@@ -4118,7 +4118,39 @@ public final class OresEvalRootNode extends RootNode {
             if (!object.mapEntries.containsKey(key)) return new OptionValue(false, null);
             Object value = object.mapEntries.get(key);
             validateMapReadValue(object, key, value);
-            return new OptionValue(true, value);
+            // A read cannot move the stored value or expose a mutable alias.
+            // Explicit remove() is the consuming operation for owned values.
+            return new OptionValue(true, mapCopyForRead(value, new IdentityHashMap<>(), 0));
+        }
+
+        private Object mapCopyForRead(
+                Object value, IdentityHashMap<Object, Boolean> active, int depth) {
+            if (value == null || depth > 64) {
+                throw new IllegalArgumentException("Map read cannot copy a null or over-deep value");
+            }
+            if (value instanceof String || value instanceof Number
+                    || value instanceof Boolean || value instanceof Character
+                    || value instanceof Complex || value instanceof OptionUnwrapError) {
+                return value;
+            }
+            if (active.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("Map read cannot copy a cyclic value");
+            }
+            try {
+                if (value instanceof OptionValue option) {
+                    return option.present()
+                            ? new OptionValue(true, mapCopyForRead(option.value(), active, depth + 1))
+                            : new OptionValue(false, null);
+                }
+                if (value instanceof ResultValue result) {
+                    return new ResultValue(
+                            result.ok(), mapCopyForRead(result.value(), active, depth + 1));
+                }
+            } finally {
+                active.remove(value);
+            }
+            throw new IllegalArgumentException(
+                    "Map.get cannot expose a move-only value; use remove() to transfer ownership");
         }
 
         private void validateMapReadValue(OresObject object, String key, Object value) {
