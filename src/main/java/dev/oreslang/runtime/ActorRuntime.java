@@ -2038,6 +2038,36 @@ public final class ActorRuntime implements AutoCloseable {
             return childRegistry.stop(child, notice.actorId(), notice.incarnation());
         }
 
+        /**
+         * Compiler-owned terminal STOP claim. Call before invoking the host
+         * effect; retain the logical reservation across asynchronous waits.
+         */
+        public SupervisorChildRegistry.StopReservation reserveFinalizedStop(
+                SupervisorProcess.Resolution resolution) {
+            requireSupervisorContext("reserve finalized supervisor STOP");
+            Objects.requireNonNull(resolution);
+            var notice = resolution.notice();
+            if (resolution.directive() != SupervisorProcess.Directive.STOP
+                    || resolution.turnGeneration() < 1
+                    || !notice.supervisorId().equals(supervisorId)
+                    || !notice.groupId().equals(id)
+                    || notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE) {
+                throw new SecurityException("invalid supervisor STOP reservation");
+            }
+            var child = notice.logicalChild().orElseThrow(() ->
+                    new IllegalStateException("STOP has no verified logical child"));
+            return childRegistry.beginStop(
+                    child, notice.actorId(), notice.incarnation(),
+                    resolution.turnGeneration());
+        }
+
+        /** Host acknowledgment of one previously reserved exact STOP turn. */
+        public SupervisorChildRegistry.Snapshot commitReservedStop(
+                SupervisorChildRegistry.StopReservation reservation) {
+            requireSupervisorContext("commit reserved supervisor STOP");
+            return childRegistry.commitStop(Objects.requireNonNull(reservation));
+        }
+
         /** Host-only callback: delivered on shared CONTROL carriers, never inline. */
         public void installSupervisorFailureHandler(
                 Consumer<SupervisorFailureControl.Notice> handler) {
