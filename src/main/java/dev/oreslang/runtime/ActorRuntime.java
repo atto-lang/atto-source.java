@@ -1673,7 +1673,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         final OresFuture<T> future;
         synchronized (cell.lifecycleLock) {
-            if (cell.stopped.get() || cell.finalized) throw terminated(cell.ref);
+            if (closed.get() || cell.stopped.get() || cell.finalized) {
+                throw terminated(cell.ref);
+            }
             future = cell.sourceScheduler().start(task);
             cell.sourceTaskFutures.add(future);
         }
@@ -1747,9 +1749,12 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(command, "source task continuation");
         final boolean cleanupOnly;
         synchronized (cell.lifecycleLock) {
+            // This scheduler capability belongs only to an already-admitted
+            // source task. A concurrent runtime close may seal new work just
+            // before it marks this actor stopped; keep the command queued so
+            // structured cancellation can drain it on the cleanup CONTROL lane.
             if (cell.finalized || cell.forceKillFenced
-                    || (cell.stopped.get() && !cell.sourceCleanupDraining)
-                    || (closed.get() && !cell.sourceCleanupDraining)) return false;
+                    || (cell.stopped.get() && !cell.sourceCleanupDraining)) return false;
             cleanupOnly = cell.stopped.get() && cell.sourceCleanupDraining;
         }
 
