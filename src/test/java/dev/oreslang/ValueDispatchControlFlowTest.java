@@ -18,7 +18,7 @@ final class ValueDispatchControlFlowTest {
         OwnershipChecker.check(program);
     }
 
-    private static String execute(String source) {
+    private static String execute(String source) throws Exception {
         admitted(source);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Source built = Source.newBuilder(OresLanguage.ID, source, "value-dispatch.ores")
@@ -31,7 +31,7 @@ final class ValueDispatchControlFlowTest {
     }
 
     @Test
-    void expressionArmsYieldLocallyWhileDoArmsReturnFromFunction() {
+    void expressionArmsYieldLocallyWhileDoArmsReturnFromFunction() throws Exception {
         String output = execute("""
                 fnc matched(int v): string {
                   const x = match v over
@@ -171,7 +171,7 @@ final class ValueDispatchControlFlowTest {
     }
 
     @Test
-    void nestedDoMatchRetainsFunctionReturnBoundary() {
+    void nestedDoMatchRetainsFunctionReturnBoundary() throws Exception {
         assertEquals("function\n", execute("""
                 fnc nested(int v): string {
                   const result = match v over
