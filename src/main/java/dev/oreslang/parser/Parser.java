@@ -389,7 +389,7 @@ public final class Parser {
     }
 
     private Ast.ActorKind resolveActorKind(Token actorToken, boolean isolated, Modifiers modifiers) {
-        if (isolated && (modifiers.shared || modifiers.untrusted || modifiers.serial)) {
+        if (isolated && (modifiers.shared || modifiers.untrusted)) {
             throw error(
                     actorToken,
                     "'shared/untrusted isoactor' is contradictory; use either shared actor, untrusted actor, or isoactor");
