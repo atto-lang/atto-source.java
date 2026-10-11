@@ -97,88 +97,59 @@ Run the newly-added scheduler cancellation and ActorEndCleanupTest tests, then
 the entire JVM suite against the exact source head. Do not merge this draft on
 focused test success alone.
 
-## Actor scheduler CONTROL cleanup candidate (#659, stacked and draft)
+## Physical queued-carrier cancellation fence (October 11, 2026)
 
-This integration reconciles the earlier #659 prototype with the *current*
-#567 `OresScheduler.CancellationAwareTask` and source lexical cleanup
-stack. Only that one scheduler/source-context protocol is retained.
+A queued turn has an atomic carrier-admission ticket. Cancellation may revoke
+a ticket that has **not** claimed entry to the VM, release its outstanding
+reservation, settle the task without entering the VM or running guest code, and
+leave the queued executor callback as a harmless no-op. This is necessary for
+fast actor termination even when the CONTROL queue contains thousands of tasks.
 
-Actor-bound source continuations use an owner-only bounded CONTROL queue
-that remains runnable after normal mailbox admission is sealed by stop
-or structured cancellation. Old arbitrary callbacks and new user mail
-cannot execute while the actor is draining. Active source-task Futures
-are separately tracked and retained even before normal pending-operations
-registration. Their completed cleanup is required before `get_done()`,
-source scheduler shutdown, actor field state or native memory retirement.
+Once a carrier has claimed VM entry, its ticket is no longer revocable:
+`outstandingCarrierTurns` delays task Future publication and scheduler/context
+retirement until the entered turn fully exits. Installing each ticket and
+publishing QUEUED are serialized with cancellation admission so competing
+producers cannot replace a live ticket. A tagged await generation independently
+rejects stale callbacks after resumption into a different cleanup Future.
+Concurrent `close()` callers share a completed drain or its original failure,
+rather than returning prematurely.
 
-Scheduler shutdown timeouts must not force terminal publication for
-unfinished source finalizers or issue `shutdownNow()` on their carriers.
-A deadline failure is explicit and outstanding owners remain pinned for
-isolate-level escalation. Cancellation errors remain distinct from
-mutex poison recovery: `SharedMutex.recover` does not swallow cancellation.
+**Verified JVM gate:** [funded run 38178592661](https://github.com/zed-pkg-test/java-app/actions/runs/38178592661)
+matched 388 source Git blobs and passed full Maven: **1,429 tests, zero failures,
+zero errors, one skipped**. This includes queued-cancellation, concurrent-close,
+producer/cancellation races, and actor end under CONTROL/backlog saturation.
 
-**Still blocked:** runtime-global close currently interrupts actor carrier
-pools before an owner cleanup drain; force-isolated revocation, untrusted
-cleanup time budgets, source-level nested await/defer/finally and
-`recover` conformance, stress, Graal native-image and LLVM are still
-required. The integration is not a release certification.
+Suspended source lexical cleanup under actor/context teardown, cancellation
+timeouts and fatal-error policy, independent physical ownership review,
+GraalVM native-image AOT/hybrid, and LLVM semantic parity remain separate
+release gates. Do not merge this draft solely on JVM success.
 
+## Stacked shutdown and FFM loan audit (October 11)
 
-## Runtime-global close hardening (draft, not yet green)
+Integrated Java 567→659→662 release-gate candidates preserve the latest
+scheduler carrier leases, terminal-outcome race guards, and stale-completion
+tests rather than restoring older forked implementations.
 
-The actor-owned cleanup lane cannot make progress if `ActorRuntime.close()`
-interrupts/shuts down dispatcher carriers before the pending source finalizer
-has resumed. The global-close draft now:
+**Physical owner invariant:** a scheduler cleanup timeout leaves its guest
+Future nonterminal, await registration live, and carrier/context retained.
+No deadline path may convert unfinished `defer`/`finally` into
+`failTerminal()` or issue `shutdownNow()` against its only runnable lane.
+A later `close()` may retire the scheduler after cleanup actually settles.
 
-- seals runtime user admissions and stops each actor, without `shutdownNow()`
-  before lexical cleanup;
-- continues already-admitted source-task CONTROL commands through both
-  admission checks and the actor's physical dispatch/reschedule path, including
-  the narrow `schedulerSafepoint()` exemption for `sourceCleanupTurn`;
-- rejects new `startActorTask` admissions after runtime close;
-- waits for actor finalization before graceful dispatcher shutdown;
-- leaves shared resources and still-owned actor execution contexts intact on
-  a drain timeout, reporting an explicit failed close instead of claiming that
-  cleanup completed.
+**Actor-close invariant:** normal messages remain fenced; only pre-owned
+scheduler CONTROL continuations can execute after structured stop or global
+close. The `closed=true`/stop transition must explicitly wake a previously
+enqueued source continuation. Cleanup-admission state must have cross-thread
+visibility. No second execution lane is granted to a serial actor.
 
-**Executed regression:** the first exact-source private GraalVM 25 run
-[38177811733](https://github.com/zed-pkg-test/java-app/actions/runs/38177811733)
-verified all 388 source blobs and compiled Java. The new
-`runtimeCloseKeepsSourceCleanupControlLaneAlive` test failed (1 failure in 67
-focused tests): the *second*, under-lock CONTROL admission check still vetoed
-`closed` runtimes. This exposed a real missed check; it was corrected in
-commit `67eefef745605372adb3a9edd1fc885a4ffedebe`.
-**The revised source head is not yet validated by a new funded run.** The
-previous passing full Maven run was for an earlier exact head and cannot be
-transferred to this change.
+**Native loan invariant:** cancellation awaits lexical cleanup before actor
+memory is logically retired. An outstanding opaque FFM loan then pins the
+physical native arena and aggregate byte reservation *beyond* logical actor
+stop until its final release. Failed global close retains actor-held SyncCell
+or native objects, even for a non-cooperative host turn; an interrupt alone is
+not proof of physical quiescence.
 
-**Remaining hazards:** timeout leaves owned carriers and cleanup resources
-pinned for escalation rather than force-interrupting untrusted work; close
-must not be mistaken for a hard-kill primitive. Exhaustive concurrent close,
-source task creation/settlement races, partial shutdown retry, nested source
-`await`/`finally`/`defer`, source-level output authority during cleanup,
-Graal Native Image, and LLVM guest continuation parity remain release gates.
-Keep all stacked branches draft.
-
-## Runtime close timeout and held SyncCell ownership (audit follow-up)
-
-When `ActorRuntime.close()` reaches its deadline while a guest turn still
-owns a shared SyncCell lock, the runtime **must not** mark the SyncCell
-closed, reset shared-memory accounting to zero, or claim physical quiescence.
-The close call fails explicitly, retains the actor and its memory reservations,
-and allows a subsequent close after the guest turn actually exits. The
-existing legacy test that expected early physical reclamation has been
-corrected to assert retention before the deadline and release after a
-successful retry.
-
-An actor with no outstanding source execution-context tasks still uses the
-existing fail-stop dispatcher interruption/queued-batch cancellation path,
-because ordinary blocking host behaviors do not have lexical continuation
-cleanup rights. When source tasks exist, shutdown instead keeps their
-scheduler-owned CONTROL lane alive. Audit test gates check both cases.
-
-The independently discovered close/stop window is fenced by a volatile
-cleanup admission state and an explicit stop-time wake of source turns queued
-after the global close flag but before actor stop. The race fixture injects
-this timing deterministically. Full JVM/native-image conformance and
-LLVM parity remain release gates; a passing focused suite is not sufficient.
+Outstanding gates: randomized multi-actor cancellation/borrow races; native
+AOT/hybrid and force-isolate revoker proof; LLVM executable parity; eventual
+source `defer`/`finally`/`recover` with native loans; merged exact-blob
+GitHub Actions; independent safety review. Keep stacked drafts unmerged.

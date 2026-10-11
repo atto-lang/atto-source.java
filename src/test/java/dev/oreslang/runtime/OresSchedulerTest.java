@@ -432,6 +432,48 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void cancellingUnclaimedQueuedTaskNeverEntersVmAndSettlesWithoutCarrier() throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger contextEntries = new AtomicInteger();
+        AtomicInteger guestRuns = new AtomicInteger();
+        carrier.execute(() -> {
+            entered.countDown();
+            try { release.await(); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "queued-cancel-context-fence", 1, carrier,
+                turn -> {
+                    contextEntries.incrementAndGet();
+                    turn.run();
+                });
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            OresFuture<Integer> task = scheduler.start(input -> {
+                guestRuns.incrementAndGet();
+                return OresScheduler.done(42);
+            });
+            assertTrue(task.cancel(false));
+            assertTrue(task.isCancelled(),
+                    "revoked unclaimed carrier must allow immediate cancellation");
+            assertEquals(0, contextEntries.get());
+            release.countDown();
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertEquals(0, contextEntries.get(),
+                    "revoked queued carrier must never enter the VM context");
+            assertEquals(0, guestRuns.get());
+        } finally {
+            release.countDown();
+            scheduler.close();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void closingSchedulerDetachesSuspendedWaiterWithoutCancellingSharedFuture() throws Exception {
         OresFuture<Integer> shared = new OresFuture<>();
         OresScheduler scheduler = new OresScheduler(1);
@@ -629,6 +671,376 @@ final class OresSchedulerTest {
                     () -> result.get(5, TimeUnit.SECONDS));
             assertEquals(1, cleanupEntries.get());
             assertNotNull(cleanupLane.get());
+        }
+    }
+
+    @Test
+    void runtimeOwnedCloseWaitsForCarrierExitBeforeRetiringCompletedTask() throws Exception {
+        // Runtime-owned schedulers have no owned carrier executor to await.
+        // A task can report Done while its guest turn is still leaving the
+        // entered Truffle Context. close() must not observe a drained task
+        // registry or publish the task Future until after that turn unwinds.
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch guestBodyReturned = new CountDownLatch(1);
+        CountDownLatch permitCarrierExit = new CountDownLatch(1);
+        CountDownLatch closeFinished = new CountDownLatch(1);
+        AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "close-carrier-exit-test", 1, carrier,
+                turn -> {
+                    turn.run();
+                    guestBodyReturned.countDown();
+                    try {
+                        if (!permitCarrierExit.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("guest carrier exit gate timed out");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("guest carrier exit interrupted",
+                                interrupted);
+                    }
+                });
+        try {
+            OresFuture<Integer> completed = scheduler.start(
+                    resume -> OresScheduler.done(42));
+            assertTrue(guestBodyReturned.await(5, TimeUnit.SECONDS));
+
+            Thread closing = Thread.ofPlatform().start(() -> {
+                try {
+                    scheduler.close();
+                } catch (Throwable failure) {
+                    closeFailure.set(failure);
+                } finally {
+                    closeFinished.countDown();
+                }
+            });
+            assertFalse(closeFinished.await(150, TimeUnit.MILLISECONDS),
+                    "close must keep the completed-but-still-entered task live");
+            assertFalse(completed.isDone(),
+                    "Future publication must happen after guest carrier exit");
+
+            permitCarrierExit.countDown();
+            assertTrue(closeFinished.await(5, TimeUnit.SECONDS));
+            closing.join(5000);
+            assertNull(closeFailure.get(), "normal guest unwind must drain cleanly");
+            assertEquals(42, completed.get(5, TimeUnit.SECONDS));
+        } finally {
+            permitCarrierExit.countDown();
+            scheduler.close();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void runtimeOwnedCloseWaitsForFailedTaskCarrierExitBeforeRetirement() throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch guestTurnExited = new CountDownLatch(1);
+        CountDownLatch allowExit = new CountDownLatch(1);
+        CountDownLatch closeFinished = new CountDownLatch(1);
+        AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+        IllegalStateException guestFailure =
+                new IllegalStateException("guest task failure before context exit");
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "close-failed-carrier-exit-test", 1, carrier,
+                turn -> {
+                    turn.run();
+                    guestTurnExited.countDown();
+                    try {
+                        if (!allowExit.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("failed task carrier exit gate timed out");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("failed task carrier exit interrupted",
+                                interrupted);
+                    }
+                });
+        try {
+            OresFuture<Integer> failed = scheduler.start(resume -> {
+                throw guestFailure;
+            });
+            assertTrue(guestTurnExited.await(5, TimeUnit.SECONDS));
+
+            Thread closing = Thread.ofPlatform().start(() -> {
+                try {
+                    scheduler.close();
+                } catch (Throwable failure) {
+                    closeFailure.set(failure);
+                } finally {
+                    closeFinished.countDown();
+                }
+            });
+            assertFalse(closeFinished.await(150, TimeUnit.MILLISECONDS),
+                    "close must retain a failed task until its entered context exits");
+            assertFalse(failed.isDone(), "failure must not publish before context exit");
+
+            allowExit.countDown();
+            assertTrue(closeFinished.await(5, TimeUnit.SECONDS));
+            closing.join(5000);
+            assertNull(closeFailure.get());
+            var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> failed.get(5, TimeUnit.SECONDS));
+            assertSame(guestFailure, observed.getCause(),
+                    "carrier-exit settlement must preserve original task failure identity");
+        } finally {
+            allowExit.countDown();
+            scheduler.close();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+
+    @Test
+    void cancellingQueuedSourceBeforeItsFirstTurnNeverRunsGuestCode()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        CountDownLatch enteredCarrier = new CountDownLatch(1);
+        CountDownLatch releaseCarrier = new CountDownLatch(1);
+        AtomicInteger sourceEntries = new AtomicInteger();
+        try {
+            OresFuture<Void> occupying = scheduler.startSync(() -> {
+                enteredCarrier.countDown();
+                assertTrue(releaseCarrier.await(5, TimeUnit.SECONDS));
+                return null;
+            });
+            assertTrue(enteredCarrier.await(5, TimeUnit.SECONDS));
+
+            OresFuture<Integer> queued = scheduler.start(
+                    new OresScheduler.CancellationAwareTask<>() {
+                        @Override public boolean cleanupInProgress() { return false; }
+                        @Override public void cancellationRequested(
+                                OresScheduler.TaskCancelledException reason) { }
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume input) {
+                            sourceEntries.incrementAndGet();
+                            return OresScheduler.done(1);
+                        }
+                    });
+
+            assertTrue(queued.cancel(false));
+            assertTrue(queued.isCancelled(),
+                    "unclaimed carrier can be revoked without running guest code");
+            assertEquals(0, sourceEntries.get());
+            releaseCarrier.countDown();
+            assertNull(occupying.get(5, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> queued.get(5, TimeUnit.SECONDS));
+            assertTrue(queued.isCancelled());
+            assertEquals(0, sourceEntries.get(),
+                    "abandoned queue entry must never dispatch guest source");
+        } finally {
+            releaseCarrier.countDown();
+            scheduler.close();
+        }
+    }
+
+    @Test
+    void cancellationAfterCommittedDoneCannotOverrideTerminalOutcome()
+            throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch doneReturned = new CountDownLatch(1);
+        CountDownLatch leaveContext = new CountDownLatch(1);
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "cancel-after-terminal-commit", 1, carrier, turn -> {
+                    turn.run();
+                    doneReturned.countDown();
+                    try {
+                        if (!leaveContext.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("context exit gate timed out");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                    }
+                });
+        try {
+            OresFuture<Integer> done = scheduler.start(
+                    input -> OresScheduler.done(42));
+            assertTrue(doneReturned.await(5, TimeUnit.SECONDS));
+            assertFalse(done.isDone(), "task Future waits for carrier exit");
+            assertFalse(done.cancel(false),
+                    "terminal outcome has already been committed");
+            leaveContext.countDown();
+            assertEquals(42, done.get(5, TimeUnit.SECONDS));
+            assertFalse(done.isCancelled());
+        } finally {
+            leaveContext.countDown();
+            scheduler.close();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void concurrentAwaitSettlementAndCancellationCannotDiscardCleanup()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            ExecutorService producers = Executors.newFixedThreadPool(2);
+            try {
+                for (int iteration = 0; iteration < 48; iteration++) {
+                    OresFuture<Integer> source = new OresFuture<>();
+                    CountDownLatch suspended = new CountDownLatch(1);
+                    AtomicInteger cleanups = new AtomicInteger();
+                    AtomicBoolean normalResultSelected = new AtomicBoolean();
+                    OresFuture<Integer> task = scheduler.start(
+                            new OresScheduler.CancellationAwareTask<>() {
+                                private volatile boolean cleanup;
+                                private volatile boolean requested;
+                                private int stage;
+
+                                @Override public boolean cleanupInProgress() {
+                                    return cleanup;
+                                }
+
+                                @Override public void cancellationRequested(
+                                        OresScheduler.TaskCancelledException reason) {
+                                    requested = true;
+                                }
+
+                                @Override public OresScheduler.Step<Integer> resume(
+                                        OresScheduler.Resume input) {
+                                    if (stage++ == 0) {
+                                        suspended.countDown();
+                                        return OresScheduler.await(source);
+                                    }
+                                    if (requested || input.failure() != null) {
+                                        assertSame(scheduler, OresScheduler.current());
+                                        cleanup = true;
+                                        cleanups.incrementAndGet();
+                                        return OresScheduler.done(123);
+                                    }
+                                    normalResultSelected.set(true);
+                                    return OresScheduler.done(55);
+                                }
+                            });
+                    assertTrue(suspended.await(5, TimeUnit.SECONDS));
+                    CountDownLatch start = new CountDownLatch(1);
+                    var settling = producers.submit(() -> {
+                        assertTrue(start.await(5, TimeUnit.SECONDS));
+                        source.completeFromRuntime(1);
+                        return null;
+                    });
+                    var cancelling = producers.submit(() -> {
+                        assertTrue(start.await(5, TimeUnit.SECONDS));
+                        return task.cancel(false);
+                    });
+                    start.countDown();
+                    settling.get(5, TimeUnit.SECONDS);
+                    boolean admitted = cancelling.get(5, TimeUnit.SECONDS);
+                    if (admitted) {
+                        assertThrows(java.util.concurrent.CancellationException.class,
+                                () -> task.get(5, TimeUnit.SECONDS));
+                        assertTrue(cleanups.get() == 1 || normalResultSelected.get(),
+                                "a cancellation may omit synthetic cleanup only when the "
+                                + "guest had already selected its normal Done result");
+                        assertTrue(cleanups.get() <= 1,
+                                "a racing await may never replay cleanup");
+                    } else {
+                        assertEquals(55, task.get(5, TimeUnit.SECONDS));
+                        assertEquals(0, cleanups.get());
+                    }
+                    assertEquals(0, source.pendingRuntimeWaiterCount());
+                }
+            } finally {
+                producers.shutdownNow();
+                assertTrue(producers.awaitTermination(5, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    void concurrentCloseCallersWaitForSameSuspendedCancellationCleanup() throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        OresFuture<Integer> source = new OresFuture<>();
+        OresFuture<Integer> cleanupGate = new OresFuture<>();
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+        CountDownLatch secondCloseStarted = new CountDownLatch(1);
+        CountDownLatch firstCloseDone = new CountDownLatch(1);
+        CountDownLatch secondCloseDone = new CountDownLatch(1);
+        AtomicReference<Throwable> firstCloseFailure = new AtomicReference<>();
+        AtomicReference<Throwable> secondCloseFailure = new AtomicReference<>();
+        AtomicInteger cleanupEntries = new AtomicInteger();
+
+        try {
+            OresFuture<Integer> task = scheduler.start(
+                    new OresScheduler.CancellationAwareTask<>() {
+                        private volatile boolean cleaning;
+
+                        @Override public boolean cleanupInProgress() {
+                            return cleaning;
+                        }
+
+                        @Override public void cancellationRequested(
+                                OresScheduler.TaskCancelledException reason) { }
+
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume input) {
+                            if (input.initial()) return OresScheduler.await(source);
+                            if (!cleaning) {
+                                assertInstanceOf(OresScheduler.TaskCancelledException.class,
+                                        input.failure());
+                                cleaning = true;
+                                cleanupEntries.incrementAndGet();
+                                cleanupEntered.countDown();
+                                return OresScheduler.await(cleanupGate);
+                            }
+                            assertSame(scheduler, OresScheduler.current());
+                            assertNull(input.failure());
+                            assertEquals(7, input.value());
+                            return OresScheduler.done(42);
+                        }
+                    });
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (source.pendingRuntimeWaiterCount() != 1
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(1, source.pendingRuntimeWaiterCount());
+
+            Thread first = Thread.ofPlatform().start(() -> {
+                try {
+                    scheduler.close();
+                } catch (Throwable failure) {
+                    firstCloseFailure.set(failure);
+                } finally {
+                    firstCloseDone.countDown();
+                }
+            });
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (cleanupGate.pendingRuntimeWaiterCount() != 1
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(1, cleanupGate.pendingRuntimeWaiterCount());
+
+            Thread second = Thread.ofPlatform().start(() -> {
+                secondCloseStarted.countDown();
+                try {
+                    scheduler.close();
+                } catch (Throwable failure) {
+                    secondCloseFailure.set(failure);
+                } finally {
+                    secondCloseDone.countDown();
+                }
+            });
+            assertTrue(secondCloseStarted.await(5, TimeUnit.SECONDS));
+            assertFalse(secondCloseDone.await(150, TimeUnit.MILLISECONDS),
+                    "second close must not return before the first has drained cleanup");
+            assertFalse(firstCloseDone.await(25, TimeUnit.MILLISECONDS));
+            assertFalse(task.isDone(), "cancellation is pending until cleanup completes");
+
+            assertTrue(cleanupGate.completeFromRuntime(7));
+            assertTrue(firstCloseDone.await(5, TimeUnit.SECONDS));
+            assertTrue(secondCloseDone.await(5, TimeUnit.SECONDS));
+            first.join(5000);
+            second.join(5000);
+            assertNull(firstCloseFailure.get());
+            assertNull(secondCloseFailure.get());
+            assertTrue(task.isCancelled());
+            assertEquals(1, cleanupEntries.get());
+            assertFalse(source.isDone(), "shared producer must not be cancelled");
+        } finally {
+            cleanupGate.completeFromRuntime(7);
+            scheduler.close();
         }
     }
 
