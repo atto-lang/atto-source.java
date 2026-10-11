@@ -5978,6 +5978,9 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean gracefulTeardownPending;
         private boolean gracefulTeardownStarted;
         private boolean gracefulTeardownActive;
+        /** Cancellation, fatal failure and runtime close revoke all further
+         * guest finalization callbacks, even if teardown already began. */
+        private boolean gracefulTeardownRevoked;
         private boolean finalized;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
@@ -6166,6 +6169,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorOwnedGuestState state;
             synchronized (lifecycleLock) {
                 if (!gracefulTeardownPending || gracefulTeardownStarted
+                        || gracefulTeardownRevoked
                         || forceKillFenced || finalized
                         || ref.terminationCause.get() != null) return;
                 gracefulTeardownStarted = true;
@@ -6194,6 +6198,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (!endRequested
                         || finalCleanupStarted
                         || finalCleanup == null
+                        || gracefulTeardownRevoked
                         || (ref.terminationCause.get() != null
                                 && !gracefulTeardownStarted)) return;
                 finalCleanupStarted = true;
@@ -6425,8 +6430,16 @@ public final class ActorRuntime implements AutoCloseable {
                     dispatcher.execute(this::runBatch);
                 }
             } catch (RejectedExecutionException rejected) {
+                // A rejected reserved lifecycle turn cannot be retried through
+                // stop(): stop would see a still-pending teardown and endlessly
+                // re-enter schedule() on the rejecting dispatcher. Fail closed,
+                // revoke guest hooks and let trusted finalization settle done.
                 scheduled.set(false);
-                stop();
+                synchronized (lifecycleLock) {
+                    gracefulTeardownPending = false;
+                    gracefulTeardownRevoked = true;
+                }
+                fail(rejected);
                 if (!closed.get()) throw rejected;
             }
         }
@@ -6747,6 +6760,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // a suspended receive use trusted-only retirement.
                 if (cause != null || closed.get() || forceKillFenced) {
                     gracefulTeardownPending = false;
+                    gracefulTeardownRevoked = true;
                 } else if (!stopped.get() && codeExecutor != null
                         && codeActorState != null && !sourceReceiveSuspended) {
                     gracefulTeardownPending = true;
