@@ -51,6 +51,10 @@ public final class TypeChecker {
     private final Set<Ast.SwitchStmt> provenExhaustiveSwitches =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final java.util.ArrayDeque<List<Type>> armValueTypes = new java.util.ArrayDeque<>();
+    // Nearest callable/lexical block return contract. Value-dispatch arms
+    // yield locally, but a nested 'do match' still returns from the function
+    // and must be checked against its declared return type.
+    private Type enclosingReturnType = Unknown.INSTANCE;
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
@@ -1314,8 +1318,15 @@ public final class TypeChecker {
     }
 
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
-        Env env = new Env(parent);
-        for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+        Type previousReturn = enclosingReturnType;
+        if (expectedReturn != Unknown.INSTANCE) enclosingReturnType = expectedReturn;
+        try {
+            Env env = new Env(parent);
+            for (Ast.Stmt stmt : body)
+                checkStatement(stmt, env, generics, expectedReturn, self);
+        } finally {
+            enclosingReturnType = previousReturn;
+        }
     }
 
     private void checkLoopBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
@@ -1822,7 +1833,7 @@ public final class TypeChecker {
             try {
                 Ast.MatchStmt statement = new Ast.MatchStmt(
                         matched.subject(), matched.ordered(), matched.arms(), false);
-                checkMatch(statement, subject, env, generics, Unknown.INSTANCE, self);
+                checkMatch(statement, subject, env, generics, enclosingReturnType, self);
                 if (!matchProvablyExhaustive(matched.arms(), subject, generics, self))
                     throw new IllegalArgumentException("non-exhaustive value match");
                 for (Ast.MatchArm arm : matched.arms()) {
@@ -1843,7 +1854,7 @@ public final class TypeChecker {
             try {
                 Ast.SwitchStmt statement = new Ast.SwitchStmt(
                         switched.subject(), switched.cases(), switched.defaultBody(), false);
-                checkStatement(statement, env, generics, Unknown.INSTANCE, self);
+                checkStatement(statement, env, generics, enclosingReturnType, self);
                 if (switched.defaultBody().isEmpty()
                         && !switchCoversAllBooleanValues(statement, subject))
                     throw new IllegalArgumentException(
