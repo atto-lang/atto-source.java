@@ -158,7 +158,7 @@ final class SourceActorSpawnExecutionTest {
         String program = """
                 define actor Counter as
                   state { count: int = 0; enabled: bool = true; }
-                  receive(ActorMail<String> mail): void using state.read, state.write {
+                  receive(ActorMail<String> mail): void {
                     val next = self.handle_state(|s| -> {
                       s.count = s.count + 1;
                       return s.count;
