@@ -97,9 +97,8 @@ public final class SourceSupervisorLowering {
                 group.acknowledgeFinalizedStop(resolution);
             });
         }
-    }
 
-    /**
+        /**
      * Restricted executable async guest hook:
      * `pub async on_panic(f: Failure): void { await self.stop(f); return; }`
      * The caller-provided CompletionStage MUST represent the host's actual
@@ -143,6 +142,8 @@ public final class SourceSupervisorLowering {
             group.acknowledgeFinalizedStop(resolution);
         });
     }
+
+    } // StopOnlySupervisor
 
     /**
      * Separate, opt-in entry point: normal program/type/isolate admission must
