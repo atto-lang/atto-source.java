@@ -181,7 +181,7 @@ final class GlobalStdioStreamTest {
     @Test
     void brokenOutputDescriptorFailsClosedInsteadOfReportingSuccessfulFlush() throws Exception {
         String code = """
-                pub routine main(): void {
+                pub suspends routine main(): void {
                   writech stdio.out, "should-fail";
                   Stdio.flush_blocking();
                   return;
@@ -211,7 +211,7 @@ final class GlobalStdioStreamTest {
     @Test
     void brokenStderrDescriptorFailsClosedInsteadOfDiscardingFailure() throws Exception {
         String code = """
-                pub routine main(): void {
+                pub suspends routine main(): void {
                   writech stdio.err, "should-fail";
                   Stdio.err_flush_blocking();
                   return;
