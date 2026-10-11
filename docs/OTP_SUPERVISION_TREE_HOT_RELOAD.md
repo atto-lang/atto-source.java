@@ -183,3 +183,25 @@ Never claim exactly-once cross-process message processing merely from a proxy.
 
 The host-level tests are not evidence that the above source features or
 hot-reload protocol already execute. Full parity is NOT claimed.
+
+## Existing Java hot-reload substrate and integration risk
+
+`HotReloadManager` already stages checked source generations using separate
+Graal Polyglot `Context` objects and tracks an active generation per code
+unit. Its explicit `retire` operation closes that generation's context.
+This is useful for compiling/staging a replacement, but it is **not** an
+in-place replacement of a live supervisor actor's policy, and it cannot
+preserve actor-local state or suspended continuation frames by itself.
+Do not close the old context while an old supervisor policy turn is
+executing or an old frame is pinned. The outstanding cross-thread context
+close assertion is tracked at
+[Java issue #507](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/507).
+ABI pinning across hot reload generations is tracked at
+[Java issue #494](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/494).
+
+A future bridge from staged `Generation` to a supervisor's authoritative
+`CodeRevision` must therefore be atomic at a CONTROL safepoint and
+quiescence-aware; avoid directly calling `Generation.start()` inside the
+currently executing supervisor turn. Test old-code drain, paused Future
+completion, context-close races, capability narrowing, failed migrations
+and rollback before enabling compiler-level hot reload.
