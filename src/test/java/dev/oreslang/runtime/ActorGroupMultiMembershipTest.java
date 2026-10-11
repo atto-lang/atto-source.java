@@ -87,4 +87,51 @@ final class ActorGroupMultiMembershipTest {
             assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void privateConnectionMayJoinTwoRoomsButCannotSubscribeToZeroCopyEvents() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup roomA = runtime.createActorGroup();
+            ActorRuntime.ActorGroup roomB = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability joinA = roomA.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability joinB = roomB.joinCapability();
+            roomA.events().defineTopic("chat", ActorEventBus.DeliveryPolicy.LATEST, 1);
+            roomB.events().defineTopic("chat", ActorEventBus.DeliveryPolicy.LATEST, 1);
+
+            CountDownLatch completed = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> connection = runtime.spawnPrivate(
+                    factoryContext -> (message, actorContext) -> {
+                        try {
+                            joinA.join();
+                            joinB.join();
+                            assertTrue(roomA.contains(actorContext.self()));
+                            assertTrue(roomB.contains(actorContext.self()));
+                            // Private socket-owning actors must use their
+                            // mailboxes; group membership never bypasses isolation.
+                            assertThrows(SecurityException.class,
+                                    () -> roomA.events().subscribe("chat"));
+                            assertThrows(SecurityException.class,
+                                    () -> roomB.events().subscribe("chat"));
+                            roomA.leaveCurrent();
+                            assertTrue(roomB.contains(actorContext.self()));
+                        } catch (Throwable problem) {
+                            failure.set(problem);
+                        } finally {
+                            completed.countDown();
+                        }
+                    });
+            connection.send(1);
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertFalse(roomA.contains(connection));
+            assertTrue(roomB.contains(connection));
+
+            roomA.close();
+            roomB.close();
+            assertTrue(connection.isAlive(), "room membership cannot terminate the socket actor");
+            connection.stop();
+            assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
 }
