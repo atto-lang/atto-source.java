@@ -1342,11 +1342,12 @@ public final class TypeChecker {
     }
 
     private void checkCallableBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
-        checkIsolatedArmBlock(body, parent, generics, expectedReturn, self, false);
+        checkIsolatedArmBlock(body, parent, generics, expectedReturn, self, false, true);
     }
 
     private void checkIsolatedArmBlock(List<Ast.Stmt> body, Env parent, Set<String> generics,
-                                       Type expectedReturn, Type self, boolean discardReturn) {
+                                       Type expectedReturn, Type self, boolean discardReturn,
+                                       boolean independentCallable) {
         int previousLoopDepth = loopDepth;
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
@@ -1356,7 +1357,10 @@ public final class TypeChecker {
         currentGenerator = false;
         currentAsyncCallable = false;
         inDiscardingSelectArm = discardReturn;
-        finallyDepth = 0;
+        // A source lambda/detached callable gets its own return boundary.
+        // A do-select arm is only a dispatch/return-discard boundary; it must
+        // NOT lift the lexical prohibition on returns inside finally.
+        finallyDepth = independentCallable ? 0 : previousFinallyDepth;
         try {
             checkBlock(body, parent, generics, expectedReturn, self);
         } finally {
@@ -1628,7 +1632,7 @@ public final class TypeChecker {
                     // Every do-select return is arm-local, including blocking do select.
                     // A returned value is evaluated, discarded, and warned about.
                     checkIsolatedArmBlock(arm.body(), armEnv, generics,
-                            Unknown.INSTANCE, self, true);
+                            Unknown.INSTANCE, self, true, false);
                 } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
                     // Compatibility: detached legacy nb select arms cannot return a value.
                     checkCallableBlock(arm.body(), armEnv, generics, Primitive.VOID, self);
