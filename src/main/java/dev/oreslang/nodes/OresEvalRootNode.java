@@ -413,6 +413,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         @Override
+        public boolean isSerialActor(String actorTypeName) {
+            return requireLocalActorClass(actorTypeName).serial();
+        }
+
+        @Override
         public ActorRuntime.ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorRuntime.ActorContext<Object> actorContext) {
