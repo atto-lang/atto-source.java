@@ -896,6 +896,15 @@ public final class TypeChecker {
 
         validateFieldLayout(klass);
         boolean mapClass = isTypedMapClass(klass);
+        if (mapClass && !klass.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException("Map subclasses cannot declare generic type parameters until runtime key types are reified");
+        }
+        for (Ast.TypeRef parent : klass.parents()) {
+            Ast.ClassDecl ancestor = findClass(parent.name());
+            if (ancestor != null && isTypedMapClass(ancestor)) {
+                throw new IllegalArgumentException("subclassing a typed Map subclass is not yet supported");
+            }
+        }
         if (!klass.mapKeys().isEmpty() && !mapClass) {
             throw new IllegalArgumentException("key declarations require extends Map<string, unknown>");
         }
@@ -905,8 +914,10 @@ public final class TypeChecker {
             if (!key.valueType().name().equals("Option") || key.valueType().arguments().size() != 1) {
                 throw new IllegalArgumentException("map key " + key.name() + " must be declared Option<T>");
             }
-            Type value = resolve(key.valueType().arguments().getFirst(), classGenerics, self);
+            Ast.TypeRef stored = key.valueType().arguments().getFirst();
+            Type value = resolve(stored, classGenerics, self);
             if (value == Primitive.VOID) throw new IllegalArgumentException("map key " + key.name() + " cannot contain void");
+            requireReifiableMapValue(stored, "map key " + key.name());
         }
         if (mapClass) {
             for (Ast.MethodDecl method : klass.methods()) {
@@ -916,7 +927,9 @@ public final class TypeChecker {
                 if (Set.of("on_get", "on_put", "on_remove").contains(method.name())) {
                     int arity = method.name().equals("on_put") ? 2 : 1;
                     if (method.isStatic() || method.isAbstract() || method.async() || method.suspends()
-                            || method.parameters().size() != arity || !method.genericParameters().isEmpty()
+                            || method.parameters().size() != arity
+                            || method.parameters().stream().anyMatch(Ast.Param::mutable)
+                            || !method.genericParameters().isEmpty()
                             || resolve(method.returnType(), classGenerics, self) != Primitive.VOID
                             || resolve(method.parameters().getFirst().type(), classGenerics, self) != Primitive.STRING
                             || (arity == 2 && resolve(method.parameters().get(1).type(), classGenerics, self) != OpenValue.INSTANCE)) {
@@ -1837,6 +1850,11 @@ public final class TypeChecker {
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
+            if (assignment.target() instanceof Ast.IndexExpr indexed
+                    && typedMapClass(deref(typeOf(indexed.receiver(), env, generics, self))) != null
+                    && value == Primitive.VOID) {
+                throw new IllegalArgumentException("Map cannot store void values");
+            }
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
             if (assignment.target() instanceof Ast.MemberExpr member
@@ -2283,6 +2301,7 @@ public final class TypeChecker {
                     Type valueType = typedMapValue(mapOwner, keyType, generics, self);
                     if (member.member().equals("put")) {
                         Type actual = typeOf(call.arguments().get(1), env, generics, self);
+                        if (actual == Primitive.VOID) throw new IllegalArgumentException("Map cannot store void values");
                         requireAssignable(actual, valueType, "Map.put value");
                         return Primitive.VOID;
                     }
@@ -3144,6 +3163,9 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Map")) {
+                throw new IllegalArgumentException("direct Map construction is not implemented; instantiate a declared Map subclass");
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
                         "DynamicStruct has been removed; use infer struct{...}, "
@@ -6092,6 +6114,40 @@ public final class TypeChecker {
         effective.putAll(local);
         stack.remove(klass);
         return effective;
+    }
+
+    private void requireReifiableMapValue(Ast.TypeRef type, String where) {
+        if (type.inferArguments() || type.isBorrow() || type.isTupleType() || type.isRecordType()) {
+            throw new IllegalArgumentException(where + " requires a runtime-reifiable, owned value type");
+        }
+        if (type.isUnion()) {
+            for (Ast.TypeRef variant : type.arguments()) requireReifiableMapValue(variant, where);
+            return;
+        }
+        if (Set.of("Option", "Result", "Array", "List").contains(type.name())) {
+            int arity = type.name().equals("Result") ? 2 : 1;
+            if (type.arguments().size() != arity) {
+                throw new IllegalArgumentException(where + " requires " + type.name() + " with " + arity + " type arguments");
+            }
+            for (Ast.TypeRef element : type.arguments()) requireReifiableMapValue(element, where);
+            return;
+        }
+        if (type.arguments().size() != 0 || type.name().equals("void")
+                || type.name().equals("null") || type.name().equals("self")
+                || type.name().equals("Future") || type.name().equals("Mutex")
+                || type.name().equals("SharedMutex")) {
+            throw new IllegalArgumentException(where + " is not runtime-reifiable as a typed Map payload: " + type);
+        }
+        if (Set.of("unknown", "string", "String", "bool", "Bool", "int", "uint",
+                "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "bigint",
+                "f32", "f64", "float", "decimal", "complex", "complex64", "complex128").contains(type.name())) {
+            return;
+        }
+        Ast.ClassDecl payloadClass = findClass(type.name());
+        if (payloadClass != null && payloadClass.genericParameters().isEmpty()
+                && payloadClass.actorKind() == Ast.ActorKind.NONE) return;
+        throw new IllegalArgumentException(where
+                + " has no supported runtime value-validation contract: " + type);
     }
 
     private boolean isTypedMapClass(Ast.ClassDecl klass) {
