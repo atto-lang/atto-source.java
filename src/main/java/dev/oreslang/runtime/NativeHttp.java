@@ -173,8 +173,12 @@ public final class NativeHttp implements AutoCloseable {
             // with an invalid http.claim(token) call.
             transfers.remove(token, exchange);
             state.ticket = null;
-            return true;
         }
+        // A timed-out transfer can survive after the HTTP admission was
+        // released. Retire its actor-done waiter once the mailbox tombstone
+        // is consumed, rather than pinning this exchange until actor stop.
+        exchange.state.detachActorDoneObserverIfReleased();
+        return true;
     }
 
     public OresFuture<?> serialRequestCompletion(
@@ -366,6 +370,8 @@ public final class NativeHttp implements AutoCloseable {
         ActorRuntime.ActorRef<?> actor;
         /** A persistent serial handler cannot be cancelled by one HTTP deadline. */
         boolean persistentActor;
+        /** Detachable actor-lifetime observer; do not retain every request forever. */
+        OresFuture.RuntimeWaiterRegistration<Void> actorDoneObserver;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
         }
@@ -414,6 +420,23 @@ public final class NativeHttp implements AutoCloseable {
                 server.admission.release(); server.completed.incrementAndGet(); server.completeDrain();
                 completion.completeFromRuntime((long) responseStatus);
             }
+            detachActorDoneObserverIfReleased();
+        }
+
+        /**
+         * A serial timed-out mail retains its tombstone until consumed by its
+         * actor. All other terminal exchanges can immediately release their
+         * actor-done observer; in particular a completed HTTP response must
+         * not remain reachable from an actor's never-settled done Future.
+         */
+        void detachActorDoneObserverIfReleased() {
+            OresFuture.RuntimeWaiterRegistration<Void> observer;
+            synchronized (this) {
+                if (server.active.contains(this) || (persistentActor && ticket != null)) return;
+                observer = actorDoneObserver;
+                actorDoneObserver = null;
+            }
+            if (observer != null) observer.detach();
         }
     }
 
@@ -451,17 +474,22 @@ public final class NativeHttp implements AutoCloseable {
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
                 transfers.put(token, moved);
-                destination.done().whenCompleteRuntime((ignored, failure) -> {
-                    synchronized (state) {
-                        // Actor teardown drains queued mail; an unclaimed
-                        // serial tombstone cannot be consumed afterward.
-                        if (state.ticket != null) {
-                            transfers.remove(state.ticket);
-                            state.ticket = null;
-                        }
-                    }
-                    state.abort(500);
-                });
+                state.actorDoneObserver = destination.done().whenCompleteRuntimeCancellable(
+                        (ignored, failure) -> {
+                            synchronized (state) {
+                                // Actor teardown drains queued mail; an unclaimed
+                                // serial tombstone cannot be consumed afterward.
+                                if (state.ticket != null) {
+                                    transfers.remove(state.ticket);
+                                    state.ticket = null;
+                                }
+                            }
+                            state.abort(500);
+                        });
+                // An already-settled actor may invoke its completion callback
+                // before registration returns. Recheck after installing the
+                // handle so that this race cannot retain a dead observer.
+                state.detachActorDoneObserverIfReleased();
                 return token;
             }
         }
