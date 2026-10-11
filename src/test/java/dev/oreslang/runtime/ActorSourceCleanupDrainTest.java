@@ -187,4 +187,41 @@ final class ActorSourceCleanupDrainTest {
             }
         }
     }
+
+    @Test
+    void runtimeCloseTimeoutKeepsCleanupOwnedForRetry() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        Gates gates = new Gates();
+        try {
+            ActorRuntime.ActorRef<String> actor = spawnWorker(runtime, gates);
+            actor.send("run");
+            assertTrue(gates.entered.await(3, TimeUnit.SECONDS));
+
+            // A deliberately unresolved cleanup Future must exceed the bounded
+            // runtime-close drain deadline. This is a failed close, not a
+            // successful actor kill or permission to free still-owned state.
+            IllegalStateException closeFailure =
+                    assertThrows(IllegalStateException.class, runtime::close);
+            assertTrue(closeFailure.getMessage().contains("did not observe full actor termination"),
+                    closeFailure.getMessage());
+            assertTrue(gates.cleanupEntered.await(3, TimeUnit.SECONDS));
+            assertFalse(actor.get_done().isDone(),
+                    "failed global close must not publish actor termination");
+            assertFalse(gates.task.get().isDone(),
+                    "suspended finalizer retains its logical source task");
+            assertEquals(1, gates.cleanupStarts.get());
+            assertEquals(0, gates.cleanupCompletes.get());
+
+            // The first close must leave the dispatcher/owned CONTROL lane
+            // intact. The future can still resume and complete exactly once.
+            gates.cleanupAwait.completeFromRuntime(null);
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(1, gates.cleanupCompletes.get());
+            assertTrue(gates.task.get().isCancelled());
+            assertDoesNotThrow(runtime::close, "retry after cleanup drain must succeed");
+        } finally {
+            gates.cleanupAwait.completeFromRuntime(null);
+            runtime.close();
+        }
+    }
 }
