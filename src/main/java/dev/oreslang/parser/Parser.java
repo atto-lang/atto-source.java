@@ -708,7 +708,7 @@ public final class Parser {
                 continue;
             }
 
-            if (matchContextualIdentifier("critical")) {
+            if (match(CRITICAL)) {
                 List<Ast.Annotation> marked = new ArrayList<>(annotations);
                 marked.add(new Ast.Annotation("$critical$", List.of()));
                 annotations = List.copyOf(marked);
@@ -787,7 +787,7 @@ public final class Parser {
      */
     private List<Ast.Annotation> parseSignatureEffects(List<Ast.Annotation> annotations) {
         List<Ast.Annotation> result = new ArrayList<>(annotations);
-        if (matchContextualIdentifier("using")) {
+        if (match(USING)) {
             List<String> names = new ArrayList<>();
             do {
                 String name = consume(IDENT, "expected function effect after using").lexeme();
@@ -3143,7 +3143,7 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after arr literal");
             return new Ast.ListExpr(items);
         }
-        if (matchContextualIdentifier("critical")) {
+        if (match(CRITICAL)) {
             if (check(PIPE)) return parsePipeLambda(false, true);
             if (check(LPAREN) && looksLikeLambda()) return parseLambda(false, true);
             throw error(previous(), "'critical' in expression position must prefix a callback lambda");
