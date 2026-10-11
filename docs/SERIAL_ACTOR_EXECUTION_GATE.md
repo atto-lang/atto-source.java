@@ -122,11 +122,11 @@ released **after** the actor envelope checks that native scratch scopes
 have closed. Actor finalization revokes the gate after active carrier turns
 quiesce, before reclaiming its state.
 
-**Important limitation:** continuation ownership is currently established by
-the existing single-writer actor mailbox scheduler, not an independent
-scheduler-issued per-continuation serial ticket. Third-party/unrelated
-continuation provenance still requires end-to-end execution-context and
-generation fencing before certifying the full async security contract.
+**Important limitation:** the runtime now issues per-task
+`SerialExecutionTicket` identities for source tasks; full end-to-end
+execution-context authority still requires verifying all detached child tasks,
+foreign completion paths, supervised restarts, and guest unwinding on the
+full compiled GraalVM runtime, not just isolated ticket tests.
 
 **HTTP is deliberately fail-closed.** `NativeHttp.Handler.dispatch` currently
 spawns one actor per request. Registering a serial source actor via
@@ -165,15 +165,17 @@ lease even if both share the same persistent actor. The authority constructor
 also checks the issuing gate identity, so identical numeric generations
 from *different actors* never authenticate each other.
 
-**Boundary still unproven.** These checks apply to `ContinuationTarget`
-callbacks, not to every callback placed into the actor's internal
-`OresScheduler` queue. The scheduler's `TaskRunner` needs a runtime-minted
-per-receive identity captured when the task begins, persisted across
-`await`, and verified on *every* queued source-task continuation.
-Until then, detached or unrelated scheduler work is not certified to obey
-serial handler lifetime ownership. This cannot be addressed by simply
-checking an actor-wide boolean on reentry: it must be the *same receive*
-that originally owned the logical admission.
+**Scheduler provenance now partially connected.** Source tasks started
+through `ActorRuntime.startActorTask` now capture a runtime-minted
+`SerialExecutionTicket` holding actor incarnation, task ID, and the
+exact active serial receive lease. The actor continuation envelope carries
+that ticket and checks it on physical re-entry. TaskRunner's enum-driven
+state transitions preserve its placement across `await` and
+`rt cooperate`. These targeted ownership checks do **not** prove all
+unrelated scheduler callbacks or detached child-task lifetimes; complete
+structured-child cancellation and full GraalVM guest tests remain
+release-blocking. The criterion remains the *same* original receive,
+not merely an actor-wide busy boolean.
 
 The funded JDK25 test mirror compiles the exact
 `SourceActorSchedulingPolicy`, `SerialActorAdmission`, and
