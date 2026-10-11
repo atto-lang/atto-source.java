@@ -1728,7 +1728,7 @@ public final class TypeChecker {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
-                    || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
+                    || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet") || name.name().equals("ActorGroup")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -2098,6 +2098,24 @@ public final class TypeChecker {
                 return new Named("Channel", List.of(element));
             }
 
+            // A cooperation group is not a supervisor or an ActorRef. Its
+            // capabilities are opaque, runtime-affine and never data-only
+            // mailbox payloads. Keep direct calls statically typed.
+            if (call.callee() instanceof Ast.MemberExpr groupFactoryCall
+                    && groupFactoryCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("ActorGroup")
+                    && env.lookup(factory.name()) == null) {
+                if (call.typeArgumentsPresent() || !groupFactoryCall.member().equals("new")
+                        || !call.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("ActorGroup.new() takes no arguments");
+                }
+                if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                    throw new IllegalArgumentException(
+                            "untrusted actors cannot create ActorGroup authorities");
+                }
+                return new Named("ActorGroup", List.of());
+            }
+
             if (call.callee() instanceof Ast.MemberExpr selectCaseCall
                     && selectCaseCall.receiver() instanceof Ast.NameExpr factory
                     && factory.name().equals("SelectCase")) {
@@ -2291,6 +2309,38 @@ public final class TypeChecker {
                         }
                     }
                     return Primitive.VOID;
+                }
+
+                if (receiver instanceof Named groupCap
+                        && (groupCap.name().equals("ActorGroup")
+                            || groupCap.name().equals("ActorGroupJoinCapability"))) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "ActorGroup operations do not accept type arguments");
+                    }
+                    if (!call.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "ActorGroup." + member.member() + " expects no arguments");
+                    }
+                    if (groupCap.name().equals("ActorGroupJoinCapability")) {
+                        if (!member.member().equals("join")) {
+                            throw new IllegalArgumentException(
+                                    "unknown ActorGroupJoinCapability operation " + member.member());
+                        }
+                        if (currentActorKind == Ast.ActorKind.NONE) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroupJoinCapability.join() requires an actor turn");
+                        }
+                        return new Named("ActorGroup", List.of());
+                    }
+                    return switch (member.member()) {
+                        case "join_capability" -> new Named("ActorGroupJoinCapability", List.of());
+                        case "leave", "close" -> Primitive.VOID;
+                        case "is_closed" -> Primitive.BOOL;
+                        case "member_count" -> Primitive.INT;
+                        default -> throw new IllegalArgumentException(
+                                "unknown ActorGroup operation " + member.member());
+                    };
                 }
 
                 if (receiver instanceof Named actorRef
@@ -2824,6 +2874,12 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            if (sumReceiver instanceof Named groupCap
+                    && (groupCap.name().equals("ActorGroup")
+                        || groupCap.name().equals("ActorGroupJoinCapability"))) {
+                throw new IllegalArgumentException(
+                        "ActorGroup capability operations are direct-call-only");
+            }
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
@@ -4511,7 +4567,8 @@ public final class TypeChecker {
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
-                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
+                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")
+                || named.name().equals("ActorGroup") || named.name().equals("ActorGroupJoinCapability")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
@@ -7030,7 +7087,7 @@ public final class TypeChecker {
             case "DynamicStruct" -> throw new IllegalArgumentException(
                     "DynamicStruct has been removed for AOT-safe static shape semantics; "
                             + "use infer struct{...} or struct{field: Type,...}{...}");
-            case "ActorId", "ActorKind" -> {
+            case "ActorId", "ActorKind", "ActorGroup", "ActorGroupJoinCapability" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException(
                             ref.name() + " does not accept type arguments");
