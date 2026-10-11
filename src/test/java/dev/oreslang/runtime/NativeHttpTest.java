@@ -71,6 +71,49 @@ class NativeHttpTest {
             assertTrue(output.contains(expected), output);
     }
 
+    @Test void stoppingHttpListenerRetainsActorExchangeUntilCancelledCleanupFinishes()
+            throws Exception {
+        String output = run("""
+            define actor Holder as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                defer stdio.println("holder-cleanup");
+                self.send("armed");
+                val Channel<int> gate = Channel.new<int>(0);
+                const ignored = await (nb readch gate);
+                stdio.println("INVALID-work-resumed");
+                self.end();
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              val actor = spawn Holder();
+              await actor.ready;
+              actor.send(request.move_to(actor));
+              await actor.outputs.next();
+              await server.shutdown(0);
+              stdio.println("drained");
+              await actor.done;
+              return;
+            }
+            """, port -> {
+            try {
+                var response = request(port, "GET", "/", "");
+                assertEquals(503, response.statusCode());
+            } catch (java.io.IOException expectedDisconnect) {
+                // HttpServer.stop(0) may close the pending request first.
+            }
+        });
+        assertTrue(output.contains("holder-cleanup"), output);
+        assertTrue(output.contains("drained"), output);
+        assertFalse(output.contains("INVALID-work-resumed"), output);
+        assertTrue(output.indexOf("holder-cleanup") < output.indexOf("drained"),
+                "HTTP shutdown may report success only after actor-owned cleanup");
+    }
+
     @Test void completionSurvivesMoveAndIncludesActorFinalization() throws Exception {
         String output = run("""
             define isoactor Owner as
