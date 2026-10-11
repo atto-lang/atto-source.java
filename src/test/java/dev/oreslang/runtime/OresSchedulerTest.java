@@ -819,13 +819,14 @@ final class OresSchedulerTest {
                     });
 
             assertTrue(queued.cancel(false));
-            assertTrue(queued.isCancelled(),
-                    "never-started source requires no guest cleanup carrier");
-            assertThrows(java.util.concurrent.CancellationException.class,
-                    () -> queued.get(1, TimeUnit.SECONDS));
+            assertFalse(queued.isDone(),
+                    "already-submitted carrier must exit before cancellation publishes");
             assertEquals(0, sourceEntries.get());
             releaseCarrier.countDown();
             assertNull(occupying.get(5, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> queued.get(5, TimeUnit.SECONDS));
+            assertTrue(queued.isCancelled());
             assertEquals(0, sourceEntries.get(),
                     "abandoned queue entry must never dispatch guest source");
         } finally {
