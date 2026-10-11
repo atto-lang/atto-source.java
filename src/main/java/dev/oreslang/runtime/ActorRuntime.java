@@ -2012,6 +2012,32 @@ public final class ActorRuntime implements AutoCloseable {
             return childRegistry.trackedChildren();
         }
 
+        /**
+         * Trusted host acknowledgement for an already-finalized STOP-only
+         * failure. A successful host decision must be bound to the exact
+         * physical actor, logical child and CONTROL turn; stale generations
+         * cannot stop a subsequent replacement.
+         *
+         * This records terminal disposition; it does not stop a live actor,
+         * synthesize an authoritative restart, or expose guest authority.
+         */
+        public SupervisorChildRegistry.Snapshot acknowledgeFinalizedStop(
+                SupervisorProcess.Resolution resolution) {
+            requireSupervisorContext("acknowledge finalized supervisor STOP");
+            Objects.requireNonNull(resolution);
+            var notice = resolution.notice();
+            if (resolution.directive() != SupervisorProcess.Directive.STOP
+                    || resolution.turnGeneration() < 1
+                    || !notice.supervisorId().equals(supervisorId)
+                    || !notice.groupId().equals(id)
+                    || notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE) {
+                throw new SecurityException("invalid supervisor STOP authority");
+            }
+            var child = notice.logicalChild().orElseThrow(
+                    () -> new IllegalStateException("STOP notice lacks verified logical child"));
+            return childRegistry.stop(child, notice.actorId(), notice.incarnation());
+        }
+
         /** Host-only callback: delivered on shared CONTROL carriers, never inline. */
         public void installSupervisorFailureHandler(
                 Consumer<SupervisorFailureControl.Notice> handler) {
