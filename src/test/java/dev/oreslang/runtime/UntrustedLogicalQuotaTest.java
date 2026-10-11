@@ -106,6 +106,45 @@ final class UntrustedLogicalQuotaTest {
     }
 
     @Test
+    void failingCpuSamplerDoesNotStrandTheOldCarrierLease() {
+        AtomicInteger samples = new AtomicInteger();
+        ActorRuntime.UntrustedLogicalQuota quota = new ActorRuntime.UntrustedLogicalQuota(
+                1000, 3, 0, 0, () -> 0, () -> {
+                    if (samples.incrementAndGet() == 2) {
+                        throw new IllegalStateException("mock CPU sampler failure");
+                    }
+                    return 100;
+                });
+        quota.enter();
+        assertThrows(IllegalStateException.class, quota::leave);
+        // The failing leave MUST clear segmentActive so future requests do not
+        // inherit an active physical carrier identity.
+        quota.enter();
+        quota.chargeSafepoint();
+        quota.leave();
+    }
+
+    @Test
+    void exhaustedFuelNeverUnderflowsOrWrapsIntoASecondBudget() {
+        AtomicLong clock = new AtomicLong();
+        ActorRuntime.UntrustedLogicalQuota quota = new ActorRuntime.UntrustedLogicalQuota(
+                10_000L, 0, 0, 0, clock::get, clock::get);
+        quota.enter();
+        try {
+            for (int i = 0; i < 3; i++) {
+                var failure = assertThrows(
+                        ActorRuntime.UntrustedActorQuotaExceededException.class,
+                        quota::chargeSafepoint);
+                assertEquals(
+                        ActorRuntime.UntrustedActorQuotaExceededException.Resource.FUEL,
+                        failure.resource());
+            }
+        } finally {
+            quota.leave();
+        }
+    }
+
+    @Test
     void concurrentCarrierAdmissionsCannotBothEnterSameLogicalQuota() throws Exception {
         AtomicLong clock = new AtomicLong();
         ActorRuntime.UntrustedLogicalQuota quota = new ActorRuntime.UntrustedLogicalQuota(
