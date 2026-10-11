@@ -413,6 +413,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         @Override
+        public boolean serialActorDeclaration(String actorTypeName) {
+            return requireLocalActorClass(actorTypeName).serial();
+        }
+
+        @Override
         public ActorRuntime.ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorRuntime.ActorContext<Object> actorContext) {
@@ -537,6 +542,15 @@ public final class OresEvalRootNode extends RootNode {
                         "source actor mailbox dispatch does not match actor-owned state");
             }
 
+            // HTTP exchange messages sent to a persistent serial handler
+            // share this actor's mailbox with ordinary actor messages.
+            // Capture the exchange completion before guest receive can claim
+            // and invalidate the transport transfer token.
+            OresFuture<?> httpCompletion = state.object().klass.serial()
+                    ? context.http().serialRequestCompletion(
+                            actorContext.self().id(), mail.value())
+                    : null;
+
             Ast.MethodDecl receive =
                     findMethod(
                             state.object().klass,
@@ -564,6 +578,9 @@ public final class OresEvalRootNode extends RootNode {
                                 state.object(),
                                 List.of(mail));
                 context.actors().suspendCurrentUserMailboxUntil(completion);
+                if (httpCompletion != null) {
+                    context.actors().suspendCurrentUserMailboxUntil(httpCompletion);
+                }
                 return;
             }
 
@@ -575,6 +592,9 @@ public final class OresEvalRootNode extends RootNode {
             if (result != null) {
                 throw new IllegalStateException(
                         "actor receive must complete with void");
+            }
+            if (httpCompletion != null) {
+                context.actors().suspendCurrentUserMailboxUntil(httpCompletion);
             }
         }
 
