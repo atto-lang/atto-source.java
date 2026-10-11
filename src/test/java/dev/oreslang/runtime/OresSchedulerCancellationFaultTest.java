@@ -102,7 +102,11 @@ final class OresSchedulerCancellationFaultTest {
                             cleanupEntries.incrementAndGet();
                             return OresScheduler.await(neverCompletes);
                         }
-                        throw new AssertionError("unfinished cleanup unexpectedly resumed");
+                        assertEquals(17, resumed.value(),
+                                "cleanup must resume after the failed-close timeout");
+                        assertNull(resumed.failure());
+                        cleaning = false;
+                        return OresScheduler.done(23);
                     }
                 });
         untilRegistered(upstream);
@@ -111,14 +115,20 @@ final class OresSchedulerCancellationFaultTest {
         assertTrue(error.getMessage().contains("unfinished cancellation cleanup"),
                 error.getMessage());
         assertEquals(1, cleanupEntries.get());
-        ExecutionException observed = assertThrows(ExecutionException.class,
-                () -> task.get(5, TimeUnit.SECONDS));
-        assertTrue(observed.getCause().getMessage().contains("cleanup drain timed out"),
-                observed.getCause().toString());
+        assertFalse(task.isDone(),
+                "timeout must not publish task cancellation before lexical cleanup finishes");
         assertEquals(0, upstream.pendingRuntimeWaiterCount());
+        assertEquals(1, neverCompletes.pendingRuntimeWaiterCount(),
+                "cleanup await must remain registered after failed close");
+        assertTrue(neverCompletes.completeFromRuntime(17),
+                "still-owned finalizer must be allowed to finish after close timeout");
+        assertThrows(java.util.concurrent.CancellationException.class,
+                () -> task.get(5, TimeUnit.SECONDS),
+                "the logical task remains cancelled once finalization completes");
         assertEquals(0, neverCompletes.pendingRuntimeWaiterCount());
-        assertSame(error, assertThrows(IllegalStateException.class, scheduler::close),
-                "subsequent close callers must see the same shutdown failure");
+        assertEquals(1, cleanupEntries.get(), "cleanup may not replay across close retry");
+        assertDoesNotThrow(scheduler::close,
+                "retry after previously suspended finalizer settles must shut down carriers");
     }
 
     @Test
