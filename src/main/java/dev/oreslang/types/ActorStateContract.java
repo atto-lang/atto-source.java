@@ -81,6 +81,10 @@ public final class ActorStateContract {
         if (node instanceof Ast.CallExpr call
                 && call.callee() instanceof Ast.MemberExpr callee
                 && isSelf(callee.receiver()) && callee.member().equals("handle_state")) {
+            if (nestedClosure) {
+                throw new IllegalArgumentException(
+                        "deferred closure cannot acquire actor state without scheduler admission");
+            }
             if (call.typeArgumentsPresent() || call.arguments().size() != 1
                     || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)
                     || lambda.parameters().size() != 1) {
