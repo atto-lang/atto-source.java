@@ -100,6 +100,12 @@ public final class NativeHttp implements AutoCloseable {
             return persistentActor;
         }
 
+        /** Enqueue ordinary mail on the same persistent serial actor lane as HTTP. */
+        public void send(String message) {
+            Objects.requireNonNull(message, "serial actor mailbox message");
+            actor().send(message);
+        }
+
         public void dispatch(Exchange exchange) {
             long perf = CorePerf.start();
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
