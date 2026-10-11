@@ -873,7 +873,11 @@ public final class OresEvalRootNode extends RootNode {
             private final ArrayDeque<SourceCleanupScope> activeScopes = new ArrayDeque<>();
             private volatile boolean cancellationRequested;
             private volatile OresScheduler.TaskCancelledException cancellationReason;
-            private int cleanupDepth;
+            // Observed by cancellation admission on arbitrary host threads.
+            // Mutations remain exclusive to the owning scheduler/actor lane,
+            // but a plain int is a data race and may misclassify a suspended
+            // finally/defer await as normal work, discarding its cleanup.
+            private volatile int cleanupDepth;
             private boolean awaitingCooperate;
 
             @Override
