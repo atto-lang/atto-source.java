@@ -29,7 +29,7 @@ final class SourceCriticalActorStateTest {
                     stdio.println(next);
                     if (next == 3) {
                         self.end();
-                    }
+                    } fi
                     return;
                 }
             end
