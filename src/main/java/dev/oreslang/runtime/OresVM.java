@@ -28,6 +28,7 @@ public final class OresVM implements AutoCloseable {
 
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
+    private final OresVMMasterControlLoop masterScheduler = new OresVMMasterControlLoop();
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -58,7 +59,9 @@ public final class OresVM implements AutoCloseable {
                 turnExecutor);
         try {
             startup();
+            masterScheduler.start();
         } catch (RuntimeException | Error failure) {
+            masterScheduler.shutdown();
             rootScheduler.close();
             controlExecutor.shutdownNow();
             throw failure;
@@ -122,6 +125,15 @@ public final class OresVM implements AutoCloseable {
         return controlExecutor.getPoolSize();
     }
 
+    int masterSchedulerThreadCount() {
+        return masterScheduler.startedThreads();
+    }
+
+    void attachActorRuntime(ActorRuntime actors) {
+        masterScheduler.attach(actors);
+        actors.setMasterPoolWakeup(masterScheduler::signal);
+    }
+
     public OresScheduler rootScheduler() {
         if (!started()) {
             throw new IllegalStateException(
@@ -158,6 +170,7 @@ public final class OresVM implements AutoCloseable {
     public synchronized void close() {
         if (!closed.compareAndSet(false, true)) return;
         startupState = StartupState.CLOSED;
+        masterScheduler.shutdown();
         try {
             rootScheduler.close();
         } finally {
@@ -166,6 +179,10 @@ public final class OresVM implements AutoCloseable {
                 if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
                     throw new IllegalStateException(
                             "Oreslang CONTROL scheduler carriers did not terminate");
+                }
+                if (!masterScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException(
+                            "OresVM master scheduler CONTROL thread did not terminate");
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
