@@ -243,7 +243,9 @@ public final class NativeHttp implements AutoCloseable {
                 finally {
                     synchronized (this) { transportStopped = true; }
                     for (State state : active) state.abort(503);
-                    servers.remove(this);
+                    // A stopped listener is still physically owned while an
+                    // exchange/actor reservation remains live. Unregister it
+                    // only when completeDrain observes the last release.
                     completeDrain();
                 }
             });
@@ -251,7 +253,10 @@ public final class NativeHttp implements AutoCloseable {
         }
         private synchronized void completeDrain() {
             notifyAll(); // HTTP shutdown also waits for actor-owned exchanges.
-            if (transportStopped && active.isEmpty() && drained != null) drained.completeFromRuntime(null);
+            if (transportStopped && active.isEmpty()) {
+                servers.remove(this);
+                if (drained != null) drained.completeFromRuntime(null);
+            }
         }
 
         private synchronized boolean awaitActiveDrain(long deadlineNanos)
@@ -272,7 +277,7 @@ public final class NativeHttp implements AutoCloseable {
             stopAccepting(); transport.stop(0);
             synchronized (this) { transportStopped = true; }
             for (State state : active) state.abort(503);
-            servers.remove(this); completeDrain();
+            completeDrain();
         }
     }
 
@@ -309,7 +314,7 @@ public final class NativeHttp implements AutoCloseable {
                 terminal = true;
             }
             // Never perform socket I/O or actor cancellation while holding the ownership monitor.
-            if (actor != null) actor.cancel();
+            if (actor != null && !alreadyClosed) actor.cancel();
             if (alreadyClosed) { release(); return; }
             try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
             catch (RejectedExecutionException rejected) {
@@ -329,12 +334,12 @@ public final class NativeHttp implements AutoCloseable {
                 throw new IllegalStateException(
                         "rejected HTTP abort still has unretired I/O carriers");
             }
-            synchronized (this) {
-                if (transportClosed) {
-                    rejectedAborts.remove(this);
-                    release();
-                    return;
-                }
+            boolean alreadyClosedTransport;
+            synchronized (this) { alreadyClosedTransport = transportClosed; }
+            if (alreadyClosedTransport) {
+                rejectedAborts.remove(this);
+                release();
+                return;
             }
             // This fallback is only reachable after the physical carrier-exit
             // barrier; it never races a response write on the old executor.
