@@ -2,6 +2,8 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
+import dev.oreslang.types.TypeChecker;
 import dev.oreslang.parser.Parser;
 
 import java.nio.charset.StandardCharsets;
@@ -104,7 +106,9 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            Ast.Program checked = OresCompiler.analyzeLinked(
+                    parsed.get(id), linkedContracts(
+                            id, parsed.get(id), parsed, normalizedImportResolutions));
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
@@ -125,6 +129,58 @@ public final class IncrementalCompiler {
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
                 initializationGroups);
+    }
+
+    /**
+     * Resolve contract imports using exactly the source closure validated by
+     * ImportGraph. Do not append imported declarations to executable modules:
+     * the typechecker gets only the public, explicitly named interface AST.
+     */
+    private static List<TypeChecker.LinkedContract> linkedContracts(
+            String unitId,
+            Ast.Program importer,
+            Map<String, Ast.Program> parsed,
+            Map<String, Map<String, String>> importResolutions) {
+        List<TypeChecker.LinkedContract> result = new ArrayList<>();
+        for (Ast.ImportDecl imported : importer.imports()) {
+            if (imported.kind() != Ast.ImportKind.CONTRACT) continue;
+            if (imported.wildcard()) {
+                throw new IllegalArgumentException(
+                        "wildcard contract imports require explicit linked name resolution: " + imported.path());
+            }
+            String targetId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, parsed.keySet(), importResolutions);
+            if (targetId == null) {
+                throw new IllegalArgumentException("module contract import is not linked: " + imported.path());
+            }
+            Ast.Program target = parsed.get(targetId);
+            for (String name : imported.names()) {
+                Ast.InterfaceDecl found = null;
+                String owner = null;
+                for (Ast.ModuleDecl module : target.modules()) {
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.InterfaceDecl candidate
+                                && candidate.moduleContract()
+                                && candidate.visibility() == Ast.Visibility.PUBLIC
+                                && candidate.name().equals(name)) {
+                            if (found != null) {
+                                throw new IllegalArgumentException(
+                                        "ambiguous imported module contract '" + name + "' from " + targetId);
+                            }
+                            found = candidate;
+                            owner = module.name();
+                        }
+                    }
+                }
+                if (found == null) {
+                    throw new IllegalArgumentException(
+                            "imported module contract '" + name + "' is not exported by " + targetId);
+                }
+                result.add(new TypeChecker.LinkedContract(
+                        ImportRules.localName(imported, name), owner, found));
+            }
+        }
+        return List.copyOf(result);
     }
 
     public synchronized void clear() {
