@@ -135,20 +135,31 @@ public final class AsyncNativeIo implements AutoCloseable {
                 Set<OresFuture<?>> failing;
                 synchronized (this) {
                     closing = new HashSet<>(resources);
-                    resources.clear();
                     failing = new HashSet<>(pending);
                     failing.addAll(controls);
                     controls.clear();
                     pending.clear();
                 }
+
+                // Physical worker exit is necessary but not sufficient. A
+                // failed explicit resource.close() must retain its reservation
+                // and be retried, never silently counted as retirement.
+                IllegalStateException releaseFailure = null;
                 for (AutoCloseable resource : closing) {
-                    try { resource.close(); } catch (Exception ignored) {
-                        // Best effort socket/file closure is only safe after
-                        // the physical I/O worker-exit barrier above.
+                    try {
+                        resource.close();
+                        synchronized (this) { resources.remove(resource); }
+                    } catch (Exception failure) {
+                        if (releaseFailure == null) {
+                            releaseFailure = new IllegalStateException(
+                                    "native I/O resources did not release after worker exit");
+                        }
+                        releaseFailure.addSuppressed(failure);
                     }
                 }
                 for (OresFuture<?> future : failing)
                     future.failFromRuntime(new IllegalStateException("I/O context closed"));
+                if (releaseFailure != null) throw releaseFailure;
                 retired = true;
             } finally {
                 retiringThread = null;
