@@ -22,14 +22,21 @@ public final class ReturnCleanupChecker {
 
     private static final class Binding {
         final String name;
-        Binding(String name) { this.name = name; }
+        final Ast.LambdaExpr closure;
+        Binding(String name, Ast.LambdaExpr closure) {
+            this.name = name;
+            this.closure = closure;
+        }
     }
 
     private static final class Scope {
         final Scope parent;
         final Map<String, Binding> locals = new HashMap<>();
         Scope(Scope parent) { this.parent = parent; }
-        void define(String name) { locals.put(name, new Binding(name)); }
+        void define(String name) { define(name, null); }
+        void define(String name, Ast.LambdaExpr closure) {
+            locals.put(name, new Binding(name, closure));
+        }
         Binding resolve(String name) {
             Binding local = locals.get(name);
             return local != null ? local : parent == null ? null : parent.resolve(name);
@@ -39,6 +46,7 @@ public final class ReturnCleanupChecker {
     private static final class State {
         final Set<Binding> returned = new HashSet<>();
         final Set<Binding> reboundInDefer = new HashSet<>();
+        final Set<Binding> scannedDeferredCallbacks = new HashSet<>();
     }
 
     public static Ast.Program check(Ast.Program program) {
@@ -80,7 +88,8 @@ public final class ReturnCleanupChecker {
         for (Ast.Stmt stmt : statements) {
             if (stmt instanceof Ast.BindingStmt binding) {
                 expression(binding.initializer(), scope, inDefer, state);
-                scope.define(binding.name());
+                scope.define(binding.name(),
+                        binding.initializer() instanceof Ast.LambdaExpr lambda ? lambda : null);
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
                 expression(destructure.initializer(), scope, inDefer, state);
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
@@ -219,6 +228,24 @@ public final class ReturnCleanupChecker {
         } else if (expr instanceof Ast.SpreadExpr spread) {
             expression(spread.expression(), scope, inDefer, state);
         } else if (expr instanceof Ast.CallExpr call) {
+            if (inDefer && call.callee() instanceof Ast.NameExpr name) {
+                Binding target = scope.resolve(name.name());
+                // A named local cleanup callback must not evade the direct
+                // deferred-lambda returned-binding check. Scan each lexical
+                // callback once to avoid recursive-call analysis loops.
+                if (target != null && target.closure != null
+                        && state.scannedDeferredCallbacks.add(target)) {
+                    Scope captured = new Scope(scope);
+                    for (Ast.Param param : target.closure.parameters()) {
+                        captured.define(param.name());
+                    }
+                    if (target.closure.blockBody() != null) {
+                        statements(target.closure.blockBody(), captured, false, true, false, state);
+                    } else {
+                        expression(target.closure.expressionBody(), captured, true, state);
+                    }
+                }
+            }
             expression(call.callee(), scope, inDefer, state);
             call.arguments().forEach(e -> expression(e, scope, inDefer, state));
         } else if (expr instanceof Ast.RuntimeCallExpr call) {
