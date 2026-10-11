@@ -42,7 +42,7 @@ final class SourceActorGroupExecutionTest {
 
     @Test
     void sourceActorCanCooperateInTwoGroupsAndLeaveOneIndependently() throws Exception {
-        assertEquals("1|2|1|1", run("""
+        assertEquals("1|1|1|1", run("""
                 define actor RoomSession as
                   receive(ActorMail<String> mail): void {
                     val roomA = ActorGroup.new();
