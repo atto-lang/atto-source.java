@@ -87,6 +87,19 @@ public final class NativeHttp implements AutoCloseable {
             this.serial = code.serialActorDeclaration(type);
         }
         public boolean isolated() { return kind == ActorRuntime.ActorKind.PRIVATE; }
+        public boolean serial() { return serial; }
+
+        /** Supervisor-only actor handle for mixed HTTP/message serial routes. */
+        public synchronized ActorRuntime.ActorRef<Object> actor() {
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("HTTP handler actor access belongs to supervisor");
+            }
+            if (!serial || persistentActor == null || !persistentActor.isAlive()) {
+                throw new IllegalStateException("serial HTTP actor is not running");
+            }
+            return persistentActor;
+        }
+
         public void dispatch(Exchange exchange) {
             long perf = CorePerf.start();
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
