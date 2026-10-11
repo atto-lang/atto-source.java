@@ -1840,7 +1840,11 @@ public final class TypeChecker {
                         + stmt.getClass().getSimpleName());
     }
 
-    private boolean isSafeTypedValuePrint(Ast.Expr expr) {
+    private boolean isSafeTypedValuePrint(Ast.Expr expr, Env env) {
+        // The evaluator resolves local names before built-in namespaces.
+        // Syntactic "stdio.println" is not a trusted effect if a lexical
+        // stdio binding shadows the intrinsic receiver.
+        if (env.lookup("stdio") != null) return false;
         if (!(expr instanceof Ast.CallExpr call)
                 || !(call.callee() instanceof Ast.MemberExpr member)
                 || !(member.receiver() instanceof Ast.NameExpr ns)
@@ -1881,16 +1885,16 @@ public final class TypeChecker {
                 requireValueMatchOwnedScalarNames(returned.value(), local);
             } else if (stmt instanceof Ast.ExprStmt statement) {
                 if (!safeValueMatchScalarExpr(statement.expression())
-                        && !isSafeTypedValuePrint(statement.expression()))
+                        && !isSafeTypedValuePrint(statement.expression(), local))
                     throw new IllegalArgumentException(
                             "typed value match expression statement has unverified effects");
-                if (isSafeTypedValuePrint(statement.expression())) {
+                if (isSafeTypedValuePrint(statement.expression(), local)) {
                     Ast.CallExpr call = (Ast.CallExpr) statement.expression();
                     for (Ast.Expr arg : call.arguments())
                         requireValueMatchOwnedScalarNames(arg, local);
                 } else requireValueMatchOwnedScalarNames(statement.expression(), local);
             } else if (stmt instanceof Ast.DeferStmt defer) {
-                if (!isSafeTypedValuePrint(defer.expression()))
+                if (!isSafeTypedValuePrint(defer.expression(), local))
                     throw new IllegalArgumentException(
                             "typed value match defer currently requires synchronous stdio.print/println");
                 Ast.CallExpr call = (Ast.CallExpr) defer.expression();
