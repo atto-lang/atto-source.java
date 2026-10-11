@@ -20,14 +20,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  * root continuations without lazily creating runtime infrastructure.</p>
  */
 public final class OresVM implements AutoCloseable {
-    private static final int DEFAULT_CONTROL_PARALLELISM =
-            Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
+    private static final int DEFAULT_CONTROL_PARALLELISM = 5;
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
 
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
+    /** The VM owns the actor runtime and, transitively, its three carrier pools. */
+    private ActorRuntime ownedActors;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -40,7 +41,7 @@ public final class OresVM implements AutoCloseable {
         ThreadFactory factory = runnable -> Thread.ofPlatform()
                 .daemon(true)
                 .name("ores-control-plane-" + carrierId.getAndIncrement())
-                .unstarted(runnable);
+                .unstarted(OresScheduler.markVmCarrier(runnable));
 
         this.controlExecutor = new ThreadPoolExecutor(
                 controlParallelism,
@@ -76,6 +77,34 @@ public final class OresVM implements AutoCloseable {
                         DEFAULT_CONTROL_PARALLELISM),
                 turnExecutor,
                 rootAdmission);
+    }
+
+    /**
+     * Attach the per-context actor runtime to this VM's lifetime. The actor runtime
+     * owns the PRIVATE, SHARED and UNTRUSTED dispatchers; OresVM is their final
+     * lifecycle authority and closes them before stopping CONTROL.
+     *
+     * <p>Each VM admits exactly one ActorRuntime. The separate untrusted carrier
+     * pool is not a security boundary: hostile tenants require independent
+     * Graal sandbox/isolate domains, not merely different worker threads.</p>
+     */
+    synchronized ActorRuntime createActorRuntime(
+            IsolatePolicy policy,
+            ActorRuntime.DispatcherConfig config,
+            ActorRuntime.TurnExecutor guestTurn) {
+        if (closed.get() || !started()) {
+            throw new IllegalStateException("Oreslang VM cannot admit actors before startup or after close");
+        }
+        if (ownedActors != null) {
+            throw new IllegalStateException("Oreslang VM already owns an ActorRuntime");
+        }
+        ActorRuntime runtime = new ActorRuntime(
+                Objects.requireNonNull(policy, "policy"),
+                Objects.requireNonNull(config, "config"),
+                Objects.requireNonNull(guestTurn, "guestTurn"),
+                this::executeControl);
+        ownedActors = runtime;
+        return runtime;
     }
 
     /**
@@ -157,22 +186,38 @@ public final class OresVM implements AutoCloseable {
     @Override
     public synchronized void close() {
         if (!closed.compareAndSet(false, true)) return;
-        startupState = StartupState.CLOSED;
+
+        RuntimeException failure = null;
+        // Actor teardown may still dispatch supervisor CONTROL messages.
+        // Keep CONTROL available until all actor carriers have exited.
         try {
-            rootScheduler.close();
+            if (ownedActors != null) ownedActors.close();
+        } catch (RuntimeException actorFailure) {
+            failure = actorFailure;
         } finally {
-            controlExecutor.shutdownNow();
+            startupState = StartupState.CLOSED;
             try {
-                if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                rootScheduler.close();
+            } catch (RuntimeException rootFailure) {
+                if (failure == null) failure = rootFailure;
+                else failure.addSuppressed(rootFailure);
+            } finally {
+                controlExecutor.shutdownNow();
+                try {
+                    if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "Oreslang CONTROL scheduler carriers did not terminate");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
                     throw new IllegalStateException(
-                            "Oreslang CONTROL scheduler carriers did not terminate");
+                            "interrupted while closing Oreslang CONTROL scheduler", interrupted);
+                } catch (RuntimeException controlFailure) {
+                    if (failure == null) failure = controlFailure;
+                    else failure.addSuppressed(controlFailure);
                 }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException(
-                        "interrupted while closing Oreslang CONTROL scheduler",
-                        interrupted);
             }
         }
+        if (failure != null) throw failure;
     }
 }
