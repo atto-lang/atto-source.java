@@ -46,7 +46,9 @@ Grant the same filesystem/network permissions required by synchronous calls.
 Actor-local capabilities are checked before submission. Canonical path resolution,
 resource permission checks, DNS/connect, and filesystem operations execute
 outside the actor carrier. HTTP client requests now use HttpClient.sendAsync
-instead of spending a virtual thread waiting for the HTTP response. Only immutable argument values are captured.
+instead of spending a virtual thread waiting for the HTTP response. Transport
+startup is initiated on a bounded virtual I/O worker (not an actor carrier),
+then completion remains callback-driven without occupying that worker. Only immutable argument values are captured.
 HTTP redirects remain disabled so a response cannot bypass the destination grant.
 Failures retain their cause and a bounded `native:io` boundary annotation.
 
