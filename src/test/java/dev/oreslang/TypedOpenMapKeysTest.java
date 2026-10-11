@@ -119,6 +119,38 @@ final class TypedOpenMapKeysTest {
     }
 
     @Test
+    void mapMutationsRequireAnExclusiveMutableReceiver() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(MAP + """
+                        fnc invalid(&MyMap map): void {
+                          map.put("fieldX", "wrong");
+                          return;
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(MAP + """
+                        fnc invalid(&MyMap map): void {
+                          map.remove("fieldX");
+                          return;
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(MAP + """
+                        fnc invalid(&MyMap map): void {
+                          map["fieldX"] = "wrong";
+                          return;
+                        }
+                        """)));
+        TypeChecker.check(Parser.parse(MAP + """
+                fnc valid(&mut MyMap map): void {
+                  map.put("fieldX", "hello");
+                  map.remove("fieldX");
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void rejectsBorrowEscapeThroughPutAndBrackets() {
         IllegalArgumentException put = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(MAP + """
