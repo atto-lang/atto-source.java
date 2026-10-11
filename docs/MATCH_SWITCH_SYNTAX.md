@@ -116,9 +116,9 @@ Two distinct contracts must **not** be conflated:
   rather than silently using non-local function returns.**
 - `do match<ret=T>` is a **procedural** match with a contract on
   non-local `return` statements. It produces no match expression result:
-  every reachable arm must return a value assignable to `T` (subject
-  to future proof of throwing/non-returning control flow). The declared
-  `T` must also be assignable to the containing callable's return type.
+  every reachable arm must explicitly return a value assignable to `T`.
+  A `loop` without a proven return cannot satisfy this contract. The
+  declared `T` must also be assignable to the containing callable's return type.
   `do match<T>` is parsed as a compatibility shorthand but emits a
   warning recommending the named spelling. An ordinary expression
   computed inside a do arm and not returned is discarded.
@@ -145,6 +145,20 @@ Future work: canonicalize optional `is` and implicit nominal binders to
 rewrite fallback aliases in legacy `end`-delimited syntax;
 unify the typed variant payload representation between Java/GraalVM and LLVM;
 test catch-all placement, narrowing, arity, and exhaustive-return statements.
+
+## Return versus finalization
+
+A `return` directly in a `finally` body (including nested blocks and
+conditionals in that same callable) is a compile-time error: it would
+override or obscure the in-flight result/error. Returns inside an
+independent callable created in `finally` are permitted, e.g.
+`finally { (|| -> { return true; })(); }`.
+
+For typed procedural matches, the compiler applies a stronger proof than
+generic definite-return analysis: infinite loops and discarded callback
+returns are not evidence of a Boolean return. Unlowered value-producing
+matches are rejected in type checking **and** guarded at both synchronous
+and suspended runtime entrypoints.
 
 ## Audit / certification status (2026-10-11)
 
