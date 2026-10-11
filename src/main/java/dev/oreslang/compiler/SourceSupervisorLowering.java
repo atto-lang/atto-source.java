@@ -95,12 +95,13 @@ public final class SourceSupervisorLowering {
                 // the host effect, even if the identity changed after policy
                 // admission but before its scheduled decision continuation.
                 requireFinalizedFailure(group, resolution.notice());
-                // The embedder first acknowledges the requested effect.
-                // Only then permanently retire the *same finalized*
-                // incarnation in the supervisor-owned logical-child registry.
-                // A throwing or ambiguous host callback does not record STOP.
+                // Claim the generation BEFORE touching external host state.
+                // A racing RESTART cannot win during this callback. If the
+                // effect throws, STOPPING remains quarantined for manual
+                // reconciliation rather than silently reopening RESTART.
+                var permit = group.reserveFinalizedStop(resolution);
                 hostDecision.accept(resolution);
-                group.acknowledgeFinalizedStop(resolution);
+                group.commitReservedStop(permit);
             });
         }
 
@@ -123,6 +124,8 @@ public final class SourceSupervisorLowering {
         }
         ActorRuntime.ActorGroupId expectedGroup = group.id();
         ActorRuntime.SupervisorId expectedSupervisor = group.supervisorId();
+        var pendingStops = new java.util.concurrent.ConcurrentHashMap<
+                Long, dev.oreslang.runtime.SupervisorChildRegistry.StopReservation>();
         return group.installSupervisorProcessAwaitingDecision(capacity, notice -> {
             if (!expectedSupervisor.equals(notice.supervisorId())
                     || !expectedGroup.equals(notice.groupId())) {
@@ -136,15 +139,21 @@ public final class SourceSupervisorLowering {
             // Reject a stale child before any external STOP side effect is
             // requested, not only when acknowledging its final disposition.
             requireFinalizedFailure(group, resolution.notice());
-            // This Stage must signal the actual STOP effect completion, not
-            // request admission. On exceptional completion the turn fails
-            // closed and no logical child is marked STOPPED.
+            // Acquire STOP ownership before the asynchronous host operation.
+            // The reservation survives suspension without pinning a worker.
+            // If the host result is ambiguous, leave STOPPING quarantined.
+            var permit = group.reserveFinalizedStop(resolution);
+            if (pendingStops.putIfAbsent(resolution.turnGeneration(), permit) != null)
+                throw new IllegalStateException("duplicate STOP turn reservation");
             return Objects.requireNonNull(hostAcknowledgment.apply(resolution),
                     "host STOP acknowledgment stage");
         }, resolution -> {
             verifyStopResolution(resolution, expectedGroup, expectedSupervisor);
-            // Runs on resumed CONTROL carrier *after* host acknowledgment.
-            group.acknowledgeFinalizedStop(resolution);
+            // Runs on the resumed CONTROL carrier after authoritative ack.
+            var permit = pendingStops.remove(resolution.turnGeneration());
+            if (permit == null)
+                throw new IllegalStateException("missing reserved STOP turn");
+            group.commitReservedStop(permit);
         });
     }
 
