@@ -6389,9 +6389,14 @@ public final class ActorRuntime implements AutoCloseable {
                             // ESCALATE. A child can never poison the parent by
                             // requesting a non-existent restart mechanism.
                             childFailures.ack(failure.actor());
-                        } catch (Throwable handlerFailure) {
+                        } catch (RuntimeException | Error handlerFailure) {
                             childFailures.retry(failure.actor());
                             throw handlerFailure;
+                        } catch (Exception handlerFailure) {
+                            childFailures.retry(failure.actor());
+                            throw new IllegalStateException(
+                                    "supervisor handler failed for child " + failure.actor(),
+                                    handlerFailure);
                         }
                         processed++;
                         continue;
