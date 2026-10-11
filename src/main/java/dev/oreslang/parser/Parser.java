@@ -430,6 +430,7 @@ public final class Parser {
             Ast.TypeRef returnType = check(LBRACE)
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
+            annotations = parseSignatureEffects(annotations);
             List<Ast.Stmt> body = parseBlock();
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
                     generics, params, returnType, annotations, body);
@@ -440,6 +441,7 @@ public final class Parser {
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
+        annotations = parseSignatureEffects(annotations);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body);
@@ -659,17 +661,30 @@ public final class Parser {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
-        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) || matchContextualIdentifier("from")
+                ? parseTypeRefList() : List.of();
 
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        boolean declaredState = false;
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (isContextualIdentifier("state") && (checkNext(LBRACE) || checkNext(COLON))) {
+                if (declaredState || !fields.isEmpty()) {
+                    throw error(peek(), "actor declares exactly one state schema and no other storage fields");
+                }
+                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async || mods.isStatic) {
+                    throw error(peek(), "actor state schema does not accept annotations or member modifiers");
+                }
+                fields.add(parseActorStateSchema());
+                declaredState = true;
+                continue;
+            }
             if (isLegacyFnSpelling()) {
                 if (mods.isStatic) throw error(peek(), "static actor functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "actor methods omit 'fn'/'fnc'; declare the method name directly");
@@ -685,11 +700,19 @@ public final class Parser {
             }
 
             if (isBindingKind(peek().type())) {
+                if (declaredState) {
+                    throw error(peek(), "actor state schema is the only actor storage field");
+                }
                 validateActorFieldModifiers(mods);
-                fields.add(parseField(annotations, mods.visibility));
+                fields.add(parseField(annotations, mods.visibility)); // legacy actor-field migration
                 continue;
             }
 
+            if (matchContextualIdentifier("critical")) {
+                List<Ast.Annotation> marked = new ArrayList<>(annotations);
+                marked.add(new Ast.Annotation("$critical$", List.of()));
+                annotations = List.copyOf(marked);
+            }
             boolean explicitFnc = match(FNC);
             if (explicitFnc) {
                 mods = mergeModifiers(mods, parseModifiers());
@@ -706,6 +729,91 @@ public final class Parser {
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+    }
+
+    /**
+     * Prototype actor storage schema encoded as a single synthetic, hidden
+     * field. The marker is not source-writable and the state member must never
+     * be lowered as an ordinary public/class field.
+     */
+    private Ast.FieldDecl parseActorStateSchema() {
+        consumeContextualIdentifier("state", "expected state declaration");
+        Ast.TypeRef stateType;
+        List<Ast.ObjectField> defaults = new ArrayList<>();
+        if (match(COLON)) {
+            Ast.TypeRef map = parseTypeRef();
+            if (!map.name().equals("Map") || map.arguments().size() != 2
+                    || !map.arguments().getFirst().name().equals("string")
+                       && !map.arguments().getFirst().name().equals("String")) {
+                throw error(previous(), "dynamic actor state must be Map<string, Value>");
+            }
+            stateType = map;
+            if (match(LBRACE)) {
+                java.util.LinkedHashMap<String, Ast.TypeRef> schema = parseActorStateKeys(defaults);
+                stateType = new Ast.TypeRef("$actor_state_map$", List.of(map, Ast.TypeRef.recordType(schema)), false);
+            } else consume(SEMICOLON, "dynamic actor state must end with ';'");
+        } else {
+            consume(LBRACE, "actor state must use 'state { ... }' or 'state: Map<string,V>;'");
+            stateType = Ast.TypeRef.recordType(parseActorStateKeys(defaults));
+        }
+        Ast.Expr initializer = defaults.isEmpty() ? null : new Ast.ObjectExpr(defaults);
+        return new Ast.FieldDecl("state", Ast.Visibility.PRIVATE, Ast.BindingKind.VAL,
+                stateType, List.of(new Ast.Annotation("$actor_state$", List.of())), initializer);
+    }
+
+    private java.util.LinkedHashMap<String, Ast.TypeRef> parseActorStateKeys(
+            List<Ast.ObjectField> defaults) {
+        java.util.LinkedHashMap<String, Ast.TypeRef> keys = new java.util.LinkedHashMap<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            String key = consume(IDENT, "expected typed state key name").lexeme();
+            consume(COLON, "expected ':' after actor state key");
+            Ast.TypeRef type = parseTypeRef();
+            if (keys.putIfAbsent(key, type) != null) {
+                throw error(previous(), "duplicate actor state key '" + key + "'");
+            }
+            if (match(EQUAL)) {
+                defaults.add(Ast.ObjectField.named(key, parseExpression()));
+            }
+            consume(SEMICOLON, "actor state key declaration must end with ';'");
+        }
+        consume(RBRACE, "expected '}' after actor state schema");
+        return keys;
+    }
+
+    /**
+     * Store declared effect/requirement sets as compiler-only annotations so
+     * older AST constructor signatures retain binary/source compatibility.
+     * The compiler must not treat parsing as proof that effects were verified.
+     */
+    private List<Ast.Annotation> parseSignatureEffects(List<Ast.Annotation> annotations) {
+        List<Ast.Annotation> result = new ArrayList<>(annotations);
+        if (matchContextualIdentifier("using")) {
+            List<String> names = new ArrayList<>();
+            do {
+                String name = consume(IDENT, "expected function effect after using").lexeme();
+                if (match(DOT)) name += "." + consume(IDENT, "expected effect member after '.'").lexeme();
+                names.add(name);
+            } while (match(COMMA));
+            dev.oreslang.types.FunctionEffects.ofNames(names);
+            result.add(new Ast.Annotation("$using$", names.stream()
+                    .map(Ast.TypeRef::simple).toList()));
+        }
+        if (matchContextualIdentifier("requires")) {
+            List<String> names = new ArrayList<>();
+            do {
+                String name = consume(IDENT, "expected function guarantee after requires").lexeme();
+                if (!List.of("bounded", "no_alloc", "no_block").contains(name)) {
+                    throw error(previous(), "unknown function requirement '" + name + "'");
+                }
+                if (names.contains(name)) {
+                    throw error(previous(), "duplicate function requirement '" + name + "'");
+                }
+                names.add(name);
+            } while (match(COMMA));
+            result.add(new Ast.Annotation("$requires$", names.stream()
+                    .map(Ast.TypeRef::simple).toList()));
+        }
+        return List.copyOf(result);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
@@ -909,6 +1017,7 @@ public final class Parser {
         }
 
         Ast.TypeRef returnType = parseReturnType(annotations);
+        annotations = parseSignatureEffects(annotations);
         List<Ast.Stmt> body;
         if (mods.isAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
