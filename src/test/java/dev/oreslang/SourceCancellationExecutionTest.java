@@ -91,7 +91,7 @@ final class SourceCancellationExecutionTest {
                       stdio.println("INVALID-inner-catch");
                     } finally {
                       stdio.println("inner-finally");
-                      const failure = 1 / 0;
+                      const failure = 1 % 0;
                     }
                   } catch (outer) {
                     stdio.println("INVALID-outer-catch");
