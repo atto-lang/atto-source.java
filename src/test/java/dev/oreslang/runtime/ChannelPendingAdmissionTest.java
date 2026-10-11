@@ -106,6 +106,31 @@ final class ChannelPendingAdmissionTest {
     }
 
     @Test
+    void dynamicSelectRejectsUnboundedIterableBeforeAllocatingAllWaiters() {
+        var channel = new ChannelRuntime.Channel<Integer>(0, 1);
+        Iterable<ChannelRuntime.SelectCase> infinite = () -> new java.util.Iterator<>() {
+            @Override public boolean hasNext() { return true; }
+            @Override public ChannelRuntime.SelectCase next() {
+                return ChannelRuntime.read(channel);
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> ChannelRuntime.SelectSet.from(infinite));
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void selectCollectionIsLimitedBeforeRegisteringAnyArm() {
+        var channel = new ChannelRuntime.Channel<Integer>(0, 1);
+        var cases = java.util.Collections.nCopies(
+                ChannelRuntime.MAX_SELECT_CASES + 1,
+                ChannelRuntime.read(channel));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ChannelRuntime.SelectSet(cases));
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
     void boundsRejectInvalidPendingBudgets() {
         assertThrows(IllegalArgumentException.class,
                 () -> new ChannelRuntime.Channel<Integer>(0, 0));
