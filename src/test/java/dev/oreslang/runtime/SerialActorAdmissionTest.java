@@ -23,6 +23,8 @@ final class SerialActorAdmissionTest {
         var secondHttp = gate.submit(HTTP);
         http.suspend();
         assertEquals(SerialActorAdmission.State.SUSPENDED, http.state());
+        assertThrows(IllegalStateException.class, http::requireActive,
+                "holding a suspended lifetime must not authorize guest execution");
         assertFalse(message.isDone(), "await cannot admit a message");
         assertFalse(secondHttp.isDone(), "await cannot admit another request");
         assertEquals(2, gate.queued());
@@ -92,4 +94,64 @@ final class SerialActorAdmissionTest {
         assertFalse(gate.busy());
         assertEquals(0, gate.queued());
     }
+    @Test void thousandsOfInlineHandlerCompletionsAreIterative() {
+        // A CompletableFuture dependent action runs inline on complete().
+        // The previous implementation recursively called finish() -> complete()
+        // for each next handler, eventually overflowing the carrier stack.
+        final int total = 4097;
+        SerialActorAdmission gate = new SerialActorAdmission(4096);
+        var first = gate.submit(HTTP).join();
+        AtomicInteger completed = new AtomicInteger();
+        List<CompletableFuture<Void>> callbacks = new ArrayList<>();
+        for (int i = 0; i < total - 1; i++) {
+            var admission = gate.submit(i % 2 == 0 ? MESSAGE : HTTP);
+            callbacks.add(admission.thenAccept(lease -> {
+                lease.requireActive();
+                completed.incrementAndGet();
+                lease.close();
+            }));
+        }
+        first.close();
+        for (var callback : callbacks) callback.join();
+        assertEquals(total - 1, completed.get());
+        assertEquals(0, gate.queued());
+        assertFalse(gate.busy());
+        gate.close();
+    }
+
+    @Test void canceledQueuedHandlersAreSkippedWithoutPoisoningFifo() {
+        SerialActorAdmission gate = new SerialActorAdmission(16);
+        var owner = gate.submit(MESSAGE).join();
+        var canceled1 = gate.submit(HTTP);
+        var survives1 = gate.submit(MESSAGE);
+        var canceled2 = gate.submit(HTTP);
+        var survives2 = gate.submit(MESSAGE);
+        assertTrue(canceled1.cancel(false));
+        assertTrue(canceled2.cancel(false));
+        assertEquals(2, gate.queued());
+        owner.close();
+        var second = survives1.join();
+        assertEquals(MESSAGE, second.kind());
+        second.close();
+        var third = survives2.join();
+        assertEquals(MESSAGE, third.kind());
+        third.close();
+        assertFalse(gate.busy());
+        assertEquals(0, gate.queued());
+        gate.close();
+    }
+
+    @Test void cannotRunSuspendedOrStoppedLease() {
+        SerialActorAdmission gate = new SerialActorAdmission(2);
+        var lease = gate.submit(HTTP).join();
+        lease.requireActive();
+        lease.suspend();
+        assertThrows(IllegalStateException.class, lease::requireActive);
+        lease.resume();
+        lease.requireActive();
+        gate.close();
+        assertThrows(IllegalStateException.class, lease::requireActive);
+        assertThrows(IllegalStateException.class, lease::resume);
+    }
+
 }
