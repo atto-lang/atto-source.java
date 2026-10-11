@@ -39,6 +39,17 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     int reserveLane() { return Math.floorMod(nextLane.getAndIncrement(), lanes.size()); }
     int cpuForLane(int lane) { return cpus.length == 0 ? -1 : cpus[lane % cpus.length]; }
     boolean nativeCarriers() { return lanes.stream().allMatch(NativeCarrierExecutor.class::isInstance); }
+    int startedCarrierCount() {
+        int total = 0;
+        for (ExecutorService lane : lanes) {
+            if (lane instanceof NativeCarrierExecutor nativeLane) {
+                total += nativeLane.getStartedCarrierCount();
+            } else if (lane instanceof java.util.concurrent.ThreadPoolExecutor javaLane) {
+                total += javaLane.getPoolSize();
+            }
+        }
+        return total;
+    }
 
     void executeOnLane(int lane, Runnable command) {
         Objects.requireNonNull(command);
