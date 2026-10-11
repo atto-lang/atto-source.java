@@ -2061,7 +2061,28 @@ public final class ActorRuntime implements AutoCloseable {
                     resolution.turnGeneration());
         }
 
-        /** Host acknowledgment of one previously reserved exact STOP turn. */
+        /** Introspect the current STOP ledger without granting lifecycle authority. */
+        public SupervisorChildRegistry.StopReceipt stopReceipt(
+                SupervisorChildRegistry.ChildId child) {
+            requireObserver("inspect supervisor STOP receipt");
+            return childRegistry.stopReceipt(Objects.requireNonNull(child));
+        }
+
+        /** Commit an authenticated, applied host effect to the STOP ledger. */
+        public SupervisorChildRegistry.StopReceipt recordAppliedStop(
+                SupervisorChildRegistry.StopReservation reservation) {
+            requireSupervisorContext("record applied supervisor STOP");
+            return childRegistry.markStopApplied(Objects.requireNonNull(reservation));
+        }
+
+        /** Quarantine uncertain host effects; never automatically retry them. */
+        public SupervisorChildRegistry.StopReceipt recordUncertainStop(
+                SupervisorChildRegistry.StopReservation reservation) {
+            requireSupervisorContext("record uncertain supervisor STOP");
+            return childRegistry.markStopUncertain(Objects.requireNonNull(reservation));
+        }
+
+        /** Host acknowledgment of one previously applied exact STOP turn. */
         public SupervisorChildRegistry.Snapshot commitReservedStop(
                 SupervisorChildRegistry.StopReservation reservation) {
             requireSupervisorContext("commit reserved supervisor STOP");
