@@ -5923,8 +5923,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        // A pool's dedicated CONTROL loop never executes guest code; stop it
-        // independently of physical carrier cleanup, including failed drains.
+        // Source cancellation cleanup owns its scheduler and worker lane
+        // across a failed close deadline. Never stop the pool scheduler while
+        // a suspended finalizer still needs to be re-admitted on retry.
+        if (!sourceCleanupPending || (stillRunning.isEmpty() && dispatchersTerminated && !interrupted)) {
         for (ActorPoolControlScheduler scheduler :
                 List.of(privatePoolScheduler, sharedPoolScheduler, untrustedPoolScheduler)) {
             scheduler.shutdown();
@@ -5941,6 +5943,7 @@ public final class ActorRuntime implements AutoCloseable {
                 interrupted = true;
                 dispatchersTerminated = false;
             }
+        }
         }
 
         // Source tasks retain their owned resources across failed cleanup
