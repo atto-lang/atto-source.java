@@ -174,7 +174,7 @@ class NativeHttpTest {
             @Override public synchronized void write(byte[] bytes, int off, int len) {
                 super.write(bytes, off, len);
                 String printed = toString(StandardCharsets.UTF_8);
-                int newline = printed.indexOf('\\n');
+                int newline = printed.indexOf('\n');
                 if (newline >= 0 && !port.isDone()) {
                     port.complete(Integer.parseInt(printed.substring(0, newline).trim()));
                 }
