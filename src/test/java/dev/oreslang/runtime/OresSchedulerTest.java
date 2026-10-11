@@ -907,4 +907,98 @@ final class OresSchedulerTest {
         }
     }
 
+    @Test
+    void concurrentCloseCallersWaitForSameSuspendedCancellationCleanup() throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        OresFuture<Integer> source = new OresFuture<>();
+        OresFuture<Integer> cleanupGate = new OresFuture<>();
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+        CountDownLatch secondCloseStarted = new CountDownLatch(1);
+        CountDownLatch firstCloseDone = new CountDownLatch(1);
+        CountDownLatch secondCloseDone = new CountDownLatch(1);
+        AtomicReference<Throwable> firstCloseFailure = new AtomicReference<>();
+        AtomicReference<Throwable> secondCloseFailure = new AtomicReference<>();
+        AtomicInteger cleanupEntries = new AtomicInteger();
+
+        try {
+            OresFuture<Integer> task = scheduler.start(
+                    new OresScheduler.CancellationAwareTask<>() {
+                        private volatile boolean cleaning;
+
+                        @Override public boolean cleanupInProgress() {
+                            return cleaning;
+                        }
+
+                        @Override public void cancellationRequested(
+                                OresScheduler.TaskCancelledException reason) { }
+
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume input) {
+                            if (input.initial()) return OresScheduler.await(source);
+                            if (!cleaning) {
+                                assertInstanceOf(OresScheduler.TaskCancelledException.class,
+                                        input.failure());
+                                cleaning = true;
+                                cleanupEntries.incrementAndGet();
+                                cleanupEntered.countDown();
+                                return OresScheduler.await(cleanupGate);
+                            }
+                            assertSame(scheduler, OresScheduler.current());
+                            assertNull(input.failure());
+                            assertEquals(7, input.value());
+                            return OresScheduler.done(42);
+                        }
+                    });
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (source.pendingRuntimeWaiterCount() != 1
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(1, source.pendingRuntimeWaiterCount());
+
+            Thread first = Thread.ofPlatform().start(() -> {
+                try {
+                    scheduler.close();
+                } catch (Throwable failure) {
+                    firstCloseFailure.set(failure);
+                } finally {
+                    firstCloseDone.countDown();
+                }
+            });
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (cleanupGate.pendingRuntimeWaiterCount() != 1
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(1, cleanupGate.pendingRuntimeWaiterCount());
+
+            Thread second = Thread.ofPlatform().start(() -> {
+                secondCloseStarted.countDown();
+                try {
+                    scheduler.close();
+                } catch (Throwable failure) {
+                    secondCloseFailure.set(failure);
+                } finally {
+                    secondCloseDone.countDown();
+                }
+            });
+            assertTrue(secondCloseStarted.await(5, TimeUnit.SECONDS));
+            assertFalse(secondCloseDone.await(150, TimeUnit.MILLISECONDS),
+                    "second close must not return before the first has drained cleanup");
+            assertFalse(firstCloseDone.await(25, TimeUnit.MILLISECONDS));
+            assertFalse(task.isDone(), "cancellation is pending until cleanup completes");
+
+            assertTrue(cleanupGate.completeFromRuntime(7));
+            assertTrue(firstCloseDone.await(5, TimeUnit.SECONDS));
+            assertTrue(secondCloseDone.await(5, TimeUnit.SECONDS));
+            first.join(5000);
+            second.join(5000);
+            assertNull(firstCloseFailure.get());
+            assertNull(secondCloseFailure.get());
+            assertTrue(task.isCancelled());
+            assertEquals(1, cleanupEntries.get());
+            assertFalse(source.isDone(), "shared producer must not be cancelled");
+        } finally {
+            cleanupGate.completeFromRuntime(7);
+            scheduler.close();
+        }
+    }
+
 }
