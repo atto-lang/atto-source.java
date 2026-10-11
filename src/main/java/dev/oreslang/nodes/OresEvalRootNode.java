@@ -419,7 +419,7 @@ public final class OresEvalRootNode extends RootNode {
          * neither the guest nor wire bytes can redefine it.
          */
         @Override
-        public java.util.Optional<dev.oreslang.runtime.MessagePackCollectionCodec.MailboxSchema>
+        public java.util.Optional<dev.oreslang.runtime.MessagePackCollectionCodec.MailboxWireCodec>
                 mailboxSchema(String actorTypeName) {
             Ast.ClassDecl actor = requireLocalActorClass(actorTypeName);
             Ast.MethodDecl receive = findMethod(
