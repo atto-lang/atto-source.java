@@ -2139,11 +2139,25 @@ public final class ActorRuntime implements AutoCloseable {
                 java.util.function.Function<SupervisorProcess.Resolution,
                         java.util.concurrent.CompletionStage<Void>> onDecision,
                 Consumer<SupervisorProcess.Resolution> onAcknowledged) {
+            return installSupervisorProcessAwaitingDecision(
+                    mailboxCapacity, onFailure, onDecision, onAcknowledged,
+                    ignored -> { });
+        }
+
+        /** Classify a failed authoritative host effect on the CONTROL lane. */
+        public SupervisorProcess installSupervisorProcessAwaitingDecision(
+                int mailboxCapacity,
+                java.util.function.Function<SupervisorFailureControl.Notice,
+                        java.util.concurrent.CompletionStage<SupervisorProcess.Directive>> onFailure,
+                java.util.function.Function<SupervisorProcess.Resolution,
+                        java.util.concurrent.CompletionStage<Void>> onDecision,
+                Consumer<SupervisorProcess.Resolution> onAcknowledged,
+                Consumer<SupervisorProcess.Resolution> onEffectFailure) {
             requireSupervisorContext("install awaiting supervisor process");
             requireOpen();
             SupervisorProcess process = new SupervisorProcess(
                     supervisorId, id, supervisorDispatcher, mailboxCapacity,
-                    onFailure, onDecision, onAcknowledged);
+                    onFailure, onDecision, onAcknowledged, onEffectFailure);
             try {
                 supervisorControl.install(process::accept);
             } catch (RuntimeException | Error admissionFailure) {
