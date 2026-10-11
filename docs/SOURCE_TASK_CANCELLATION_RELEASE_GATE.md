@@ -1,19 +1,21 @@
 # Source-task cancellation and cleanup: release gate
 
-Status: **DRAFT IMPLEMENTATION / NOT YET RELEASE-VERIFIED** (October 11, 2026)
+Status: **PARTIAL IMPLEMENTATION / RELEASE BLOCKED** (October 11, 2026)
 
-This document is an executable admission checklist, not evidence that
-Oreslang already guarantees cancellation-safe `finally` / `defer`.
+This document remains an executable admission checklist. Scheduler-lane
+cancellation unwinding has a draft implementation, but the language and
+runtime have **not** certified all cancellation-safe `finally` / `defer`
+paths, actor teardown or native-image behavior.
 
-## Audited cancellation gap
+## Original audited cancellation gap (historical)
 
-`OresScheduler.TaskRunner.cancelFromFuture()` currently detaches
-`activeAwaitRegistration`, transitions `phase` to `TERMINAL`, clears the
-pending resume and removes the task. `cancelFromSchedulerClose()` invokes
-`completion.cancel(false)`. The `SourceTask` keeps lexical cleanup in
-heap-owned continuations, and the runtime does **not** unwind those
-continuations after either terminal cancellation path. Cancelling while
-awaiting `finally` or `defer` can therefore skip cleanup altogether.
+The original `OresScheduler.TaskRunner.cancelFromFuture()` detached
+`activeAwaitRegistration`, transitioned `phase` to `TERMINAL`, cleared the
+pending resume and removed the task. `cancelFromSchedulerClose()` invoked
+`completion.cancel(false)`. This previously discarded suspended cleanup.
+The new task-specific cancellation admission preserves the task lifetime and
+enqueues cancellation through the owning scheduler, but further end-to-end
+conformance is still required.
 
 Passing `await`-in-`finally` conformance proves *ordinary completion*
 only, not cancellation, timed teardown, or context close.
@@ -62,52 +64,61 @@ only, not cancellation, timed teardown, or context close.
 **Until all of these pass, keep the PR draft and do not advertise
 exactly-once cleanup for cancelled source tasks.**
 
-## October 11 experimental execution-context integration (stacked draft)
+## Draft implementation progress (October 11)
 
-The Java draft now has an **opt-in** scheduler protocol,
-`OresScheduler.UnwindingTask`, and the heap-owned `SourceTask` opts in.
-`OresFuture.cancel()` for these tasks is a single-shot *request*, not
-terminal publication. The scheduler detaches abandoned await registrations,
-places a cancellation resume on the original task domain, and permits
-future completion threads only to enqueue resumption. Existing task ownership
-is retained until after the final carrier turn leaves the context.
+- `OresFuture` now has a task-specific deferred cancellation mode; other
+  Futures retain their immediate settlement semantics. The task Future becomes
+  terminal only after its scheduler marks cleanup complete or failed.
+- `OresScheduler.TaskRunner` admits a single cancellation request, delivers
+  it to cancellation-aware source tasks on their original scheduler lane,
+  leaves an already-running cleanup await intact, and does not publish terminal
+  completion until after the carrier turn exits.
+- `SourceTask` maintains a heap-owned LIFO lexical cleanup stack. One owner
+  drains each scope's `defer` and native mutex guards. A scheduler cancellation
+  bypasses guest `catch`, but enters `finally`. Cancellation in a cooperative
+  loop is observed at sparse safe backedges and unwinds the active lexical
+  scope rather than replaying the loop body.
+- Scheduler shutdown stops new tasks, requests cancellation, and waits up to
+  five seconds for outstanding cleanup tasks. A timeout is **reported as a
+  failed drain**, not silently relabeled a successful guest finalizer.
+  Runtime-owned context/actor teardown needs independent integration review.
+- Queued non-source tasks without lexical cleanup are cancelled without
+  consuming the actor CONTROL lane, preserving actor-termination responsiveness
+  under high backlog.
 
-The execution context is the existing heap-owned SourceTask, not a second
-Java interpreter stack. `cleanupDepth` marks live `defer`/lexical
-`finally` regions, and `SourceFlowKind.CANCEL` is a non-catchable control
-exit. A task already awaiting *inside* cleanup continues that await instead
-of receiving another cancellation throw. A pending cancellation is published
-after the cleanup chain and mutex guards finish, or a cleanup failure is
-reported with cancellation suppressed. Scheduler.close rejects new tasks,
-requests a drain, waits up to five seconds, and **reports a failure without
-forcibly shutting down carriers** if an owned cleanup task remains.
+**Remaining release blockers:** real source-level cancellation interleavings
+through awaited `try/finally/defer` with nested errors and nested `recover`,
+fault-injected owned borrow/guard retirement, actor/context shutdown races,
+shutdown timeout and fatal error policy, independent scheduler/continuation
+review, Graal native-image AOT/hybrid and LLVM parity. A host shutdown deadline
+is a failure boundary, not proof that a stuck guest finalizer can always run.
 
-**Defer/recover semantic separation:** `defer` owns lexical finalizers and
-must run in LIFO order. `recover` is currently implemented as
-`SharedMutex.recover(callback)`, an owner-controlled poison recovery
-operation, NOT a general-purpose cancellation handler. Future language
-`recover` control-flow syntax must never swallow a task CANCEL signal or
-fabricate successful cleanup. Panic/throw recovery is separate from
-cancellation and from force termination of an isolated actor.
+Run the newly-added scheduler cancellation and ActorEndCleanupTest tests, then
+the entire JVM suite against the exact source head. Do not merge this draft on
+focused test success alone.
 
-**Important caveats / next audit targets:**
+## Actor scheduler CONTROL cleanup candidate (#659, stacked and draft)
 
-- This experimental change does not yet certify cancellation-safe guest
-  `defer`/try/`finally` execution on the actual Graal source evaluator.
-  Source integration, randomized interleavings, native-image AOT/hybrid and
-  complete merge-tree CI still need to run.
-- Busy CPU loops need cancellation control at existing compiler/runtime
-  safepoints; do not add wall-clock checks to every iteration. Logical task
-  cancellation still requires a source-loop continuation conformance matrix.
-- Cooperative timeout does not magically release stalled FFM loans or native
-  borrows. The runtime must report incomplete drain and retain ownership
-  rather than claiming resources have been reclaimed.
-- The cancellation-aware task Future intentionally remains pending between
-  acceptance of the request and terminal cleanup publication; user-visible
-  semantics and callbacks must be covered by compatibility tests.
-- `OresScheduler.UnwindingTask` is an internal host capability; guest source
-  cannot forge `CANCEL`, grant itself a cleanup lane, or bypass the actor
-  supervisor's ownership authority.
+This integration reconciles the earlier #659 prototype with the *current*
+#567 `OresScheduler.CancellationAwareTask` and source lexical cleanup
+stack. Only that one scheduler/source-context protocol is retained.
 
-**Keep the PR draft.** The mandatory executed tests listed above are still
-release gates, not evidence already obtained.
+Actor-bound source continuations use an owner-only bounded CONTROL queue
+that remains runnable after normal mailbox admission is sealed by stop
+or structured cancellation. Old arbitrary callbacks and new user mail
+cannot execute while the actor is draining. Active source-task Futures
+are separately tracked and retained even before normal pending-operations
+registration. Their completed cleanup is required before `get_done()`,
+source scheduler shutdown, actor field state or native memory retirement.
+
+Scheduler shutdown timeouts must not force terminal publication for
+unfinished source finalizers or issue `shutdownNow()` on their carriers.
+A deadline failure is explicit and outstanding owners remain pinned for
+isolate-level escalation. Cancellation errors remain distinct from
+mutex poison recovery: `SharedMutex.recover` does not swallow cancellation.
+
+**Still blocked:** runtime-global close currently interrupts actor carrier
+pools before an owner cleanup drain; force-isolated revocation, untrusted
+cleanup time budgets, source-level nested await/defer/finally and
+`recover` conformance, stress, Graal native-image and LLVM are still
+required. The integration is not a release certification.

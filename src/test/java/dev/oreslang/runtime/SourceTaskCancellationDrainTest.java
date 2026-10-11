@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class SourceTaskCancellationDrainTest {
     private static final class SuspendedCleanup
-            implements OresScheduler.UnwindingTask<Integer> {
+            implements OresScheduler.CancellationAwareTask<Integer> {
         final OresFuture<Void> abandoned = new OresFuture<>();
         final OresFuture<Void> cleanup = new OresFuture<>();
         final CountDownLatch enteredFirstAwait = new CountDownLatch(1);
@@ -32,12 +32,12 @@ final class SourceTaskCancellationDrainTest {
         volatile Thread cleanupThread;
 
         @Override
-        public void requestCancellation() {
+        public void cancellationRequested() {
             requestCount.incrementAndGet();
         }
 
         @Override
-        public boolean cleanupActive() {
+        public boolean cleanupInProgress() {
             return insideCleanup.get();
         }
 
@@ -137,9 +137,9 @@ final class SourceTaskCancellationDrainTest {
             AtomicInteger pc = new AtomicInteger();
             OresFuture<Void> input = new OresFuture<>();
             CountDownLatch enteredFirstAwait = new CountDownLatch(1);
-            OresFuture<Integer> task = scheduler.start(new OresScheduler.UnwindingTask<>() {
-                @Override public void requestCancellation() { }
-                @Override public boolean cleanupActive() { return cleanupActive.get(); }
+            OresFuture<Integer> task = scheduler.start(new OresScheduler.CancellationAwareTask<>() {
+                @Override public void cancellationRequested() { }
+                @Override public boolean cleanupInProgress() { return cleanupActive.get(); }
                 @Override public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
                     if (pc.getAndIncrement() == 0) {
                         enteredFirstAwait.countDown();

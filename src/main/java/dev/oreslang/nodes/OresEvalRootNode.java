@@ -823,7 +823,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private enum SourceFlowKind {
-            NORMAL, RETURN, ARM_RETURN, BREAK, CONTINUE, THROW, CANCEL
+            NORMAL, RETURN, ARM_RETURN, BREAK, CONTINUE, THROW
         }
 
         private record SourceFlow(
@@ -852,9 +852,6 @@ public final class OresEvalRootNode extends RootNode {
 
             private static SourceFlow throwing(Throwable failure) {
                 Objects.requireNonNull(failure, "failure");
-                if (failure instanceof OresScheduler.TaskCancelledException) {
-                    return cancelling(failure);
-                }
                 // Internal lexical returns are never guest exceptions. An
                 // awaited value arm may carry a containing-function return
                 // through expression callbacks until it reaches this boundary.
@@ -862,10 +859,6 @@ public final class OresEvalRootNode extends RootNode {
                     return returning(returned.value);
                 }
                 return new SourceFlow(SourceFlowKind.THROW, null, failure);
-            }
-            private static SourceFlow cancelling(Throwable signal) {
-                return new SourceFlow(SourceFlowKind.CANCEL, null,
-                        Objects.requireNonNull(signal, "signal"));
             }
         }
 
@@ -875,7 +868,37 @@ public final class OresEvalRootNode extends RootNode {
          * current continuation is stored here and OresScheduler.Task returns
          * Await to unwind the carrier completely.
          */
-        private final class SourceTask implements OresScheduler.UnwindingTask<Object> {
+        private final class SourceTask
+                implements OresScheduler.CancellationAwareTask<Object> {
+            private final ArrayDeque<SourceCleanupScope> activeScopes = new ArrayDeque<>();
+            private volatile boolean cancellationRequested;
+            private volatile OresScheduler.TaskCancelledException cancellationReason;
+            // Observed by cancellation admission on arbitrary host threads.
+            // Mutations remain exclusive to the owning scheduler/actor lane,
+            // but a plain int is a data race and may misclassify a suspended
+            // finally/defer await as normal work, discarding its cleanup.
+            private volatile int cleanupDepth;
+            private boolean awaitingCooperate;
+
+            @Override
+            public boolean cleanupInProgress() {
+                return cleanupDepth > 0;
+            }
+
+            @Override
+            public void cancellationRequested(
+                    OresScheduler.TaskCancelledException reason) {
+                cancellationReason = Objects.requireNonNull(reason, "reason");
+                cancellationRequested = true;
+            }
+
+            private SourceFlow cancellationFlow() {
+                OresScheduler.TaskCancelledException reason = cancellationReason;
+                if (reason == null) {
+                    throw new IllegalStateException("source cancellation missing scheduler reason");
+                }
+                return SourceFlow.throwing(reason);
+            }
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             private static final int LOOP_SAFEPOINT_INTERVAL = 32;
@@ -893,32 +916,6 @@ public final class OresEvalRootNode extends RootNode {
 
             private SourceValueCont awaitingContinuation;
             private OresScheduler.Step<Object> nextStep;
-            // The heap-owned continuation IS the execution context. Host
-            // threads publish intent; only the owning scheduler lane mutates
-            // lexical cleanup scopes or executes their code.
-            private volatile boolean cancellationRequested;
-            private volatile int cleanupDepth;
-            private final OresScheduler.TaskCancelledException cancellationSignal =
-                    new OresScheduler.TaskCancelledException();
-
-            @Override
-            public void requestCancellation() {
-                cancellationRequested = true;
-            }
-
-            @Override
-            public boolean cleanupActive() {
-                return cleanupDepth > 0;
-            }
-
-            private void enterCleanup() { ++cleanupDepth; }
-
-            private void leaveCleanup() {
-                if (cleanupDepth <= 0) {
-                    throw new IllegalStateException("source cleanup depth underflow");
-                }
-                --cleanupDepth;
-            }
 
             private SourceTask(
                     Ast.FunctionDecl function,
@@ -957,7 +954,6 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     return resumeSource(resume);
                 } catch (RuntimeException failure) {
-                    if (failure instanceof OresScheduler.TaskCancelledException) throw failure;
                     awaitingContinuation = null;
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
@@ -972,10 +968,6 @@ public final class OresEvalRootNode extends RootNode {
             private OresScheduler.Step<Object> resumeSource(OresScheduler.Resume resume) {
                 nextStep = null;
 
-                if (resume.initial() && cancellationRequested) {
-                    // No source scope started: nothing to unwind.
-                    return OresScheduler.done(null);
-                }
                 if (resume.initial()) {
                     Env params;
                     if (blockBody != null) {
@@ -1029,15 +1021,25 @@ public final class OresEvalRootNode extends RootNode {
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
-                    if (continuation == null) {
-                        throw new IllegalStateException(
-                                "source task resumed without a pending source continuation");
+                    boolean wasCooperating = awaitingCooperate;
+                    awaitingCooperate = false;
+                    if (resume.failure() instanceof OresScheduler.TaskCancelledException
+                            && wasCooperating) {
+                        pendingLoopContinuation = null;
+                        pendingLoopGuardEnv = null;
+                        SourceCleanupScope inner = activeScopes.peekFirst();
+                        if (inner == null) {
+                            throw new IllegalStateException(
+                                    "source cancellation has no live lexical scope");
+                        }
+                        inner.finish(cancellationFlow());
+                    } else {
+                        if (continuation == null) {
+                            throw new IllegalStateException(
+                                    "source task resumed without a pending source continuation");
+                        }
+                        continuation.accept(this, resume.value(), resume.failure());
                     }
-                    continuation.accept(
-                            this,
-                            resume.value(),
-                            cancellationRequested && !cleanupActive()
-                                    ? cancellationSignal : resume.failure());
                 }
 
                 // Finish each source loop back-edge iteratively. The unexecuted
@@ -1079,6 +1081,18 @@ public final class OresEvalRootNode extends RootNode {
                     boolean untrusted = ActorRuntime.currentActorKind()
                             == ActorRuntime.ActorKind.UNTRUSTED;
                     if (untrusted || (backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0) {
+                        if (cancellationRequested && cleanupDepth == 0
+                                && !guardEnv.hasLiveMutexGuards()) {
+                            pendingLoopContinuation = null;
+                            pendingLoopGuardEnv = null;
+                            SourceCleanupScope inner = activeScopes.peekFirst();
+                            if (inner == null) {
+                                throw new IllegalStateException(
+                                        "source cancellation has no live loop scope");
+                            }
+                            inner.finish(cancellationFlow());
+                            return;
+                        }
                         // Untrusted fuel is charged at EVERY loop backedge, not
                         // once per 32 iterations. Trusted tasks poll at 32.
                         context.schedulerSafepoint();
@@ -1108,6 +1122,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "source continuation attempted two terminal steps in one turn");
                 }
+                awaitingCooperate = false;
                 awaitingContinuation = continuation;
                 nextStep = OresScheduler.await(future);
             }
@@ -1118,6 +1133,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "source continuation attempted two terminal steps in one turn");
                 }
+                awaitingCooperate = true;
                 awaitingContinuation = continuation;
                 nextStep = OresScheduler.cooperate();
             }
@@ -1133,15 +1149,6 @@ public final class OresEvalRootNode extends RootNode {
             private void finishSourceFlow(
                     SourceTask task,
                     SourceFlow flow) {
-                // This runs only AFTER lexical finalization and guard release.
-                if (cancellationRequested) {
-                    if (flow.kind() == SourceFlowKind.THROW) {
-                        preserveSuppressedCleanupFailure(
-                                flow.failure(), cancellationSignal);
-                        throw sourceFailure(flow.failure());
-                    }
-                    throw cancellationSignal;
-                }
                 if (blockBody != null) {
                     switch (flow.kind()) {
                         case NORMAL -> done(null);
@@ -1152,7 +1159,7 @@ public final class OresEvalRootNode extends RootNode {
                             }
                             done(null);
                         }
-                        case THROW, CANCEL -> throw sourceFailure(flow.failure());
+                        case THROW -> throw sourceFailure(flow.failure());
                         case BREAK, CONTINUE, ARM_RETURN ->
                                 throw new IllegalStateException(
                                         "lexical control flow crossed a source continuation boundary");
@@ -1163,7 +1170,7 @@ public final class OresEvalRootNode extends RootNode {
                 switch (flow.kind()) {
                     case NORMAL -> done(shapeSourceReturn(null, null));
                     case RETURN -> done(shapeSourceReturn(flow.value(), null));
-                    case THROW, CANCEL -> throw sourceFailure(flow.failure());
+                    case THROW -> throw sourceFailure(flow.failure());
                     case BREAK, CONTINUE, ARM_RETURN ->
                             throw new IllegalStateException(
                                     "lexical control flow crossed a source function boundary");
@@ -1647,6 +1654,43 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
+        /**
+         * A heap-owned lexical scope is the unique finalization owner. A source
+         * cancellation suspended at a loop cooperate point can enter this frame
+         * directly without replaying the abandoned loop continuation.
+         */
+        private final class SourceCleanupScope {
+            private final SourceTask task;
+            private final Env env;
+            private final ArrayDeque<Ast.Expr> defers;
+            private final SourceFlowCont downstream;
+            private boolean claimed;
+
+            private SourceCleanupScope(SourceTask task, Env env,
+                    ArrayDeque<Ast.Expr> defers, SourceFlowCont downstream) {
+                this.task = task;
+                this.env = env;
+                this.defers = defers;
+                this.downstream = downstream;
+            }
+
+            private void finish(SourceFlow flow) {
+                if (claimed) {
+                    throw new IllegalStateException("lexical cleanup scope finalized twice");
+                }
+                claimed = true;
+                task.cleanupDepth++;
+                finishBlock(task, env, defers, flow, (resumed, completed) -> {
+                    if (task.activeScopes.peekFirst() != this) {
+                        throw new IllegalStateException("lexical cleanup stack lost scope ordering");
+                    }
+                    task.activeScopes.removeFirst();
+                    task.cleanupDepth--;
+                    downstream.accept(resumed, completed);
+                });
+            }
+        }
+
         private void runBlock(
                 SourceTask task,
                 List<Ast.Stmt> statements,
@@ -1654,14 +1698,21 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
-            runStatements(
-                    task,
-                    statements,
-                    env,
-                    defers,
-                    0,
-                    (ignored, flow) ->
-                            finishBlock(task, env, defers, flow, continuation));
+            SourceCleanupScope scope =
+                    new SourceCleanupScope(task, env, defers, continuation);
+            task.activeScopes.addFirst(scope);
+            runStatements(task, statements, env, defers, 0,
+                    (ignored, flow) -> scope.finish(flow));
+        }
+
+        /** The entire finally body is cleanup, including its awaited expressions. */
+        private void runFinallyBlock(SourceTask task,
+                List<Ast.Stmt> statements, Env parent, SourceFlowCont downstream) {
+            task.cleanupDepth++;
+            runBlock(task, statements, parent, (resumed, flow) -> {
+                task.cleanupDepth--;
+                downstream.accept(resumed, flow);
+            });
         }
 
         /**
@@ -1704,14 +1755,14 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 int index,
                 SourceFlowCont continuation) {
-            // Cancellation at a lexical safe point, not per loop iteration.
-            // An active defer/finally is allowed to finish its own await.
-            if (task.cancellationRequested && !task.cleanupActive()) {
-                continuation.accept(task, SourceFlow.cancelling(task.cancellationSignal));
-                return;
-            }
             // Only runBlock owns finalization. These statements produce a flow;
             // the caller drains defers and releases live guards exactly once.
+            // No unrelated guest statements may run after cancellation; code
+            // within an already-admitted finally/defer retains cleanupDepth.
+            if (task.cancellationRequested && task.cleanupDepth == 0) {
+                continuation.accept(task, task.cancellationFlow());
+                return;
+            }
             if (index >= statements.size()) {
                 continuation.accept(task, SourceFlow.normal());
                 return;
@@ -1767,8 +1818,7 @@ public final class OresEvalRootNode extends RootNode {
         private SourceFlow mergeCleanupFlow(SourceFlow pending, SourceFlow cleanup) {
             if (cleanup.kind() == SourceFlowKind.NORMAL) return pending;
             if (cleanup.kind() == SourceFlowKind.THROW
-                    && (pending.kind() == SourceFlowKind.THROW
-                        || pending.kind() == SourceFlowKind.CANCEL)) {
+                    && pending.kind() == SourceFlowKind.THROW) {
                 preserveSuppressedCleanupFailure(cleanup.failure(), pending.failure());
             }
             return cleanup;
@@ -1797,16 +1847,12 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
-            task.enterCleanup();
             runOneDefer(
                     task,
                     env,
                     defers,
                     initialFlow,
-                    (completedTask, completedFlow) -> {
-                        completedTask.leaveCleanup();
-                        continuation.accept(completedTask, completedFlow);
-                    });
+                    continuation);
         }
 
         private void runOneDefer(
@@ -2102,20 +2148,42 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (stmt instanceof Ast.TryStmt attempted) {
-                    runBlock(task, attempted.body(), env, (t, flow) -> {
-                        if (flow.kind() == SourceFlowKind.THROW) {
-                            Env caught = new Env(env);
-                            caught.define(attempted.errorName(), flow.failure(),
-                                    Ast.BindingKind.VAL);
-                            runBlock(t, attempted.catchBody(), caught, (t2, catchFlow) ->
-                                    runCancellationAwareFinally(
-                                            t2, attempted, env, catchFlow, continuation));
-                        } else {
-                            // Cancellation bypasses ordinary guest catch/recover.
-                            runCancellationAwareFinally(
-                                    t, attempted, env, flow, continuation);
-                        }
-                    });
+                    runBlock(
+                            task,
+                            attempted.body(),
+                            env,
+                            (t, flow) -> {
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && !(flow.failure() instanceof OresScheduler.TaskCancelledException)) {
+                                    Env caught = new Env(env);
+                                    caught.define(
+                                            attempted.errorName(),
+                                            flow.failure(),
+                                            Ast.BindingKind.VAL);
+                                    runBlock(
+                                            t,
+                                            attempted.catchBody(),
+                                            caught,
+                                            (t2, catchFlow) ->
+                                                    runFinallyBlock(
+                                                            t2,
+                                                            attempted.finallyBody(),
+                                                            env,
+                                                            (t3, finallyFlow) ->
+                                                                    continuation.accept(
+                                                                            t3,
+                                                                            mergeCleanupFlow(catchFlow, finallyFlow))));
+                                } else {
+                                    runFinallyBlock(
+                                            t,
+                                            attempted.finallyBody(),
+                                            env,
+                                            (t2, finallyFlow) ->
+                                                    continuation.accept(
+                                                            t2,
+                                                            mergeCleanupFlow(flow, finallyFlow)));
+                                }
+                            });
                     return;
                 }
 
@@ -2227,23 +2295,6 @@ public final class OresEvalRootNode extends RootNode {
                 // for a second time.
                 if (delivered.get()) throw failure;
                 continuation.accept(task, SourceFlow.throwing(failure));
-            }
-        }
-
-        private void runCancellationAwareFinally(
-                SourceTask task, Ast.TryStmt attempted, Env env,
-                SourceFlow pending, SourceFlowCont continuation) {
-            task.enterCleanup();
-            java.util.concurrent.atomic.AtomicBoolean left =
-                    new java.util.concurrent.atomic.AtomicBoolean();
-            try {
-                runBlock(task, attempted.finallyBody(), env, (t, flow) -> {
-                    if (left.compareAndSet(false, true)) t.leaveCleanup();
-                    continuation.accept(t, mergeCleanupFlow(pending, flow));
-                });
-            } catch (RuntimeException | Error failure) {
-                if (left.compareAndSet(false, true)) task.leaveCleanup();
-                throw failure;
             }
         }
 
@@ -2625,7 +2676,7 @@ public final class OresEvalRootNode extends RootNode {
                                     t,
                                     SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW || flow.kind() == SourceFlowKind.CANCEL) {
+                                || flow.kind() == SourceFlowKind.THROW) {
                             continuation.accept(t, flow);
                         } else {
                             if (loop.update() == null) {
@@ -2671,7 +2722,7 @@ public final class OresEvalRootNode extends RootNode {
                                     t,
                                     SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW || flow.kind() == SourceFlowKind.CANCEL) {
+                                || flow.kind() == SourceFlowKind.THROW) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
@@ -2777,7 +2828,7 @@ public final class OresEvalRootNode extends RootNode {
                 runBlock(t, body, iteration, (t2, flow) -> {
                     if (flow.kind() == SourceFlowKind.BREAK) {
                         finishAsyncForOf(t2, generator, SourceFlow.normal(), continuation);
-                    } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW || flow.kind() == SourceFlowKind.CANCEL) {
+                    } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW) {
                         finishAsyncForOf(t2, generator, flow, continuation);
                     } else {
                         runAsyncForOfIteration(t2, generator, env, body, bind, continuation);
@@ -2812,7 +2863,7 @@ public final class OresEvalRootNode extends RootNode {
                         if (flow.kind() == SourceFlowKind.BREAK) {
                             continuation.accept(t, SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW || flow.kind() == SourceFlowKind.CANCEL) {
+                                || flow.kind() == SourceFlowKind.THROW) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
@@ -2864,7 +2915,7 @@ public final class OresEvalRootNode extends RootNode {
                         if (flow.kind() == SourceFlowKind.BREAK) {
                             continuation.accept(t, SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW || flow.kind() == SourceFlowKind.CANCEL) {
+                                || flow.kind() == SourceFlowKind.THROW) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
@@ -3007,7 +3058,7 @@ public final class OresEvalRootNode extends RootNode {
                 switch (flow.kind()) {
                     case ARM_RETURN ->
                             continuation.accept(resumed, flow.value(), null);
-                    case THROW, CANCEL ->
+                    case THROW ->
                             continuation.accept(resumed, null, flow.failure());
                     case NORMAL ->
                             continuation.accept(resumed, null,

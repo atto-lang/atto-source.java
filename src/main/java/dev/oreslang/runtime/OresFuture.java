@@ -99,8 +99,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private final BooleanSupplier cancelAdmission;
-    // Non-null only for scheduler tasks that must unwind before terminal cancellation.
-    private final BooleanSupplier deferredCancellationRequest;
+    private final boolean deferredTaskCancel;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
@@ -123,21 +122,19 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * Guest code never receives the admission capability.</p>
      */
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook) {
-        this(cancelAdmission, cancelHook, null);
+        this(cancelAdmission, cancelHook, false);
     }
 
-    /**
-     * Internal two-phase cancellation: Future.cancel() requests unwinding but
-     * does NOT settle the Future until its owning scheduler has left the
-     * execution context and discharged its cleanup obligations.
-     */
-    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
-            BooleanSupplier deferredCancellationRequest) {
-        this.cancelAdmission = Objects.requireNonNull(
-                cancelAdmission, "cancelAdmission");
-        this.cancelHook = new AtomicReference<>(
-                Objects.requireNonNull(cancelHook, "cancelHook"));
-        this.deferredCancellationRequest = deferredCancellationRequest;
+    /** Only scheduler Task Futures defer terminal publication until cleanup. */
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook, boolean deferredTaskCancel) {
+        this.cancelAdmission = Objects.requireNonNull(cancelAdmission, "cancelAdmission");
+        this.deferredTaskCancel = deferredTaskCancel;
+        this.cancelHook = new AtomicReference<>(Objects.requireNonNull(cancelHook, "cancelHook"));
+    }
+
+    /** The scheduler alone settles a cancelled Task Future after its cleanup drain. */
+    boolean cancelFromRuntime(CancellationException reason) {
+        return settle(new Cancelled(Objects.requireNonNull(reason, "reason")));
     }
 
     public static <T> OresFuture<T> completed(T value) {
@@ -438,25 +435,16 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return waiters.size();
     }
 
-    /** Settle an accepted task-cancellation request only AFTER its cleanup drain. */
-    boolean cancelAfterCleanupFromRuntime(CancellationException signal) {
-        // Retain the single control-flow identity observed by the source task.
-        return settle(new Cancelled(Objects.requireNonNull(signal, "signal")));
-    }
-
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
         if (state.get() != PENDING) return false;
         if (!cancelAdmission.getAsBoolean()) return false;
-        if (deferredCancellationRequest != null) {
-            // Never invoke guest work here: the request callback can only
-            // enqueue a cancellation resume on the owning scheduler lane.
-            return deferredCancellationRequest.getAsBoolean();
-        }
 
-        CancellationException cancelled =
-                new CancellationException("OresFuture was cancelled");
-        if (!settle(new Cancelled(cancelled))) return false;
+        if (!deferredTaskCancel) {
+            CancellationException cancelled =
+                    new CancellationException("OresFuture was cancelled");
+            if (!settle(new Cancelled(cancelled))) return false;
+        }
 
         Runnable hook = cancelHook.getAndSet(null);
         if (hook != null && cancelHookRun.compareAndSet(false, true)) {
