@@ -171,14 +171,41 @@ final class ActorStateAndEffectsParserTest {
             """)));
     }
 
-    @Test void parsesSuspensionInStateCallbackWithoutClaimingRuntimeLowering() {
-        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
+    @Test void rejectsSuspensionAndUnverifiedCallsInsideStateBorrow() {
+        // This was previously admitted despite there being no continuation
+        // owner or borrow revalidation in the Graal actor state runtime.
+        assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(Parser.parse("""
             define actor Worker as
                 state { count: int = 0; }
                 pub tick(): void {
                     self.handle_state(|s| -> {
                         s.count = s.count + 1;
                         await fetch();
+                        s.count = s.count + 1;
+                    });
+                    return;
+                }
+            end
+            """)));
+        assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(Parser.parse("""
+            define actor Worker as
+                state { count: int = 0; }
+                pub tick(): void {
+                    self.handle_state(|s| -> {
+                        update_external();
+                        s.count = s.count + 1;
+                    });
+                    return;
+                }
+            end
+            """)));
+        // Direct scalar operations stay legal and nested synchronous
+        // self.handle_state calls are still tested above.
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
+            define actor Worker as
+                state { count: int = 0; }
+                pub tick(): void {
+                    self.handle_state(|s| -> {
                         s.count = s.count + 1;
                     });
                     return;
