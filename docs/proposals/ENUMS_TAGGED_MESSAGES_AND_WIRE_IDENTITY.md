@@ -176,7 +176,7 @@ The **compiler-owned schema descriptor** determines whether an array payload is 
 
 **Fail-closed compiler admission:** until their canonical codecs are implemented, the Java type checker rejects `decimal`, `complex`, untagged unions/pattern alternatives, record values, `Option`/`Result` and nominal user classes at actor mailbox boundaries. The reference scalar/sequence subset alone is admitted. Once a tagged union descriptor, a keyed-record codec or an enum codec becomes executable in both runtimes, corresponding admission can be enabled with round-trip and malformed-input fixtures. `@Serializable` remains reserved until actual derivation exists.
 
-A Java **standalone reference subset** is now provided by `MessagePackCollectionCodec`, with the same six golden vectors in both repositories' `contracts/v1/design/messagepack_collection_vectors.json`: primitive UTF-8 string/bool/signed i64/finite f64 and nested homogeneous/different-typed list, array and tuple shapes. It checks schema ID, version, fixed arity, UTF-8 validity, numeric range/type, trailing bytes, graph cycles, byte/node/depth/length quotas and disallows arbitrary host objects. This is *not yet the ActorRuntime.send transport*, nor a complete `Serializable` implementation for structs, maps, enums, options, decimals, complex numbers or all signed/unsigned widths.
+A Java **standalone reference subset** is now provided by `MessagePackCollectionCodec`, with the same six golden vectors in both repositories' `contracts/v1/design/messagepack_collection_vectors.json`: primitive UTF-8 string/bool/signed i64/finite f64 and nested homogeneous/different-typed list, array and tuple shapes. It checks schema ID, version, fixed arity, UTF-8 validity, numeric range/type, trailing bytes, graph cycles, byte/node/depth/length quotas and disallows arbitrary host objects. This codec is now used by schema-bound real ActorRuntime mailboxes and automatically bound by the Java source evaluator for supported local `receive(ActorMail<T>)` contracts; it is still not a complete `Serializable` implementation for structs, maps, enums, options, decimals, complex numbers or all signed/unsigned widths.
 
 **Default send:** immediately encode/snapshot before publishing a message to a mailbox, reserve bytes/quota, and deliver a recipient-owned decoded value. Serialization semantics must apply to SHARED, PRIVATE and UNTRUSTED actors alike. For `SHARED` local actors, `rt copy` **may** later replace the byte encoding only when a compiler/runtime proof establishes recursive serializability, identical semantics, ownership-safe deep copy and exactly the same failure/quota behavior. Even a `SHARED` actor cannot inspect or mutate the sender's live heap by retaining a pointer. Absolutely never use a faster alias-sharing path merely because the actors happen to be in the same process.
 
@@ -233,3 +233,13 @@ Implementation phases:
 - Whether the public syntax should name payload-bearing declarations `enum` (one construct) or `variant`/`data` (two constructs). Favor one construct initially for less complexity, while keeping payload distinction in ABI. A separate `define pattern` remains necessary because it declares a non-constructible structural domain, not a value family.
 - Whether persisted/public enums require explicit labels instead of merely recommending them.
 - The exact source grammar of `receive` and `<messages=...>` after integration with the current ActorGroup/actor single-send design. This RFC does **not** claim these source forms currently parse.
+
+
+**Executed integration milestone:** The full Java/Graal source has now passed
+[39 exact-source Maven/JUnit tests](https://github.com/gha-indie-worker/gha-indie-worker-docs/actions/runs/38168958540),
+including source-level Tuple/List actor sends and real shared/private mailbox
+snapshots, after verifying 76 source/test/resource Git blob identities.
+The codec remains strictly limited to supported scalars/collections, and the
+native LLVM actor compiler has not yet been integrated. Native C++17 codec
+byte parity separately passed
+[GHA #38169364693](https://github.com/gha-indie-worker/gha-indie-worker-docs/actions/runs/38169364693).
