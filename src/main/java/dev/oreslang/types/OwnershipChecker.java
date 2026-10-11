@@ -635,7 +635,7 @@ public final class OwnershipChecker {
             VarState owner = borrowOwner(runtime.arguments().getFirst(), scope);
             beginPersistentBorrow(owner, false);
             value = new ValueInfo(
-                    Ast.TypeRef.borrowed(owner.type, false),
+                    Ast.TypeRef.borrowed(borrowedPlaceType(runtime.arguments().getFirst(), scope, owner), false),
                     ValueKind.IMM_BORROW,
                     ownershipRoot(owner),
                     true);
@@ -645,7 +645,7 @@ public final class OwnershipChecker {
             VarState owner = borrowOwner(unary.operand(), scope);
             beginPersistentBorrow(owner, mutableBorrow);
             value = new ValueInfo(
-                    Ast.TypeRef.borrowed(owner.type, mutableBorrow),
+                    Ast.TypeRef.borrowed(borrowedPlaceType(unary.operand(), scope, owner), mutableBorrow),
                     mutableBorrow ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW,
                     ownershipRoot(owner),
                     true);
@@ -725,7 +725,7 @@ public final class OwnershipChecker {
                 boolean mutable = unary.operator().equals("&mut");
                 VarState owner = borrowOwner(unary.operand(), scope);
                 validateBorrow(owner, mutable);
-                return new ValueInfo(Ast.TypeRef.borrowed(owner.type, mutable), mutable ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, ownershipRoot(owner));
+                return new ValueInfo(Ast.TypeRef.borrowed(borrowedPlaceType(unary.operand(), scope, owner), mutable), mutable ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, ownershipRoot(owner));
             }
             return checkExpr(unary.operand(), scope, false);
         }
@@ -762,7 +762,7 @@ public final class OwnershipChecker {
                     VarState owner = borrowOwner(argument, scope);
                     validateBorrow(owner, false);
                     yield new ValueInfo(
-                            Ast.TypeRef.borrowed(owner.type, false),
+                            Ast.TypeRef.borrowed(borrowedPlaceType(argument, scope, owner), false),
                             ValueKind.IMM_BORROW,
                             ownershipRoot(owner));
                 }
@@ -1676,13 +1676,29 @@ public final class OwnershipChecker {
     }
 
     private VarState borrowOwner(Ast.Expr operand, Scope scope) {
-        if (!(operand instanceof Ast.NameExpr name)) {
-            throw error("borrows currently require a named owner; borrow the binding before projecting fields/indexes");
+        // A projected loan conservatively locks its whole named owner.
+        // Disjoint field/index loans need separate place-sensitive analysis.
+        Ast.Expr root = operand;
+        while (root instanceof Ast.MemberExpr || root instanceof Ast.IndexExpr) {
+            if (root instanceof Ast.MemberExpr member) root = member.receiver();
+            else root = ((Ast.IndexExpr) root).receiver();
+        }
+        if (!(root instanceof Ast.NameExpr name)) {
+            throw error("cannot borrow a temporary or computed value; projected borrows require a named owner");
         }
         VarState owner = requireState(scope, name.name());
         owner.debugName = name.name();
         requireUsable(owner, name.name(), false);
         return owner;
+    }
+
+    private Ast.TypeRef borrowedPlaceType(Ast.Expr operand, Scope scope, VarState owner) {
+        if (operand instanceof Ast.NameExpr) return owner.type;
+        Ast.TypeRef type = checkExpr(operand, scope, false).type;
+        if (type == null || type.name().equals("$infer$")) {
+            throw error("cannot borrow an unresolved field or indexed place");
+        }
+        return type;
     }
 
     private void validateBorrow(VarState owner, boolean mutable) {
