@@ -86,15 +86,46 @@ public final class TypeChecker {
     }
 
     /** Type analysis only; executable admission must use OresCompiler.analyze. */
+    /**
+     * Contract declarations may be supplied by the already-validated linked
+     * import graph. They exist in the type namespace only; the importer never
+     * acquires executable functions or access to unrelated private members.
+     */
+    public record LinkedContract(String localName, String ownerModule, Ast.InterfaceDecl declaration) {
+        public LinkedContract {
+            if (localName == null || localName.isBlank() || ownerModule == null || ownerModule.isBlank()
+                    || declaration == null || !declaration.moduleContract()
+                    || declaration.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException("linked contract must be an explicitly exported module contract");
+            }
+        }
+    }
+
     public static Ast.Program checkTypes(Ast.Program program) {
-        return checkTypesWithDiagnostics(program).program();
+        return checkTypes(program, List.of());
+    }
+
+    public static Ast.Program checkTypes(Ast.Program program, List<LinkedContract> importedContracts) {
+        return checkTypesWithDiagnostics(program, importedContracts).program();
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        return checkTypesWithDiagnostics(program, List.of());
+    }
+
+    public static TypeCheckResult checkTypesWithDiagnostics(
+            Ast.Program program, List<LinkedContract> importedContracts) {
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+        // Only a linked importer may supply these. Source-level import syntax
+        // alone does not create an interface declaration or bypass validation.
+        for (LinkedContract imported : List.copyOf(importedContracts)) {
+            checker.putQualified(checker.interfaces, checker.ambiguousInterfaces,
+                    imported.ownerModule(), imported.localName(), imported.declaration(), "contract");
+            checker.interfaceOwners.put(imported.declaration(), imported.ownerModule());
+        }
         checker.validate(program);
         return new TypeCheckResult(program, checker.warnings);
     }
