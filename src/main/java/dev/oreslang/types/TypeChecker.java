@@ -7423,7 +7423,11 @@ public final class TypeChecker {
 
     private boolean constant(Ast.Expr expr) {
         if (expr instanceof Ast.LiteralExpr) return true;
-        if (expr instanceof Ast.UnaryExpr unary) return constant(unary.operand());
+        if (expr instanceof Ast.UnaryExpr unary) {
+            // A trap boundary is an effectful control operation even if the
+            // operand appears constant. Do not optimize it as a pure literal.
+            return !unary.operator().equals("trap") && constant(unary.operand());
+        }
         if (expr instanceof Ast.BinaryExpr binary) return constant(binary.left()) && constant(binary.right());
         if (expr instanceof Ast.ConditionalExpr conditional) return constant(conditional.condition()) && constant(conditional.whenTrue()) && constant(conditional.whenFalse());
         if (expr instanceof Ast.ListExpr list) return list.elements().stream().allMatch(this::constant);
