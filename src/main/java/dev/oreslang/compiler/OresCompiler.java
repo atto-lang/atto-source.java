@@ -15,6 +15,16 @@ public final class OresCompiler {
         return analyze(Parser.parse(source));
     }
 
+    /**
+     * Opt-in, STOP-only source supervisor compilation. This does not change
+     * general program admission, which still rejects unlowered on_panic hooks.
+     * The result is a compiler-validated CONTROL policy, not an actor method.
+     */
+    public static SourceSupervisorLowering.StopOnlySupervisor compileStopOnlySupervisor(
+            String source) {
+        return SourceSupervisorLowering.compile(source);
+    }
+
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
         rejectUnloweredSupervisors(program);
