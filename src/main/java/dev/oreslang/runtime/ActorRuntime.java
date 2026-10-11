@@ -58,6 +58,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
     private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
+    private static final int MAX_SUPERVISOR_RESTARTS = 3;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
@@ -1198,13 +1199,22 @@ public final class ActorRuntime implements AutoCloseable {
         SupervisionDecision onPanic(SupervisorFailureLane.Failure failure);
         SupervisionDecision onCancel(SupervisorFailureLane.Failure failure);
         SupervisionDecision onHostFailure(SupervisorFailureLane.Failure failure);
+
+        /**
+         * New actor identity and fresh private state; no mailbox replay.
+         * Called only on the parent's actor lane following a successful restart.
+         */
+        default void onRestarted(
+                SupervisorFailureLane.Failure failedChild, ActorRef<?> replacement) { }
     }
 
     public enum SupervisionDecision {
         /** The failed child is already finalized; consume this notification. */
         ACKNOWLEDGE,
         /** Leave the already-published root event for ancestor/host handling. */
-        ESCALATE
+        ESCALATE,
+        /** Spawn a fresh child with new identity, subject to a bounded budget. */
+        RESTART
     }
 
     /**
@@ -5734,6 +5744,10 @@ public final class ActorRuntime implements AutoCloseable {
         /** Pre-reserved per-child urgent CONTROL events, distinct from mail. */
         private final SupervisorFailureLane childFailures =
                 new SupervisorFailureLane(dispatcherConfig.maxActors());
+        /** Bounded by childFailures reservations; never retain completed guest state. */
+        private final Map<SupervisorFailureLane.ActorKey, ActorCell<?>> restartCandidates =
+                new ConcurrentHashMap<>();
+        private int restartsUsed;
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
@@ -6013,6 +6027,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || !children.isEmpty()) return;
             finalized = true;
+            restartCandidates.clear();
             // Root must receive any urgent child events the parent did not
             // process before stopping. Do not silently lose reserved faults.
             Optional<SupervisorFailureLane.Failure> orphan;
@@ -6094,6 +6109,7 @@ public final class ActorRuntime implements AutoCloseable {
                     supervisorFailures.publish(controlEvent);
                     childFailures.retireGracefully(supervisorKey(child.ref.id()));
                 } else {
+                    restartCandidates.put(controlEvent.actor(), child);
                     childFailures.publish(controlEvent);
                     wake = true;
                 }
@@ -6305,6 +6321,20 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        @SuppressWarnings("unchecked")
+        private ActorRef<?> restartFailedChild(ActorCell<?> previous) {
+            // Deliberately never copy previous.codeActorState or mailbox.
+            // Private arenas and mutable actor state were retired at finalize.
+            return ActorRuntime.this.spawnInternal(
+                    previous.kind,
+                    previous.policy,
+                    (BehaviorFactory<Object>) previous.behaviorFactory,
+                    previous.trustedFactory,
+                    previous.codeImage,
+                    previous.codeExecutor,
+                    previous.codeActorType);
+        }
+
         private SupervisionDecision dispatchSupervisorHook(
                 SupervisionHandler handler,
                 SupervisorFailureLane.Failure failure) {
@@ -6412,13 +6442,30 @@ public final class ActorRuntime implements AutoCloseable {
                                                 codeActorType, codeActorState, failure, sourceContext),
                                         "source supervisor returned null decision");
                             }
-                            if (decision == SupervisionDecision.ESCALATE) {
-                                supervisorFailures.publish(failure);
-                            } else {
-                                // ACK means the child is handled. No root
-                                // notification should be spuriously delivered.
-                                supervisorFailures.retireGracefully(failure.actor());
+                            ActorCell<?> completed = restartCandidates.remove(failure.actor());
+                            boolean escalate = decision == SupervisionDecision.ESCALATE;
+                            if (decision == SupervisionDecision.RESTART) {
+                                if (completed == null || restartsUsed >= MAX_SUPERVISOR_RESTARTS) {
+                                    escalate = true;
+                                } else {
+                                    // Count attempts, not merely successes:
+                                    // repeated failed initializers must not loop.
+                                    restartsUsed++;
+                                    try {
+                                        ActorRef<?> replacement = restartFailedChild(completed);
+                                        replacement.ready(); // nonblocking initialization admission
+                                        if (behavior instanceof SupervisionHandler handler) {
+                                            handler.onRestarted(failure, replacement);
+                                        }
+                                    } catch (RuntimeException spawnFailure) {
+                                        // Preserve the terminal child failure
+                                        // as the escalation; parent survives.
+                                        escalate = true;
+                                    }
+                                }
                             }
+                            if (escalate) supervisorFailures.publish(failure);
+                            else supervisorFailures.retireGracefully(failure.actor());
                             childFailures.ack(failure.actor());
                         } catch (RuntimeException | Error handlerFailure) {
                             supervisorFailures.publish(failure);
