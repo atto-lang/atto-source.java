@@ -63,6 +63,22 @@ final class AcceleratorSourceLoweringTest {
         assertEquals(-3f, minus.kernel().bias());
     }
 
+    @Test void rejectsHugeInputsAndUnderflowWhilePreservingSubnormalF32() {
+        var p = layout();
+        var small = AcceleratorSourceLowering.compileGpu(
+                "gpu fnc tiny(f32 value): f32 { return value * 1e-45; }", p);
+        assertEquals(Float.MIN_VALUE, small.kernel().scale());
+        assertThrows(IllegalArgumentException.class, () ->
+                AcceleratorSourceLowering.compileGpu(
+                        "gpu fnc tiny(f32 value): f32 { return value * 1e-1000; }", p));
+        assertThrows(IllegalArgumentException.class, () ->
+                AcceleratorSourceLowering.compileGpu(
+                        "gpu fnc huge(f32 value): f32 { return value; }" + " ".repeat(70_000), p));
+        assertThrows(IllegalArgumentException.class, () ->
+                AcceleratorSourceLowering.compileQuantum(
+                        "quantum fnc huge(): Circuit<2,2> { measure(0,0); }" + " ".repeat(70_000)));
+    }
+
     @Test void quantumSourceLowersToSimulatorAndOpenQasmWithoutFallback() {
         String code = """
                 quantum fnc bell(): Circuit<2,2> {
