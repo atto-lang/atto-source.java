@@ -4647,7 +4647,16 @@ public final class TypeChecker {
             TaggedMessageContracts.Case variant = taggedCaseOrNull(named.name());
             if (variant != null) return; // registry already verified recursive payload codec.
             if (taggedMessages.enums().containsKey(named.name())
-                    || taggedMessages.patterns().containsKey(named.name())) return;
+                    || taggedMessages.patterns().containsKey(named.name())) {
+                int alternatives = taggedMessages.requireDomain(named.name()).cases().size();
+                if (alternatives < 1
+                        || alternatives > TaggedActorMessageBinding.MAX_PORTABLE_VARIANTS) {
+                    throw new IllegalArgumentException(where
+                            + " requires 1..64 portable actor alternatives; "
+                            + "the native LLVM source actor runtime currently supports at most 64");
+                }
+                return;
+            }
         }
         if (type instanceof Primitive primitive) {
             if (primitive != Primitive.INT && primitive != Primitive.FLOAT
