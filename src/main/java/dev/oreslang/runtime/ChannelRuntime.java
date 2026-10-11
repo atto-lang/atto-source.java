@@ -550,14 +550,11 @@ public final class ChannelRuntime {
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
-                if (registerLocked(this)) {
-                    pumpLocked(completions);
-                } else {
-                    decided = true;
-                    completions.add(() -> future.failFromRuntime(
-                            new ChannelBackpressureException(
-                                    "channel pending registration budget exhausted")));
-                }
+                // Even when the retained-waiter quota is full, a ready
+                // rendezvous or immediate probe must be able to make progress.
+                // A transient registration is held only while under the lock.
+                registerLocked(this);
+                pumpLocked(completions);
 
                 if (!decided && defaultIndex >= 0) {
                     commitSingleLocked(
@@ -567,6 +564,15 @@ public final class ChannelRuntime {
                                     SelectOperation.DEFAULT,
                                     null),
                             completions);
+                }
+
+                if (!decided && !immediateOnly
+                        && exceedsPendingBudgetLocked(this)) {
+                    decided = true;
+                    unregisterLocked(this);
+                    completions.add(() -> future.failFromRuntime(
+                            new ChannelBackpressureException(
+                                    "channel pending registration budget exhausted")));
                 }
 
                 if (!decided && immediateOnly) {
@@ -593,25 +599,19 @@ public final class ChannelRuntime {
         }
     }
 
-    private static boolean registerLocked(SelectRegistration selection) {
-        if (selection.decided || selection.registered) return false;
-
-        // Preflight every channel under the same coordinator lock, before
-        // mutating ACTIVE or any channel list. A rejected multi-channel select
-        // cannot leave phantom readers/writers on its earlier arms.
-        java.util.IdentityHashMap<Channel<?>, Integer> needed =
-                new java.util.IdentityHashMap<>();
-        for (int index : selection.order) {
-            SelectCase selectCase = selection.set.cases.get(index);
-            if (selectCase instanceof DefaultCase) continue;
-            Channel<?> channel = channelOf(selectCase);
-            int armCount = needed.getOrDefault(channel, 0) + 1;
-            needed.put(channel, armCount);
-            if (armCount > channel.maxPendingRegistrations
-                    - channel.registrations.size()) {
-                return false;
+    private static boolean exceedsPendingBudgetLocked(
+            SelectRegistration selection) {
+        for (CaseRegistration registration : selection.registrations) {
+            Channel<?> channel = registration.channel();
+            if (channel.registrations.size() > channel.maxPendingRegistrations) {
+                return true;
             }
         }
+        return false;
+    }
+
+    private static void registerLocked(SelectRegistration selection) {
+        if (selection.decided || selection.registered) return;
 
         selection.registered = true;
         ACTIVE.add(selection);
@@ -625,7 +625,6 @@ public final class ChannelRuntime {
             selection.registrations.add(registration);
             channelOf(selectCase).registrations.add(registration);
         }
-        return true;
     }
 
     private static void unregisterLocked(SelectRegistration selection) {
