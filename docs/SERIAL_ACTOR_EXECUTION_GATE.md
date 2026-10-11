@@ -304,3 +304,31 @@ serial handler registration until one persistent actor per route shares
 HTTP and mailbox admission. Additional proof obligations include liveness
 under fair scheduling, nested async child ownership, physical quiescence
 during cleanup, and the complete Java/LLVM runtime refinements.
+
+## Task retirement and canceled mailbox segments (2026-10-11)
+
+A handler lease is *not* a durable authorization for every child task
+created under that handler. A source task's `SerialExecutionTicket` now has
+its own monotonic retirement bit. `ActorRuntime.startActorTask` retires this
+ticket on Future completion **or cancellation**, and on immediate task-start
+failure. Other live tasks of the same source handler keep their own tickets
+and are unaffected.
+
+The actor's CONTROL mailbox can already contain a task segment by the time
+a Future is canceled. The actor carrier detects an explicitly retired
+ticket and discards that queued segment **without** resuming the suspended
+handler and without treating normal cancellation as a supervisor panic.
+Invalid foreign actor/incarnation/handler tickets remain fail-closed errors.
+Every discarded envelope still passes through mailbox permit release and
+native scratch-scope checking.
+
+Do not confuse the task-scoped revocation with handler-scoped
+`ContinuationTarget` callbacks. Detached child callbacks and structured
+cancellation need further end-to-end provenance auditing in the complete
+GraalVM guest runtime. Canceled but physically executing native/guest code
+still requires cooperative unwinding and quiescence, not merely token
+revocation.
+
+Regression tests were added to ensure one retired task cannot use a live
+handler's admission while a sibling still can. Focused exact-source runner
+validation is separate from full Maven and guest HTTP verification.
