@@ -81,6 +81,46 @@ final class LinkedPublicClassFieldTypesTest {
     }
 
     @Test
+    void callableFieldAliasesResolveOnlyInsideDefiningModule() {
+        var files = new LinkedHashMap<>(sources());
+        files.put("src/options.ores", """
+                type InternalCallback = () => int;
+                pub define class ImportedOptions as
+                  pub val int max_input_bytes;
+                  pub val List<int> items;
+                  pub val InternalCallback callback;
+                end
+                """);
+        files.put("src/decoder.ores", """
+                import class ImportedOptions from './options';
+                fnc answer(): int { return 42; }
+                pub fnc make(): ImportedOptions {
+                  return new ImportedOptions(10, new List<int>(), answer);
+                }
+                """);
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(files));
+    }
+
+    @Test
+    void unimportedPrivateAliasCannotBeNamedInConsumer() {
+        var files = new LinkedHashMap<>(sources());
+        files.put("src/options.ores", """
+                type InternalCallback = () => int;
+                pub define class ImportedOptions as
+                  pub val int max_input_bytes;
+                  pub val List<int> items;
+                  pub val InternalCallback callback;
+                end
+                """);
+        files.put("src/decoder.ores", """
+                import class ImportedOptions from './options';
+                pub fnc bad(InternalCallback callback): void { return; }
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(files));
+    }
+
+    @Test
     void importedReadOnlyFieldCannotGainMutationThroughProjection() {
         var files = sources();
         files.put("src/decoder.ores", """
