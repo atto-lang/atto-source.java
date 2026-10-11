@@ -102,6 +102,11 @@ class SharedUntrustedGraalIsolateTest {
             domain.submitSource("pub routine main(): void { return; }")
                     .get(15, TimeUnit.SECONDS);
             if (Boolean.getBoolean("ores.untrusted.require-native-isolate")) {
+                // Disambiguate repeated-eval lifecycle defects from actor
+                // scheduling defects in a persistent UNTRUSTED Context.
+                // Both no-op units receive different host-owned code IDs.
+                domain.submitSource("pub routine main(): void { return; }")
+                        .get(15, TimeUnit.SECONDS);
                 // This positive Native Image gate is deliberately stronger than
                 // the JVM fail-closed smoke: both actors must start, exchange
                 // mailbox traffic and terminate inside the SAME guest Context.
