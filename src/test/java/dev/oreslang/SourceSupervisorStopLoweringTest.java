@@ -56,6 +56,44 @@ final class SourceSupervisorStopLoweringTest {
                 () -> OresCompiler.parseAndTypeCheck(source));
     }
 
+
+    @Test
+    void typedFailureBinderTargetsOnlyTheCurrentFailure() {
+        String source = """
+                define supervisor Root as
+                  pub on_panic(problem: Failure): void {
+                    self.stop(problem);
+                    return;
+                  }
+                end
+                """;
+        var compiled = OresCompiler.compileStopOnlySupervisor(source);
+        assertEquals("Root", compiled.sourceName());
+        assertTrue(compiled.explicitlyBoundFailure());
+        assertFalse(OresCompiler.compileStopOnlySupervisor(SOURCE)
+                .explicitlyBoundFailure());
+        // Normal compilation is still closed until general guest CONTROL
+        // lowering exists, regardless of a syntactically valid typed binder.
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+
+        for (String body : new String[] {
+                "self.stop(wrong); return;",
+                "self.stop(self); return;",
+                "self.stop(problem.child); return;",
+                "self.stop(problem.actor); return;",
+                "self.stop(problem, problem); return;",
+                "self.stop(42); return;",
+                "self.stop(); self.stop(problem); return;"
+        }) {
+            String forged = "define supervisor Root as "
+                    + "on_panic(problem: Failure): void { " + body + " } end";
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.compileStopOnlySupervisor(forged),
+                    "forged or unsupported failure target: " + body);
+        }
+    }
+
     @Test
     void foreignStatementsAndUnsupportedLifecycleEffectsFailClosed() {
         for (String body : new String[] {
