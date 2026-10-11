@@ -132,6 +132,9 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
+                if (check(ENUM) || check(PATTERN)) {
+                    throw error(peek(), "enum and pattern declarations are reserved but not yet implemented");
+                }
                 throw error(previous(), "expected module, class, interface, or trait after 'define'");
             }
 
