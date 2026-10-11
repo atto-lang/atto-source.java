@@ -19,6 +19,7 @@ public final class SupervisorCodeSlot<P> implements AutoCloseable {
     private final Object lock = new Object();
     private final int maxLiveRevisions;
     private final List<Generation<P>> live = new ArrayList<>();
+    private ActorRuntime.ActorSupervisor boundSupervisor;
     private Generation<P> current;
     private boolean closed;
 
@@ -95,6 +96,20 @@ public final class SupervisorCodeSlot<P> implements AutoCloseable {
     private static void requireAbi(String abi) {
         if (abi == null || abi.isBlank())
             throw new IllegalArgumentException("supervisor policy ABI required");
+    }
+
+    /**
+     * One code slot belongs to exactly one runtime-local supervisor identity.
+     * Prevents accidentally applying Daddy1's upgrade to Daddy2.
+     */
+    void bindToSupervisor(ActorRuntime.ActorSupervisor owner) {
+        Objects.requireNonNull(owner, "owner");
+        synchronized (lock) {
+            if (closed) throw new IllegalStateException("supervisor code slot closed");
+            if (boundSupervisor != null)
+                throw new IllegalStateException("supervisor code slot already bound");
+            boundSupervisor = owner;
+        }
     }
 
     public Descriptor current() {
