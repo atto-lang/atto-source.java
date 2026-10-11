@@ -6451,15 +6451,27 @@ public final class ActorRuntime implements AutoCloseable {
                                     // Count attempts, not merely successes:
                                     // repeated failed initializers must not loop.
                                     restartsUsed++;
+                                    ActorRef<?> replacement = null;
                                     try {
-                                        ActorRef<?> replacement = restartFailedChild(completed);
+                                        replacement = restartFailedChild(completed);
                                         replacement.ready(); // nonblocking initialization admission
                                         if (behavior instanceof SupervisionHandler handler) {
                                             handler.onRestarted(failure, replacement);
                                         }
                                     } catch (RuntimeException spawnFailure) {
-                                        // Preserve the terminal child failure
-                                        // as the escalation; parent survives.
+                                        // If the restart callback fails after
+                                        // admission, revoke that *new* actor:
+                                        // otherwise a replacement can outlive
+                                        // the failed restart transaction.
+                                        if (replacement != null) {
+                                            try {
+                                                replacement.stop();
+                                            } catch (RuntimeException stopFailure) {
+                                                spawnFailure.addSuppressed(stopFailure);
+                                            }
+                                        }
+                                        // Preserve original terminal child
+                                        // identity for root escalation.
                                         escalate = true;
                                     }
                                 }
