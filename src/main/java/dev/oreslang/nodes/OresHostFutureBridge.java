@@ -77,6 +77,22 @@ public final class OresHostFutureBridge {
         }
     }
 
+    /**
+     * Reject forged bridged control commands before any asynchronous work is
+     * started. A missing host receiver must not create an orphaned producer.
+     */
+    static void requireActiveScope(String function) {
+        ArrayDeque<Slot> slots = CAPTURES.get();
+        if (slots == null || slots.isEmpty()
+                || !slots.peek().function.equals(function)) {
+            throw new SecurityException(
+                    "host Future handoff requires a matching scoped invocation");
+        }
+        if (slots.peek().future != null) {
+            throw new IllegalStateException("host Future already published");
+        }
+    }
+
     /** Called only by the root node's dedicated bridged invoke command. */
     static boolean publish(String function, OresFuture<?> future) {
         Objects.requireNonNull(future, "future");
