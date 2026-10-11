@@ -2307,6 +2307,9 @@ public final class TypeChecker {
                         requireAssignable(actual, valueType, "Map.put value");
                         return Primitive.VOID;
                     }
+                    if (member.member().equals("get") && !mapPayloadCanBeCopied(valueType)) {
+                        throw new IllegalArgumentException("Map.get cannot copy owned/non-Copy key values; use remove() to transfer ownership or wait for checked borrow APIs");
+                    }
                     return new Named("Option", List.of(valueType));
                 }
 
@@ -3144,7 +3147,11 @@ public final class TypeChecker {
             Ast.ClassDecl mapOwner = typedMapClass(receiver);
             if (mapOwner != null) {
                 requireAssignable(index, Primitive.STRING, "map key");
-                return new Named("Option", List.of(typedMapValue(mapOwner, index, generics, self)));
+                Type element = typedMapValue(mapOwner, index, generics, self);
+                if (!mapPayloadCanBeCopied(element)) {
+                    throw new IllegalArgumentException("Map indexed read cannot copy owned/non-Copy key values; use remove() to transfer ownership or wait for checked borrow APIs");
+                }
+                return new Named("Option", List.of(element));
             }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "object/map key");
@@ -6123,6 +6130,31 @@ public final class TypeChecker {
      * must run on both built-in put() calls and bracket assignments.
      * Nested sum/container types cannot conceal borrowed references.
      */
+    /**
+     * Map.get and bracket reads are non-consuming. No alias to owned map state
+     * may escape through Option<T>. Open keys are checked again at runtime.
+     */
+    private boolean mapPayloadCanBeCopied(Type value) {
+        if (value == OpenValue.INSTANCE || value == Unknown.INSTANCE
+                || value instanceof StringLiteral) return true;
+        if (value instanceof Primitive primitive) {
+            return primitive != Primitive.VOID && primitive != Primitive.NULL;
+        }
+        if (value instanceof Union union) {
+            return union.options().stream().allMatch(this::mapPayloadCanBeCopied);
+        }
+        if (value instanceof Named named) {
+            return switch (named.name()) {
+                case "Option" -> named.arguments().size() == 1
+                        && mapPayloadCanBeCopied(named.arguments().getFirst());
+                case "Result" -> named.arguments().size() == 2
+                        && named.arguments().stream().allMatch(this::mapPayloadCanBeCopied);
+                default -> false;
+            };
+        }
+        return false;
+    }
+
     private void rejectEscapingMapValue(Type value, String where) {
         if (value instanceof Borrow || value instanceof Function || value instanceof Generic) {
             throw new IllegalArgumentException(where
