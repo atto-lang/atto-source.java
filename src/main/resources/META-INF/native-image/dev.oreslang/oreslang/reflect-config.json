@@ -1,0 +1,570 @@
+[
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$Program",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ImportDecl",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ModuleDecl",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$Annotation",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$TypeRef",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$Param",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$FunctionDecl",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ClassDecl",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ConstructorDecl",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$InterfaceFunctionDecl",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$InterfaceFieldDecl",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$InterfaceDecl",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$FieldDecl",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$MethodDecl",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$MethodArity",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$TypeAliasDecl",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$BindingStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$DestructureBinding",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$DestructureStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ReturnStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$YieldStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ExprStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$DeferStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$BlockStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$BreakStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ContinueStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$IfBranch",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$IfStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$WildcardPattern",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$LiteralPattern",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$BindingPattern",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$TypePattern",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$StructuralPattern",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$TuplePattern",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ConstructorPattern",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$MatchArm",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$MatchStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$SwitchCase",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$SwitchStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$TryStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ForOfStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ForOfDestructureStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ForStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$LoopStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$SelectArm",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$SelectStmt",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$LiteralExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$Imaginary",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$NameExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$BinaryExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$UnaryExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$AssignExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ConditionalExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$TypeTestExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$PatternTestExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$CastExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$SpreadExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$CallExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$RuntimeCallExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$MemberExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$IndexExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$NewExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$AwaitExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ChannelOpExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$DynamicSelectExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ListExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$TupleExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ObjectField",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$StructFieldSpec",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$ObjectExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "condition": {
+      "typeReachable": "dev.oreslang.types.ActorStateContract"
+    },
+    "name": "dev.oreslang.ast.Ast$LambdaExpr",
+    "allRecordComponents": true,
+    "allDeclaredMethods": true
+  }
+]
