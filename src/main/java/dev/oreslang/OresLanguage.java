@@ -63,13 +63,34 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
      */
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
-        if (thread == null) return false;
-        return singleThreaded
-                || thread == initialContextHostThread
-                || (thread == Thread.currentThread()
-                    && (ActorRuntime.isActorCarrierThread()
-                        || AsyncRuntime.isAsyncCarrierThread()
-                        || OresScheduler.isSchedulerCarrierThread()));
+        return threadAccessDecision(
+                thread,
+                Thread.currentThread(),
+                initialContextHostThread,
+                singleThreaded,
+                ActorRuntime.isActorCarrierThread(),
+                AsyncRuntime.isAsyncCarrierThread(),
+                OresScheduler.isSchedulerCarrierThread());
+    }
+
+    /**
+     * Pure admission predicate, independently exhaustively checked in tests.
+     * A carrier-local flag must never authenticate a different requested
+     * Thread; only the explicitly published trusted host identity can do so.
+     */
+    static boolean threadAccessDecision(
+            Thread requested,
+            Thread caller,
+            Thread trustedHost,
+            boolean singleThreaded,
+            boolean actorCarrier,
+            boolean asyncCarrier,
+            boolean schedulerCarrier) {
+        return requested != null
+                && (singleThreaded
+                    || requested == trustedHost
+                    || (requested == caller
+                        && (actorCarrier || asyncCarrier || schedulerCarrier)));
     }
 
     @Override
