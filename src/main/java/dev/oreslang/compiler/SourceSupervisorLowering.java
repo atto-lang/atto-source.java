@@ -134,8 +134,6 @@ public final class SourceSupervisorLowering {
         }
         ActorRuntime.ActorGroupId expectedGroup = group.id();
         ActorRuntime.SupervisorId expectedSupervisor = group.supervisorId();
-        var pendingStops = new java.util.concurrent.ConcurrentHashMap<
-                Long, dev.oreslang.runtime.SupervisorChildRegistry.StopReservation>();
         return group.installSupervisorProcessAwaitingDecision(capacity, notice -> {
             if (!expectedSupervisor.equals(notice.supervisorId())
                     || !expectedGroup.equals(notice.groupId())) {
