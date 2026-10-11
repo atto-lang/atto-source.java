@@ -2062,10 +2062,17 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
             }
             requireActorLifecycleAuthority(worker, "manage an ActorGroup worker");
+            ActorCell<?> admissionCell = actors.get(worker.id());
+            if (admissionCell == null) {
+                throw new IllegalStateException("unknown worker");
+            }
+            // Child spawn and teardown use the same lifecycleLock first.
+            synchronized (admissionCell.lifecycleLock) {
             synchronized (authorityLock) {
                 requireOpen();
                 ActorCell<?> cell = actors.get(worker.id());
-                if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker.id())) {
+                if (cell != admissionCell || cell.stopped.get() || cell.finalized
+                        || stoppingWorkers.contains(worker.id())) {
                     throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
                 }
                 if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
@@ -2077,6 +2084,10 @@ public final class ActorRuntime implements AutoCloseable {
                 // but no second manager may acquire independent stop rights.
                 ActorGroupId owningGroup = cell.managedByGroup.get();
                 if (owningGroup == null) {
+                    if (!cell.children.isEmpty()) {
+                        throw new IllegalStateException(
+                                "cannot adopt unmanaged worker with live descendants");
+                    }
                     if (cell.managedByGroup.compareAndSet(null, id)) {
                         owningGroup = id;
                     } else {
@@ -2089,10 +2100,7 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 managedWorkers.putIfAbsent(worker.id(), worker);
                 cell.supervision.set(supervisorControl);
-                if (cell.stopped.get()) {
-                    managedWorkers.remove(worker.id(), worker);
-                    throw new IllegalStateException("worker stopped during group admission");
-                }
+            }
             }
             return worker;
         }
