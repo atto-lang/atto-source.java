@@ -70,6 +70,10 @@ final class SupervisorDecisionCommitFenceTest {
             assertEquals(0, process.queued());
             assertEquals(0, process.undelivered());
             assertFalse(process.callbackActive());
+            assertTrue(process.failure().isEmpty(),
+                    "executor replay poisoned otherwise completed supervisor");
+            assertTrue(process.healthy(),
+                    "all committed turns must leave a healthy supervisor");
             process.close();
         }
     }
