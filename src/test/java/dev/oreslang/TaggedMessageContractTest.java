@@ -146,4 +146,50 @@ final class TaggedMessageContractTest {
                         "a.send(\"hello\" as Status.Message2);",
                         "a.send(7 as Status.Message2);"))));
     }
+    @Test
+    void largeClosedPatternRoutesOneSchemaWithoutTrialDecoding() {
+        // Hundreds of nominal alternatives share one structural payload
+        // shape. A receiver must select exactly one compiler-registered
+        // schema rather than decoding every candidate.
+        java.util.ArrayList<TaggedMessageContracts.Case> alternatives =
+                new java.util.ArrayList<>();
+        for (int tag = 1; tag <= 384; tag++) {
+            alternatives.add(new TaggedMessageContracts.Case(
+                    "Events", "Case" + tag, tag,
+                    Ast.TypeRef.simple("string"),
+                    dev.oreslang.runtime.MessagePackCollectionCodec.string()));
+        }
+        var codec = new TaggedMessageCodec(
+                new TaggedMessageContracts.Domain("Events", alternatives));
+        var value = new TaggedMessageCodec.TaggedValue(
+                "Events", "Case383", 383, "late-alternative");
+        byte[] wire = codec.encode(value);
+        assertEquals(value, codec.decode(wire));
+        assertThrows(IllegalArgumentException.class,
+                () -> codec.decode(new byte[dev.oreslang.runtime.MessagePackCollectionCodec.MAX_BYTES + 1]));
+        byte[] invalidSchema = wire.clone();
+        invalidSchema[12] ^= 1;
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(invalidSchema));
+        byte[] alteredVersion = wire.clone();
+        alteredVersion[1] = 1;
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(alteredVersion));
+        byte[] nonCanonicalSchema = wire.clone();
+        nonCanonicalSchema[2] = (byte) 0xda; // str16 is invalid here
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(nonCanonicalSchema));
+        assertEquals(value, codec.decode(wire));
+    }
+
+    @Test
+    void closedTaggedDecoderRejectsOtherDomainWithoutTryingPayloadShapes() {
+        var registered = TaggedMessageContracts.verify(Parser.parse(DECLARATIONS));
+        var allowed = new TaggedMessageCodec(registered.requireDomain("Messages"));
+        var foreign = new TaggedMessageCodec(new TaggedMessageContracts.Domain(
+                "Foreign", registered.requireDomain("Messages").cases()));
+        var original = new TaggedMessageCodec.TaggedValue(
+                "Status", "Message2", 2, "same-shape");
+        byte[] foreignWire = foreign.encode(original);
+        assertThrows(IllegalArgumentException.class, () -> allowed.decode(foreignWire));
+        assertEquals(original, foreign.decode(foreignWire));
+    }
+
 }
