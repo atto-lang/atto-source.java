@@ -195,6 +195,45 @@ final class SupervisorFailureControlTest {
     }
 
     @Test
+    void diagnosticLimitUsesUtf8BytesAndDoesNotSplitUnicodeScalars() {
+        var id = ActorRuntime.SupervisorId.create();
+        var group = ActorRuntime.ActorGroupId.create();
+        var actor = ActorRuntime.ActorId.create();
+        java.util.function.Function<String, SupervisorFailureControl.Notice> notice = text ->
+                new SupervisorFailureControl.Notice(
+                        id, group, actor, java.util.Optional.empty(),
+                        SupervisorFailureControl.Kind.TERMINAL_FAILURE, text, text);
+
+        // Two UTF-8 bytes per Latin-1 scalar, four per supplementary scalar.
+        var twoByte = notice.apply("é".repeat(600));
+        assertEquals(512, twoByte.diagnostic().length());
+        assertEquals(1024, twoByte.diagnostic()
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+        var fourByte = notice.apply("😀".repeat(300));
+        assertEquals(256 * 2, fourByte.diagnostic().length());
+        assertEquals(1024, fourByte.diagnostic()
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+
+        // A boundary at 1,023 bytes cannot admit the next complete 4-byte
+        // scalar. Do not skip ahead to later scalars, as native truncates here.
+        var boundary = notice.apply("a".repeat(1023) + "😀" + "b");
+        assertEquals("a".repeat(1023), boundary.diagnostic());
+        assertEquals(1023, boundary.diagnostic()
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+
+        // Malformed Java UTF-16 must never survive into a failure envelope.
+        var malformed = notice.apply("A\uD800B\uDC00C");
+        assertEquals("A?B?C", malformed.diagnostic());
+        assertEquals("A?B?C", malformed.failureType());
+        assertEquals("A😀B", notice.apply("A\uD83D\uDE00B").diagnostic());
+
+        var ascii = notice.apply("X".repeat(1024));
+        assertEquals(1024, ascii.diagnostic().length());
+        assertEquals(ascii.diagnostic(), notice.apply(ascii.diagnostic()).diagnostic(),
+                "sanitization should be stable when envelopes are reconstructed");
+    }
+
+    @Test
     void failureHandlerMayNotBeInstalledFromActorCode() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
