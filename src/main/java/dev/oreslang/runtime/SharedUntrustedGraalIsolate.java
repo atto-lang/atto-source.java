@@ -4,6 +4,7 @@ import dev.oreslang.OresLanguage;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.SandboxPolicy;
+import org.graalvm.polyglot.Source;
 
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -43,6 +44,9 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
     private static SharedUntrustedGraalIsolate processDomain;
 
     private final long aggregateHeapLimit;
+    // submitSource() is synchronized so this monotonically increasing ID is
+    // assigned before work is queued and cannot be shared by two sources.
+    private long nextCodeUnitId;
     private final AtomicReference<Thread> submitCarrier = new AtomicReference<>();
     private final java.util.Set<CompletableFuture<Void>> pending =
             ConcurrentHashMap.newKeySet();
@@ -160,13 +164,23 @@ public final class SharedUntrustedGraalIsolate implements AutoCloseable {
         if (source.length() > MAX_SOURCE_CHARACTERS)
             throw new IllegalArgumentException("untrusted source exceeds entry payload limit");
         if (closed.get()) throw new IllegalStateException("untrusted isolate is closed");
+        // OresLanguage.parse() uses Source.name as its code-image identity.
+        // Context.eval(languageId, text) names EVERY source "Unnamed"; that
+        // accidentally aliases distinct code images in a persistent Context.
+        // Never use guest-supplied names or paths as trusted registry keys.
+        long sourceId = ++nextCodeUnitId;
+        if (sourceId <= 0)
+            throw new IllegalStateException("untrusted code-unit identity space exhausted");
+        Source code = Source.newBuilder(
+                OresLanguage.ID, source, "untrusted-entry-" + sourceId + ".ores")
+                .buildLiteral();
         CompletableFuture<Void> result = new CompletableFuture<>();
         pending.add(result);
         try {
             submissions.execute(() -> {
                 try {
                     if (result.isDone()) return;
-                    guest.eval(OresLanguage.ID, source);
+                    guest.eval(code);
                     result.complete(null);
                 } catch (Throwable failure) {
                     result.completeExceptionally(failure);
