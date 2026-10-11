@@ -103,10 +103,14 @@ public final class OresEvalRootNode extends RootNode {
                 && (INVOKE_PUBLIC_COMMAND.equals(arguments[0])
                     || INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0]))
                 && arguments[1] instanceof String functionName) {
+            boolean bridged = INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0]);
+            // Authenticate the host capture *before* invoking guest code.
+            // A caller who guesses the internal command cannot orphan a task.
+            if (bridged) OresHostFutureBridge.requireActiveScope(functionName);
             current.link();
             Object result = current.invokePublic(
                     functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
-            if (INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0])) {
+            if (bridged) {
                 if (!(result instanceof OresFuture<?> future)) {
                     throw new IllegalArgumentException(
                             "host Future handoff requires an async public function: " + functionName);
