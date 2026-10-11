@@ -27,7 +27,7 @@ final class MethodDeclarationSpellingTest {
                 """);
         Ast.ClassDecl actor = assertInstanceOf(Ast.ClassDecl.class,
                 program.modules().getFirst().declarations().getFirst());
-        assertEquals(Ast.ActorKind.ACTOR, actor.actorKind());
+        assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
         assertEquals(1, actor.fields().size());
         assertEquals("rooms", actor.fields().getFirst().name());
         assertEquals(Ast.BindingKind.CONST, actor.fields().getFirst().bindingKind());
