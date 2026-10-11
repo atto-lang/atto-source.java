@@ -768,4 +768,60 @@ final class PatternMatchingHardeningTest {
         assertEquals("true\nfalse", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 
+
+    @Test
+    void typedDoMatchCannotTreatInfiniteLoopAsBooleanReturn() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                fnc noBoolean(int n): bool {
+                  do match<ret=bool> n over {
+                    default { loop { } }
+                    on 7 { return true; }
+                  }
+                }
+                """)));
+        assertTrue(failure.getMessage().contains("must return"), failure.getMessage());
+    }
+
+    @Test
+    void rejectsReturnDirectlyInFinallyButAllowsNestedCallableReturn() {
+        IllegalArgumentException invalid = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                fnc invalid(): bool {
+                  try { return true; }
+                  catch (e) { return false; }
+                  finally { return false; }
+                }
+                """)));
+        assertTrue(invalid.getMessage().contains("return is forbidden directly inside finally"),
+                invalid.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
+                fnc allowed(): bool {
+                  try { return true; }
+                  catch (e) { return false; }
+                  finally { (|| -> { return true; })(); }
+                }
+                """)));
+    }
+
+    @Test
+    void typedDoMatchRejectsReturnInNestedFinally() {
+        IllegalArgumentException invalid = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                fnc invalid(int n): bool {
+                  do match<ret=bool> n over {
+                    on 7 { return true; }
+                    default {
+                      try { return false; }
+                      catch (e) { return false; }
+                      finally { if true { return true; } }
+                    }
+                  }
+                }
+                """)));
+        assertTrue(invalid.getMessage().contains("return is forbidden directly inside finally"),
+                invalid.getMessage());
+    }
+
 }
