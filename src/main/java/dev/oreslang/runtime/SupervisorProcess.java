@@ -117,9 +117,23 @@ public final class SupervisorProcess implements AutoCloseable {
                 // Stop consuming CONTROL rather than misreporting loss as success.
                 throw new IllegalStateException("supervisor process cannot admit notice");
             }
-            mailbox.addLast(notice);
+            try {
+                mailbox.addLast(notice);
+            } catch (Throwable enqueueFailure) {
+                // Failed admission was never accepted. Account for it, then
+                // fail the process and retire any previously accepted notices.
+                undelivered.incrementAndGet();
+                failLocked(enqueueFailure);
+                throw enqueueFailure;
+            }
             admitted.incrementAndGet();
             scheduleLocked();
+            if (state != State.RUNNING) {
+                // A rejected CONTROL dispatcher cannot masquerade as
+                // successful notification admission.
+                throw new IllegalStateException(
+                        "supervisor CONTROL dispatch failed during admission", fatal);
+            }
         }
     }
 
