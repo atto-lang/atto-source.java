@@ -308,6 +308,13 @@ public final class OresScheduler implements AutoCloseable {
 
         TaskRunner<T> runner = new TaskRunner<>(task);
         tasks.add(runner);
+        // close() may win after ensureOpen() and before registration. Do not
+        // admit a new task after close snapshots and drains live tasks.
+        if (closed.get()) {
+            runner.failBeforeStart(new RejectedExecutionException(
+                    "OresScheduler " + name + " closed during task admission"));
+            return runner.completion;
+        }
         try {
             runner.scheduleInitial();
         } catch (RuntimeException | Error failure) {
@@ -745,9 +752,9 @@ public final class OresScheduler implements AutoCloseable {
             terminalOutcome.set(cancelRequested.get()
                     ? new TerminalCancelled<T>(cancellation)
                     : new TerminalSuccess<>(value));
-            removeFromTasks();
-            // afterCarrierTurn() publishes only after the carrier has fully
-            // unwound runBound(...).
+            // Keep this task in the live registry until afterCarrierTurn()
+            // publishes completion. Otherwise close() may dispose a shared
+            // context while guest code is still leaving its carrier turn.
         }
 
         private void failTerminal(Throwable failure) {
@@ -763,23 +770,36 @@ public final class OresScheduler implements AutoCloseable {
                     failure == cancellation
                             ? new TerminalCancelled<T>(cancellation)
                             : new TerminalFailure<T>(failure));
-            removeFromTasks();
             if (!executing.get()) {
                 publishTerminalIfReady();
             }
         }
 
         private void publishTerminalIfReady() {
-            if (phase.get() != TERMINAL || completion.isDone()) return;
+            // A terminal *phase* is not proof that the carrier has left the
+            // entered guest context. The task remains registered until its
+            // completion is published outside that execution lease.
+            if (phase.get() != TERMINAL || executing.get()) return;
+            if (completion.isDone()) {
+                removeFromTasks();
+                return;
+            }
             TerminalOutcome<T> outcome = terminalOutcome.get();
-            if (outcome instanceof TerminalSuccess<?> success) {
-                @SuppressWarnings("unchecked")
-                T value = (T) success.value();
-                completion.completeFromRuntime(value);
-            } else if (outcome instanceof TerminalFailure<?> failure) {
-                completion.failFromRuntime(failure.failure());
-            } else if (outcome instanceof TerminalCancelled<?> cancelled) {
-                completion.cancelFromRuntime(cancelled.reason());
+            if (outcome == null) return;
+            try {
+                if (outcome instanceof TerminalSuccess<?> success) {
+                    @SuppressWarnings("unchecked")
+                    T value = (T) success.value();
+                    completion.completeFromRuntime(value);
+                } else if (outcome instanceof TerminalFailure<?> failure) {
+                    completion.failFromRuntime(failure.failure());
+                } else if (outcome instanceof TerminalCancelled<?> cancelled) {
+                    completion.cancelFromRuntime(cancelled.reason());
+                }
+            } finally {
+                // Never tell close() the task drained until the terminal
+                // callback has settled (including synchronous observers).
+                if (completion.isDone()) removeFromTasks();
             }
         }
 
