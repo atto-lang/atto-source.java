@@ -4122,7 +4122,7 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.MapKeyDecl declared : object.klass.mapKeys()) {
                 if (declared.name().equals(key)) {
                     Ast.TypeRef target = declared.valueType().arguments().getFirst();
-                    if (!oresTypeMatches(value, target)) {
+                    if (!mapStoredTypeMatches(value, target)) {
                         throw new IllegalArgumentException("Map key '" + key + "' expects " + target.name());
                     }
                     break;
@@ -4130,6 +4130,43 @@ public final class OresEvalRootNode extends RootNode {
             }
             mapHook(object, "on_put", key, value);
             object.mapEntries.put(key, value);
+        }
+
+        /**
+         * Schema checks must not rely on erasure: oresTypeMatches checks only
+         * the outer Option/List/Result carrier for generic types.
+         */
+        private boolean mapStoredTypeMatches(Object value, Ast.TypeRef target) {
+            if (target.isUnion()) {
+                for (Ast.TypeRef option : target.arguments()) {
+                    if (mapStoredTypeMatches(value, option)) return true;
+                }
+                return false;
+            }
+            if (target.name().equals("Option") && target.arguments().size() == 1) {
+                return value instanceof OptionValue option
+                        && (!option.present()
+                            || mapStoredTypeMatches(option.value(), target.arguments().getFirst()));
+            }
+            if (target.name().equals("Result") && target.arguments().size() == 2) {
+                return value instanceof ResultValue result
+                        && mapStoredTypeMatches(result.value(),
+                            target.arguments().get(result.ok() ? 0 : 1));
+            }
+            if ((target.name().equals("Array") || target.name().equals("List"))
+                    && target.arguments().size() == 1) {
+                if (!(value instanceof List<?> list)) return false;
+                for (Object member : list) {
+                    if (!mapStoredTypeMatches(member, target.arguments().getFirst())) return false;
+                }
+                return true;
+            }
+            if (target.inferArguments() || !target.arguments().isEmpty()) {
+                // No reified generic proof for other types yet; deny instead
+                // of silently validating only a nominal outer carrier.
+                return false;
+            }
+            return oresTypeMatches(value, target);
         }
 
         private OptionValue mapRemove(OresObject object, String key) {
