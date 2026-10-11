@@ -2,7 +2,6 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.Objects;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
 /**
@@ -14,7 +13,7 @@ import java.util.function.Function;
  *
  * This is a synchronous host prototype, NOT a general Oreslang Map<K,V>,
  * the scheduler's logical CriticalGate, or suspendable handle_state lowering.
- * Host-only non-suspending callbacks use a fail-fast reentrant admission lock,
+ * Host-only non-suspending callbacks use the arena's logical CriticalGate,
  * never a carrier-parking monitor. The compiler must separately enforce that
  * no callback can suspend or let its state access capability escape.
  */
@@ -23,8 +22,8 @@ public final class ActorPersistentI64Map implements AutoCloseable {
     private static final long LIVE = 1L;
     private static final long DELETED = 2L;
     private final ActorArena arena;
-    // Nonblocking host admission only. This is NOT a continuation-owned gate.
-    private final ReentrantLock admission = new ReentrantLock();
+    // Shared with source-level actor critical scopes using this arena.
+    private final CriticalGate admission;
     private final int capacity;
     private final int maxEntries;
     private final ExplicitNativeI64Region.Slot[] keys;
@@ -37,6 +36,7 @@ public final class ActorPersistentI64Map implements AutoCloseable {
 
     ActorPersistentI64Map(ActorArena arena, int capacity) {
         this.arena = Objects.requireNonNull(arena, "arena");
+        this.admission = arena.criticalGate();
         if (capacity < 4 || capacity > 21845) {
             throw new IllegalArgumentException("native map capacity must be 4..21845");
         }
@@ -74,16 +74,21 @@ public final class ActorPersistentI64Map implements AutoCloseable {
      * Contention fails immediately; only a future scheduler-owned suspendable
      * CriticalGate can enqueue a logical continuation without parking a carrier.
      *
-     * Nested synchronous calls by the same carrier are reentrant; the outer
+     * Nested synchronous calls by the same logical continuation are reentrant; the outer
      * Access is temporarily fenced and always restored on exceptional exit.
      * Do not suspend, invoke untrusted callbacks, or retain Access past return.
      */
     public <R> R critical(Function<? super Access, ? extends R> body) {
         Objects.requireNonNull(body, "critical body");
         requireActiveOwner();
-        if (!admission.tryLock()) {
-            throw new IllegalStateException(
-                    "actor critical state busy; synchronous acquisition must not park a carrier");
+        CriticalGate.Ticket ticket = admission.heldByCurrentLogicalDomain()
+                ? null : admission.newTicket();
+        if (ticket != null) {
+            try { ticket.enterSync(); }
+            catch (RuntimeException | Error failure) {
+                ticket.close();
+                throw failure;
+            }
         }
         try {
             requireActiveOwner();
@@ -97,7 +102,7 @@ public final class ActorPersistentI64Map implements AutoCloseable {
                 active = previous;
             }
         } finally {
-            admission.unlock();
+            if (ticket != null) ticket.close();
         }
     }
 
@@ -236,9 +241,14 @@ public final class ActorPersistentI64Map implements AutoCloseable {
         // admission, not made to wait on the current owner's critical callback.
         if (closed) return;
         requireActiveOwner();
-        if (!admission.tryLock()) {
-            throw new IllegalStateException(
-                    "actor critical state busy; close must not park a carrier");
+        CriticalGate.Ticket ticket = admission.heldByCurrentLogicalDomain()
+                ? null : admission.newTicket();
+        if (ticket != null) {
+            try { ticket.enterSync(); }
+            catch (RuntimeException | Error failure) {
+                ticket.close();
+                throw failure;
+            }
         }
         try {
             if (closed) return;
@@ -257,7 +267,7 @@ public final class ActorPersistentI64Map implements AutoCloseable {
             }
             closed = true;
         } finally {
-            admission.unlock();
+            if (ticket != null) ticket.close();
         }
     }
 }
