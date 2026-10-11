@@ -69,6 +69,8 @@ public final class SupervisorProcess implements AutoCloseable {
     /** Optional async authoritative effect: acknowledgment is observed on CONTROL. */
     private final Function<Resolution, CompletionStage<Void>> asyncDecisionSink;
     private final Consumer<Resolution> onAcknowledged;
+    /** Executes only on CONTROL for an observed, unsuccessful host effect. */
+    private final Consumer<Resolution> onEffectFailure;
     private final ArrayDeque<SupervisorFailureControl.Notice> mailbox =
             new ArrayDeque<>();
     private final AtomicLong admitted = new AtomicLong();
@@ -104,6 +106,7 @@ public final class SupervisorProcess implements AutoCloseable {
         this.decisionSink = Objects.requireNonNull(decisionSink);
         this.asyncDecisionSink = null;
         this.onAcknowledged = null;
+        this.onEffectFailure = null;
         if (capacity < 1) throw new IllegalArgumentException(
                 "supervisor mailbox capacity must be positive");
         this.capacity = capacity;
@@ -122,6 +125,19 @@ public final class SupervisorProcess implements AutoCloseable {
             Function<SupervisorFailureControl.Notice, CompletionStage<Directive>> onFailure,
             Function<Resolution, CompletionStage<Void>> asyncDecisionSink,
             Consumer<Resolution> onAcknowledged) {
+        this(supervisorId, groupId, controlDispatcher, capacity, onFailure,
+                asyncDecisionSink, onAcknowledged, ignored -> { });
+    }
+
+    SupervisorProcess(
+            ActorRuntime.SupervisorId supervisorId,
+            ActorRuntime.ActorGroupId groupId,
+            Executor controlDispatcher,
+            int capacity,
+            Function<SupervisorFailureControl.Notice, CompletionStage<Directive>> onFailure,
+            Function<Resolution, CompletionStage<Void>> asyncDecisionSink,
+            Consumer<Resolution> onAcknowledged,
+            Consumer<Resolution> onEffectFailure) {
         this.supervisorId = Objects.requireNonNull(supervisorId);
         this.groupId = Objects.requireNonNull(groupId);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
@@ -129,6 +145,7 @@ public final class SupervisorProcess implements AutoCloseable {
         this.decisionSink = null;
         this.asyncDecisionSink = Objects.requireNonNull(asyncDecisionSink);
         this.onAcknowledged = Objects.requireNonNull(onAcknowledged);
+        this.onEffectFailure = Objects.requireNonNull(onEffectFailure);
         if (capacity < 1) throw new IllegalArgumentException(
                 "supervisor mailbox capacity must be positive");
         this.capacity = capacity;
@@ -335,6 +352,7 @@ public final class SupervisorProcess implements AutoCloseable {
                     asyncDecisionSink.apply(resolution),
                     "async supervisor lifecycle sink returned null completion");
         } catch (Throwable failure) {
+            noteEffectFailure(resolution, failure);
             synchronized (this) { finishSinkFailureLocked(failure); }
             return;
         } finally {
@@ -367,14 +385,21 @@ public final class SupervisorProcess implements AutoCloseable {
                             "async supervisor acknowledgment lost its CONTROL lease"));
                     return;
                 }
-                if (error != null) {
-                    finishSinkFailureLocked(error);
-                    return;
-                }
-                // The host-effect stage has succeeded. Preserve the decision
+                // A failed effect also needs a CONTROL-only receipt update,
+                // outside this monitor, before fail-closed accounting.
+                // The host-effect stage has succeeded only if error is null.
+                // Preserve the decision
                 // fence, but DO NOT call trusted host finalization under the
                 // mailbox monitor. This avoids lock inversion with Group state.
                 committingDecision = true;
+            }
+            if (error != null) {
+                noteEffectFailure(resolution, error);
+                synchronized (this) {
+                    committingDecision = false;
+                    finishSinkFailureLocked(error);
+                }
+                return;
             }
             try {
                 onAcknowledged.accept(resolution);
@@ -403,6 +428,16 @@ public final class SupervisorProcess implements AutoCloseable {
                     scheduleLocked();
                 }
             }
+        }
+    }
+
+    private void noteEffectFailure(Resolution resolution, Throwable failure) {
+        try {
+            // CONTROL-owned failure classification; no guest callback or
+            // registry mutation on the foreign Future completion thread.
+            onEffectFailure.accept(resolution);
+        } catch (Throwable receiptFailure) {
+            if (receiptFailure != failure) failure.addSuppressed(receiptFailure);
         }
     }
 
