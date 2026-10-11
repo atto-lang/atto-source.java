@@ -80,6 +80,9 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private int loopDepth;
+    // A break/continue must not escape the nearest finally and replace a
+    // pending return. Each entry records the enclosing loop depth.
+    private final java.util.ArrayDeque<Integer> finallyLoopBoundaries = new java.util.ArrayDeque<>();
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
 
@@ -1342,12 +1345,35 @@ public final class TypeChecker {
         checkIsolatedArmBlock(body, parent, generics, expectedReturn, self, false);
     }
 
+    private <T> T inFreshCallableFinallyScope(java.util.function.Supplier<T> work) {
+        // Lambdas have their own lexical return/loop boundaries, even when
+        // defined in a finally. An inner lambda's own finally is still guarded.
+        java.util.ArrayDeque<Integer> previous = new java.util.ArrayDeque<>(finallyLoopBoundaries);
+        finallyLoopBoundaries.clear();
+        try { return work.get(); }
+        finally {
+            finallyLoopBoundaries.clear();
+            finallyLoopBoundaries.addAll(previous);
+        }
+    }
+
+    private void checkFinallyControlExit(String operation) {
+        for (int entryLoopDepth : finallyLoopBoundaries) {
+            if (loopDepth <= entryLoopDepth) {
+                throw new IllegalArgumentException(
+                        operation + " cannot escape a finally block");
+            }
+        }
+    }
+
     private void checkIsolatedArmBlock(List<Ast.Stmt> body, Env parent, Set<String> generics,
                                        Type expectedReturn, Type self, boolean discardReturn) {
         int previousLoopDepth = loopDepth;
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
         boolean previousDiscard = inDiscardingSelectArm;
+        java.util.ArrayDeque<Integer> previousFinally = new java.util.ArrayDeque<>(finallyLoopBoundaries);
+        finallyLoopBoundaries.clear();
         loopDepth = 0;
         currentGenerator = false;
         currentAsyncCallable = false;
@@ -1359,6 +1385,8 @@ public final class TypeChecker {
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             inDiscardingSelectArm = previousDiscard;
+            finallyLoopBoundaries.clear();
+            finallyLoopBoundaries.addAll(previousFinally);
         }
     }
 
@@ -1443,13 +1471,17 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.BreakStmt) {
             if (loopDepth == 0) throw new IllegalArgumentException("'break' may only appear inside loop or for");
+            checkFinallyControlExit("break");
             return;
         }
         if (stmt instanceof Ast.ContinueStmt) {
             if (loopDepth == 0) throw new IllegalArgumentException("'continue' may only appear inside loop or for");
+            checkFinallyControlExit("continue");
             return;
         }
         if (stmt instanceof Ast.ArmReturnStmt ret) {
+            if (!finallyLoopBoundaries.isEmpty())
+                throw new IllegalArgumentException("return is forbidden inside finally");
             if (armValueTypes.isEmpty()) throw new IllegalArgumentException(
                     "match/switch arm return has no enclosing value expression");
             if (ret.value() == null) throw new IllegalArgumentException(
@@ -1458,6 +1490,8 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
+            if (!finallyLoopBoundaries.isEmpty())
+                throw new IllegalArgumentException("return is forbidden inside finally");
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
                         ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
@@ -1594,7 +1628,9 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> caughtExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(normalExit, caughtExit));
-            checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
+            finallyLoopBoundaries.push(loopDepth);
+            try { checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self); }
+            finally { finallyLoopBoundaries.pop(); }
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
@@ -3469,7 +3505,8 @@ public final class TypeChecker {
             Type result;
             try {
                 if (lambda.expressionBody() != null) {
-                    result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+                    result = inFreshCallableFinallyScope(
+                            () -> typeOf(lambda.expressionBody(), lambdaEnv, generics, self));
                 } else {
                     checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
                     result = Unknown.INSTANCE;
@@ -4180,8 +4217,9 @@ public final class TypeChecker {
         if (nonLexical) currentClassOwner = null;
         try {
             if (lambda.expressionBody() != null) {
-                Type actual = typeOfAgainstExpected(
-                        lambda.expressionBody(), Primitive.VOID, lambdaEnv, generics, self);
+                Type actual = inFreshCallableFinallyScope(
+                        () -> typeOfAgainstExpected(
+                                lambda.expressionBody(), Primitive.VOID, lambdaEnv, generics, self));
                 requireAssignable(actual, Primitive.VOID, "mutex callback expression body");
             } else {
                 checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
@@ -4224,8 +4262,9 @@ public final class TypeChecker {
         if (nonLexical) currentClassOwner = null;
         try {
             if (lambda.expressionBody() != null) {
-                Type actual = typeOfAgainstExpected(
-                        lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
+                Type actual = inFreshCallableFinallyScope(
+                        () -> typeOfAgainstExpected(
+                                lambda.expressionBody(), expected.result(), lambdaEnv, generics, self));
                 requireReadonlyCapabilityPreserved(
                         actual,
                         expected.result(),
