@@ -4955,12 +4955,17 @@ public final class ActorRuntime implements AutoCloseable {
 
         synchronized void leave() {
             requireActive();
-            long now = cpuClock.getAsLong();
-            if (segmentCpuStarted >= 0 && now >= segmentCpuStarted) {
-                cpuUsedNanos = saturatingSum(cpuUsedNanos, now - segmentCpuStarted);
+            try {
+                long now = cpuClock.getAsLong();
+                if (segmentCpuStarted >= 0 && now >= segmentCpuStarted) {
+                    cpuUsedNanos = saturatingSum(cpuUsedNanos, now - segmentCpuStarted);
+                }
+            } finally {
+                // Even an unexpected JVM CPU-counter failure must not strand
+                // the quota's execution lease on the old carrier.
+                segmentCpuStarted = -1L;
+                segmentActive = false;
             }
-            segmentCpuStarted = -1L;
-            segmentActive = false;
         }
 
         private long accruedCpu() {
