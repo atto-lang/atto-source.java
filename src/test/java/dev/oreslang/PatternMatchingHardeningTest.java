@@ -728,4 +728,44 @@ final class PatternMatchingHardeningTest {
         assertTrue(unsupported.getMessage().contains("arm-local return/result lowering"));
     }
 
+
+    @Test
+    void doMatchPositionalContractReportsPreferNamedReturnDiagnostic() {
+        var result = TypeChecker.checkTypesWithDiagnostics(Parser.parse("""
+                fnc f(int n): bool {
+                  do match<bool> n over {
+                    on 7 { return true; }
+                    default { return false; }
+                  }
+                }
+                """));
+        assertTrue(result.warnings().stream()
+                        .anyMatch(message -> message.contains("W-MATCH-RET-SHORTHAND")),
+                result.warnings().toString());
+    }
+
+    @Test
+    void typedProceduralMatchReturnsFromContainingCallable() throws Exception {
+        String program = """
+                fnc choose(int n): bool {
+                  do match<ret=bool> n over {
+                    default { return false; }
+                    on 7 { return true; }
+                  }
+                }
+                pub fnc main(): void {
+                  stdio.println(choose(7));
+                  stdio.println(choose(8));
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "typed-do-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("true\nfalse", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
+    }
+
 }
