@@ -110,6 +110,19 @@ public final class SupervisorChildRegistry {
 
 
     /**
+     * Roll back an actor that was registered but never successfully admitted.
+     * This is only for the trusted owning lifecycle coordinator: it is not
+     * finalization and must never be invoked to hide a running child.
+     * Preserve the used-ActorId ledger so a stale identity cannot reenter.
+     */
+    synchronized void detachActive(
+            ChildId child, ActorRuntime.ActorId actor, long incarnation) {
+        Snapshot current = requireExpected(child, actor, incarnation, Phase.ACTIVE);
+        activeActors.remove(current.actor());
+        children.remove(child.logicalId());
+    }
+
+    /**
      * The lifecycle owner must complete the actor's physical finalization
      * before marking its exact incarnation finalized. This check prevents
      * stale finalizers from authorizing replacement of a newer incarnation.
