@@ -44,6 +44,35 @@ final class SourceSupervisorContractTest {
     }
 
     @Test
+    void rejectsDirectNestedSpawnWithoutACompileTimeSupervisionContract() {
+        var error = assertThrows(IllegalArgumentException.class, () -> compile("""
+                actor Unsupervised {
+                    startChild(): void {
+                        val child = spawn Unsupervised();
+                        return;
+                    }
+                }
+                """));
+        assertTrue(error.getMessage().contains("cannot spawn a child"),
+                error.getMessage());
+    }
+
+    @Test
+    void allowsNestedSpawnWhenSupervisorHasCompleteEffectHooks() {
+        assertDoesNotThrow(() -> compile("""
+                actor Supervised {
+                    on_throw(String summary): void { return; }
+                    on_raise(String summary): void { return; }
+                    on_panic(String summary): void { return; }
+                    startChild(): void {
+                        val child = spawn Supervised();
+                        return;
+                    }
+                }
+                """));
+    }
+
+    @Test
     void rejectsUnsafeHookAndPolicySignatures() {
         assertThrows(IllegalArgumentException.class, () -> compile("""
                 actor Supervisor {
