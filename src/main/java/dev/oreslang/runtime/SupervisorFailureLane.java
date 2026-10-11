@@ -38,9 +38,12 @@ public final class SupervisorFailureLane {
             Objects.requireNonNull(kind, "kind");
             Objects.requireNonNull(summary, "summary");
             Objects.requireNonNull(parentId, "parentId");
-            if (parentId.length() > 128) throw new IllegalArgumentException("parentId too long");
-            // Control-plane event size must be bounded, including hostile guest errors.
-            if (summary.length() > 512) summary = summary.substring(0, 512);
+            // CONTROL data may cross isolates or native boundaries. Measure
+            // encoded bytes rather than UTF-16 code units and never retain an
+            // isolated surrogate. The native lane uses the same replacement
+            // policy and bounded scalar-wise truncation.
+            summary = boundedUtf8(summary, 512);
+            parentId = boundedUtf8(parentId, 128);
         }
     }
 
@@ -86,6 +89,32 @@ public final class SupervisorFailureLane {
     public SupervisorFailureLane(int capacity) {
         if (capacity <= 0) throw new IllegalArgumentException("capacity must be positive");
         this.capacity = capacity;
+    }
+
+    private static String boundedUtf8(String source, int maxBytes) {
+        StringBuilder result = new StringBuilder(Math.min(source.length(), maxBytes));
+        int used = 0;
+        for (int i = 0; i < source.length();) {
+            char first = source.charAt(i);
+            int cp;
+            int consumed = 1;
+            if (Character.isHighSurrogate(first) && i + 1 < source.length()
+                    && Character.isLowSurrogate(source.charAt(i + 1))) {
+                cp = Character.toCodePoint(first, source.charAt(i + 1));
+                consumed = 2;
+            } else if (Character.isSurrogate(first)) {
+                cp = '?';
+            } else {
+                cp = first;
+            }
+            int encoded = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2
+                    : cp <= 0xffff ? 3 : 4;
+            if (used + encoded > maxBytes) break;
+            result.appendCodePoint(cp);
+            used += encoded;
+            i += consumed;
+        }
+        return result.toString();
     }
 
     /** Must happen before child admission; quota exhaustion denies child spawn. */
