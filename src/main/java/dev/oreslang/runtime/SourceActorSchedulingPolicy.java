@@ -34,4 +34,16 @@ public final class SourceActorSchedulingPolicy {
         return match.serial();
     }
 
+    /** Validate advisory executor metadata without allowing it to grant or
+     * remove scheduling constraints established by the linked AST. */
+    public static boolean verifyClaim(
+            Ast.Program program, String actorName, boolean executorSerialClaim) {
+        boolean serial = isSerialActor(program, actorName);
+        if (serial != executorSerialClaim) {
+            throw new SecurityException(
+                    "source actor executor scheduling metadata disagrees with linked code image: "
+                            + actorName);
+        }
+        return serial;
+    }
 }
