@@ -945,6 +945,8 @@ public final class OresEvalRootNode extends RootNode {
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
+            // Exclusive to an inline channel operation, never a shared Future.
+            private OresFuture<?> ownedPendingChannelAwait;
             private OresScheduler.Step<Object> nextStep;
 
             private SourceTask(
@@ -1051,6 +1053,15 @@ public final class OresEvalRootNode extends RootNode {
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
+                    OresFuture<?> abandonedChannel = ownedPendingChannelAwait;
+                    ownedPendingChannelAwait = null;
+                    if (abandonedChannel != null
+                            && resume.failure() instanceof OresScheduler.TaskCancelledException
+                            && cleanupDepth == 0) {
+                        // This uniquely-created inline channel select must not
+                        // retain a phantom consumer after its owner cancels.
+                        abandonedChannel.cancel(false);
+                    }
                     boolean wasCooperating = awaitingCooperate;
                     awaitingCooperate = false;
                     if (resume.failure() instanceof OresScheduler.TaskCancelledException
@@ -1146,6 +1157,13 @@ public final class OresEvalRootNode extends RootNode {
             private void suspend(
                     OresFuture<?> future,
                     SourceValueCont continuation) {
+                suspend(future, continuation, false);
+            }
+
+            private void suspend(
+                    OresFuture<?> future,
+                    SourceValueCont continuation,
+                    boolean ownsInlineChannelOperation) {
                 Objects.requireNonNull(future, "future");
                 Objects.requireNonNull(continuation, "continuation");
                 if (nextStep != null) {
@@ -1154,6 +1172,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 awaitingCooperate = false;
                 awaitingContinuation = continuation;
+                ownedPendingChannelAwait = ownsInlineChannelOperation ? future : null;
                 nextStep = OresScheduler.await(future);
             }
 
@@ -3304,7 +3323,10 @@ public final class OresEvalRootNode extends RootNode {
                                     suspendOnAwaitable(
                                             t,
                                             value,
-                                            continuation);
+                                            continuation,
+                                            awaited.expression() instanceof Ast.ChannelOpExpr channel
+                                                    && channel.mode() == Ast.WaitMode.NONBLOCKING
+                                                    && !channel.callback());
                                 }
                             });
                     return;
@@ -3903,7 +3925,8 @@ public final class OresEvalRootNode extends RootNode {
         private void suspendOnAwaitable(
                 SourceTask task,
                 Object value,
-                SourceValueCont continuation) {
+                SourceValueCont continuation,
+                boolean ownsInlineChannelOperation) {
             OresFuture<?> future;
             if (value instanceof OresFuture<?> oresFuture) {
                 future = oresFuture;
@@ -3949,7 +3972,8 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(
                                     t,
                                     result,
-                                    failure));
+                                    failure),
+                    ownsInlineChannelOperation);
         }
 
         private void evalSuspendableChannel(
