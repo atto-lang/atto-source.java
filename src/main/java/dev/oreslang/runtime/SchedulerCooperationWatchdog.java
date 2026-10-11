@@ -58,14 +58,14 @@ final class SchedulerCooperationWatchdog {
             this.watchdogObservations = watchdogObservations;
         }
 
-        void enter() {
+        synchronized void enter() {
             pressure.set(false);
             dispatchStartedNanos = System.nanoTime();
             active = true;
             ACTIVE.add(this);
         }
 
-        void leave() {
+        synchronized void leave() {
             active = false;
             ACTIVE.remove(this);
             dispatchStartedNanos = 0;
@@ -77,7 +77,10 @@ final class SchedulerCooperationWatchdog {
         }
 
         /** Same-thread and deterministic-clock testability without sleeping. */
-        boolean inspect(long nowNanos) {
+        synchronized boolean inspect(long nowNanos) {
+            // Serialize observation with dispatch enter/exit. An old monitor
+            // snapshot must never put a stale request on a *new* turn.
+            // This monitor lock is off the compiled loop fast path.
             long started = dispatchStartedNanos;
             if (!active || nowNanos - started < GREEDY_DISPATCH_NANOS) return false;
             if (pressure.compareAndSet(false, true)) {
@@ -88,13 +91,13 @@ final class SchedulerCooperationWatchdog {
         }
 
         /** A suspended await cannot turn into a greedy dispatch. */
-        void enterAtForTest(long nowNanos) {
+        synchronized void enterAtForTest(long nowNanos) {
             pressure.set(false);
             dispatchStartedNanos = nowNanos;
             active = true;
         }
 
-        void leaveForTest() {
+        synchronized void leaveForTest() {
             active = false;
             dispatchStartedNanos = 0;
             pressure.set(false);
