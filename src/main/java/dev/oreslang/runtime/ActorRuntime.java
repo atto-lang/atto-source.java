@@ -2096,6 +2096,23 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean isAlive() { return ref.isAlive(); }
         public Optional<Throwable> failure() { return ref.failure(); }
 
+        /**
+         * Host/supervisor-only advisory count of overdue source-task dispatches.
+         * This count is not a hard deadline violation or an authorization to
+         * interrupt the carrier; it is valid only while the actor is registered.
+         * A serial actor retains its single-writer lease while overdue.
+         */
+        public long greedyDispatchObservations() {
+            requireSupervisorContext("inspect an actor's scheduler watchdog");
+            ActorCell<?> cell = actors.get(ref.id());
+            if (cell == null) return 0L;
+            synchronized (cell.lifecycleLock) {
+                OresScheduler scheduler = cell.sourceScheduler;
+                return scheduler == null ? 0L
+                        : scheduler.greedyDispatchObservations();
+            }
+        }
+
         public Optional<ActorId> parentId() {
             ActorCell<?> cell = actors.get(ref.id());
             return cell == null || cell.parent == null
