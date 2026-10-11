@@ -126,7 +126,7 @@ final class CriticalBorrowBoundaryTest {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
                     define class Store as
-                      suspend critical get(): int { return 1; }
+                      pub suspend critical get(): int { return 1; }
                     end
                     async fnc caller(): int {
                       let Store store = new Store();
