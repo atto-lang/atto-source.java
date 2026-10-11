@@ -379,6 +379,7 @@ public final class ActorRuntime implements AutoCloseable {
             new ActorPoolControlScheduler("ores-shared");
     private final ActorPoolControlScheduler untrustedPoolScheduler =
             new ActorPoolControlScheduler("ores-untrusted");
+    private volatile Consumer<ActorKind> masterPoolWakeup;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
@@ -3882,6 +3883,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // The pool scheduler is created eagerly, but only its first
                 // actor registration starts its dedicated CONTROL thread.
                 poolSchedulerFor(kind).registerActor(id);
+                Consumer<ActorKind> notifyMaster = masterPoolWakeup;
+                if (notifyMaster != null) notifyMaster.accept(kind);
                 return ref;
             } catch (RuntimeException | Error failure) {
                 if (linkedToParent && cell != null) parent.children.remove(cell);
@@ -5976,6 +5979,15 @@ public final class ActorRuntime implements AutoCloseable {
         };
     }
 
+    void setMasterPoolWakeup(Consumer<ActorKind> sink) {
+        Objects.requireNonNull(sink, "sink");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (masterPoolWakeup != null) throw new IllegalStateException("master already attached");
+            masterPoolWakeup = sink;
+        }
+    }
+
     private ActorPoolControlScheduler poolSchedulerFor(ActorKind kind) {
         return switch (kind) {
             case PRIVATE -> privatePoolScheduler;
@@ -6622,6 +6634,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (!scheduled.compareAndSet(false, true)) return;
             try {
                 poolSchedulerFor(kind).signalActorWork();
+                Consumer<ActorKind> notifyMaster = masterPoolWakeup;
+                if (notifyMaster != null) notifyMaster.accept(kind);
                 ExecutorService dispatcher = dispatcherFor(kind);
                 if (dispatcher instanceof ActorAffinityDispatcher lanes) {
                     lanes.executeOnLane(dispatchLane, this::runBatch);
