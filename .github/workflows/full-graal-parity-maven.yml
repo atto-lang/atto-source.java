@@ -1,0 +1,24 @@
+name: Full GraalVM Maven parity gate
+on:
+  push:
+    branches: [ci/full-graal-parity-20261010]
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - '.github/workflows/full-graal-parity-maven.yml'
+permissions:
+  contents: read
+jobs:
+  graal-full-maven:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: graalvm
+          java-version: '21'
+          cache: maven
+      - name: Compile and execute all current-head Maven tests
+        run: mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true test
