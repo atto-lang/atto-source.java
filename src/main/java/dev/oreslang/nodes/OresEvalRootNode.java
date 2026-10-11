@@ -8732,6 +8732,11 @@ public final class OresEvalRootNode extends RootNode {
             String actorTypeName,
             OresObject object)
             implements ActorRuntime.ActorOwnedGuestState {
+        @Override public void retireFromRuntime() {
+            if (object.actorState != null) {
+                object.actorState.retireFromRuntime(ownerActorId);
+            }
+        }
         private SourceActorState {
             Objects.requireNonNull(ownerActorId, "ownerActorId");
             if (actorTypeName == null || actorTypeName.isBlank()) {
