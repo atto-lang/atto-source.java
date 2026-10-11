@@ -98,6 +98,33 @@ final class CleanupReturnFinalityTest {
     }
 
     @Test
+    void namedDeferredCallbackCannotRebindTheReturnedLocal() {
+        rejected("""
+                fnc make(): Box {
+                  let mut Box result = new Box();
+                  const cleanup = || -> { result = new Box(); };
+                  defer cleanup();
+                  return result;
+                }
+                """, "defer cannot reassign returned binding 'result'");
+    }
+
+    @Test
+    void namedDeferredCallbackMayRebindOnlyItsShadowedLocal() {
+        admitted("""
+                fnc make(): Box {
+                  let mut Box result = new Box();
+                  const cleanup = || -> {
+                    let mut Box result = new Box();
+                    result = new Box();
+                  };
+                  defer cleanup();
+                  return result;
+                }
+                """);
+    }
+
+    @Test
     void deferredArrayMutationPreservesTheOriginalReturnedObject() {
         String code = """
                 fnc make(): Array<int> {
