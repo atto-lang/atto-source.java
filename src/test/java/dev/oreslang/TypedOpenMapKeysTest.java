@@ -170,12 +170,12 @@ final class TypedOpenMapKeysTest {
     }
 
     @Test
-    void dynamicWriteValidatesRecursivelyAndBlocksAliasedCorruption() throws Exception {
+    void ownershipRejectsAliasMutationAfterMapInsertion() {
         String program = """
                 define class MyMap extends Map<string, unknown> as
                   key items: Option<Array<string>>;
                 end
-                pub routine main(): void {
+                fnc invalid(): void {
                   val m = new MyMap();
                   val items = new Array<unknown>();
                   items.add("hello");
@@ -186,15 +186,9 @@ final class TypedOpenMapKeysTest {
                   return;
                 }
                 """;
-        TypeChecker.check(Parser.parse(program));
-        Source source = Source.newBuilder(OresLanguage.ID, program, "map-mutated-payload.ores")
-                .mimeType(OresLanguage.MIME_TYPE).build();
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false).build()) {
-            PolyglotException failure = assertThrows(
-                    PolyglotException.class, () -> context.eval(source));
-            assertTrue(failure.getMessage().contains("no longer satisfies"));
-        }
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(failure.getMessage().contains("moved value 'items'"));
     }
 
     @Test
