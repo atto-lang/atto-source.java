@@ -1685,6 +1685,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cell.stopped.get()) {
                     if (cell.sourceTaskFutures.isEmpty()) {
                         cell.sourceCleanupDraining = false;
+                        cell.discardAbandonedSourceCommands();
                     }
                     cell.finalizeStopLocked();
                     cell.lifecycleLock.notifyAll();
@@ -1744,21 +1745,52 @@ public final class ActorRuntime implements AutoCloseable {
      */
     private boolean enqueueSourceTaskContinuation(ActorCell<?> cell, Runnable command) {
         Objects.requireNonNull(command, "source task continuation");
+        final boolean cleanupOnly;
         synchronized (cell.lifecycleLock) {
             if (cell.finalized || cell.forceKillFenced || closed.get()
-                    || (cell.stopped.get() && !cell.sourceCleanupDraining)) {
-                return false;
-            }
-            if (cell.sourceTaskMailbox.size() >= INTERNAL_CONTINUATION_SLOTS) {
-                throw new RejectedExecutionException(
-                        "actor source CONTROL mailbox full: " + cell.ref.id());
-            }
-            cell.sourceTaskMailbox.addLast(command);
-            if (currentActor.get() == cell) cell.sourceHandoffRequested = true;
+                    || (cell.stopped.get() && !cell.sourceCleanupDraining)) return false;
+            cleanupOnly = cell.stopped.get() && cell.sourceCleanupDraining;
         }
-        cell.schedule();
-        return true;
+
+        // Ordinary source continuations share the *same* 1024-slot CONTROL
+        // accounting as all other internal callbacks. Only after the user
+        // mailbox is sealed may already-owned scheduler tasks use reserved,
+        // separately bounded cleanup admission. This cannot grant extra
+        // pre-shutdown user capacity or bypass the control overflow gate.
+        final boolean counted = !cleanupOnly;
+        if (counted && !cell.reserveContinuationSlot()) {
+            cell.fail(new IllegalStateException(
+                    "actor internal continuation queue overflow for " + cell.ref.id()));
+            throw new RejectedExecutionException(
+                    "actor internal continuation queue overflow for " + cell.ref.id());
+        }
+        boolean admitted = false;
+        try {
+            synchronized (cell.lifecycleLock) {
+                if (cell.finalized || cell.forceKillFenced || closed.get()
+                        || (cell.stopped.get() && !cell.sourceCleanupDraining)) {
+                    return false;
+                }
+                final int bound = cell.sourceCleanupDraining
+                        ? INTERNAL_CONTINUATION_SLOTS * 2
+                        : INTERNAL_CONTINUATION_SLOTS;
+                if (cell.sourceTaskMailbox.size() >= bound) {
+                    throw new RejectedExecutionException(
+                            "actor source CONTROL mailbox saturated: " + cell.ref.id());
+                }
+                cell.sourceTaskMailbox.addLast(
+                        new SourceTaskCommand(command, counted));
+                admitted = true;
+                if (currentActor.get() == cell) cell.sourceHandoffRequested = true;
+            }
+            cell.schedule();
+            return true;
+        } finally {
+            if (!admitted && counted) cell.releaseMailboxSlot(true);
+        }
     }
+
+    private record SourceTaskCommand(Runnable turn, boolean counted) { }
 
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
         Objects.requireNonNull(actorId, "actorId");
@@ -5992,7 +6024,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
         /** Dedicated bounded scheduler CONTROL lane, never user-callable. */
-        private final ArrayDeque<Runnable> sourceTaskMailbox = new ArrayDeque<>();
+        private final ArrayDeque<SourceTaskCommand> sourceTaskMailbox = new ArrayDeque<>();
         /** Guarded by lifecycleLock; only actual source tasks retain this lane. */
         private boolean sourceCleanupDraining;
         /** Actor single-writer lease only; safepoints still charge fuel. */
@@ -6591,7 +6623,7 @@ public final class ActorRuntime implements AutoCloseable {
                 while (processed < dispatcherConfig.throughput()
                         && (!stopped.get() || sourceCleanupDraining)) {
                     MessageEnvelope envelope;
-                    Runnable sourceCommand;
+                    SourceTaskCommand sourceCommand;
                     synchronized (lifecycleLock) {
                         if (finalized || (stopped.get() && !sourceCleanupDraining)) break;
                         // Only the capability-protected source CONTROL lane
@@ -6610,9 +6642,10 @@ public final class ActorRuntime implements AutoCloseable {
                         // command may resume an awaited cleanup and re-suspend.
                         // Allow cancellation cleanup past ordinary stop
                         // safepoints without disabling untrusted fuel limits.
+                        if (sourceCommand.counted()) releaseMailboxSlot(true);
                         sourceCleanupTurn = stopped.get() && sourceCleanupDraining;
                         try {
-                            sourceCommand.run();
+                            sourceCommand.turn().run();
                         } finally {
                             sourceCleanupTurn = false;
                         }
@@ -6735,31 +6768,57 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void drainMailboxReservations() {
+        /**
+         * Drop commands only after every source task Future is terminal.
+         * These queued executor closures can no longer own lexical cleanup,
+         * so reclaim their original CONTROL reservations without replay.
+         */
+        private void discardAbandonedSourceCommands() {
             synchronized (lifecycleLock) {
-                // An owned source CONTROL command may not be thrown away
-                // before its task Future reaches terminal cleanup settlement.
-                if (!sourceTaskFutures.isEmpty() || !sourceTaskMailbox.isEmpty()) {
+                if (!sourceTaskFutures.isEmpty()) {
                     throw new IllegalStateException(
-                            "actor attempted to drain an unfinished source execution context");
+                            "source queue discarded before task cleanup settled");
                 }
+                SourceTaskCommand command;
+                while ((command = sourceTaskMailbox.pollFirst()) != null) {
+                    if (command.counted()) releaseMailboxSlot(true);
+                }
+            }
+        }
+
+        private void drainOrdinaryMailboxReservations() {
+            synchronized (lifecycleLock) {
                 while (continuationMailbox.drainOne(continuation -> {
                     releaseMailboxSlot(true);
                     continuation.close();
                 })) {
-                    // Reclaim admitted control mail even after termination closes the channel.
+                    // Normal user callbacks have no shutdown cleanup authority.
                 }
                 sourceHandoffRequested = false;
             }
-
             while (mailbox.drainOne(envelope -> {
                 releaseMailboxSlot(false);
                 envelope.close();
             })) {
-                // Drain all committed user-message envelopes, including after close.
+                // Drain accepted user messages after stop.
             }
-            sourceReceiveSuspended = false;
-            activeMail = null;
+            if (!sourceCleanupDraining) {
+                sourceReceiveSuspended = false;
+                activeMail = null;
+            }
+        }
+
+        private void drainMailboxReservations() {
+            synchronized (lifecycleLock) {
+                if (!sourceTaskFutures.isEmpty()) {
+                    throw new IllegalStateException(
+                            "actor attempted to release unfinished source execution context");
+                }
+                discardAbandonedSourceCommands();
+                drainOrdinaryMailboxReservations();
+                sourceReceiveSuspended = false;
+                activeMail = null;
+            }
         }
 
         private void fail(Throwable failure) {
@@ -6789,6 +6848,9 @@ public final class ActorRuntime implements AutoCloseable {
                 // until each task's defer/finally/owned guard has unwound.
                 continuationMailbox.close(cause);
                 sourceCleanupDraining = !sourceTaskFutures.isEmpty();
+                // Cancel ordinary callbacks immediately to free normal
+                // CONTROL reservations. Source-task commands remain owned.
+                drainOrdinaryMailboxReservations();
                 if (!sourceCleanupDraining) drainMailboxReservations();
                 descendants = List.copyOf(children);
                 java.util.HashSet<OresFuture<?>> toCancel =

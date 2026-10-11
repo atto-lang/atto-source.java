@@ -482,6 +482,8 @@ public final class OresScheduler implements AutoCloseable {
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
         private final AtomicBoolean cancelRequested = new AtomicBoolean();
+        /** An undispatched task has no registered defer/finally obligations. */
+        private final AtomicBoolean everEntered = new AtomicBoolean();
         private final TaskCancelledException cancellation = new TaskCancelledException();
 
         private TaskRunner(Task<T> task) {
@@ -501,6 +503,17 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void onCancellationRequested() {
+            // Cancel never-entered scheduler tasks directly. Their already-
+            // enqueued executor closures are inert because phase is TERMINAL.
+            // This prevents a stopped actor with thousands of queued source
+            // tasks from needing guest execution just to discover no lexical
+            // cleanup was ever registered.
+            int initialPhase = phase.get();
+            if (!everEntered.get()
+                    && (initialPhase == NEW || initialPhase == QUEUED)) {
+                failTerminal(cancellation);
+                return;
+            }
             if (task instanceof CancellationAwareTask<?> aware) {
                 aware.cancellationRequested(cancellation);
             } else {
@@ -543,6 +556,7 @@ public final class OresScheduler implements AutoCloseable {
 
         private void runTurn() {
             if (!phase.compareAndSet(QUEUED, RUNNING)) return;
+            everEntered.set(true);
             if (!executing.compareAndSet(false, true)) {
                 failTerminal(new IllegalStateException(
                         "OresScheduler task execution lease violation"));
