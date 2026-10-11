@@ -225,6 +225,46 @@ final class ActorGroupMultiMembershipTest {
     }
 
     @Test
+    void creatorCannotEvadeGroupOwnershipQuotaByLeavingMembership() throws Exception {
+        IsolatePolicy base = IsolatePolicy.developer();
+        IsolatePolicy twoGroups = new IsolatePolicy(
+                base.capabilities(), base.maxHeapBytes(), 2, base.maxWallTime());
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch completed = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> creator = runtime.spawnShared(
+                    twoGroups, () -> (message, context) -> {
+                        try {
+                            ActorRuntime.ActorGroup first = context.runtime().createActorGroup();
+                            ActorRuntime.ActorGroup second = context.runtime().createActorGroup();
+                            first.leaveCurrent();
+                            second.leaveCurrent();
+                            // Creation quota is structural: leaving cooperation
+                            // membership must never confer extra creator rights.
+                            assertThrows(IllegalStateException.class,
+                                    context.runtime()::createActorGroup);
+                            first.close();
+                            ActorRuntime.ActorGroup replacement =
+                                    context.runtime().createActorGroup();
+                            assertEquals(2, context.runtime().actorGroupCount());
+                            replacement.close();
+                            second.close();
+                        } catch (Throwable problem) {
+                            failure.set(problem);
+                        } finally {
+                            completed.countDown();
+                        }
+                    });
+            creator.send(1);
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            creator.stop();
+            assertTrue(creator.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorGroupCount());
+        }
+    }
+
+    @Test
     void concurrentRoomJoinsCannotExceedActorMembershipQuota() throws Exception {
         IsolatePolicy base = IsolatePolicy.developer();
         IsolatePolicy twoRooms = new IsolatePolicy(
