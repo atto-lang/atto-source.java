@@ -128,6 +128,25 @@ final class SupervisorChildRegistryTest {
     }
 
     @Test
+    void admissionRollbackDoesNotRecycleRetiredActorIdentity() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var actor = ActorRuntime.ActorId.create();
+        var admitted = registry.register(actor);
+        assertThrows(IllegalStateException.class,
+                () -> registry.detachActive(admitted.child(), ActorRuntime.ActorId.create(), 1));
+        registry.detachActive(admitted.child(), actor, 1);
+        assertEquals(0, registry.trackedChildren());
+        assertEquals(1, registry.trackedActorIdentities(),
+                "rollback must preserve actor-identity replay fence");
+        assertThrows(IllegalStateException.class, () -> registry.register(actor));
+        assertThrows(IllegalStateException.class,
+                () -> registry.finalized(admitted.child(), actor, 1));
+        assertThrows(IllegalStateException.class,
+                () -> registry.detachActive(admitted.child(), actor, 1));
+    }
+
+    @Test
     void concurrentReplacementOfSameGenerationHasSingleWinner() throws Exception {
         var registry = new SupervisorChildRegistry(
                 ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
