@@ -42,6 +42,8 @@ public final class OwnershipChecker {
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
+    /** Every active try records outer roots transferred anywhere inside its body. */
+    private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
 
     private OwnershipChecker(Ast.Program program) {
         index(program);
@@ -395,19 +397,46 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.SwitchStmt switched) {
             checkExpr(switched.subject(), scope, false);
+            Map<VarState, StateSnapshot> entry = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
             for (Ast.SwitchCase arm : switched.cases()) {
+                restoreState(entry);
                 for (Ast.Expr constant : arm.constants()) checkExpr(constant, scope, false);
                 checkBlock(arm.body(), scope, returnType);
+                exits.add(stateSnapshot(scope));
             }
+            restoreState(entry);
             checkBlock(switched.defaultBody(), scope, returnType);
+            exits.add(stateSnapshot(scope));
+            // Missing/default-empty cases retain the original owner state.
+            // Moving in any case poisons post-switch use, but not other cases.
+            mergeBranchState(entry, exits);
             return;
         }
         if (stmt instanceof Ast.TryStmt attempted) {
-            checkBlock(attempted.body(), scope, returnType);
+            Map<VarState, StateSnapshot> entry = stateSnapshot(scope);
+            // Catch can run after any throwing operation, including one after
+            // a move in a nested branch or in an expression. Tracking moves
+            // directly is safer than looking only at the try's final state.
+            Set<VarState> movedDuringTry = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+            tryMoveObservers.add(movedDuringTry);
+            try {
+                checkBlock(attempted.body(), scope, returnType);
+            } finally {
+                tryMoveObservers.removeLast();
+            }
+            Map<VarState, StateSnapshot> normal = stateSnapshot(scope);
+            restoreState(entry);
+            for (VarState moved : movedDuringTry) {
+                if (entry.containsKey(moved)) moved.moved = true;
+            }
             Scope caught = new Scope(scope);
             caught.define(attempted.errorName(), new VarState(Ast.TypeRef.inferred(), false, ValueKind.MOVE_ONLY, Origin.LOCAL));
             checkBlock(attempted.catchBody(), caught, returnType);
             caught.close();
+            Map<VarState, StateSnapshot> exceptional = stateSnapshot(scope);
+            // Finally sees both the ordinary and exceptional predecessor.
+            mergeBranchState(entry, List.of(normal, exceptional));
             checkBlock(attempted.finallyBody(), scope, returnType);
             return;
         }
@@ -2586,6 +2615,7 @@ public final class OwnershipChecker {
             }
         }
 
+        for (Set<VarState> observer : tryMoveObservers) observer.add(root);
         root.moved = true;
     }
 
