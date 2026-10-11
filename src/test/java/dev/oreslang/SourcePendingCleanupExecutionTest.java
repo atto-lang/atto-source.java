@@ -79,6 +79,9 @@ final class SourcePendingCleanupExecutionTest {
         ChannelRuntime.Channel<Integer> defer =
                 (ChannelRuntime.Channel<Integer>) command.execute(
                         OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "exposeDeferGate").asHostObject();
+        assertSame(fin, command.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
+                "exposeFinallyGate").asHostObject(),
+                "reading a module field must reuse its exact process-local channel identity");
         Value result = command.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "work");
         assertTrue(result.isHostObject(), "async source invocation must return a host Future");
         return new Started(assertInstanceOf(OresFuture.class, result.asHostObject()),
