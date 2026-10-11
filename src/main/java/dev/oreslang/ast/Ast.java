@@ -284,13 +284,22 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            List<MapKeyDecl> mapKeys) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            mapKeys = List.copyOf(mapKeys);
+        }
+
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract, ActorKind actorKind,
+                         List<String> genericParameters, List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor, List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, List.of());
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
@@ -315,6 +324,9 @@ public final class Ast {
                     List.of(), List.of(), fields, null, methods);
         }
     }
+
+    /** Open Map schema entry, never an instance field or constructor argument. */
+    public record MapKeyDecl(String name, TypeRef valueType, Visibility visibility) { }
 
     public record ConstructorDecl(
             Visibility visibility,
