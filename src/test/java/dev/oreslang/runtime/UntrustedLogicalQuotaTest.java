@@ -106,6 +106,44 @@ final class UntrustedLogicalQuotaTest {
     }
 
     @Test
+    void actualUntrustedActorCannotRefuelThroughRepeatedCooperate() throws Exception {
+        AtomicReference<OresFuture<Integer>> taskRef = new AtomicReference<>();
+        AtomicInteger dispatches = new AtomicInteger();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnUntrusted(context -> (message, turn) ->
+                    taskRef.set(turn.runtime().startActorTask(resume -> {
+                        dispatches.incrementAndGet();
+                        // The UNTRUSTED default budget is 250ms x 256 = 64,000
+                        // fuel units. Six 13,000-checkpoint physical dispatches
+                        // exceed that cumulative budget despite each individual
+                        // dispatch remaining under it.
+                        for (int i = 0; i < 13_000; i++) {
+                            turn.runtime().schedulerSafepoint();
+                        }
+                        return OresScheduler.cooperate();
+                    })));
+            actor.send("start");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (taskRef.get() == null && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            OresFuture<Integer> result = taskRef.get();
+            assertTrue(result != null, "source task was not admitted");
+            var failed = assertThrows(ExecutionException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertTrue(
+                    failed.getCause() instanceof ActorRuntime.UntrustedActorQuotaExceededException,
+                    () -> "unexpected failed task: " + failed.getCause());
+            assertEquals(
+                    ActorRuntime.UntrustedActorQuotaExceededException.Resource.FUEL,
+                    ((ActorRuntime.UntrustedActorQuotaExceededException) failed.getCause()).resource());
+            assertTrue(dispatches.get() >= 5, "fuel must be charged across physical resumes");
+            actor.stop();
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void actualUntrustedActorTaskCannotResetDeadlineAfterAwait() throws Exception {
         AtomicReference<OresFuture<Integer>> taskRef = new AtomicReference<>();
         AtomicInteger resumes = new AtomicInteger();
