@@ -284,9 +284,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public static DispatcherConfig defaults() {
-            int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
-            int shared = Integer.getInteger("ores.runtime.actor.shared.parallelism", cpus);
-            return new DispatcherConfig(cpus, shared, 64, 16_384);
+            int privateWorkers = Integer.getInteger("ores.runtime.actor.private.parallelism", 5);
+            int sharedWorkers = Integer.getInteger("ores.runtime.actor.shared.parallelism", 5);
+            return new DispatcherConfig(privateWorkers, sharedWorkers, 64, 16_384);
         }
     }
 
@@ -379,6 +379,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
+    private final int untrustedParallelism;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
     private final ArrayBlockingQueue<WatchdogNotice> watchdogNotices =
@@ -430,6 +431,11 @@ public final class ActorRuntime implements AutoCloseable {
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
+        int untrustedWorkers = Integer.getInteger("ores.runtime.actor.untrusted.parallelism", 5);
+        if (untrustedWorkers <= 0) {
+            throw new IllegalArgumentException("untrusted actor parallelism must be > 0");
+        }
+        this.untrustedParallelism = untrustedWorkers;
         ExecutorService privatePool = null;
         ExecutorService sharedPool = null;
         ExecutorService untrustedPool;
@@ -438,7 +444,7 @@ public final class ActorRuntime implements AutoCloseable {
                     dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-");
             sharedPool = newActorDispatcher(dispatcherConfig.sharedParallelism(),
                     dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-");
-            untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
+            untrustedPool = newActorDispatcher(untrustedWorkers,
                     dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-");
         } catch (RuntimeException | Error failure) {
             if (privatePool != null) privatePool.shutdownNow();
@@ -461,6 +467,17 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    /** Host diagnostics: independent carrier budget for each actor kind. */
+    public int carrierParallelism(ActorKind kind) {
+        return switch (Objects.requireNonNull(kind, "kind")) {
+            case PRIVATE -> dispatcherConfig.privateParallelism();
+            case SHARED -> dispatcherConfig.sharedParallelism();
+            case UNTRUSTED -> untrustedParallelism;
+        };
+    }
+
+    boolean isClosed() { return closed.get(); }
 
     /** Total overrun detections, including notices dropped from the bounded queue. */
     public long watchdogOverruns() { return watchdogOverruns.get(); }
