@@ -38,6 +38,50 @@ final class ActorMessageSerializableContractTest {
     }
 
     @Test
+    void tuplesFixedArraysFixedListsAndNestedVariableCollectionsAreSerializable() {
+        String[] validPayloadTypes = {
+                "Tuple[bool, string]",
+                "FixedArray[bool, string]",
+                "FixedList[bool, string]",
+                "Array[string]",
+                "List[string]",
+                "Array[List[string]]",
+                "List[Tuple[bool, string]]"
+        };
+        for (String payloadType : validPayloadTypes) {
+            String source = """
+                    define actor Worker as
+                      receive(ActorMail<%s> mail): void { return; }
+                    end
+                    """.formatted(payloadType);
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)), payloadType);
+        }
+    }
+
+    @Test
+    void nestedNonSerializableTypeIsRejectedInsideEveryCollectionKind() {
+        String[] invalidPayloadTypes = {
+                "Tuple[bool, ActorId]",
+                "FixedArray[bool, ActorId]",
+                "FixedList[bool, ActorId]",
+                "Array[ActorId]",
+                "List[ActorId]",
+                "List[Tuple[bool, ActorId]]"
+        };
+        for (String payloadType : invalidPayloadTypes) {
+            String source = """
+                    define actor Worker as
+                      receive(ActorMail<%s> mail): void { return; }
+                    end
+                    """.formatted(payloadType);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), payloadType);
+            assertTrue(failure.getMessage().contains("Serializable"), failure.getMessage());
+        }
+    }
+
+    @Test
     void rejectsRuntimeCapabilityPayloadEvenWhenFormerlySendable() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
