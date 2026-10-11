@@ -79,6 +79,18 @@ final class ActorMessageSerializableContractTest {
     }
 
     @Test
+    void serializationAnnotationDoesNotSilentlyPretendToGenerateCodec() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        @Serializable
+                        define class Message as
+                          value: string
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("codec derivation"), failure.getMessage());
+    }
+
+    @Test
     void rejectsUnknownOpaqueOrExecutablePayloadTypes() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
