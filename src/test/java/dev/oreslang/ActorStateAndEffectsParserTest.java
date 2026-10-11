@@ -137,6 +137,56 @@ final class ActorStateAndEffectsParserTest {
                 """)));
     }
 
+    @Test void permitsHomogeneousDynamicMapAndShadowedNestedStateCallbacks() {
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
+            define actor Cache as
+                state: Map<string, int>;
+                pub noop(): void { return; }
+            end
+            """)));
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
+            define actor Counter as
+                state { count: int = 0; }
+                pub nested(): void {
+                    self.handle_state(|s| -> {
+                        self.handle_state(|s| -> { s.count = s.count + 1; });
+                        s.count = s.count + 1;
+                    });
+                    return;
+                }
+            end
+            """)));
+        assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(Parser.parse("""
+            define actor Counter as
+                state { count: int = 0; }
+                pub illegal(): void {
+                    self.handle_state(|s| -> {
+                        self.handle_state(|inner| -> {
+                            s.count = s.count + 1;
+                        });
+                    });
+                    return;
+                }
+            end
+            """)));
+    }
+
+    @Test void parsesSuspensionInStateCallbackWithoutClaimingRuntimeLowering() {
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
+            define actor Worker as
+                state { count: int = 0; }
+                pub tick(): void {
+                    self.handle_state(|s| -> {
+                        s.count = s.count + 1;
+                        await fetch();
+                        s.count = s.count + 1;
+                    });
+                    return;
+                }
+            end
+            """)));
+    }
+
     @Test void effectVocabularyHasMatchingUpperBoundOperations() {
         var allowed = FunctionEffects.ofNames(List.of("state.read", "state.write", "suspend"));
         var actual = FunctionEffects.ofNames(List.of("state.read", "suspend"));
