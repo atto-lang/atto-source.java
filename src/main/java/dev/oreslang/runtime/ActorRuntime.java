@@ -3456,8 +3456,7 @@ public final class ActorRuntime implements AutoCloseable {
         // requiring the boundary must use SharedUntrustedGraalIsolate and
         // must not silently admit untrusted guest code on this host runtime.
         if (kind == ActorKind.UNTRUSTED
-                && Boolean.getBoolean("ores.untrusted.require-physical-isolate")
-                && !policyCeiling.adversarial()) {
+                && Boolean.getBoolean("ores.untrusted.require-physical-isolate")) {
             throw new SecurityException(
                     "UNTRUSTED actor rejected in host ActorRuntime: "
                     + "physical shared Graal isolate is required; "
