@@ -3558,6 +3558,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorCell<M> cell = null;
             boolean linkedToParent = false;
             boolean supervisionReserved = false;
+            List<ActorCell<?>> reservedAncestors = new ArrayList<>();
             try {
                 // Admission is atomic with respect to actor visibility: a child
                 // never runs without a pre-reserved terminal CONTROL slot.
@@ -3583,7 +3584,14 @@ public final class ActorRuntime implements AutoCloseable {
                                     "cannot spawn a child from a stopping or force-fenced actor "
                                             + parent.ref.id());
                         }
-                        parent.childFailures.reserve(supervisorKey(id));
+                        // Pre-reserve at EVERY ancestor, so failures can
+                        // escalate hop-by-hop without allocating CONTROL
+                        // capacity on the failure path.
+                        for (ActorCell<?> ancestor = parent;
+                                ancestor != null; ancestor = ancestor.parent) {
+                            ancestor.childFailures.reserve(supervisorKey(id));
+                            reservedAncestors.add(ancestor);
+                        }
                         parent.children.add(cell);
                         linkedToParent = true;
                         actors.put(id, cell);
@@ -3596,8 +3604,12 @@ public final class ActorRuntime implements AutoCloseable {
                 if (linkedToParent && cell != null) {
                     synchronized (parent.lifecycleLock) {
                         parent.children.remove(cell);
-                        parent.childFailures.retireGracefully(supervisorKey(id));
                     }
+                }
+                // A failed admission must release *all* ancestor slots,
+                // including a partial reservation before the child is linked.
+                for (ActorCell<?> ancestor : reservedAncestors) {
+                    ancestor.childFailures.retireGracefully(supervisorKey(id));
                 }
                 if (supervisionReserved) supervisorFailures.retireGracefully(supervisorKey(id));
                 actorCount.decrementAndGet();
@@ -6028,12 +6040,13 @@ public final class ActorRuntime implements AutoCloseable {
                     || !children.isEmpty()) return;
             finalized = true;
             restartCandidates.clear();
-            // Root must receive any urgent child events the parent did not
-            // process before stopping. Do not silently lose reserved faults.
+            // A stopped supervisor is not permitted to swallow descendant
+            // CONTROL. Route each already-reserved event to the first
+            // surviving ancestor, or ultimately to runtime root.
             Optional<SupervisorFailureLane.Failure> orphan;
             while ((orphan = childFailures.poll()).isPresent()) {
                 SupervisorFailureLane.Failure failure = orphan.orElseThrow();
-                supervisorFailures.publish(failure);
+                escalateToAncestorOrRoot(failure);
                 childFailures.ack(failure.actor());
             }
             OresScheduler scheduler = sourceScheduler;
@@ -6095,6 +6108,41 @@ public final class ActorRuntime implements AutoCloseable {
             lifecycleLock.notifyAll();
         }
 
+        /**
+         * Each descendant reserved a slot in every ancestor at spawn time.
+         * Only the first live ancestor receives the event; stopped ancestors
+         * relinquish their unused reservations. No guest code is invoked here.
+         */
+        private void escalateToAncestorOrRoot(SupervisorFailureLane.Failure failure) {
+            ActorCell<?> next = parent;
+            while (next != null) {
+                boolean admitted = false;
+                synchronized (next.lifecycleLock) {
+                    if (!next.stopped.get() && !next.finalized && !next.forceKillFenced) {
+                        next.childFailures.publish(failure);
+                        admitted = true;
+                    } else {
+                        next.childFailures.retireGracefully(failure.actor());
+                    }
+                }
+                if (admitted) {
+                    next.schedule();
+                    return;
+                }
+                next = next.parent;
+            }
+            supervisorFailures.publish(failure);
+        }
+
+        /** A handled or gracefully finished child must not leak ancestor quotas. */
+        private void releaseUnusedAncestorSlots(
+                ActorCell<?> first, SupervisorFailureLane.ActorKey key) {
+            for (ActorCell<?> ancestor = first; ancestor != null;
+                    ancestor = ancestor.parent) {
+                ancestor.childFailures.retireGracefully(key);
+            }
+        }
+
         private void childFinalized(
                 ActorCell<?> child,
                 SupervisorFailureLane.Failure controlEvent) {
@@ -6102,11 +6150,13 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 children.remove(child);
                 if (controlEvent == null) {
-                    childFailures.retireGracefully(supervisorKey(child.ref.id()));
+                    SupervisorFailureLane.ActorKey key = supervisorKey(child.ref.id());
+                    childFailures.retireGracefully(key);
+                    releaseUnusedAncestorSlots(parent, key);
                 } else if (stopped.get() || finalized || forceKillFenced) {
-                    // A dead supervisor cannot consume a child event. Escalate
-                    // directly; root's reserved slot survives the child.
-                    supervisorFailures.publish(controlEvent);
+                    // Dead supervisors forward to a surviving ancestor, not
+                    // straight to root. Their own pre-reservation is unused.
+                    escalateToAncestorOrRoot(controlEvent);
                     childFailures.retireGracefully(supervisorKey(child.ref.id()));
                 } else {
                     restartCandidates.put(controlEvent.actor(), child);
@@ -6476,15 +6526,19 @@ public final class ActorRuntime implements AutoCloseable {
                                     }
                                 }
                             }
-                            if (escalate) supervisorFailures.publish(failure);
-                            else supervisorFailures.retireGracefully(failure.actor());
+                            if (escalate) {
+                                escalateToAncestorOrRoot(failure);
+                            } else {
+                                releaseUnusedAncestorSlots(parent, failure.actor());
+                                supervisorFailures.retireGracefully(failure.actor());
+                            }
                             childFailures.ack(failure.actor());
                         } catch (RuntimeException | Error handlerFailure) {
-                            supervisorFailures.publish(failure);
+                            // Retain in this lane until actor teardown
+                            // safely transfers the failure to its ancestor.
                             childFailures.retry(failure.actor());
                             throw handlerFailure;
                         } catch (Exception handlerFailure) {
-                            supervisorFailures.publish(failure);
                             childFailures.retry(failure.actor());
                             throw new IllegalStateException(
                                     "supervisor handler failed for child " + failure.actor(),
