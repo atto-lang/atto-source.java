@@ -269,8 +269,9 @@ public final class SupervisorChildRegistry {
      */
     synchronized StopReceipt markStopUncertain(StopReservation permit) {
         StopReceipt current = requireStopReceipt(permit);
-        if (current.status() == StopReceiptStatus.ACKNOWLEDGED)
-            throw new IllegalStateException("cannot invalidate acknowledged STOP");
+        if (current.status() == StopReceiptStatus.ACKNOWLEDGED
+                || current.status() == StopReceiptStatus.APPLIED)
+            throw new IllegalStateException("cannot downgrade confirmed STOP effect");
         if (current.status() == StopReceiptStatus.UNCERTAIN) return current;
         StopReceipt updated = new StopReceipt(permit, StopReceiptStatus.UNCERTAIN);
         stopReceipts.put(permit.child().logicalId(), updated);
