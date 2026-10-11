@@ -6627,10 +6627,11 @@ public final class ActorRuntime implements AutoCloseable {
                                 if (held != null) {
                                     if (sourceReceiveSuspended) {
                                         if (held.state() == SerialActorAdmission.State.RUNNING) held.suspend();
-                                    } else {
-                                        serialReceiveLease = null;
-                                        if (!stopped.get()) held.close();
                                     }
+                                    // Closing the lifetime before the entire
+                                    // actor envelope has retired its scratch and
+                                    // state loans would permit premature re-entry.
+                                    // Release only after the envelope boundary.
                                 }
                             }
                         } else {
@@ -6677,16 +6678,24 @@ public final class ActorRuntime implements AutoCloseable {
                                     SerialActorAdmission.Lease held = serialReceiveLease;
                                     if (sourceReceiveSuspended) {
                                         if (held.state() == SerialActorAdmission.State.RUNNING) held.suspend();
-                                    } else {
-                                        serialReceiveLease = null;
-                                        if (!stopped.get()) held.close();
                                     }
+                                    // Closing the lifetime before the entire
+                                    // actor envelope has retired its scratch and
+                                    // state loans would permit premature re-entry.
+                                    // Release only after the envelope boundary.
                                 }
                             }
                         }
                         // Both synchronous messages and cooperative continuation
                         // segments must leave ephemeral native memory before yield.
                         memorySlice.assertScratchTurnsClosed();
+                        if (serialReceiveLease != null && !sourceReceiveSuspended) {
+                            // The logical lease cannot be released before
+                            // native scratch scopes and per-turn loans close.
+                            SerialActorAdmission.Lease completed = serialReceiveLease;
+                            serialReceiveLease = null;
+                            if (!stopped.get()) completed.close();
+                        }
                         if (codeExecutor == null
                                 && isPrivateKind(kind)
                                 && !trustedFactory) {
