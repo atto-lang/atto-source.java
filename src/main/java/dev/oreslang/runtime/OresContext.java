@@ -46,6 +46,12 @@ public final class OresContext implements AutoCloseable {
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
+    // Separate from the context monitor used by code/image registration: an
+    // unwinding guest continuation may still need that monitor while close()
+    // waits for its carrier to finish.
+    private final Object closeLock = new Object();
+    private Thread closeOwner;
+    private boolean resourcesRetired;
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
     // Exactly one immutable code image per linked source unit for all actor kinds.
     // Per-actor mutable heaps/closures are never published into this store.
@@ -425,36 +431,49 @@ public final class OresContext implements AutoCloseable {
         return Map.copyOf(descriptor);
     }
 
+    /**
+     * Stop admitting actor work, then drain all guest and async owners before
+     * invalidating any context-owned I/O, code images or collector state.
+     *
+     * A deadline is not quiescence. On a failed close these resources must
+     * remain intact for already-authorized CONTROL cleanup continuations;
+     * another host close can retry after those continuations actually finish.
+     */
     @Override
     public void close() {
-        nativeIo.close();
-        http.close();
-        RuntimeException failure = null;
-        try {
-            asyncRuntime.close();
-        } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
-        }
-        try {
-            actors.close();
-        } catch (RuntimeException actorFailure) {
-            if (failure == null) failure = actorFailure;
-            else failure.addSuppressed(actorFailure);
-        }
-        try {
-            vm.close();
-        } catch (RuntimeException vmFailure) {
-            if (failure == null) failure = vmFailure;
-            else failure.addSuppressed(vmFailure);
-        } finally {
-            synchronized (this) {
-                linkedCodeUnits.clear();
-                linkedImportResolutions.clear();
-                sharedCodeImages.close();
+        synchronized (closeLock) {
+            if (resourcesRetired) return;
+            if (closeOwner == Thread.currentThread()) {
+                throw new IllegalStateException(
+                        "OresContext close cannot be re-entered by its own cleanup callback");
             }
-            garbageCollector.close();
-            output.flush();
+            closeOwner = Thread.currentThread();
+            try {
+                // Actor-owned finalizers may still need the VM CONTROL scheduler,
+                // async workers, imported code, network or native I/O. Never
+                // retire those dependencies before actor quiescence is proven.
+                actors.close();
+                vm.close();
+                // An async carrier may still own an entered Truffle context
+                // even after its Future was cancelled. Its executor shutdown
+                // is a physical-exit barrier, not merely Future.isDone().
+                asyncRuntime.close();
+
+                // Physical guest and host carriers are now retired. Only then
+                // revoke the remaining external resources and linked code.
+                nativeIo.close();
+                http.close();
+                synchronized (this) {
+                    linkedCodeUnits.clear();
+                    linkedImportResolutions.clear();
+                    sharedCodeImages.close();
+                }
+                garbageCollector.close();
+                output.flush();
+                resourcesRetired = true;
+            } finally {
+                closeOwner = null;
+            }
         }
-        if (failure != null) throw failure;
     }
 }
