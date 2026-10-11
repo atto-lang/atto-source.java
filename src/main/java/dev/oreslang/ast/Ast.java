@@ -793,7 +793,7 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, ValueMatchExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -802,6 +802,21 @@ public final class Ast {
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
+
+    /**
+     * Stage-one typed value dispatch: a direct arm-local return expression is
+     * evaluated as the value of this expression, not as a function exit.
+     * Complex arm control flow, cleanup and suspension remain fail-closed
+     * until the continuation IR from PR #567 is integrated safely.
+     */
+    public record ValueMatchExpr(Expr subject, boolean ordered, List<MatchArm> arms,
+                                 TypeRef returnContract) implements Expr {
+        public ValueMatchExpr {
+            arms = List.copyOf(arms);
+            if (returnContract == null) throw new IllegalArgumentException(
+                    "value-producing match requires an explicit return type");
+        }
+    }
 
     /** "value is Type [binding]" -- a nominal/refinement test, not general pattern matching. */
     public record TypeTestExpr(Expr value, TypeRef targetType, String binding) implements Expr { }
