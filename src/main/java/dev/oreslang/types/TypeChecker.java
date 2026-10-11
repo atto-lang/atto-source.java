@@ -7665,6 +7665,8 @@ public final class TypeChecker {
                 Type type,
                 Ast.BindingKind kind,
                 Set<String> uninitializedFields) {
+            if ("_".equals(name)) throw new IllegalArgumentException(
+                    "'_' is a wildcard/discard, not a user binding");
             if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }
