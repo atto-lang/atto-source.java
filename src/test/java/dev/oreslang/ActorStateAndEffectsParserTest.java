@@ -27,7 +27,7 @@ final class ActorStateAndEffectsParserTest {
                 }
                 pub increment(): int using state.read, state.write {
                     return self.handle_state(|s| -> {
-                        s.count += 1;
+                        s.count = s.count + 1;
                         return s.count;
                     });
                 }
@@ -46,7 +46,7 @@ final class ActorStateAndEffectsParserTest {
         assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
             define actor A as
               state { count: int = 0; }
-              pub f(): void { self.handle_state(|s| -> { s.count += 1; }); return; }
+              pub f(): void { self.handle_state(|s| -> { s.count = s.count + 1; }); return; }
             end
             """)));
     }
@@ -125,7 +125,7 @@ final class ActorStateAndEffectsParserTest {
             ActorStateContract.verify(Parser.parse("""
                 define actor A as
                   state { count: int = 0; }
-                  pub bogus(): void { self.handle_state(|s| -> { s.missing += 1; }); return; }
+                  pub bogus(): void { self.handle_state(|s| -> { s.missing = s.missing + 1; }); return; }
                 end
                 """)));
         assertThrows(IllegalArgumentException.class, () ->
