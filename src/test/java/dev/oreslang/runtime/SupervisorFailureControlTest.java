@@ -126,6 +126,54 @@ final class SupervisorFailureControlTest {
         }
     }
 
+
+    @Test
+    void handlerFailureRetiresQueuedNoticesAndRejectsLateDeliveries() throws Exception {
+        try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
+            var supervisor = ActorRuntime.SupervisorId.create();
+            var group = ActorRuntime.ActorGroupId.create();
+            var actor = ActorRuntime.ActorId.create();
+            var lane = new SupervisorFailureControl(supervisor, group, pool, 3);
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var calls = new AtomicInteger();
+            var notice = new SupervisorFailureControl.Notice(
+                    supervisor, group, actor, java.util.Optional.empty(),
+                    SupervisorFailureControl.Kind.TERMINAL_FAILURE,
+                    "Panic", "failure payload");
+            lane.install(n -> {
+                calls.incrementAndGet();
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("timed out waiting for failure");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
+                }
+                throw new IllegalStateException("supervisor policy crashed");
+            });
+            lane.publish(notice);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            lane.publish(notice);
+            assertEquals(2, lane.queued());
+            release.countDown();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (lane.failure().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertTrue(lane.failure().orElse("").contains("supervisor policy crashed"));
+            assertEquals(2, lane.undelivered(), "failed callback and pending notice both lost");
+            assertEquals(0, lane.queued(), "terminal failure retained owned notices");
+            assertEquals(1, calls.get(), "policy retried after terminal failure");
+            assertFalse(lane.healthy());
+            lane.publish(notice);
+            assertEquals(3, lane.undelivered(), "late notice must be rejected and counted");
+            assertEquals(0, lane.queued());
+        }
+    }
+
     @Test
     void failureHandlerMayNotBeInstalledFromActorCode() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
