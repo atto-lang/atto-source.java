@@ -16,7 +16,7 @@ public final class SourceActorSchedulingPolicy {
             throw new IllegalArgumentException("source actor type name is required");
         }
         Ast.ClassDecl match = null;
-        for (Ast.Module module : program.modules()) {
+        for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.ClassDecl klass)
                         || !klass.name().equals(actorName)) continue;
@@ -34,21 +34,4 @@ public final class SourceActorSchedulingPolicy {
         return match.serial();
     }
 
-    public static boolean verifyExecutor(
-            SharedCodeImageStore.CodeImage image,
-            ActorRuntime.ActorCodeExecutor executor,
-            String actorName) {
-        Objects.requireNonNull(image, "linked code image");
-        Objects.requireNonNull(executor, "source code executor");
-        if (executor.codeImage() != image) {
-            throw new SecurityException("source executor has a foreign linked code image");
-        }
-        boolean authoritative = isSerialActor(image.program(), actorName);
-        if (executor.isSerialActor(actorName) != authoritative) {
-            throw new SecurityException(
-                    "source executor serial scheduling metadata disagrees with linked AST: "
-                            + actorName);
-        }
-        return authoritative;
-    }
 }
