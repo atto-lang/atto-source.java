@@ -1854,6 +1854,26 @@ public final class ActorRuntime implements AutoCloseable {
             return doneFuture;
         }
 
+        /**
+         * Idiomatic Oreslang lifecycle-method spelling. Identical
+         * runtime-owned observer as ready(); this is NOT cancellation
+         * authority and does not imply the physical actor is terminated.
+         *
+         * Guest source dispatch still needs separate method-binding
+         * conformance before source-level compatibility is claimed.
+         */
+        public OresFuture<Void> get_ready() {
+            return ready();
+        }
+
+        /**
+         * Physical termination/finalization barrier. Unlike stop(), this
+         * observes completion and never requests or fabricates shutdown.
+         */
+        public OresFuture<Void> get_done() {
+            return done();
+        }
+
         /** Read-only outputs emitted by actor-local self.send(...). */
         public ActorOutputStream<Object> outputs() {
             ActorOutputStream<Object> stream = outputStream;
