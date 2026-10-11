@@ -41,6 +41,10 @@ public final class OresScheduler implements AutoCloseable {
     private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
     private static final ThreadLocal<Object> CURRENT_TASK_DOMAIN = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> SCHEDULER_CARRIER = new ThreadLocal<>();
+    // The physical carrier remains owned through post-guest terminal Future
+    // publication, after CURRENT has already been restored to its caller.
+    private static final ThreadLocal<OresScheduler> ACTIVE_CARRIER_OWNER =
+            new ThreadLocal<>();
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
 
     @FunctionalInterface
@@ -398,7 +402,9 @@ public final class OresScheduler implements AutoCloseable {
         // Existing admitted tasks may resume cancellation cleanup after close().
         executor.execute(() -> {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
+            OresScheduler priorOwner = ACTIVE_CARRIER_OWNER.get();
             SCHEDULER_CARRIER.set(Boolean.TRUE);
+            ACTIVE_CARRIER_OWNER.set(this);
             try {
                 // A queued cancellation may revoke its unclaimed carrier
                 // ticket. In that case the already-submitted Runnable is a
@@ -419,7 +425,12 @@ public final class OresScheduler implements AutoCloseable {
                 } else {
                     SCHEDULER_CARRIER.remove();
                 }
-                afterTurn.run();
+                try {
+                    afterTurn.run();
+                } finally {
+                    if (priorOwner == null) ACTIVE_CARRIER_OWNER.remove();
+                    else ACTIVE_CARRIER_OWNER.set(priorOwner);
+                }
             }
         });
     }
@@ -433,10 +444,11 @@ public final class OresScheduler implements AutoCloseable {
 
     @Override
     public synchronized void close() {
-        if (CURRENT.get() == this) {
+        if (CURRENT.get() == this || ACTIVE_CARRIER_OWNER.get() == this) {
             throw new IllegalStateException(
-                    "OresScheduler cannot be closed from one of its own task turns; "
-                    + "close it from an outside/root scheduler task");
+                    "OresScheduler cannot be closed from its own task turn or "
+                            + "terminal Future callback on an owned carrier; "
+                            + "close from an outside/root scheduler task");
         }
 
         // Closed seals new admission; it is not a proof of quiescence.
