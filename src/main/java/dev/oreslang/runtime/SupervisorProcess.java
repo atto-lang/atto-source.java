@@ -371,14 +371,24 @@ public final class SupervisorProcess implements AutoCloseable {
                     finishSinkFailureLocked(error);
                     return;
                 }
-                // Verified host effect first, then trusted finalization of
-                // precisely this actor incarnation on this CONTROL carrier.
-                try {
-                    onAcknowledged.accept(resolution);
-                } catch (Throwable finalizationFailure) {
+                // The host-effect stage has succeeded. Preserve the decision
+                // fence, but DO NOT call trusted host finalization under the
+                // mailbox monitor. This avoids lock inversion with Group state.
+                committingDecision = true;
+            }
+            try {
+                onAcknowledged.accept(resolution);
+            } catch (Throwable finalizationFailure) {
+                synchronized (this) {
+                    committingDecision = false;
                     finishSinkFailureLocked(finalizationFailure);
-                    return;
                 }
+                return;
+            }
+            synchronized (this) {
+                committingDecision = false;
+                if (state != State.RUNNING || !callbackActive
+                        || generation != callbackGeneration) return;
                 mailbox.removeFirst();
                 resolved.incrementAndGet();
                 callbackActive = false;
