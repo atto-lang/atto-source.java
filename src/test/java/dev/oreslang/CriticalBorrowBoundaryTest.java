@@ -103,6 +103,25 @@ final class CriticalBorrowBoundaryTest {
     }
 
     @Test
+    void borrowCreatedInsideSuspendCriticalCannotCrossLaterAwait() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    define class Bar as
+                      pub let String foo = "start";
+                    end
+                    async fnc obtain(): int { return 42; }
+                    suspend critical fnc bad(): int {
+                      let Bar b = new Bar();
+                      val &Bar view = rt borrow b;
+                      val result = await obtain();
+                      stdio.println(view.foo);
+                      return result;
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("borrow"), failure::getMessage);
+    }
+
+    @Test
     void ownedCriticalArgumentsAreAccepted() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 suspend critical fnc commit(int x): int { return x; }
