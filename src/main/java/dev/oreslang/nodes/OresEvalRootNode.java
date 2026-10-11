@@ -1366,6 +1366,9 @@ public final class OresEvalRootNode extends RootNode {
                 return expressionContainsPotentialSuspension(
                         destructure.initializer(), seen);
             }
+            // ARM_RESULT needs the SourceFlow dispatcher, even when the
+            // result expression itself is immediately ready.
+            if (stmt instanceof Ast.ArmReturnStmt) return true;
             if (stmt instanceof Ast.ReturnStmt ret) {
                 return ret.value() != null
                         && expressionContainsPotentialSuspension(
@@ -1471,13 +1474,49 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
+        /** Only real suspension, not the lexical ARM_RESULT token itself. */
+        private boolean valueArmActuallySuspends(Ast.Stmt stmt, Set<Object> seen) {
+            if (stmt instanceof Ast.ArmReturnStmt arm)
+                return expressionContainsPotentialSuspension(arm.value(), seen);
+            if (stmt instanceof Ast.BindingStmt binding)
+                return expressionContainsPotentialSuspension(binding.initializer(), seen);
+            if (stmt instanceof Ast.ExprStmt expression)
+                return expressionContainsPotentialSuspension(expression.expression(), seen);
+            if (stmt instanceof Ast.DeferStmt defer)
+                return expressionContainsPotentialSuspension(defer.expression(), seen);
+            if (stmt instanceof Ast.BlockStmt block)
+                return block.body().stream().anyMatch(child -> valueArmActuallySuspends(child, seen));
+            if (stmt instanceof Ast.IfStmt conditional)
+                return conditional.branches().stream().anyMatch(branch ->
+                        expressionContainsPotentialSuspension(branch.condition(), seen)
+                                || branch.body().stream().anyMatch(child ->
+                                        valueArmActuallySuspends(child, seen)))
+                        || conditional.elseBody().stream().anyMatch(child ->
+                                valueArmActuallySuspends(child, seen));
+            if (stmt instanceof Ast.TryStmt tried)
+                return tried.body().stream().anyMatch(child -> valueArmActuallySuspends(child, seen))
+                        || tried.catchBody().stream().anyMatch(child -> valueArmActuallySuspends(child, seen))
+                        || tried.finallyBody().stream().anyMatch(child -> valueArmActuallySuspends(child, seen));
+            return false;
+        }
+
         private boolean expressionContainsPotentialSuspension(
                 Ast.Expr expr,
                 Set<Object> seen) {
             if (expr == null) return false;
-            // All typed value-match expressions inside SourceTask take the
-            // frame-aware continuation path, even when the subject is ready.
-            if (expr instanceof Ast.ValueMatchExpr) return true;
+            if (expr instanceof Ast.ValueMatchExpr matched) {
+                // Do not promote synchronous value-match callables into async
+                // merely because ARM_RESULT needs a SourceFlow when in a task.
+                if (expressionContainsPotentialSuspension(matched.subject(), seen)) return true;
+                for (Ast.MatchArm arm : matched.arms()) {
+                    if (arm.guard() != null
+                            && expressionContainsPotentialSuspension(arm.guard(), seen)) return true;
+                    for (Ast.Stmt stmt : arm.body()) {
+                        if (valueArmActuallySuspends(stmt, seen)) return true;
+                    }
+                }
+                return false;
+            }
             if (expr instanceof Ast.AwaitExpr
                     || expr instanceof Ast.ChannelOpExpr channel
                         && channel.mode() == Ast.WaitMode.BLOCKING
