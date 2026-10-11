@@ -224,6 +224,36 @@ final class ActorStateAndEffectsParserTest {
                 () -> Parser.parse(valid.replace("critical |s|", "critical 123")));
     }
 
+    @Test void writingStateDoesNotImplicitlyReadIt() {
+        Ast.Program writeOnly = Parser.parse("""
+            define actor Counter as
+                state { count: int = 0; }
+                pub initialize(): void using state.write {
+                    self.handle_state(critical |s| -> {
+                        s.count = 42;
+                    });
+                    return;
+                }
+            end
+            """);
+        assertDoesNotThrow(() -> ActorStateContract.verify(writeOnly));
+        assertDoesNotThrow(() -> dev.oreslang.types.DeclaredEffectVerifier.verify(writeOnly));
+
+        Ast.Program readModifyWrite = Parser.parse("""
+            define actor Counter as
+                state { count: int = 0; }
+                pub increment(): void using state.write {
+                    self.handle_state(critical |s| -> {
+                        s.count = s.count + 1;
+                    });
+                    return;
+                }
+            end
+            """);
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.DeclaredEffectVerifier.verify(readModifyWrite));
+    }
+
     @Test void effectVocabularyHasMatchingUpperBoundOperations() {
         var allowed = FunctionEffects.ofNames(List.of("state.read", "state.write", "suspend"));
         var actual = FunctionEffects.ofNames(List.of("state.read", "suspend"));
