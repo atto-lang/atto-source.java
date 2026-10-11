@@ -243,6 +243,8 @@ final class SourcePendingCleanupExecutionTest {
                     stdio.println("armed");
                     const ignored = readch gates.startGate;
                     stdio.println("INVALID-read-resumed");
+                  } catch (cancelled) {
+                    stdio.println("INVALID-caught");
                   } finally {
                     stdio.println("cleanup-once");
                   }
@@ -275,6 +277,8 @@ final class SourcePendingCleanupExecutionTest {
                     stdio.println("armed");
                     writech gates.startGate, 77;
                     stdio.println("INVALID-write-resumed");
+                  } catch (cancelled) {
+                    stdio.println("INVALID-caught");
                   } finally {
                     stdio.println("cleanup-once");
                   }
