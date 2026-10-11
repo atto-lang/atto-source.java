@@ -172,4 +172,37 @@ final class TypedValueMatchIntegrationTest {
                 }
                 """, "return is forbidden directly inside finally");
     }
+
+    @Test
+    void enclosingDeferRunsBeforeCallerReceivesMatchValue() throws Exception {
+        assertEquals("cleanup\\n42", execute("""
+                fnc classify(int n): int {
+                  defer stdio.println("cleanup");
+                  const value: int = match<ret=int> n over {
+                    on 7 { return 42; }
+                    default { return 9; }
+                  };
+                  return value;
+                }
+                pub fnc main(): void { stdio.println(classify(7)); }
+                """));
+    }
+
+    @Test
+    void enclosingFinallyRunsBeforeCallerReceivesMatchValue() throws Exception {
+        assertEquals("finalized\\n42", execute("""
+                fnc classify(int n): int {
+                  try {
+                    const value: int = match<ret=int> n over {
+                      on 7 { return 42; }
+                      default { return 9; }
+                    };
+                    return value;
+                  }
+                  catch (e) { return 0; }
+                  finally { stdio.println("finalized"); }
+                }
+                pub fnc main(): void { stdio.println(classify(7)); }
+                """));
+    }
 }
