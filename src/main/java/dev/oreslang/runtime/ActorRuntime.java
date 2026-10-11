@@ -2106,6 +2106,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // Other cooperation groups may still admit it as a member,
                 // but no second manager may acquire independent stop rights.
                 ActorGroupId owningGroup = cell.managedByGroup.get();
+                boolean acquiredGroupOwnership = false;
                 if (owningGroup == null) {
                     if (!cell.children.isEmpty()) {
                         throw new IllegalStateException(
@@ -2113,6 +2114,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     if (cell.managedByGroup.compareAndSet(null, id)) {
                         owningGroup = id;
+                        acquiredGroupOwnership = true;
                     } else {
                         owningGroup = cell.managedByGroup.get();
                     }
@@ -2122,8 +2124,15 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor is already managed by a different ActorGroup");
                 }
                 if (cell.supervisedChild.get() == null) {
-                    var admittedChild = childRegistry.register(worker.id());
-                    cell.supervisedChild.set(new SupervisedChild(childRegistry, admittedChild));
+                    try {
+                        var admittedChild = childRegistry.register(worker.id());
+                        cell.supervisedChild.set(new SupervisedChild(childRegistry, admittedChild));
+                    } catch (RuntimeException | Error admissionFailure) {
+                        if (acquiredGroupOwnership) {
+                            cell.managedByGroup.compareAndSet(id, null);
+                        }
+                        throw admissionFailure;
+                    }
                 }
                 managedWorkers.putIfAbsent(worker.id(), worker);
                 cell.supervision.set(supervisorControl);
