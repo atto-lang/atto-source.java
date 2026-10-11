@@ -3178,6 +3178,14 @@ public final class ActorRuntime implements AutoCloseable {
         ActorId creator = currentActorId().orElse(null);
         IsolatePolicy creatorPolicy =
                 currentActorPolicy() == null ? policyCeiling : currentActorPolicy();
+        // A guest can reach this method indirectly through a non-actor helper
+        // routine. The interpreter's factory capability check alone is not a
+        // substitute for this actor-local runtime admission boundary.
+        if (creator != null
+                && !creatorPolicy.capabilities().contains(IsolatePolicy.Capability.ACTOR_SPAWN)) {
+            throw new SecurityException(
+                    "actor requires ACTOR_SPAWN to create an ActorGroup");
+        }
         if (creator != null && !actors.containsKey(creator)) {
             throw new IllegalStateException("current actor is no longer registered");
         }
