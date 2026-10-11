@@ -23,6 +23,9 @@ public final class Parser {
     private int current;
     private boolean suppressRefinementOperators;
     private int valueArmDepth;
+    // Return is forbidden in a finally lexical scope. A nested lambda
+    // starts a new return boundary and does not inherit this restriction.
+    private int finallyDepth;
     private boolean lastDispatchUsedLegacyArrows;
 
     public Parser(List<Token> tokens) {
@@ -1549,6 +1552,9 @@ public final class Parser {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
         if (match(RETURN)) {
+            if (finallyDepth > 0) {
+                throw error(previous(), "return is forbidden inside finally; a nested lambda may return from itself");
+            }
             if (match(DO)) {
                 if (match(MATCH)) return parseMatch(true, false, false);
                 if (match(SWITCH)) return parseSwitch(true, false, false);
@@ -2622,7 +2628,12 @@ public final class Parser {
         String error = consume(IDENT, "expected catch binding").lexeme();
         consume(RPAREN, "expected ')' after catch binding");
         List<Ast.Stmt> catchBody = parseBlock();
-        List<Ast.Stmt> finallyBody = match(FINALLY) ? parseBlock() : List.of();
+        List<Ast.Stmt> finallyBody = List.of();
+        if (match(FINALLY)) {
+            finallyDepth++;
+            try { finallyBody = parseBlock(); }
+            finally { finallyDepth--; }
+        }
         return new Ast.TryStmt(body, error, catchBody, finallyBody);
     }
 
@@ -3232,13 +3243,16 @@ public final class Parser {
         // Lambdas are fresh lexical return scopes. A lambda declared inside
         // a value match arm must NOT inherit that arm's return target.
         int outerArmDepth = valueArmDepth;
+        int outerFinallyDepth = finallyDepth;
         valueArmDepth = 0;
+        finallyDepth = 0;
         try {
             if (check(LBRACE))
                 return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
             return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
         } finally {
             valueArmDepth = outerArmDepth;
+            finallyDepth = outerFinallyDepth;
         }
     }
 
