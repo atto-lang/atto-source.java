@@ -65,7 +65,6 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     protected CallTarget parse(ParsingRequest request) {
         var source = request.getSource();
         String text = source.getCharacters().toString();
-        Ast.Program program = OresCompiler.parseAndTypeCheck(text);
         String codeUnitId = source.getPath();
         if (codeUnitId == null || codeUnitId.isBlank()) {
             codeUnitId = source.getName();
@@ -77,6 +76,12 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             }
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
+        // Multi-file host compilation already validated the exact import graph,
+        // public contract shapes, types and borrows. A source/path-matched
+        // synchronous lease preserves that checked AST for Truffle execution.
+        // Ordinary standalone Context.parse() still checks the full source.
+        Ast.Program program = OresCompiler.takeVerifiedGuestProgram(codeUnitId, text);
+        if (program == null) program = OresCompiler.parseAndTypeCheck(text);
         RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
     }
