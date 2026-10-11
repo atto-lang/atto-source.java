@@ -24,11 +24,11 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * native carrier set; no actor owns a carrier and carrier identity is never
  * actor identity.</p>
  *
- * <p>All max carriers are created up front so watchdog compensation never has
- * to allocate an OS thread while the runtime is already under pressure. Only
- * {@code corePoolSize} carrier slots are enabled at a time. Extra carriers are
- * parked in native code and are enabled/disabled by the bounded compensation
- * policy in {@link ActorRuntime}.</p>
+ * <p>Bootstrap is descriptor-only, with zero OS carriers. The first accepted
+ * turn starts the bounded native worker set and attaches pthreads to the JVM.
+ * Core worker slots are enabled, while compensation slots are parked until
+ * the bounded watchdog policy activates them. No ActorGroup or actor gets a
+ * dedicated carrier.</p>
  */
 public final class NativeCarrierExecutor extends AbstractExecutorService implements AutoCloseable {
     private static final String LIBRARY = "oresthread";
