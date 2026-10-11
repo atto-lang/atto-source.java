@@ -417,4 +417,20 @@ final class ActorCapabilityIsolationTest {
                 () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
         assertTrue(denied.getMessage().contains("SHARED_MEMORY"));
     }
+
+    @Test
+    void zeroArityConstructorPatternStillCarriesNominalCapability() {
+        Ast.Program program = Parser.parse("""
+                pub untrusted actor fnc worker(): void {
+                  val result = match<ret=int> 7 over {
+                    on SharedMutex { return 2; }
+                    default { return 1; }
+                  };
+                  return;
+                }
+                """);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("SHARED_MEMORY"));
+    }
 }
