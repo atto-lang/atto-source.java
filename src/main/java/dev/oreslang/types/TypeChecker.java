@@ -1727,7 +1727,8 @@ public final class TypeChecker {
 
     /**
      * Strict first admission stage for PR #567's arm-local completion model.
-     * Only scalar, single-return, non-suspending arms are lowered today.
+     * Scalar arms with explicit awaiting of a named local async callable are
+     * lowered through a lexical SourceTask match frame when suspension occurs.
      * Never reinterpret a procedural do-match return as an expression result.
      */
     private Type checkTypedValueMatch(
@@ -1736,9 +1737,9 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "typed value match requires canonical 'match ... over' ordered dispatch");
         }
-        if (currentMaySuspend || currentAsyncCallable || currentGenerator) {
+        if (currentGenerator) {
             throw new IllegalArgumentException(
-                    "value match continuation lowering is not enabled in async/suspends/generator callables");
+                    "value match continuation lowering is not enabled in generator callables");
         }
         Type result = resolve(matched.returnContract(), generics, self);
         // Never erase a borrowed contract before scalar admission. A declared
@@ -1753,9 +1754,9 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "typed value match currently supports scalar int/bool/string/float/decimal results only");
         }
-        if (!safeValueMatchScalarExpr(matched.subject())) {
+        if (!safeValueMatchContextScalarExpr(matched.subject())) {
             throw new IllegalArgumentException(
-                    "typed value match subject may not suspend or have unverified effects");
+                    "typed value match subject requires a pure scalar expression or explicit await of a local callable");
         }
         Type subject = deref(typeOf(matched.subject(), env, generics, self));
         if (subject != Primitive.INT && subject != Primitive.BOOL
@@ -1876,9 +1877,9 @@ public final class TypeChecker {
                 // own lexical ARM_RESULT boundary and proven scalar type.
                 // It is not equivalent to an unverified arbitrary call.
                 boolean nestedValueMatch = binding.initializer() instanceof Ast.ValueMatchExpr;
-                if (!nestedValueMatch && !safeValueMatchScalarExpr(binding.initializer()))
+                if (!nestedValueMatch && !safeValueMatchContextScalarExpr(binding.initializer()))
                     throw new IllegalArgumentException(
-                            "typed value match binding initializer must be a pure scalar expression");
+                            "typed value match binding initializer requires a pure scalar expression or admitted await");
                 if (!nestedValueMatch)
                     requireValueMatchOwnedScalarNames(binding.initializer(), local);
                 Type value = typeOf(binding.initializer(), local, generics, self);
@@ -1887,9 +1888,9 @@ public final class TypeChecker {
                             "typed value match binding must be an owned scalar value");
                 checkStatement(binding, local, generics, result, self);
             } else if (stmt instanceof Ast.ArmReturnStmt returned) {
-                if (!safeValueMatchScalarExpr(returned.value()))
+                if (!safeValueMatchContextScalarExpr(returned.value()))
                     throw new IllegalArgumentException(
-                            "typed value match arm result must be a pure scalar expression");
+                            "typed value match arm result requires a pure scalar expression or admitted await");
                 requireValueMatchOwnedScalarNames(returned.value(), local);
             } else if (stmt instanceof Ast.ExprStmt statement) {
                 if (!safeValueMatchScalarExpr(statement.expression())
@@ -1956,6 +1957,41 @@ public final class TypeChecker {
         return type == Primitive.INT || type == Primitive.BOOL
                 || type == Primitive.STRING || type == Primitive.FLOAT
                 || type == Primitive.DECIMAL || type instanceof StringLiteral;
+    }
+
+    /**
+     * Only explicit await of a zero-argument named callable is admitted as
+     * a new effectful scalar subexpression at this stage. The ordinary type
+     * checker verifies its declaration, awaitability, and scalar result.
+     * Generic calls, implicit effects and borrowed payloads stay fail-closed.
+     */
+    private boolean safeValueMatchContextScalarExpr(Ast.Expr expr) {
+        if (safeValueMatchScalarExpr(expr)) return true;
+        if (!currentMaySuspend) return false;
+        if (expr instanceof Ast.AwaitExpr awaited
+                && awaited.expression() instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.NameExpr
+                && call.arguments().isEmpty()
+                && !call.typeArgumentsPresent()) return true;
+        if (expr instanceof Ast.UnaryExpr unary)
+            return switch (unary.operator()) {
+                case "!", "~", "+", "-" -> safeValueMatchContextScalarExpr(unary.operand());
+                default -> false;
+            };
+        if (expr instanceof Ast.BinaryExpr binary)
+            return safeValueMatchScalarOperator(binary.operator())
+                    && safeValueMatchContextScalarExpr(binary.left())
+                    && safeValueMatchContextScalarExpr(binary.right());
+        return false;
+    }
+
+    private boolean safeValueMatchScalarOperator(String op) {
+        return switch (op) {
+            case "+", "-", "*", "/", "%", "==", "!=", "eq", "neq",
+                    "<", "<=", ">", ">=", "&&", "||", "^^",
+                    "&", "|", "^", "<<", ">>", ">>>" -> true;
+            default -> false;
+        };
     }
 
     private boolean safeValueMatchScalarExpr(Ast.Expr expr) {
