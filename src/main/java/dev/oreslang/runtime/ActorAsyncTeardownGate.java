@@ -23,8 +23,8 @@ final class ActorAsyncTeardownGate {
     record Outcome(State state, Throwable error) {
         Outcome {
             Objects.requireNonNull(state);
-            if (state == State.FAILURE && error == null) {
-                throw new IllegalArgumentException("failed teardown requires cause");
+            if ((state == State.FAILURE) != (error != null)) {
+                throw new IllegalArgumentException("teardown failure cause must match terminal state");
             }
         }
     }
@@ -36,7 +36,11 @@ final class ActorAsyncTeardownGate {
     }
 
     private final AtomicReference<Outcome> terminal = new AtomicReference<>();
-    private final ControlEnqueue controlEnqueue;
+    // The Future may never complete after timeout. Clear this reference on
+    // first terminal event so the still-registered completion callback cannot
+    // retain the actor's CONTROL closure and its guest state indefinitely.
+    private final AtomicReference<ControlEnqueue> controlEnqueue = new AtomicReference<>();
+    private final AtomicReference<Throwable> notificationFailure = new AtomicReference<>();
     private final ScheduledFuture<?> deadline;
 
     ActorAsyncTeardownGate(CompletionStage<?> operation,
@@ -46,7 +50,7 @@ final class ActorAsyncTeardownGate {
         Objects.requireNonNull(operation, "operation");
         Objects.requireNonNull(timeout, "timeout");
         Objects.requireNonNull(timer, "timer");
-        this.controlEnqueue = Objects.requireNonNull(controlEnqueue, "controlEnqueue");
+        this.controlEnqueue.set(Objects.requireNonNull(controlEnqueue, "controlEnqueue"));
         if (timeout.isNegative() || timeout.isZero()) {
             throw new IllegalArgumentException("actor teardown deadline must be positive");
         }
@@ -75,13 +79,27 @@ final class ActorAsyncTeardownGate {
         return Optional.ofNullable(terminal.get());
     }
 
+    /** Rejected CONTROL notification is never silently mistaken for delivery.
+     * The trusted caller must fail closed or let a supervisor watchdog poll
+     * outcome(); this host-only gate cannot enqueue actor work itself. */
+    Optional<Throwable> notificationFailure() {
+        return Optional.ofNullable(notificationFailure.get());
+    }
+
     private void publish(Outcome result) {
         if (!terminal.compareAndSet(null, result)) return;
         deadline.cancel(false);
         // This is intentionally just a trusted CONTROL enqueue, not an actor
         // callback. A failed enqueue must be handled by the caller's existing
         // fail-closed supervisor/host watchdog; outcome remains observable.
-        controlEnqueue.signal();
+        ControlEnqueue enqueue = controlEnqueue.getAndSet(null);
+        if (enqueue != null) {
+            try {
+                enqueue.signal();
+            } catch (RuntimeException rejection) {
+                notificationFailure.compareAndSet(null, rejection);
+            }
+        }
     }
 
     private static Throwable unwrap(Throwable failure) {
