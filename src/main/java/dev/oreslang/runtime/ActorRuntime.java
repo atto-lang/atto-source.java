@@ -6723,44 +6723,48 @@ public final class ActorRuntime implements AutoCloseable {
                                 // that turn; do not resume its suspended handler
                                 // and do not treat normal cancellation as panic.
                             } else {
-                                try {
-                                    if (ticket != null) {
+                                // Catch cancellation only at the ticket
+                                // validation sites. Catching it around the
+                                // guest continuation itself could swallow a
+                                // genuine task/guest failure with this type.
+                                boolean admitted = true;
+                                if (ticket != null) {
+                                    try {
                                         ticket.requireAdmissible(
                                                 ref.id(), executionDomain, serialReceiveLease);
+                                    } catch (SerialExecutionTicket.RetiredTaskException canceled) {
+                                        admitted = false;
                                     }
+                                }
+                                if (admitted) {
                                     SerialActorAdmission.Lease held = serialReceiveLease;
-                                if (held != null) {
-                                    if (held.state() == SerialActorAdmission.State.SUSPENDED) held.resume();
-                                    held.requireActive();
-                                }
-                                try {
-                                    if (ticket != null) {
-                                        ticket.requireRunnable(
-                                                ref.id(), executionDomain, serialReceiveLease);
-                                    }
-                                    // Task cancellation can arrive between
-                                    // authority validation and guest dispatch.
-                                    // The scheduler's own terminal CAS also
-                                    // fences any cancellation after this check.
-                                    if (ticket == null || !ticket.isRetired()) {
-                                        activeEnvelope.continuation().run();
-                                    }
-                                } finally {
-                                    held = serialReceiveLease;
                                     if (held != null) {
-                                        if (sourceReceiveSuspended) {
-                                            if (held.state() == SerialActorAdmission.State.RUNNING) held.suspend();
-                                        }
-                                        // Closing the lifetime before the entire
-                                        // actor envelope has retired its scratch and
-                                        // state loans would permit premature re-entry.
-                                        // Release only after the envelope boundary.
+                                        if (held.state() == SerialActorAdmission.State.SUSPENDED) held.resume();
+                                        held.requireActive();
                                     }
-                                }
-                                } catch (SerialExecutionTicket.RetiredTaskException canceled) {
-                                    // Cancellation raced the authority check:
-                                    // discard this segment after its envelope
-                                    // retires, without fail-stopping the actor.
+                                    try {
+                                        boolean runnable = true;
+                                        if (ticket != null) {
+                                            try {
+                                                ticket.requireRunnable(
+                                                        ref.id(), executionDomain, serialReceiveLease);
+                                            } catch (SerialExecutionTicket.RetiredTaskException canceled) {
+                                                runnable = false;
+                                            }
+                                        }
+                                        // Cancellation may race the authority
+                                        // checks; TaskRunner's own TERMINAL CAS
+                                        // independently fences late cancellation.
+                                        if (runnable && (ticket == null || !ticket.isRetired())) {
+                                            activeEnvelope.continuation().run();
+                                        }
+                                    } finally {
+                                        held = serialReceiveLease;
+                                        if (held != null && sourceReceiveSuspended
+                                                && held.state() == SerialActorAdmission.State.RUNNING) {
+                                            held.suspend();
+                                        }
+                                    }
                                 }
                             }
                         } else {
