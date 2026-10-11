@@ -91,6 +91,31 @@ final class SupervisorFailureLaneTest {
     }
 
     @Test
+    void unicodeControlMetadataIsByteBoundedAndAlwaysWellFormed() {
+        var key = id(55);
+        var exact = new SupervisorFailureLane.Failure(key,
+                SupervisorFailureLane.Kind.PANIC, "🚨".repeat(130), "p");
+        assertEquals("🚨".repeat(128), exact.summary());
+        assertEquals(512, exact.summary().getBytes(
+                java.nio.charset.StandardCharsets.UTF_8).length);
+        var mixed = new SupervisorFailureLane.Failure(key,
+                SupervisorFailureLane.Kind.PANIC,
+                "x".repeat(510) + "🚨" + "bad", "root");
+        assertEquals("x".repeat(510), mixed.summary());
+        var malformed = new SupervisorFailureLane.Failure(key,
+                SupervisorFailureLane.Kind.PANIC,
+                "\uD83D" + "🚨" + "\uDE80",
+                "p".repeat(127) + "\uD83D" + "🚨");
+        assertEquals("?🚨?", malformed.summary());
+        assertEquals("p".repeat(127) + "?", malformed.parentId());
+        var lane = new SupervisorFailureLane(1);
+        lane.reserve(key);
+        assertTrue(lane.publish(malformed));
+        assertEquals("?🚨?", lane.poll().orElseThrow().summary());
+        lane.ack(key);
+    }
+
+    @Test
     void concurrentProducersCannotLoseReservedTerminalEvents() throws Exception {
         int total = 256;
         SupervisorFailureLane lane = new SupervisorFailureLane(total);
