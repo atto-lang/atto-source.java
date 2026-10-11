@@ -19,8 +19,20 @@ final class SupervisorChildRegistryTest {
                 first.child(), firstActor, 1, ActorRuntime.ActorId.create()),
                 "cannot replace before physical-finalization admission");
         registry.finalized(first.child(), firstActor, 1);
+        var reservation = registry.beginRestart(first.child(), firstActor, 1);
+        assertEquals(SupervisorChildRegistry.Phase.RESTARTING,
+                registry.snapshot(first.child()).phase());
+        assertThrows(IllegalStateException.class,
+                () -> registry.beginRestart(first.child(), firstActor, 1),
+                "a competing restart must not be allowed to spawn");
+        assertThrows(IllegalStateException.class,
+                () -> registry.stop(first.child(), firstActor, 1),
+                "STOP cannot overtake an active restart reservation");
         var nextActor = ActorRuntime.ActorId.create();
-        var next = registry.replace(first.child(), firstActor, 1, nextActor);
+        var next = registry.replace(reservation, nextActor);
+        assertThrows(IllegalStateException.class,
+                () -> registry.replace(reservation, ActorRuntime.ActorId.create()),
+                "committed reservation cannot replay");
         assertEquals(first.child(), next.child(), "logical identity must remain stable");
         assertNotEquals(first.actor(), next.actor(), "replacement needs a fresh ActorId");
         assertEquals(2, next.incarnation());
@@ -36,8 +48,8 @@ final class SupervisorChildRegistryTest {
         registry.stop(next.child(), nextActor, 2);
         assertEquals(SupervisorChildRegistry.Phase.STOPPED,
                 registry.snapshot(next.child()).phase());
-        assertThrows(IllegalStateException.class, () -> registry.replace(
-                next.child(), nextActor, 2, ActorRuntime.ActorId.create()));
+        assertThrows(IllegalStateException.class, () ->
+                registry.beginRestart(next.child(), nextActor, 2));
         registry.retireStopped(next.child());
         assertEquals(0, registry.trackedChildren());
         assertThrows(IllegalStateException.class,
@@ -70,13 +82,49 @@ final class SupervisorChildRegistryTest {
                 () -> registry.finalized(first.child(), ActorRuntime.ActorId.create(), 1));
 
         registry.finalized(first.child(), actor, 1);
+        var permit = registry.beginRestart(first.child(), actor, 1);
         assertThrows(IllegalStateException.class,
-                () -> registry.replace(first.child(), actor, 1, actor),
+                () -> registry.replace(permit, actor),
                 "same ActorId must not masquerade as replacement");
         var other = registry.register(ActorRuntime.ActorId.create());
         assertThrows(IllegalStateException.class,
-                () -> registry.replace(first.child(), actor, 1, other.actor()),
+                () -> registry.replace(permit, other.actor()),
                 "cannot steal an active actor belonging to another logical child");
+        registry.abortRestart(permit);
+        assertThrows(IllegalStateException.class,
+                () -> registry.replace(permit, ActorRuntime.ActorId.create()),
+                "aborted reservation must never reactivate");
+    }
+
+    @Test
+    void failedRestartAbortRestoresFinalizedButFencesOldPermit() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var oldActor = ActorRuntime.ActorId.create();
+        var first = registry.register(oldActor);
+        registry.finalized(first.child(), oldActor, 1);
+        var previous = registry.beginRestart(first.child(), oldActor, 1);
+        assertThrows(IllegalStateException.class, () ->
+                registry.beginRestart(first.child(), oldActor, 1));
+        registry.abortRestart(previous);
+        assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                registry.snapshot(first.child()).phase());
+        var current = registry.beginRestart(first.child(), oldActor, 1);
+        assertNotEquals(previous.nonce(), current.nonce());
+        assertThrows(IllegalStateException.class, () ->
+                registry.abortRestart(previous));
+        assertThrows(IllegalStateException.class, () ->
+                registry.replace(previous, ActorRuntime.ActorId.create()));
+        var replacement = ActorRuntime.ActorId.create();
+        registry.replace(current, replacement);
+        assertEquals(2, registry.snapshot(first.child()).incarnation());
+        registry.finalized(first.child(), replacement, 2);
+        var reuse = registry.beginRestart(first.child(), replacement, 2);
+        assertThrows(IllegalStateException.class,
+                () -> registry.replace(reuse, oldActor),
+                "A -> B -> A actor ABA must not be accepted");
+        registry.abortRestart(reuse);
+        assertEquals(2, registry.trackedActorIdentities());
     }
 
     @Test
@@ -98,8 +146,8 @@ final class SupervisorChildRegistryTest {
                         try {
                             if (!start.await(5, java.util.concurrent.TimeUnit.SECONDS))
                                 throw new IllegalStateException("race barrier timed out");
-                            registry.replace(first.child(), actor, 1,
-                                    ActorRuntime.ActorId.create());
+                            var permit = registry.beginRestart(first.child(), actor, 1);
+                            registry.replace(permit, ActorRuntime.ActorId.create());
                             success.incrementAndGet();
                         } catch (IllegalStateException expected) {
                             failed.incrementAndGet();
