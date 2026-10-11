@@ -833,10 +833,14 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private static SourceFlow throwing(Throwable failure) {
-                return new SourceFlow(
-                        SourceFlowKind.THROW,
-                        null,
-                        Objects.requireNonNull(failure, "failure"));
+                Objects.requireNonNull(failure, "failure");
+                // Internal lexical returns are never guest exceptions. An
+                // awaited value arm may carry a containing-function return
+                // through expression callbacks until it reaches this boundary.
+                if (failure instanceof ReturnSignal returned) {
+                    return returning(returned.value);
+                }
+                return new SourceFlow(SourceFlowKind.THROW, null, failure);
             }
         }
 
@@ -2944,10 +2948,17 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(resumed, null,
                                     new IllegalStateException(
                                             "value dispatch arm completed without result"));
-                    case RETURN, BREAK, CONTINUE ->
+                    case RETURN ->
+                            // A procedural do match/do switch nested in this
+                            // value arm may return from the containing callable.
+                            // Carry that lexical exit through expression callbacks
+                            // and never hand it to a source catch arm as an error.
+                            continuation.accept(resumed, null,
+                                    new ReturnSignal(flow.value()));
+                    case BREAK, CONTINUE ->
                             continuation.accept(resumed, null,
                                     new IllegalStateException(
-                                            "invalid nonlocal flow from suspendable value arm: "
+                                            "invalid loop control from suspendable value arm: "
                                                     + flow.kind()));
                 }
             });
