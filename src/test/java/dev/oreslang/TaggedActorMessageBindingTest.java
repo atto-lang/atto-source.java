@@ -99,9 +99,9 @@ final class TaggedActorMessageBindingTest {
                 reordered.decode(original.encode("Status.Message2", "x")));
         var retagged = TaggedActorMessageBinding.fromRegistry(
                 TaggedMessageContracts.verify(Parser.parse(SOURCE.replace(
-                        "Message2: string = 2", "Message2: string = 10"))), "WorkerMessages");
+                        "AliasMessage: string = 4", "AliasMessage: string = 10"))), "WorkerMessages");
         assertThrows(IllegalArgumentException.class,
-                () -> retagged.decode(original.encode("Status.Message2", "x")));
+                () -> retagged.decode(original.encode("Status.AliasMessage", "x")));
     }
 
     @Test
