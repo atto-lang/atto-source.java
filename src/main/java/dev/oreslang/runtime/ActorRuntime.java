@@ -1761,16 +1761,27 @@ public final class ActorRuntime implements AutoCloseable {
                     "source actor task requires an executing actor turn");
         }
         final SerialExecutionTicket ticket = cell.issueSourceTaskTicket();
-        return cell.sourceScheduler().startActorBound(task, command -> {
-            if (!ticket.mayEnqueue()) {
-                throw new RejectedExecutionException(
-                        "actor task ticket revoked before enqueue");
-            }
-            if (!enqueueContinuation(cell.ref.id(), command, ticket)) {
-                throw new RejectedExecutionException(
-                        "actor task " + ticket.taskId() + " lost its continuation lane");
-            }
-        });
+        OresFuture<T> completion;
+        try {
+            completion = cell.sourceScheduler().startActorBound(task, command -> {
+                if (!ticket.mayEnqueue()) {
+                    throw new RejectedExecutionException(
+                            "actor task ticket revoked before enqueue");
+                }
+                if (!enqueueContinuation(cell.ref.id(), command, ticket)) {
+                    throw new RejectedExecutionException(
+                            "actor task " + ticket.taskId() + " lost its continuation lane");
+                }
+            });
+        } catch (RuntimeException | Error failure) {
+            ticket.retire();
+            throw failure;
+        }
+        // The handler admission can outlive this individual source task.
+        // A canceled or completed task must not replay an already-enqueued
+        // continuation under the still-live handler's ticket.
+        completion.whenCompleteRuntime((ignored, failure) -> ticket.retire());
+        return completion;
     }
 
     private boolean ownFuture(
