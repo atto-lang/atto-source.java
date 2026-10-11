@@ -49,6 +49,9 @@ final class SerialExecutionTicket {
     /** Revoke this task's authority independently of its enclosing actor handler. */
     void retire() { retired.set(true); }
 
+    /** Distinguish ordinary task cancellation from invalid foreign authority. */
+    boolean isRetired() { return retired.get(); }
+
     /** Producer/IO threads can enqueue, but they cannot execute guest code. */
     boolean mayEnqueue() {
         if (retired.get() || !actorAlive.getAsBoolean()) return false;
