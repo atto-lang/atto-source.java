@@ -240,4 +240,45 @@ final class SourceSupervisorAwaitStopTest {
             group.close();
         }
     }
+    @Test
+    void failingCompletionRegistrationQuarantinesStopWithoutReplay() throws Exception {
+        var compiled = OresCompiler.compileStopOnlySupervisor(SOURCE);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var attempted = new CountDownLatch(1);
+            var observed = new AtomicReference<SupervisorProcess.Resolution>();
+            var process = compiled.installAwaitingStop(group, 2, resolution -> {
+                observed.set(resolution);
+                attempted.countDown();
+                return new CompletableFuture<Void>() {
+                    @Override
+                    public CompletableFuture<Void> whenComplete(
+                            java.util.function.BiConsumer<? super Void, ? super Throwable> action) {
+                        throw new IllegalStateException("completion registration failed");
+                    }
+                };
+            });
+            var actor = group.spawnWorker(ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(), factory -> (message, ctx) -> {
+                        throw new IllegalStateException("registration-failure-actor");
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send("panic");
+            assertTrue(attempted.await(10, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (process.failure().isEmpty() && System.nanoTime() < deadline)
+                Thread.sleep(1);
+            assertTrue(process.failure().orElse("").contains("completion registration failed"));
+            assertEquals(0, process.resolved());
+            assertEquals(1, process.undelivered());
+            var child = observed.get().notice().logicalChild().orElseThrow();
+            assertEquals(SupervisorChildRegistry.StopReceiptStatus.UNCERTAIN,
+                    group.stopReceipt(child).status());
+            assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                    group.childSnapshot(child).phase());
+            process.close();
+            group.close();
+        }
+    }
+
 }
