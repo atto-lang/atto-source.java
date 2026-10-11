@@ -133,6 +133,24 @@ final class OresVMTest {
     }
 
     @Test
+    void aThousandActorGroupsDoNotAllocateCarriersOrSchedulers() {
+        try (OresVM vm = OresVM.create(Runnable::run)) {
+            ActorRuntime actors = vm.createActorRuntime(
+                    IsolatePolicy.developer(),
+                    new ActorRuntime.DispatcherConfig(2, 2, 64, 2_048),
+                    ActorRuntime.TurnExecutor.direct());
+            for (int i = 0; i < 1_000; i++) {
+                actors.createActorGroup();
+            }
+            assertEquals(1_000, actors.actorGroupCount());
+            for (OresVM.Pool pool : OresVM.Pool.values()) {
+                assertEquals(0, vm.poolScheduler(pool).createdCarriers(),
+                        "ActorGroup creation must not allocate " + pool + " workers");
+            }
+        }
+    }
+
+    @Test
     void defaultPoolsHaveIndependentFiveCarrierBudgets() {
         var config = ActorRuntime.DispatcherConfig.defaults();
         assertEquals(
