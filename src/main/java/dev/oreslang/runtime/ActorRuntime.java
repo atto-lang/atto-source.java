@@ -349,7 +349,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
-    private final ActorSupervisor rootSupervisor = new ActorSupervisor(SupervisorId.create());
+    private final ActorSupervisor rootSupervisor = new ActorSupervisor(SupervisorId.create(), null);
     private final Map<SupervisorId, ActorSupervisor> supervisors =
             new ConcurrentHashMap<>(Map.of(rootSupervisor.id(), rootSupervisor));
     private final AtomicInteger actorCount = new AtomicInteger();
@@ -1921,12 +1921,39 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ActorSupervisor {
         private final SupervisorId id;
+        // Immutable parent prevents cycles and prevents a hot-policy upgrade
+        // from silently reparenting an existing supervisory domain.
+        private final ActorSupervisor parent;
 
-        private ActorSupervisor(SupervisorId id) {
+        private ActorSupervisor(SupervisorId id, ActorSupervisor parent) {
             this.id = Objects.requireNonNull(id, "id");
+            this.parent = parent;
         }
 
         public SupervisorId id() { return id; }
+
+        public Optional<SupervisorId> parentId() {
+            requireSupervisorContext("inspect supervisor parent");
+            requireCallerRuntimeAffinity("inspect supervisor parent");
+            return Optional.ofNullable(parent).map(ActorSupervisor::id);
+        }
+
+        /** Directly supervised child supervisors. */
+        public Set<SupervisorId> childSupervisorIds() {
+            requireSupervisorContext("inspect child supervisors");
+            requireCallerRuntimeAffinity("inspect child supervisors");
+            return Set.copyOf(supervisors.values().stream()
+                    .filter(candidate -> candidate.parent == this)
+                    .map(ActorSupervisor::id)
+                    .toList());
+        }
+
+        private boolean isDescendantOf(ActorSupervisor ancestor) {
+            for (ActorSupervisor cursor = this; cursor != null; cursor = cursor.parent) {
+                if (cursor == ancestor) return true;
+            }
+            return false;
+        }
 
         /** Read-only snapshot; closed groups disappear from the association. */
         public Set<ActorGroupId> advisedGroupIds() {
@@ -1934,6 +1961,17 @@ public final class ActorRuntime implements AutoCloseable {
             requireCallerRuntimeAffinity("inspect supervisor ActorGroups");
             return Set.copyOf(actorGroups.values().stream()
                     .filter(group -> group.supervisor == this && !group.closed())
+                    .map(ActorGroup::id)
+                    .toList());
+        }
+
+        /** Groups directly or transitively supervised by this node. */
+        public Set<ActorGroupId> subtreeGroupIds() {
+            requireSupervisorContext("inspect supervisor subtree ActorGroups");
+            requireCallerRuntimeAffinity("inspect supervisor subtree ActorGroups");
+            return Set.copyOf(actorGroups.values().stream()
+                    .filter(group -> !group.closed()
+                            && group.supervisor.isDescendantOf(this))
                     .map(ActorGroup::id)
                     .toList());
         }
@@ -1945,16 +1983,34 @@ public final class ActorRuntime implements AutoCloseable {
         return rootSupervisor;
     }
 
-    /** Register an explicit supervisor identity; host/CONTROL authority only. */
+    /** Register a supervisor immediately below the runtime root. */
     public ActorSupervisor createSupervisor() {
-        requireSupervisorContext("create an ActorSupervisor");
-        requireCallerRuntimeAffinity("create an ActorSupervisor");
+        return createChildSupervisor(rootSupervisor);
+    }
+
+    /**
+     * Create a supervisor whose parent is another same-runtime supervisor.
+     * Parentage is fixed for the lifetime of this supervisor identity.
+     * A logical supervisor will eventually execute as a CONTROL-lane actor,
+     * not as a dedicated thread or mandatory OS process.
+     */
+    public ActorSupervisor createChildSupervisor(ActorSupervisor parent) {
+        requireSupervisorContext("create a child ActorSupervisor");
+        requireCallerRuntimeAffinity("create a child ActorSupervisor");
+        Objects.requireNonNull(parent, "parent");
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (supervisors.get(parent.id()) != parent)
+                throw new IllegalArgumentException(
+                        "parent ActorSupervisor belongs to another ActorRuntime");
+            if (supervisors.size() >= dispatcherConfig.maxActors())
+                throw new IllegalStateException(
+                        "ActorSupervisor runtime limit exceeded: maximum "
+                                + dispatcherConfig.maxActors());
             while (true) {
-                ActorSupervisor supervisor = new ActorSupervisor(SupervisorId.create());
-                if (supervisors.putIfAbsent(supervisor.id(), supervisor) == null)
-                    return supervisor;
+                ActorSupervisor child = new ActorSupervisor(SupervisorId.create(), parent);
+                if (supervisors.putIfAbsent(child.id(), child) == null)
+                    return child;
             }
         }
     }
