@@ -4521,7 +4521,15 @@ public final class ActorRuntime implements AutoCloseable {
                 else release.run();
             }
         }
-        cell.schedule();
+        // The message has already crossed the linearizable admission commit.
+        // A dispatcher rejection is an actor lifecycle failure, not evidence
+        // that mailbox admission failed. The scheduler records that failure
+        // in done()/supervision; never report it as a rejected send.
+        try {
+            cell.schedule();
+        } catch (RejectedExecutionException rejectedAfterAdmission) {
+            // Delivery is no longer guaranteed, but admission did succeed.
+        }
         } finally {
             if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
         }
@@ -6380,7 +6388,11 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             } catch (RejectedExecutionException rejected) {
                 scheduled.set(false);
-                stop();
+                // A failed carrier submission is an exceptional actor exit:
+                // accepted mailbox envelopes are abandoned, never processed.
+                // Senders observe it via done()/supervisor, not by inventing
+                // a post-admission send failure.
+                fail(rejected);
                 if (!closed.get()) throw rejected;
             }
         }
