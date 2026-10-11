@@ -853,6 +853,24 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * Compile-time supervision proof for direct spawn intrinsic lowering.
+     * The runtime also checks this boundary for dynamically invoked spawns.
+     */
+    private boolean hasActorSupervisionContract(Ast.ClassDecl klass) {
+        Set<String> names = new HashSet<>();
+        for (Ast.MethodDecl method : effectiveInstanceMethods(
+                klass, new LinkedHashSet<>()).values()) {
+            if (method.name().equals("supervision_policy")) return true;
+            if (method.name().equals("on_throw")
+                    || method.name().equals("on_raise")
+                    || method.name().equals("on_panic")) {
+                names.add(method.name());
+            }
+        }
+        return names.containsAll(Set.of("on_throw", "on_raise", "on_panic"));
+    }
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
@@ -1977,6 +1995,19 @@ public final class TypeChecker {
                                     + "' is not a source actor visible to this compilation unit");
                 }
                 rejectUnimportedClassNamespace(actorClass);
+                // A directly lowered nested spawn is provably supervised
+                // only if its lexical actor declares exhaustive hooks or
+                // an explicit escalation policy. Do not defer this check
+                // until runtime where a child could otherwise be admitted.
+                if (currentActorKind != Ast.ActorKind.NONE
+                        && lexicalClassOrigin != null
+                        && !hasActorSupervisionContract(lexicalClassOrigin)) {
+                    throw new IllegalArgumentException(
+                            "actor '" + lexicalClassOrigin.name()
+                                    + "' cannot spawn a child without exhaustive "
+                                    + "on_throw/on_raise/on_panic hooks or "
+                                    + "supervision_policy(): String");
+                }
                 if (actorClass.actorKind() == Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
                             "spawn requires an actor class; '" + actorClass.name()
