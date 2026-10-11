@@ -53,6 +53,10 @@ final class ActorPipeTransportTest {
                 writer.writeAsync("first").get(5, TimeUnit.SECONDS);
                 var waiting = writer.writeAsync("second");
                 assertFalse(waiting.isDone(), "bounded pipe must backpressure upstream");
+                var bypass = pipe.writer(0, String.class);
+                assertThrows(ExecutionException.class,
+                        () -> bypass.writeAsync("overflow").get(5, TimeUnit.SECONDS),
+                        "fresh port handle must share the per-edge pending write budget");
                 assertEquals("first", reader.readAsync().get(5, TimeUnit.SECONDS));
                 waiting.get(5, TimeUnit.SECONDS);
                 assertEquals("second", reader.readAsync().get(5, TimeUnit.SECONDS));
