@@ -182,9 +182,9 @@ final class SourceSupervisorStopLoweringTest {
             var incarnation = group.childSnapshot(logicalChild);
             assertEquals(failedId, incarnation.actor());
             assertEquals(1, incarnation.incarnation());
-            assertEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.FINALIZED,
+            assertNotEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.ACTIVE,
                     incarnation.phase(),
-                    "CONTROL received failure before registered child was finalized");
+                    "CONTROL received an active, unfinalized child");
             assertEquals(Boolean.TRUE, doneAtDecision.get(),
                     "CONTROL delivered STOP before child done/finalization barrier");
             assertEquals(group.supervisorId(), decision.notice().supervisorId());
@@ -195,6 +195,9 @@ final class SourceSupervisorStopLoweringTest {
             }
             assertEquals(1, process.resolved());
             assertEquals(0, process.undelivered());
+            assertEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.STOPPED,
+                    group.childSnapshot(logicalChild).phase(),
+                    "host STOP acknowledgment did not commit child disposition");
             group.close();
             process.close();
         }
@@ -281,7 +284,7 @@ final class SourceSupervisorStopLoweringTest {
             var child = group.childSnapshot(decision.notice().logicalChild().orElseThrow());
             assertEquals(decision.notice().actorId(), child.actor());
             assertEquals(decision.notice().incarnation(), child.incarnation());
-            assertEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.FINALIZED,
+            assertNotEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.ACTIVE,
                     child.phase());
             assertEquals(Boolean.FALSE, onActorCarrier.get(),
                     "compiled guest STOP ran on a child actor carrier");
@@ -293,6 +296,8 @@ final class SourceSupervisorStopLoweringTest {
             assertEquals(1, process.resolved());
             assertEquals(0, process.undelivered());
             assertTrue(process.healthy());
+            assertEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.STOPPED,
+                    group.childSnapshot(decision.notice().logicalChild().orElseThrow()).phase());
             group.close();
             process.close();
         }
