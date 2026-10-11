@@ -325,4 +325,54 @@ final class ActorCapabilityIsolationTest {
     }
 
 
+
+    @Test
+    void untrustedActorCannotHideStdoutInsideValueMatchDefer() {
+        Ast.Program program = Parser.parse("""
+                pub untrusted actor fnc worker(): void {
+                  val result = match<ret=int> 7 over {
+                    default {
+                      defer stdio.println("denied");
+                      return 7;
+                    }
+                  };
+                  return;
+                }
+                """);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("STDOUT"));
+    }
+
+    @Test
+    void untrustedActorCannotHideCapabilityInsideArmReturnExpression() {
+        Ast.Program program = Parser.parse("""
+                pub untrusted actor fnc worker(): void {
+                  val result = match<ret=int> 7 over {
+                    default { return process.context_id; }
+                  };
+                  return;
+                }
+                """);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("PROCESS_INFO"));
+    }
+
+    @Test
+    void untrustedActorMayUsePureValueProducingMatchWithoutCapabilities() {
+        Ast.Program program = Parser.parse("""
+                pub untrusted actor fnc worker(): void {
+                  val result = match<ret=int> 7 over {
+                    default {
+                      val value = 41;
+                      return value + 1;
+                    }
+                  };
+                  return;
+                }
+                """);
+        assertDoesNotThrow(() ->
+                CapabilityChecker.check(program, IsolatePolicy.developer()));
+    }
 }
