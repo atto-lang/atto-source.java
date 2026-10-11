@@ -24,7 +24,7 @@ public final class SourceCooperationQuantum {
     private final LongSupplier monotonicNanos;
     private long lastCooperateAtNanos;
     private long dispatchStartedAtNanos;
-    private int backedgesThisDispatch;
+    private long backedgesThisDispatch;
 
     /** Production clock, injected in tests to validate exact clock-read cost. */
     public SourceCooperationQuantum() {
@@ -48,7 +48,7 @@ public final class SourceCooperationQuantum {
      * Absolutely no clock reads or scheduler calls on the usual fast path.
      */
     public boolean completedBackedgeNeedsCheck() {
-        int completed = ++backedgesThisDispatch;
+        long completed = ++backedgesThisDispatch;
         return (completed & (LOOP_CHECK_INTERVAL - 1)) == 0;
     }
 
@@ -72,7 +72,7 @@ public final class SourceCooperationQuantum {
         return Math.max(0L, monotonicNanos.getAsLong() - lastCooperateAtNanos);
     }
 
-    public int completedBackedgesThisDispatch() {
+    public long completedBackedgesThisDispatch() {
         return backedgesThisDispatch;
     }
 }
