@@ -2605,7 +2605,7 @@ public final class Parser {
                 cases.add(new Ast.SwitchCase(constants, parseBlock()));
                 continue;
             }
-            if (match(DEFAULT) || (check(IDENT) && peek().lexeme().equals("_") && advance() != null)) {
+            if (match(DEFAULT) || matchContextualIdentifier("_")) {
                 if (sawDefault) throw error(previous(), "switch can contain only one default/_ arm");
                 sawDefault = true;
                 if (check(FAT_ARROW)) {
