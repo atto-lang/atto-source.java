@@ -9,7 +9,7 @@ pub gen* read_stdin(): Iterator<String> {
   return;
 }
 
-pub routine main(): void {
+pub suspends routine main(): void {
   // Observable is a native Oreslang prelude module, not a Java observable.
   // Each element is pulled only as the downstream iterator requests it.
   for const message of Observable.from_ch(process.stdin) {
