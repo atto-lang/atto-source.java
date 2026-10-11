@@ -90,6 +90,10 @@ public final class DeclaredEffectVerifier {
                         || callback.parameters().size() != 1) {
                     throw new IllegalArgumentException("invalid handle_state effect callback");
                 }
+                if (!callback.critical() || callback.nonLexical()) {
+                    throw new IllegalArgumentException(
+                            "intrinsic critical handle_state requires a critical lexical callback");
+                }
                 String name = callback.parameters().getFirst().name();
                 collect(callback.expressionBody(), effects, name, callableName);
                 collect(callback.blockBody(), effects, name, callableName);
