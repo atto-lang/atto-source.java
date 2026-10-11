@@ -645,8 +645,20 @@ public final class Parser {
     private void rejectUnloweredRuntimeEntityDeclaration() {
         if (!check(IDENT)) return;
         String name = peek().lexeme();
+        if (name.equals("readable") || name.equals("transform")
+                || name.equals("writable") || name.equals("duplex")) {
+            if (current + 2 < tokens.size()
+                    && tokens.get(current + 1).lexeme().equals("pipe")
+                    && tokens.get(current + 2).type() == ACTOR) {
+                throw error(peek(), "source " + name + " pipe actor declarations "
+                        + "require compiler-checked pipe role typing, bounded "
+                        + "edge transport and cross-backend lowering; not yet enabled");
+            }
+            return;
+        }
         if (!name.equals("supervisor") && !name.equals("mailman")
-                && !name.equals("scheduler") && !name.equals("proxy")) return;
+                && !name.equals("scheduler") && !name.equals("proxy")
+                && !name.equals("pipe")) return;
         throw error(peek(), "source " + name + " declarations require "
                 + "compiler-checked runtime entity lowering, supervisor "
                 + "CONTROL admission and cross-backend parity; not yet enabled");
@@ -2622,6 +2634,11 @@ public final class Parser {
 
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parseConditional();
+        if (isContextualIdentifier("pipe")) {
+            throw error(peek(), "actor pipe expressions require compiler-checked "
+                    + "source/transform/sink role typing, supervisor exclusion, "
+                    + "bounded edge transport and Java/LLVM lowering; not yet enabled");
+        }
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
                 throw error(previous(), "assignment target must be a local, field, or index");
