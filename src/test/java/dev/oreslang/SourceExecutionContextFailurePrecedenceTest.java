@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * heap-owned SourceTask execution context, not to its transient carrier.
  */
 final class SourceExecutionContextFailurePrecedenceTest {
-    private static PolyglotException fails(String code, ByteArrayOutputStream out) {
+    private static PolyglotException fails(String code, ByteArrayOutputStream out) throws Exception {
         Source source = Source.newBuilder(OresLanguage.ID, code, "source-context-failure.ores")
                 .mimeType(OresLanguage.MIME_TYPE).build();
         try (Context context = Context.newBuilder(OresLanguage.ID)
@@ -29,7 +29,7 @@ final class SourceExecutionContextFailurePrecedenceTest {
     }
 
     @Test
-    void awaitedSourceTaskRetainsPanicAcrossMultipleFailingDefers() {
+    void awaitedSourceTaskRetainsPanicAcrossMultipleFailingDefers() throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         PolyglotException failure = fails("""
                 async fnc ready(): int { return 7; }
@@ -48,7 +48,7 @@ final class SourceExecutionContextFailurePrecedenceTest {
     }
 
     @Test
-    void awaitedSourceTaskPreservesPanicAcrossFailedFinally() {
+    void awaitedSourceTaskPreservesPanicAcrossFailedFinally() throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         PolyglotException failure = fails("""
                 async fnc ready(): int { return 7; }
@@ -72,7 +72,7 @@ final class SourceExecutionContextFailurePrecedenceTest {
     }
 
     @Test
-    void sourceFinallyErrorOverridesNormalReturnAfterAwait() {
+    void sourceFinallyErrorOverridesNormalReturnAfterAwait() throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         PolyglotException failure = fails("""
                 async fnc ready(): int { return 7; }
