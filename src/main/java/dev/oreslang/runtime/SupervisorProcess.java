@@ -27,12 +27,25 @@ import java.util.function.Function;
 public final class SupervisorProcess implements AutoCloseable {
     public enum Directive { RESTART, STOP, ESCALATE, ACKNOWLEDGE }
 
+    /**
+     * Trusted host lifecycle request. The monotonic turnGeneration is scoped
+     * to supervisorId + groupId; the same immutable notice object can appear
+     * in several distinct turns, so it cannot serve as an idempotency key.
+     */
     public record Resolution(
             SupervisorFailureControl.Notice notice,
-            Directive directive) {
+            Directive directive,
+            long turnGeneration) {
         public Resolution {
             Objects.requireNonNull(notice);
             Objects.requireNonNull(directive);
+            if (turnGeneration < 0) {
+                throw new IllegalArgumentException("negative supervisor turn generation");
+            }
+        }
+        /** Source compatibility for callers constructing host-only test values. */
+        public Resolution(SupervisorFailureControl.Notice notice, Directive directive) {
+            this(notice, directive, 0);
         }
     }
 
@@ -223,7 +236,7 @@ public final class SupervisorProcess implements AutoCloseable {
         }
         try {
             // Exactly one decision request, on an admitted runtime turn.
-            decisionSink.accept(new Resolution(notice, decision));
+            decisionSink.accept(new Resolution(notice, decision, generation));
         } catch (Throwable sinkFailure) {
             synchronized (this) {
                 committingDecision = false;
