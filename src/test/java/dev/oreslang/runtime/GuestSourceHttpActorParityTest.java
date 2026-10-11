@@ -67,26 +67,30 @@ final class GuestSourceHttpActorParityTest {
         AtomicLong ids = new AtomicLong();
         AtomicReference<Throwable> failedActor = new AtomicReference<>();
         Context[] contexts = new Context[ACTORS];
+        Value[] targets = new Value[ACTORS];
         ActorArena[] arenas = new ActorArena[ACTORS];
         long started = System.nanoTime();
         try (ActorRuntime runtime = new ActorRuntime();
              ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
              HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()) {
+            // Trusted host creates and owns guest Context lifecycle; an actor
+            // must not install an exit hook or create its own Context.
+            for (int a = 0; a < ACTORS; ++a) {
+                contexts[a] = Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false).build();
+                targets[a] = contexts[a].parse(Source.newBuilder(
+                        OresLanguage.ID, text, "http-guest-counter-handler.ores").build());
+            }
             @SuppressWarnings("unchecked")
             ActorRuntime.ActorRef<Long>[] actors = new ActorRuntime.ActorRef[ACTORS];
             for (int a = 0; a < ACTORS; a++) {
                 final int index = a;
                 AtomicReference<ExplicitNativeI64Region.Slot> slot = new AtomicReference<>();
-                AtomicReference<Value> code = new AtomicReference<>();
                 var behavior = (java.util.function.Supplier<ActorRuntime.Behavior<Long>>) () -> (mail, context) -> {
                     try {
                         if (mail == 0L) {
                             arenas[index] = context.actorOwnedMemory().orElseThrow().newActorArena(2, 2);
                             slot.set(arenas[index].allocatePersistent(0));
-                            contexts[index] = Context.newBuilder(OresLanguage.ID)
-                                    .allowAllAccess(false).build();
-                            code.set(contexts[index].parse(Source.newBuilder(
-                                    OresLanguage.ID, text, "http-guest-counter-handler.ores").build()));
                             initialized.countDown();
                             return;
                         }
@@ -98,7 +102,7 @@ final class GuestSourceHttpActorParityTest {
                                 throw new IllegalStateException("actor scratch leak");
                             long count = arenas[index].readPersistent(slot.get()) + 1;
                             arenas[index].writePersistent(slot.get(), count);
-                            long answer = code.get().execute(
+                            long answer = targets[index].execute(
                                     OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
                                     "counter_response", count).asLong();
                             promise.complete(index + "," + count + "," + answer);
