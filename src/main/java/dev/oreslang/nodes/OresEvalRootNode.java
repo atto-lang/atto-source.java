@@ -2188,11 +2188,10 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             if (index >= matched.arms().size()) {
                 if (fallback == null) {
-                    continuation.accept(
-                            task,
-                            SourceFlow.throwing(
-                                    new IllegalStateException(
-                                            "exhaustive match invariant violated")));
+                    continuation.accept(task, matched.returnForm()
+                            ? SourceFlow.throwing(new IllegalStateException(
+                                    "exhaustive return do match invariant violated"))
+                            : SourceFlow.normal());
                     return;
                 }
                 LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
@@ -4762,8 +4761,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (selected == null) {
+                    if (!matched.returnForm()) return; // partial do match
                     throw new IllegalStateException(
-                            "exhaustive match invariant violated at runtime: no arm matched");
+                            "exhaustive return do match invariant violated at runtime");
                 }
                 Env selectedEnv = new Env(env);
                 selectedBindings.forEach((name, value) ->
