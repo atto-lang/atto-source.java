@@ -4444,6 +4444,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 if (value instanceof OresObject object) {
+                    if (object.mapEntries != null) {
+                        throw new IllegalArgumentException("open Map objects cannot cross async task boundaries without an explicit serialization contract");
+                    }
                     LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
                     for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
@@ -7863,6 +7866,7 @@ public final class OresEvalRootNode extends RootNode {
                 return structuralRecordMatches(value, target);
             }
             String name = target.name();
+            if (name.equals("unknown")) return true;
             if (name.equals("int") || name.equals("i8") || name.equals("i16") || name.equals("i32")
                     || name.equals("i64") || name.equals("u8") || name.equals("u16")
                     || name.equals("u32") || name.equals("u64") || name.equals("uint")
