@@ -55,6 +55,14 @@ public final class OresCompiler {
      * The restricted source grammar is independently type/effect checked by
      * AcceleratorSourceLowering (only pure finite f32 operations permitted).
      */
+    /** Compile strict checked three-stage source to a typed host graph plan. */
+    public static dev.oreslang.runtime.accel.PipelineSourceLowering.Plan
+    compilePipelineSource(String source,
+            dev.oreslang.runtime.DataOrientedLayout.Plan layout,
+            dev.oreslang.runtime.accel.DopKernelIR.GpuTarget target) {
+        return Parser.parseTrustedPipelineSource(source, layout, target);
+    }
+
     public static dev.oreslang.runtime.accel.DopKernelIR.OpenClArtifact compileGpuSource(
             String source,
             dev.oreslang.runtime.DataOrientedLayout.Plan layout,
