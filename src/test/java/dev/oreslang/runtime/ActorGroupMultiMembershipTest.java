@@ -271,4 +271,44 @@ final class ActorGroupMultiMembershipTest {
             assertEquals(0, a.memberCount() + b.memberCount() + c.memberCount());
         }
     }
+    @Test
+    void rotatedPermitCannotJoinEvenWhileAnotherRoomRemainsAvailable() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup roomA = runtime.createActorGroup();
+            ActorRuntime.ActorGroup roomB = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability stale = roomA.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability replacement = roomA.rotateJoinCapability();
+            ActorRuntime.ActorGroupJoinCapability joinB = roomB.joinCapability();
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Throwable> problem = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(
+                    factory -> (message, ctx) -> {
+                        try {
+                            assertThrows(SecurityException.class, stale::join,
+                                    "rotated permit must not admit a new member");
+                            assertEquals(0, roomA.memberCount());
+                            replacement.join();
+                            joinB.join();
+                            assertTrue(roomA.contains(ctx.self()));
+                            assertTrue(roomB.contains(ctx.self()));
+                            roomA.leaveCurrent();
+                            assertThrows(SecurityException.class, stale::join,
+                                    "revoked authority cannot bypass membership revocation");
+                            assertTrue(roomB.contains(ctx.self()));
+                        } catch (Throwable failure) {
+                            problem.set(failure);
+                        } finally {
+                            done.countDown();
+                        }
+                    });
+            actor.send(1);
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertNull(problem.get());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, roomA.memberCount());
+            assertEquals(0, roomB.memberCount());
+        }
+    }
+
 }
