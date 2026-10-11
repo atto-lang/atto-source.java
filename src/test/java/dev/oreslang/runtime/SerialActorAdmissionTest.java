@@ -154,4 +154,41 @@ final class SerialActorAdmissionTest {
         assertThrows(IllegalStateException.class, lease::resume);
     }
 
+    @Test void cancellationRacingPromotionNeverLeavesAnOrphanedLease() throws Exception {
+        for (int attempt = 0; attempt < 300; attempt++) {
+            SerialActorAdmission gate = new SerialActorAdmission(2);
+            var owner = gate.submit(HTTP).join();
+            var candidate = gate.submit(MESSAGE);
+            CountDownLatch start = new CountDownLatch(1);
+            Thread cancel = Thread.ofPlatform().start(() -> {
+                try {
+                    start.await();
+                    candidate.cancel(false);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            Thread finish = Thread.ofPlatform().start(() -> {
+                try {
+                    start.await();
+                    owner.close();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            start.countDown();
+            cancel.join();
+            finish.join();
+            if (!candidate.isCancelled()) {
+                var admitted = candidate.join();
+                admitted.requireActive();
+                admitted.close();
+            }
+            assertFalse(gate.busy(), "canceled promotion leaked lease in attempt " + attempt);
+            assertEquals(0, gate.queued());
+            gate.submit(HTTP).join().close(); // Admission must still make progress.
+            gate.close();
+        }
+    }
+
 }
