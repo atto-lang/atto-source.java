@@ -549,4 +549,71 @@ final class PatternMatchingHardeningTest {
         assertEquals("42\n9", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 
+
+    @Test
+    void switchCaseDuplicatesAreComparedAfterScalarConstantFolding() {
+        for (String caseBody : new String[] {
+                "case 2 { return 2; } case 1 + 1 { return 3; }",
+                "case -1 { return 2; } case 0 - 1 { return 3; }"
+        }) {
+            String source = "fnc f(int v): int { switch v { " + caseBody
+                    + " default { return 0; } } return 0; }";
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+            assertTrue(error.getMessage().contains("duplicate switch case"), error.getMessage());
+        }
+        IllegalArgumentException strings = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                fnc f(string v): int {
+                  switch v {
+                    case "foo" { return 1; }
+                    case "f" + "oo" { return 2; }
+                    default { return 0; }
+                  }
+                  return 0;
+                }
+                """)));
+        assertTrue(strings.getMessage().contains("duplicate switch case"), strings.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc invalid([int, int] v): int {
+                  switch v {
+                    case [1, 2] { return 1; }
+                    default { return 0; }
+                  }
+                  return 0;
+                }
+                """)));
+    }
+
+    @Test
+    void asyncAndSyncSwitchAgreeOnFallbackSemantics() throws Exception {
+        String program = """
+                async fnc answer(): string {
+                  return "car";
+                }
+                fnc direct(string value): int {
+                  switch value {
+                    default { return 0; }
+                    case "foo", "car" { return 42; }
+                  }
+                  return -1;
+                }
+                pub async fnc main(): void {
+                  stdio.println(direct("car"));
+                  switch (await answer()) {
+                    default { stdio.println(0); }
+                    case "foo", "car" { stdio.println(42); }
+                  }
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "switch-async-equality.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("42\n42", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
+    }
+
 }
