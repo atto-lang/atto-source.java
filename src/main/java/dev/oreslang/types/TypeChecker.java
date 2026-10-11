@@ -449,6 +449,43 @@ public final class TypeChecker {
                 Ast.BindingKind.CONST);
     }
 
+    /**
+     * Critical tickets fence access only until invocation completion. A
+     * borrowed result (including a nested borrow in a record/tuple/generic)
+     * would outlive the ticket. A suspendable critical callable must likewise
+     * not retain a borrowed parameter across its mandatory entry yield.
+     *
+     * This verifies declared surface types; OwnershipChecker separately
+     * verifies the actual call arguments and live lexical loans.
+     */
+    private static boolean containsCriticalBorrow(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        if (type.arguments().stream().anyMatch(TypeChecker::containsCriticalBorrow)) return true;
+        return type.isRecordType()
+                && type.recordMembers().values().stream().anyMatch(TypeChecker::containsCriticalBorrow);
+    }
+
+    private static void verifyCriticalSignature(
+            String name, boolean critical, boolean suspends, boolean async,
+            List<Ast.Param> parameters, Ast.TypeRef returns) {
+        if (!critical) return;
+        if (containsCriticalBorrow(returns)) {
+            throw new IllegalArgumentException(
+                    "critical callable '" + name
+                    + "' cannot return a borrowed reference beyond the critical ticket lifetime");
+        }
+        if (!suspends && !async) return;
+        for (Ast.Param param : parameters) {
+            if (param.structural() || containsCriticalBorrow(param.type())) {
+                throw new IllegalArgumentException(
+                        "suspending critical callable '" + name
+                        + "' must capture owned parameters before its mandatory suspension; "
+                        + "borrowed and structural parameters are not admitted");
+            }
+        }
+    }
+
     private void requireSuspendableCall(boolean suspends, String label) {
         if (suspends && !currentMaySuspend)
             throw new IllegalArgumentException(
@@ -456,6 +493,8 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        verifyCriticalSignature(module + "." + fn.name(), fn.critical(),
+                fn.suspends(), fn.async(), fn.parameters(), fn.returnType());
         if (fn.name().endsWith("_blocking") && !fn.suspends())
             throw new IllegalArgumentException(
                     "*_blocking function '" + fn.name() + "' must declare suspends");
@@ -981,6 +1020,8 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            verifyCriticalSignature(klass.name() + "." + method.name(), method.critical(),
+                    method.suspends(), method.async(), method.parameters(), method.returnType());
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && (method.name().equals("send")
