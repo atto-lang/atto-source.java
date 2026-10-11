@@ -286,10 +286,23 @@ public final class OresScheduler implements AutoCloseable {
      * scheduler does not move the waiter onto this scheduler.</p>
      */
     public <T> OresFuture<T> start(Task<T> task) {
+        return startWithPlacement(task, executor);
+    }
+
+    /**
+     * ActorRuntime-only bridge: every segment of one source actor task must
+     * be admitted using the same runtime-issued task ticket. This is not a
+     * guest API and it does not create a scheduler or a carrier pool.
+     */
+    <T> OresFuture<T> startActorBound(Task<T> task, Executor taskPlacement) {
+        return startWithPlacement(task, Objects.requireNonNull(taskPlacement, "taskPlacement"));
+    }
+
+    private <T> OresFuture<T> startWithPlacement(Task<T> task, Executor taskPlacement) {
         Objects.requireNonNull(task, "task");
         ensureOpen();
 
-        TaskRunner<T> runner = new TaskRunner<>(task);
+        TaskRunner<T> runner = new TaskRunner<>(task, taskPlacement);
         tasks.add(runner);
         try {
             runner.scheduleInitial();
@@ -344,11 +357,12 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     private void executeTurn(Runnable turn, Runnable afterTurn,
-            java.util.function.Consumer<Throwable> admissionFailure) {
+            java.util.function.Consumer<Throwable> admissionFailure,
+            Executor taskPlacement) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         ensureOpen();
-        executor.execute(() -> {
+        taskPlacement.execute(() -> {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
             SCHEDULER_CARRIER.set(Boolean.TRUE);
             try {
@@ -417,6 +431,7 @@ public final class OresScheduler implements AutoCloseable {
         private static final int TERMINAL = 4;
 
         private final Task<T> task;
+        private final Executor taskPlacement;
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
@@ -429,8 +444,9 @@ public final class OresScheduler implements AutoCloseable {
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
 
-        private TaskRunner(Task<T> task) {
+        private TaskRunner(Task<T> task, Executor taskPlacement) {
             this.task = task;
+            this.taskPlacement = Objects.requireNonNull(taskPlacement, "taskPlacement");
             this.completion = new OresFuture<>(this::cancelFromFuture);
         }
 
@@ -447,7 +463,7 @@ public final class OresScheduler implements AutoCloseable {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn();
                     }
-                }, this::afterCarrierTurn, this::failTerminal);
+                }, this::afterCarrierTurn, this::failTerminal, taskPlacement);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;
