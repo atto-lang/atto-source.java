@@ -58,6 +58,41 @@ final class ActorFailureNoticeTest {
     }
 
     @Test
+    void supervisorNoticeDiagnosticIsBoundedOnUtf8BoundaryForBothKinds() throws Exception {
+        String longUnicodeDiagnostic = "🚨".repeat(300) + "tail";
+        var direct = new ActorRuntime.ActorFailureNotice(
+                ActorRuntime.ActorId.create(),
+                ActorRuntime.ActorFailureKind.RAISE,
+                longUnicodeDiagnostic);
+        assertEquals("🚨".repeat(256), direct.summary(),
+                "an actor cannot forge an unbounded parent CONTROL diagnostic");
+        assertEquals(1024,
+                direct.summary().getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        throw new OresPanic(longUnicodeDiagnostic);
+                    });
+            actor.send("crash");
+            var signal = actor.failureNotice().get(5, TimeUnit.SECONDS);
+            assertEquals(ActorRuntime.ActorFailureKind.PANIC, signal.kind());
+            assertEquals("🚨".repeat(256), signal.summary());
+            assertTrue(signal.summary().getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 1024);
+        }
+    }
+
+    @Test
+    void supervisorNoticeKeepsShortMultilingualDiagnosticUnchanged() {
+        String diagnostic = "actor invariant: café — 状态";
+        var notice = new ActorRuntime.ActorFailureNotice(
+                ActorRuntime.ActorId.create(),
+                ActorRuntime.ActorFailureKind.PANIC,
+                diagnostic);
+        assertEquals(diagnostic, notice.summary());
+    }
+
+    @Test
     void ordinaryStopDoesNotFabricateASupervisorPanic() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<String>spawnShared(
