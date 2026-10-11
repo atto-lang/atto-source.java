@@ -6039,16 +6039,17 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || !children.isEmpty()) return;
             finalized = true;
-            restartCandidates.clear();
             // A stopped supervisor is not permitted to swallow descendant
             // CONTROL. Route each already-reserved event to the first
             // surviving ancestor, or ultimately to runtime root.
             Optional<SupervisorFailureLane.Failure> orphan;
             while ((orphan = childFailures.poll()).isPresent()) {
                 SupervisorFailureLane.Failure failure = orphan.orElseThrow();
-                escalateToAncestorOrRoot(failure);
+                escalateToAncestorOrRoot(
+                        failure, restartCandidates.remove(failure.actor()));
                 childFailures.ack(failure.actor());
             }
+            restartCandidates.clear();
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
             if (scheduler != null) {
@@ -6113,13 +6114,21 @@ public final class ActorRuntime implements AutoCloseable {
          * Only the first live ancestor receives the event; stopped ancestors
          * relinquish their unused reservations. No guest code is invoked here.
          */
-        private void escalateToAncestorOrRoot(SupervisorFailureLane.Failure failure) {
+        private void escalateToAncestorOrRoot(
+                SupervisorFailureLane.Failure failure,
+                ActorCell<?> restartCandidate) {
             ActorCell<?> next = parent;
             while (next != null) {
                 boolean admitted = false;
                 synchronized (next.lifecycleLock) {
                     if (!next.stopped.get() && !next.finalized && !next.forceKillFenced) {
                         next.childFailures.publish(failure);
+                        if (restartCandidate != null) {
+                            // A grandparent may choose to restart the original
+                            // descendant using its immutable factory metadata.
+                            // Never move the stopped actor's guest state/arena.
+                            next.restartCandidates.put(failure.actor(), restartCandidate);
+                        }
                         admitted = true;
                     } else {
                         next.childFailures.retireGracefully(failure.actor());
@@ -6156,7 +6165,7 @@ public final class ActorRuntime implements AutoCloseable {
                 } else if (stopped.get() || finalized || forceKillFenced) {
                     // Dead supervisors forward to a surviving ancestor, not
                     // straight to root. Their own pre-reservation is unused.
-                    escalateToAncestorOrRoot(controlEvent);
+                    escalateToAncestorOrRoot(controlEvent, child);
                     childFailures.retireGracefully(supervisorKey(child.ref.id()));
                 } else {
                     restartCandidates.put(controlEvent.actor(), child);
@@ -6492,7 +6501,10 @@ public final class ActorRuntime implements AutoCloseable {
                                                 codeActorType, codeActorState, failure, sourceContext),
                                         "source supervisor returned null decision");
                             }
-                            ActorCell<?> completed = restartCandidates.remove(failure.actor());
+                            // Keep candidate ownership through callback failure
+                            // and retry. Transfer to an ancestor only after
+                            // the current logical turn commits escalation.
+                            ActorCell<?> completed = restartCandidates.get(failure.actor());
                             boolean escalate = decision == SupervisionDecision.ESCALATE;
                             if (decision == SupervisionDecision.RESTART) {
                                 if (completed == null || restartsUsed >= MAX_SUPERVISOR_RESTARTS) {
@@ -6527,12 +6539,13 @@ public final class ActorRuntime implements AutoCloseable {
                                 }
                             }
                             if (escalate) {
-                                escalateToAncestorOrRoot(failure);
+                                escalateToAncestorOrRoot(failure, completed);
                             } else {
                                 releaseUnusedAncestorSlots(parent, failure.actor());
                                 supervisorFailures.retireGracefully(failure.actor());
                             }
                             childFailures.ack(failure.actor());
+                            restartCandidates.remove(failure.actor());
                         } catch (RuntimeException | Error handlerFailure) {
                             // Retain in this lane until actor teardown
                             // safely transfers the failure to its ancestor.
