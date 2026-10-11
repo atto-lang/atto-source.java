@@ -34,10 +34,13 @@ actor Cache {
 ```
 
 No declaration means no implicit untyped map. `critical handle_state` is a sealed actor intrinsic, not user-overridable.
-The callback may await or select. The scheduler must preserve exclusive logical
-ownership across suspension using continuation-aware critical admission, without
-holding a JVM monitor or physical mutex across await. Reentrant calls must obey
-explicit critical ownership semantics; they are not categorically rejected.
+The callback may await or select. The scheduler preserves single-flight logical actor execution **per admitted
+slice**, releases actor-lane admission at a verified suspension boundary, and
+may admit other continuations before the callback resumes. It must not retain
+a state-backed mutable loan or JVM monitor across await. Nested same-continuation
+synchronous callbacks are permitted; the innermost loan temporarily fences the
+outer loan. A distinct continuation cannot enter an active exclusive state
+scope; it must be separately admitted on the actor lane.
 State capabilities and mutable state-backed aliases must not escape their
 valid ownership scope. Runtime invalidation is a
 second line of defense, not a replacement for compiler ownership checks.
@@ -48,3 +51,9 @@ ActorGroup must own initialization and deterministic cleanup on termination,
 panic, cancellation and failed initialization. JVM carrier thread identity is
 not the owner identity. LLVM and Java must share typed field-layout metadata
 and source-level conformance fixtures before declaring parity.
+
+For effect inference, concrete proposed `using`/`requires` signature syntax,
+and current `pure`/`nlex`/`trap` limitations, see
+[function-effect contract](FUNCTION_EFFECTS_AND_SIGNATURE_QUALIFIERS.md).
+For bounded preemption and strict real-time admission, see
+[reduction-region scheduling](REDUCTION_REGION_SCHEDULING.md).
