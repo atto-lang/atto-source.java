@@ -8,6 +8,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
@@ -26,6 +27,7 @@ import java.util.function.Consumer;
 final class ActorTurnWatchdog {
     static final long OVERRUN_NANOS = TimeUnit.MILLISECONDS.toNanos(4);
     private static final Set<Lease> ACTIVE = ConcurrentHashMap.newKeySet();
+    private static final AtomicLong OBSERVER_FAILURES = new AtomicLong();
     private static final ScheduledExecutorService WATCHDOG;
 
     static {
@@ -35,7 +37,7 @@ final class ActorTurnWatchdog {
                 .unstarted(runnable);
         WATCHDOG = Executors.newSingleThreadScheduledExecutor(factory);
         WATCHDOG.scheduleWithFixedDelay(
-                () -> scanAt(System.nanoTime()), 2, 2, TimeUnit.MILLISECONDS);
+                ActorTurnWatchdog::scanSafely, 2, 2, TimeUnit.MILLISECONDS);
     }
 
     private ActorTurnWatchdog() { }
@@ -46,8 +48,31 @@ final class ActorTurnWatchdog {
         return lease;
     }
 
-    private static void scanAt(long nowNanos) {
-        for (Lease lease : ACTIVE) lease.inspect(nowNanos);
+    /** Failed observer callbacks and recoverable monitor errors, never guest exceptions. */
+    static long observerFailures() {
+        return OBSERVER_FAILURES.get();
+    }
+
+    /** A bad observer must never permanently suppress all future scans. */
+    private static void scanSafely() {
+        try {
+            scanAt(System.nanoTime());
+        } catch (RuntimeException | AssertionError failure) {
+            OBSERVER_FAILURES.incrementAndGet();
+        }
+    }
+
+    // Package-private for deterministic regression tests; does not run guest work.
+    static void scanAt(long nowNanos) {
+        for (Lease lease : ACTIVE) {
+            try {
+                lease.inspect(nowNanos);
+            } catch (RuntimeException | AssertionError failure) {
+                // The failing lease remains requested and cannot fire twice.
+                // Another actor's lease must still be inspected this tick.
+                OBSERVER_FAILURES.incrementAndGet();
+            }
+        }
     }
 
     static final class Lease implements AutoCloseable {
