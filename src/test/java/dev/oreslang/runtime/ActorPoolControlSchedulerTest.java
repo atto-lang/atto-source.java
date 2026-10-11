@@ -151,4 +151,42 @@ final class ActorPoolControlSchedulerTest {
         if (previous == null) System.clearProperty(key);
         else System.setProperty(key, previous);
     }
+
+    @Test
+    void admissionIsIssuedBySchedulerButGuestWorkRunsOnWorker() throws Exception {
+        var scheduler = new ActorPoolControlScheduler("test-worker-handoff", 8);
+        scheduler.registerActor(id());
+        try (var workers = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "ores-test-worker");
+            t.setDaemon(true);
+            return t;
+        })) {
+            CountDownLatch executed = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<String> executionThread =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            scheduler.dispatch(workers, -1, () -> {
+                executionThread.set(Thread.currentThread().getName());
+                executed.countDown();
+            });
+            assertTrue(executed.await(3, TimeUnit.SECONDS));
+            assertEquals("ores-test-worker", executionThread.get());
+            assertTrue(scheduler.started());
+        } finally {
+            scheduler.shutdown();
+            assertTrue(scheduler.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void shutdownRejectsFurtherDispatchWithoutRunningGuestOnScheduler() throws Exception {
+        var scheduler = new ActorPoolControlScheduler("test-reject", 1);
+        scheduler.registerActor(id());
+        try (var workers = Executors.newSingleThreadExecutor()) {
+            scheduler.shutdown();
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> scheduler.dispatch(workers, -1,
+                            () -> fail("rejected task must not execute")));
+            assertTrue(scheduler.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
 }
