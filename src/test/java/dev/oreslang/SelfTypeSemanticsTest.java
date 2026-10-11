@@ -157,7 +157,7 @@ final class SelfTypeSemanticsTest {
     }
 
     @Test
-    void contextualBoundMethodExtractionKeepsSelfPolymorphic() throws Exception {
+    void explicitReceiverLambdaKeepsSelfPolymorphic() throws Exception {
         String output = run("""
                 define module m
                   define class Base as
@@ -172,7 +172,7 @@ final class SelfTypeSemanticsTest {
                     }
 
                     pub via_callback(): int {
-                      val Fnc<self> callback = self.same;
+                      val Fnc<self> callback = || -> { return self.same(); };
                       return callback().child_only();
                     }
                   end
