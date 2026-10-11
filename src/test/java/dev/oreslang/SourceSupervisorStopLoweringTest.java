@@ -225,6 +225,36 @@ final class SourceSupervisorStopLoweringTest {
     }
 
     @Test
+    void transferringAWorkerRetiresTheOldLogicalIdentityWithoutStoppingIt()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var original = runtime.createActorGroup();
+            var actor = original.spawnWorker(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    factory -> (message, ctx) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            assertEquals(1, original.trackedLogicalChildren());
+            assertTrue(original.releaseWorker(actor));
+            assertEquals(0, original.trackedLogicalChildren(),
+                    "ownership transfer retained an old supervisor child");
+            assertFalse(original.releaseWorker(actor),
+                    "second release must not repeat the transfer");
+            var newOwner = runtime.createActorGroup();
+            newOwner.manageWorker(actor);
+            assertEquals(1, newOwner.trackedLogicalChildren());
+            actor.stop();
+            actor.getDone().get(5, TimeUnit.SECONDS);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (newOwner.trackedLogicalChildren() != 0
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(0, newOwner.trackedLogicalChildren(),
+                    "new supervisor did not retire cleanly finalized child");
+            original.close();
+            newOwner.close();
+        }
+    }
+
+    @Test
     void normallyStoppedManagedActorRetiresItsLogicalChild() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup();
