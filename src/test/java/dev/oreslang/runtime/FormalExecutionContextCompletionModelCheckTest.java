@@ -192,7 +192,11 @@ final class FormalExecutionContextCompletionModelCheckTest {
             boolean cleanupFailed = a == Action.CLEANUP_FAIL;
             Failure primary = s.primary() == Failure.NONE && cleanupFailed
                     ? Failure.CLEANUP : s.primary();
-            Completion completion = cleanupFailed && s.pending() != Completion.THROW
+            // Cancellation and an existing throw keep their original
+            // completion identity. Cleanup failure only supersedes a value.
+            Completion completion = cleanupFailed
+                    && (s.pending() == Completion.NONE
+                        || s.pending() == Completion.ARM_RESULT)
                     ? Completion.THROW : s.pending();
             int suppressed = s.suppressedFailures()
                     + (cleanupFailed && s.primary() != Failure.NONE ? 1 : 0);
