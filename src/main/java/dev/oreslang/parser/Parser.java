@@ -504,6 +504,9 @@ public final class Parser {
 
             boolean explicitFnc = match(FNC);
             boolean explicitMethod = matchExplicitMethodMarker();
+            if (explicitFnc && explicitMethod) {
+                throw error(previous(), "an instance member cannot combine 'fnc' and 'method' markers");
+            }
             if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
@@ -703,6 +706,9 @@ public final class Parser {
 
             boolean explicitFnc = match(FNC);
             boolean explicitMethod = matchExplicitMethodMarker();
+            if (explicitFnc && explicitMethod) {
+                throw error(previous(), "an instance member cannot combine 'fnc' and 'method' markers");
+            }
             if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
