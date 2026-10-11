@@ -73,6 +73,41 @@ final class OresLanguageThreadAdmissionTest {
     }
 
     @Test
+    void exhaustiveRequestedCallerAndCarrierCombinationsRespectIdentityFence() {
+        Thread calling = Thread.currentThread();
+        Thread other = Thread.ofPlatform().unstarted(() -> { });
+        // Enumerate every configuration of the single-thread flag, three
+        // independent carrier kinds, and all requested/host identities.
+        int transitionsChecked = 0;
+        Thread[] requested = {calling, other, null};
+        Thread[] hosts = {calling, other, null};
+        for (Thread request : requested) {
+            for (Thread host : hosts) {
+                for (int mask = 0; mask < 16; mask++) {
+                    boolean single = (mask & 1) != 0;
+                    boolean actor = (mask & 2) != 0;
+                    boolean async = (mask & 4) != 0;
+                    boolean scheduler = (mask & 8) != 0;
+                    boolean actual = OresLanguage.threadAccessDecision(
+                            request, calling, host, single, actor, async, scheduler);
+                    boolean authorizedOwner = request != null && request == host;
+                    boolean authorizedCarrier = request != null
+                            && request == calling && (actor || async || scheduler);
+                    assertEquals(request != null
+                                    && (single || authorizedOwner || authorizedCarrier),
+                            actual, "bad thread admission state " + mask);
+                    if (request != calling && request != host && !single) {
+                        assertFalse(actual,
+                                "carrier privilege cannot transfer to a foreign thread");
+                    }
+                    transitionsChecked++;
+                }
+            }
+        }
+        assertEquals(144, transitionsChecked);
+    }
+
+    @Test
     void trustedHostAndCarrierKeepDistinctAuthorizedIdentities()
             throws Exception {
         OresLanguage language = new OresLanguage();
