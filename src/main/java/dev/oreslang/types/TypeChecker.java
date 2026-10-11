@@ -49,6 +49,7 @@ public final class TypeChecker {
     // their declaring class, never as names available to importer source.
     private final IdentityHashMap<Ast.ClassDecl, Map<String, Ast.TypeAliasDecl>> linkedClassAliases = new IdentityHashMap<>();
     private Map<String, Ast.TypeAliasDecl> resolvingLinkedFieldAliases = Map.of();
+    private final Set<String> hiddenLinkedAliasNames = new HashSet<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
@@ -144,6 +145,7 @@ public final class TypeChecker {
                 }
             }
             checker.linkedClassAliases.put(declaration, Map.copyOf(aliases));
+            checker.hiddenLinkedAliasNames.addAll(aliases.keySet());
         }
         if (!linkedClasses.keySet().containsAll(linkedAliases.keySet())) {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
@@ -7028,6 +7030,18 @@ public final class TypeChecker {
         if (generics.contains(ref.name())) return new Generic(ref.name());
 
         rejectUnimportedTypeDependency(ref.name());
+
+        // A non-public alias used by a linked class's public field is *not*
+        // an imported type name in user code. Only the field's defining
+        // module may expand it; otherwise a private nominal could escape.
+        if (resolvingLinkedFieldAliases.get(ref.name()) == null
+                && hiddenLinkedAliasNames.contains(ref.name())
+                && !typeAliases.containsKey(ref.name())
+                && !classes.containsKey(ref.name())) {
+            throw new IllegalArgumentException(
+                    "private linked type alias '" + ref.name()
+                            + "' is not imported; use the public class field contract");
+        }
 
         Ast.TypeAliasDecl alias = resolvingLinkedFieldAliases.get(ref.name());
         if (alias == null) alias = findTypeAlias(ref.name());
