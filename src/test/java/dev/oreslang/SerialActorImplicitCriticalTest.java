@@ -59,11 +59,9 @@ final class SerialActorImplicitCriticalTest {
         assertDoesNotThrow(() -> DeclaredEffectVerifier.verify(program));
         assertDoesNotThrow(() -> TypeChecker.checkTypes(program));
 
-        String builtinBase = SERIAL_COUNTER.replace(
-                "define serial actor Counter", "define actor Counter from serial actor");
-        assertTrue(((Ast.ClassDecl) Parser.parse(builtinBase).modules().getFirst()
-                .declarations().getFirst()).serial());
-        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(builtinBase)));
+        // Serial is a scheduling modifier; ordinary actor isolation is orthogonal.
+        // The explicit 'from serial actor' spelling remains in #547's separate
+        // builtin-superclass branch and is not advertised by this parser yet.
         String explicit = SERIAL_COUNTER.replace("|s|", "critical |s|");
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(explicit)));
     }
