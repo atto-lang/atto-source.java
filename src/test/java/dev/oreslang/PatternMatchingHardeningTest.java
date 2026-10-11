@@ -546,7 +546,7 @@ final class PatternMatchingHardeningTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(source);
         }
-        assertEquals("42\\n9", output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+        assertEquals("42\n9", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 
 }
