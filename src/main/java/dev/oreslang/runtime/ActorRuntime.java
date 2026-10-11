@@ -1985,6 +1985,35 @@ public final class ActorRuntime implements AutoCloseable {
             supervisorControl.install(handler);
         }
 
+        /**
+         * Start a runtime-owned supervisor PROCESS, not a callback on a
+         * failing child carrier. The supervisor logical turn remains
+         * exclusive across an unfinished CompletionStage/await, while the
+         * shared CONTROL carrier can run other supervisors.
+         *
+         * Directive callbacks request lifecycle decisions; they do not
+         * automatically restart an already-finalized actor or forge a
+         * parent/grandparent supervisor.
+         */
+        public SupervisorProcess installSupervisorProcess(
+                int mailboxCapacity,
+                java.util.function.Function<SupervisorFailureControl.Notice,
+                        java.util.concurrent.CompletionStage<SupervisorProcess.Directive>> onFailure,
+                Consumer<SupervisorProcess.Resolution> onDecision) {
+            requireSupervisorContext("install supervisor process");
+            requireOpen();
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisorId, id, privateDispatcher, mailboxCapacity,
+                    onFailure, onDecision);
+            try {
+                supervisorControl.install(process::accept);
+            } catch (RuntimeException | Error admissionFailure) {
+                process.close();
+                throw admissionFailure;
+            }
+            return process;
+        }
+
         /** Nonzero means this host CONTROL lane has failed closed. */
         public long undeliveredSupervisorFailures() {
             requireObserver("inspect undelivered supervisor notices");
