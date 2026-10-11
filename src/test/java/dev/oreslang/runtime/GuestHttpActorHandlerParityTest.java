@@ -69,6 +69,16 @@ final class GuestHttpActorHandlerParityTest {
         ConcurrentHashMap<Long, CompletableFuture<Answer>> pending = new ConcurrentHashMap<>();
         AtomicLong tickets = new AtomicLong();
         try {
+            // Host creates and parses polyglot Contexts BEFORE actor turns.
+            // An actor must not install host/supervisor-owned exit hooks.
+            for (int i = 0; i < ACTORS; i++) {
+                Context guest = Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false).build();
+                contexts.set(i, guest);
+                Value handler = guest.parse(guestSource);
+                assertTrue(handler.canExecute());
+                handlers.set(i, handler);
+            }
             try (ActorRuntime group = new ActorRuntime();
                  ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
                  HttpClient http = HttpClient.newBuilder()
@@ -85,12 +95,9 @@ final class GuestHttpActorHandlerParityTest {
                                             .orElseThrow().newActorArena(2, 2);
                                     arenas.set(actorIndex, memory);
                                     counters.set(actorIndex, memory.allocatePersistent(0));
-                                    Context guest = Context.newBuilder(OresLanguage.ID)
-                                            .allowAllAccess(false).build();
-                                    contexts.set(actorIndex, guest);
-                                    Value handler = guest.parse(guestSource);
-                                    assertTrue(handler.canExecute());
-                                    handlers.set(actorIndex, handler);
+                                    // Guest code is invoked only on this actor's
+                                    // exclusive admitted lane, with a host-prepared Context.
+                                    assertNotNull(handlers.get(actorIndex));
                                     ready.countDown();
                                     return;
                                 }
