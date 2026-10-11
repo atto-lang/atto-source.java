@@ -90,13 +90,13 @@ class NativeHttpTest {
               val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
               stdio.println(server.port);
               val request = await server.accept();
-              val actor = spawn Holder();
-              await actor.ready;
-              actor.send(request.move_to(actor));
-              await actor.outputs.next();
+              val holder = spawn Holder();
+              await holder.ready;
+              holder.send(request.move_to(holder));
+              await holder.outputs.next();
               await server.shutdown(0);
               stdio.println("drained");
-              await actor.done;
+              await holder.done;
               return;
             }
             """, port -> {
