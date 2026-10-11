@@ -1918,6 +1918,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (stmt instanceof Ast.MatchStmt matched) {
+                    if (matched.returnContract() != null && !matched.procedural()) {
+                        continuation.accept(
+                                task,
+                                SourceFlow.throwing(new IllegalStateException(
+                                        "value-producing match<ret=T> reached suspended runtime without arm-local result lowering")));
+                        return;
+                    }
                     evalSuspendableExpr(
                             task,
                             matched.subject(),
@@ -4716,6 +4723,10 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.MatchStmt matched) {
+                if (matched.returnContract() != null && !matched.procedural()) {
+                    throw new IllegalStateException(
+                            "value-producing match<ret=T> reached runtime without arm-local result lowering");
+                }
                 Object subject = eval(matched.subject(), env);
                 Ast.MatchArm selected = null;
                 Map<String, Object> selectedBindings = Map.of();
