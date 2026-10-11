@@ -1499,6 +1499,11 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorOwnedGuestState state,
                 ActorInboxMail<Object> mail,
                 ActorContext<Object> context) throws Exception;
+
+        /** Trusted linked compiler metadata, never inferred from guest requests.
+         * Source serial actors require one persistent actor across HTTP and mail;
+         * the current HTTP spawn-per-request adapter cannot provide that yet. */
+        default boolean isSerialActor(String actorTypeName) { return false; }
     }
 
     public interface ActorContext<M> {
