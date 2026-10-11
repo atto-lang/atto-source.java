@@ -219,6 +219,58 @@ final class ValueDispatchControlFlowTest {
     }
 
     @Test
+    void nestedObjectPayloadAndLoopAwaitCannotEscapeValueDispatchFence() {
+        String[] badSources = {
+                """
+                fnc forbidden(Future<int> pending): int {
+                  return match 1 over
+                    on _ {
+                      const message = infer struct{delta: await pending};
+                      return 3;
+                    }
+                  end
+                }
+                """,
+                """
+                fnc forbidden(Future<int> pending): int {
+                  return switch 1
+                    default {
+                      loop {
+                        const result = await pending;
+                        break;
+                      }
+                      return 3;
+                    }
+                  end
+                }
+                """,
+                """
+                fnc forbidden(Future<int> pending): int {
+                  return match 1 over
+                    on _ {
+                      try {
+                        const packet = infer struct{data: await pending};
+                      } catch (failure) {
+                        stdio.println("caught");
+                      } finally {
+                        stdio.println("finalized");
+                      }
+                      return 3;
+                    }
+                  end
+                }
+                """
+        };
+        for (String source : badSources) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+            assertTrue(failure.getMessage().contains("continuation lowering"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
     void nestedDoArmReturnMustMatchContainingFunctionType() {
         IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
