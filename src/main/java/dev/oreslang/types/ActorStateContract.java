@@ -111,9 +111,21 @@ public final class ActorStateContract {
                     || node instanceof Ast.SelectStmt
                     || node instanceof Ast.DynamicSelectExpr
                     || node instanceof Ast.ChannelOpExpr
-                    || node instanceof Ast.RuntimeCallExpr) {
+                    || node instanceof Ast.RuntimeCallExpr
+                    || node instanceof Ast.YieldStmt
+                    || node instanceof Ast.ForStmt
+                    || node instanceof Ast.ForOfStmt
+                    || node instanceof Ast.ForOfDestructureStmt
+                    || node instanceof Ast.LoopStmt
+                    || node instanceof Ast.DeferStmt
+                    || node instanceof Ast.NewExpr) {
+                // Ordinary loops are automatically subject to compiler
+                // reduction preemption, even with no source-level await.
+                // Arbitrary allocation/construction and deferred callbacks
+                // need transitive effect/lifetime proof before admission.
                 throw new IllegalArgumentException(
-                        "actor state access cannot cross await, select, rt operations or other suspension boundaries");
+                        "actor state access cannot cross await, yield, loop safepoints, "
+                        + "select, deferred work, allocation, or runtime operations");
             }
             if (node instanceof Ast.CallExpr) {
                 // The sealed self.handle_state nested call is handled above.
