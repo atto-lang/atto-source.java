@@ -2425,6 +2425,10 @@ public final class Parser {
     }
 
     private Ast.MatchStmt parseMatch(boolean procedural) {
+        return parseMatch(procedural, false);
+    }
+
+    private Ast.MatchStmt parseMatch(boolean procedural, boolean valuePosition) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
         //     on Pattern -> { ... }
@@ -2446,6 +2450,12 @@ public final class Parser {
             }
             returnContract = parseTypeRef();
             consume(GT, "expected '>' after match return-type contract");
+        }
+        if (valuePosition && returnContract == null) {
+            throw error(peek(), "value-producing match requires <ret=Type> during staged lowering");
+        }
+        if (valuePosition && procedural) {
+            throw error(peek(), "do match cannot produce an expression result");
         }
 
         boolean previousSuppression = suppressRefinementOperators;
@@ -3120,6 +3130,11 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        if (match(MATCH)) {
+            Ast.MatchStmt matched = parseMatch(false, true);
+            return new Ast.ValueMatchExpr(
+                    matched.subject(), matched.ordered(), matched.arms(), matched.returnContract());
+        }
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
