@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Invoke the existing Graal/Java Oreslang compiler's --check mode.
+"""Run the real Graal/Java Oreslang launcher in check or execution mode.
 
-The launcher reads classpath resolved by Maven; this probe does not execute
-guest Oreslang code. Calling via argv avoids shell quoting mistakes.
+Check mode must reject diagnostics with exit 1; execution mode invokes guest
+main() and forwards its real process exit (no synthetic result or stub).
+The launcher reads classpath resolved by Maven, never from the environment.
 """
 import os
 from pathlib import Path
@@ -11,8 +12,9 @@ import sys
 
 
 def main():
-    if len(sys.argv) != 2:
-        raise ValueError("usage: java_probe.py <fixture.ores>")
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "--execute"):
+        raise ValueError("usage: java_probe.py <fixture.ores> [--execute]")
+    execute = len(sys.argv) == 3
     path = Path(sys.argv[1]).resolve()
     if not path.is_file() or path.suffix != ".ores":
         raise ValueError("invalid source fixture")
@@ -23,7 +25,8 @@ def main():
         raise ValueError("missing Maven dependency classpath")
     classes = project / "target" / "classes"
     argv = ["java", "-cp", str(classes) + os.pathsep + deps,
-            "dev.oreslang.launcher.OresMain", "--check", str(path)]
+            "dev.oreslang.launcher.OresMain",
+            *([] if execute else ["--check"]), str(path)]
     result = subprocess.run(argv, cwd=project, timeout=80, check=False)
     return result.returncode
 
