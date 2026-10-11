@@ -110,4 +110,45 @@ final class ActorPoolControlSchedulerTest {
             else System.setProperty("ores.actor.affinity", affinity);
         }
     }
+
+    @Test
+    void cpuAffinityPoolBootstrapDoesNotRequireNativeLibraryBeforeFirstTurn() throws Exception {
+        String previousAffinity = System.getProperty("ores.actor.affinity");
+        String previousCpus = System.getProperty("ores.actor.cpus");
+        String previousBackend = System.getProperty("ores.runtime.carriers");
+        String previousPath = System.getProperty("ores.thread.native.path");
+        System.setProperty("ores.actor.affinity", "cpu");
+        System.setProperty("ores.actor.cpus", "0");
+        System.setProperty("ores.runtime.carriers", "java");
+        System.setProperty("ores.thread.native.path", "/does-not-exist/ores-pool-affinity-test.so");
+        try {
+            try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                    new ActorRuntime.DispatcherConfig(1, 1, 8, 16))) {
+                assertEquals(0, runtime.activatedActorCarrierPools());
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {});
+                assertEquals(1, runtime.activatedActorPoolSchedulers());
+                assertEquals(0, runtime.activatedActorCarrierPools(),
+                        "CPU affinity must not load JNI or start a carrier until runnable work");
+                runtime.stop(actor);
+                assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            }
+        } finally {
+            restore("ores.actor.affinity", previousAffinity);
+            restore("ores.actor.cpus", previousCpus);
+            restore("ores.runtime.carriers", previousBackend);
+            restore("ores.thread.native.path", previousPath);
+        }
+    }
+
+    @Test
+    void defaultPoolWorkerLimitsDoNotExceedFive() {
+        var config = ActorRuntime.DispatcherConfig.defaults();
+        assertTrue(config.privateParallelism() >= 1 && config.privateParallelism() <= 5);
+        assertTrue(config.sharedParallelism() >= 1 && config.sharedParallelism() <= 5);
+    }
+
+    private static void restore(String key, String previous) {
+        if (previous == null) System.clearProperty(key);
+        else System.setProperty(key, previous);
+    }
 }
