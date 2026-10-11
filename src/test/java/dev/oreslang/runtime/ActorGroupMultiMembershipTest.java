@@ -223,4 +223,52 @@ final class ActorGroupMultiMembershipTest {
             assertEquals(0, runtime.actorGroupCount());
         }
     }
+
+    @Test
+    void concurrentRoomJoinsCannotExceedActorMembershipQuota() throws Exception {
+        IsolatePolicy base = IsolatePolicy.developer();
+        IsolatePolicy twoRooms = new IsolatePolicy(
+                base.capabilities(), base.maxHeapBytes(), 2, base.maxWallTime());
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup a = runtime.createActorGroup();
+            ActorRuntime.ActorGroup b = runtime.createActorGroup();
+            ActorRuntime.ActorGroup c = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> connection = runtime.spawnShared(
+                    twoRooms, () -> (message, context) -> { });
+            var groups = java.util.List.of(a, b, c);
+            var permits = java.util.List.of(
+                    a.joinCapability(), b.joinCapability(), c.joinCapability());
+            CountDownLatch release = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger successes =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger rejected =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            java.util.List<Thread> joins = new java.util.ArrayList<>();
+            for (int i = 0; i < groups.size(); i++) {
+                final int index = i;
+                Thread joiner = new Thread(() -> {
+                    try {
+                        release.await();
+                        groups.get(index).join(connection, permits.get(index));
+                        successes.incrementAndGet();
+                    } catch (IllegalStateException capacity) {
+                        rejected.incrementAndGet();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                joins.add(joiner);
+                joiner.start();
+            }
+            release.countDown();
+            for (Thread thread : joins) thread.join(5_000);
+            for (Thread thread : joins) assertFalse(thread.isAlive(), "joiner hung");
+            assertEquals(2, successes.get(), "concurrent joins exceeded quota");
+            assertEquals(1, rejected.get());
+            assertEquals(2, a.memberCount() + b.memberCount() + c.memberCount());
+            connection.stop();
+            assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, a.memberCount() + b.memberCount() + c.memberCount());
+        }
+    }
 }
