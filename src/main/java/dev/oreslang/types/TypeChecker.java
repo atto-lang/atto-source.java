@@ -1862,6 +1862,14 @@ public final class TypeChecker {
     private void verifyTypedValueArm(
             List<Ast.Stmt> body, Env parent, Set<String> generics, Type result, Type self) {
         Env local = new Env(parent);
+        // Defer evaluates its expression at block exit against the *same*
+        // mutable lexical environment. A declaration later in the block can
+        // therefore shadow the stdio intrinsic after a defer was registered.
+        // Pre-scan the complete block before approving any deferred print.
+        // Immediate prints still use the sequential lexical environment.
+        boolean shadowsDeferredStdio = body.stream().anyMatch(
+                statement -> statement instanceof Ast.BindingStmt binding
+                        && binding.name().equals("stdio"));
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.BindingStmt binding) {
                 // A nested value match is recursively admitted against its
@@ -1894,7 +1902,7 @@ public final class TypeChecker {
                         requireValueMatchOwnedScalarNames(arg, local);
                 } else requireValueMatchOwnedScalarNames(statement.expression(), local);
             } else if (stmt instanceof Ast.DeferStmt defer) {
-                if (!isSafeTypedValuePrint(defer.expression(), local))
+                if (shadowsDeferredStdio || !isSafeTypedValuePrint(defer.expression(), local))
                     throw new IllegalArgumentException(
                             "typed value match defer currently requires synchronous stdio.print/println");
                 Ast.CallExpr call = (Ast.CallExpr) defer.expression();
