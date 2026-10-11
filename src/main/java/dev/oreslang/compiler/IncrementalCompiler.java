@@ -3,6 +3,8 @@ package dev.oreslang.compiler;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -104,7 +106,23 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            Ast.Program checked;
+            Map<String, Ast.ClassDecl> linkedClasses =
+                    linkedPublicClasses(id, parsed.get(id), parsed, normalizedImportResolutions);
+            if (linkedClasses.isEmpty()) {
+                checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            } else {
+                try {
+                    // Foreign layouts are used for type and ownership proofs;
+                    // their declarations are never executed in the importer.
+                    checked = TypeChecker.checkTypesWithImportedClasses(
+                            Parser.parse(normalized.get(id)), linkedClasses);
+                    OwnershipChecker.checkWithImportedClasses(checked, linkedClasses);
+                } catch (IllegalArgumentException invalid) {
+                    throw new IllegalArgumentException(
+                            "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
+                }
+            }
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
@@ -125,6 +143,46 @@ public final class IncrementalCompiler {
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
                 initializationGroups);
+    }
+
+    private static Map<String, Ast.ClassDecl> linkedPublicClasses(
+            String unitId,
+            Ast.Program importer,
+            Map<String, Ast.Program> parsed,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.ClassDecl> linked = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : importer.imports()) {
+            if (imported.kind() != Ast.ImportKind.CLASS || imported.wildcard()) continue;
+            String sourceId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, parsed.keySet(), importResolutions);
+            if (sourceId == null) continue; // external resolution remains opaque
+            Ast.Program source = parsed.get(sourceId);
+            if (source == null) {
+                throw new IllegalArgumentException("missing linked class source '" + sourceId + "'");
+            }
+            for (String name : imported.names()) {
+                Ast.ClassDecl resolved = null;
+                for (Ast.ModuleDecl module : source.modules()) {
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.ClassDecl klass
+                                && klass.name().equals(name)
+                                && klass.visibility() == Ast.Visibility.PUBLIC) {
+                            if (resolved != null) {
+                                throw new IllegalArgumentException(
+                                        "ambiguous linked public class '" + name + "'");
+                            }
+                            resolved = klass;
+                        }
+                    }
+                }
+                if (resolved == null || linked.putIfAbsent(name, resolved) != null) {
+                    throw new IllegalArgumentException(
+                            "missing or duplicate public linked class '" + name
+                                    + "' in source unit '" + unitId + "'");
+                }
+            }
+        }
+        return Map.copyOf(linked);
     }
 
     public synchronized void clear() {
