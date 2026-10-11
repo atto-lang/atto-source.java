@@ -15,6 +15,26 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class SharedNativeDeferSourceParityTest {
     @Test
+    void sharedBorrowCannotEscalateToMutableReborrow() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Counter as
+                          pub let int value = 0;
+                        end
+                        fnc mutate(borrow mut Counter c): void {
+                          c.value = 2;
+                          return;
+                        }
+                        fnc invalid(borrow Counter c): void {
+                          mutate(rt borrow mut c);
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("cannot mutably reborrow a shared borrow"),
+                failure::getMessage);
+    }
+
+    @Test
     void exactNativeLifoSourceChecksAndExecutesOnGraalVM() throws Exception {
         Path fixture = Path.of("contracts/v1/semantics/fixtures/native-defer-lifo-cfg.ores");
         String source = Files.readString(fixture, StandardCharsets.UTF_8);
