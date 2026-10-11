@@ -70,6 +70,8 @@ public final class TypeChecker {
     private boolean currentMaySuspend;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
+    /** Return may not escape a finally body; a nested callable owns its own boundary. */
+    private int finallyDepth;
     private final List<String> warnings = new ArrayList<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
@@ -1349,10 +1351,12 @@ public final class TypeChecker {
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
         boolean previousDiscard = inDiscardingSelectArm;
+        int previousFinallyDepth = finallyDepth;
         loopDepth = 0;
         currentGenerator = false;
         currentAsyncCallable = false;
         inDiscardingSelectArm = discardReturn;
+        finallyDepth = 0;
         try {
             checkBlock(body, parent, generics, expectedReturn, self);
         } finally {
@@ -1360,6 +1364,7 @@ public final class TypeChecker {
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             inDiscardingSelectArm = previousDiscard;
+            finallyDepth = previousFinallyDepth;
         }
     }
 
@@ -1451,6 +1456,11 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
+            if (finallyDepth > 0) {
+                throw new IllegalArgumentException(
+                        "return is forbidden directly inside finally; "
+                        + "wrap an independently returning callable/lambda if needed");
+            }
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
                         ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
@@ -1572,7 +1582,12 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> caughtExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(normalExit, caughtExit));
-            checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
+            finallyDepth++;
+            try {
+                checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
+            } finally {
+                finallyDepth--;
+            }
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
@@ -4643,7 +4658,7 @@ public final class TypeChecker {
                 requireAssignable(typeOfCondition(arm.guard(), armEnv, generics, self), Primitive.BOOL, "match guard");
             }
             checkBlock(arm.body(), armEnv, generics, armExpectedReturn, self);
-            if (matched.returnContract() != null && !definitelyReturns(arm.body())) {
+            if (matched.returnContract() != null && !guaranteedTypedMatchReturn(arm.body())) {
                 throw new IllegalArgumentException(
                         "do match<ret=T> arm " + (i + 1)
                                 + " must return the declared type on every path; "
@@ -7588,6 +7603,41 @@ public final class TypeChecker {
         if (expr instanceof Ast.ListExpr list) return list.elements().stream().allMatch(this::constant);
         if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().allMatch(this::constant);
         if (expr instanceof Ast.ObjectExpr object) return object.fields().stream().allMatch(field -> constant(field.value()));
+        return false;
+    }
+
+    /**
+     * Proof for a procedural match<ret=T> arm. Unlike the general
+     * definitelyReturns() helper, an infinite loop (or switch without a
+     * default) cannot satisfy an explicit return-value contract merely
+     * because control flow has no fallthrough.
+     */
+    private boolean guaranteedTypedMatchReturn(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ReturnStmt) return true;
+            if (stmt instanceof Ast.BlockStmt block
+                    && guaranteedTypedMatchReturn(block.body())) return true;
+            if (stmt instanceof Ast.IfStmt conditional
+                    && !conditional.branches().isEmpty()
+                    && conditional.branches().stream().allMatch(
+                            branch -> guaranteedTypedMatchReturn(branch.body()))
+                    && !conditional.elseBody().isEmpty()
+                    && guaranteedTypedMatchReturn(conditional.elseBody())) return true;
+            if (stmt instanceof Ast.MatchStmt matched
+                    && !matched.arms().isEmpty()
+                    && matched.arms().stream().allMatch(
+                            arm -> guaranteedTypedMatchReturn(arm.body()))) return true;
+            if (stmt instanceof Ast.SwitchStmt switched
+                    && !switched.defaultBody().isEmpty()
+                    && guaranteedTypedMatchReturn(switched.defaultBody())
+                    && switched.cases().stream().allMatch(
+                            arm -> guaranteedTypedMatchReturn(arm.body()))) return true;
+            if (stmt instanceof Ast.TryStmt attempted
+                    && guaranteedTypedMatchReturn(attempted.body())
+                    && guaranteedTypedMatchReturn(attempted.catchBody())) return true;
+            // No implicit return proof from a loop, expression statement,
+            // discarded callback return, or an unproven nonlocal exception.
+        }
         return false;
     }
 
