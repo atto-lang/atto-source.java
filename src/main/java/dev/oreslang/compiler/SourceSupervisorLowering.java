@@ -84,18 +84,20 @@ public final class SourceSupervisorLowering {
 
     public static StopOnlySupervisor compile(Ast.Program program) {
         Objects.requireNonNull(program, "program");
-        if (!program.imports().isEmpty()) {
-            throw unsupported("imports require linked supervisor module lowering");
+        if (!program.imports().isEmpty() || program.namespace() != null) {
+            throw unsupported("imports and namespaces require linked supervisor module lowering");
         }
-        Ast.SupervisorDecl target = null;
-        for (Ast.ModuleDecl module : program.modules()) {
-            for (Ast.Decl declaration : module.declarations()) {
-                if (!(declaration instanceof Ast.SupervisorDecl supervisor) || target != null) {
-                    throw unsupported("exactly one source supervisor is required");
-                }
-                target = supervisor;
-            }
+        if (program.modules().size() != 1) {
+            throw unsupported("exactly one supervisor module is required");
         }
+        Ast.ModuleDecl module = program.modules().getFirst();
+        if (!module.annotations().isEmpty() || !module.contracts().isEmpty()
+                || module.declarations().size() != 1
+                || !(module.declarations().getFirst() instanceof Ast.SupervisorDecl)) {
+            throw unsupported("module metadata and other declarations are not in the STOP slice");
+        }
+        Ast.SupervisorDecl target =
+                (Ast.SupervisorDecl) module.declarations().getFirst();
         if (target == null) throw unsupported("missing supervisor declaration");
         if (target.hooks().size() != 1) {
             throw unsupported("only on_panic is executable in the STOP slice");
@@ -109,6 +111,8 @@ public final class SourceSupervisorLowering {
                 || hook.parameters().size() != 1
                 || hook.parameters().getFirst().structural()
                 || hook.parameters().getFirst().mutable()
+                || hook.parameters().getFirst().name().isBlank()
+                || hook.parameters().getFirst().name().equals("self")
                 || !hook.parameters().getFirst().type().equals(Ast.TypeRef.simple("Failure"))
                 || !hook.returnType().equals(Ast.TypeRef.simple("void"))) {
             throw unsupported("on_panic requires synchronous (f: Failure): void");
