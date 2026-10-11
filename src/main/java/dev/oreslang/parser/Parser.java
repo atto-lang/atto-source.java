@@ -22,6 +22,7 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    private int valueArmDepth;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -1547,13 +1548,17 @@ public final class Parser {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
         if (match(RETURN)) {
-            // Exhaustive control-flow statements, not value expressions.
-            // Return within each admitted arm exits the surrounding function.
-            if (match(MATCH)) return parseMatch(true);
-            if (match(SWITCH)) return parseSwitch(true);
+            if (match(DO)) {
+                if (match(MATCH)) return parseMatch(true, false);
+                if (match(SWITCH)) return parseSwitch(true, false);
+                throw error(peek(), "'return do' requires match or switch");
+            }
+            // 'return match' / 'return switch' evaluate the expression's
+            // arm-local result; a nested return targets its lexical arm.
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
-            return new Ast.ReturnStmt(value);
+            return valueArmDepth > 0
+                    ? new Ast.ArmReturnStmt(value) : new Ast.ReturnStmt(value);
         }
         if (match(YIELD)) {
             boolean delegated = match(STAR);
@@ -1586,8 +1591,21 @@ public final class Parser {
             return new Ast.ContinueStmt();
         }
         if (match(IF)) return parseIf();
-        if (match(MATCH)) return parseMatch(false);
-        if (match(SWITCH)) return parseSwitch(false);
+        if (match(DO)) {
+            if (match(MATCH)) return parseMatch(false, false);
+            if (match(SWITCH)) return parseSwitch(false, false);
+            throw error(peek(), "'do' must introduce a statement such as 'do match' or 'do switch'");
+        }
+        // A bare match/switch is a result-producing expression whose value
+        // may be discarded by the expression-statement context.
+        if (match(MATCH)) {
+            Ast.MatchStmt body = parseMatch(false, true);
+            return new Ast.ExprStmt(new Ast.ValueMatchExpr(body.subject(), body.ordered(), body.arms()));
+        }
+        if (match(SWITCH)) {
+            Ast.SwitchStmt body = parseSwitch(false, true);
+            return new Ast.ExprStmt(new Ast.ValueSwitchExpr(body.subject(), body.cases(), body.defaultBody()));
+        }
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
@@ -2365,7 +2383,7 @@ public final class Parser {
         return expr;
     }
 
-    private Ast.MatchStmt parseMatch(boolean returnForm) {
+    private Ast.MatchStmt parseMatch(boolean returnForm, boolean valueMode) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
         //     on Pattern -> { ... }
@@ -2418,7 +2436,11 @@ public final class Parser {
                                 ? "match arm requires '{ ... }' after its pattern (optional legacy '->')"
                                 : "legacy match arms use the slim arrow '->'");
             }
-            List<Ast.Stmt> body = parseBlock();
+            int savedArmDepth = valueArmDepth;
+            valueArmDepth = valueMode ? savedArmDepth + 1 : 0;
+            List<Ast.Stmt> body;
+            try { body = parseBlock(); }
+            finally { valueArmDepth = savedArmDepth; }
             arms.add(new Ast.MatchArm(pattern, guard, body));
         }
         consume(END, "expected 'end' to close match");
@@ -2524,7 +2546,7 @@ public final class Parser {
         throw error(peek(), "expected match pattern");
     }
 
-    private Ast.SwitchStmt parseSwitch(boolean returnForm) {
+    private Ast.SwitchStmt parseSwitch(boolean returnForm, boolean valueMode) {
         Ast.Expr subject = parseExpression();
         match(SEMICOLON);
         List<Ast.SwitchCase> cases = new ArrayList<>();
@@ -2540,7 +2562,12 @@ public final class Parser {
                     throw error(peek(), "switch implementations use the slim arrow '->'; '=>' is reserved for type definitions");
                 }
                 consume(ARROW, "switch cases use the slim arrow '->'");
-                cases.add(new Ast.SwitchCase(constants, parseBlock()));
+                int savedArmDepth = valueArmDepth;
+                valueArmDepth = valueMode ? savedArmDepth + 1 : 0;
+                List<Ast.Stmt> body;
+                try { body = parseBlock(); }
+                finally { valueArmDepth = savedArmDepth; }
+                cases.add(new Ast.SwitchCase(constants, body));
                 continue;
             }
             if (match(DEFAULT)) {
@@ -2550,7 +2577,10 @@ public final class Parser {
                     throw error(peek(), "switch implementations use the slim arrow '->'; '=>' is reserved for type definitions");
                 }
                 consume(ARROW, "switch default uses the slim arrow '->'");
-                defaultBody = parseBlock();
+                int savedArmDepth = valueArmDepth;
+                valueArmDepth = valueMode ? savedArmDepth + 1 : 0;
+                try { defaultBody = parseBlock(); }
+                finally { valueArmDepth = savedArmDepth; }
                 continue;
             }
             throw error(peek(), "expected 'case', 'default', or 'end' in switch");
@@ -2986,6 +3016,14 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        if (match(MATCH)) {
+            Ast.MatchStmt body = parseMatch(false, true);
+            return new Ast.ValueMatchExpr(body.subject(), body.ordered(), body.arms());
+        }
+        if (match(SWITCH)) {
+            Ast.SwitchStmt body = parseSwitch(false, true);
+            return new Ast.ValueSwitchExpr(body.subject(), body.cases(), body.defaultBody());
+        }
         if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
