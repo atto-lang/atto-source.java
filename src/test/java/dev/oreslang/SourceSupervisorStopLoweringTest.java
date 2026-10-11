@@ -132,6 +132,54 @@ final class SourceSupervisorStopLoweringTest {
                         .replace("end\n", "tear_down(): void { return; }\nend\n")));
     }
 
+
+    @Test
+    void typedFailureTargetBindsToPhysicallyFailedActorNotice() throws Exception {
+        String source = """
+                define supervisor Root as
+                  on_panic(problem: Failure): void {
+                    self.stop(problem);
+                    return;
+                  }
+                end
+                """;
+        var compiled = OresCompiler.compileStopOnlySupervisor(source);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            CountDownLatch delivered = new CountDownLatch(1);
+            AtomicReference<SupervisorProcess.Resolution> observed =
+                    new AtomicReference<>();
+            var process = compiled.install(group, 2, resolution -> {
+                observed.set(resolution);
+                delivered.countDown();
+            });
+            var failed = group.spawnWorker(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    factory -> (message, ctx) -> {
+                        throw new IllegalStateException("typed-failure-stop");
+                    });
+            failed.getReady().get(5, TimeUnit.SECONDS);
+            var failedId = failed.id();
+            failed.send("panic");
+            assertTrue(delivered.await(10, TimeUnit.SECONDS));
+            var decision = observed.get();
+            assertNotNull(decision);
+            assertEquals(SupervisorProcess.Directive.STOP, decision.directive());
+            assertEquals(failedId, decision.notice().actorId(),
+                    "typed Failure STOP retargeted a different child");
+            assertEquals(group.supervisorId(), decision.notice().supervisorId());
+            assertTrue(decision.turnGeneration() > 0);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (process.resolved() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, process.resolved());
+            assertEquals(0, process.undelivered());
+            group.close();
+            process.close();
+        }
+    }
+
     @Test
     void compiledStopDoesNotAcknowledgeThrowingHostCommit() throws Exception {
         var compiled = OresCompiler.compileStopOnlySupervisor(SOURCE);
