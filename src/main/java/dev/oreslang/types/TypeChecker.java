@@ -7618,9 +7618,8 @@ public final class TypeChecker {
             if (stmt instanceof Ast.ArmReturnStmt result) return result.value() != null;
             if (stmt instanceof Ast.BlockStmt nested && definitelyYieldsValue(nested.body())) return true;
             if (stmt instanceof Ast.TryStmt attempted) {
-                // A lexical arm result in try/catch must survive finally;
-                // finally can itself yield and override the pending result.
-                if (definitelyYieldsValue(attempted.finallyBody())) return true;
+                // A finally cannot return or yield to the surrounding
+                // callable/value arm. Only try and catch contribute a result.
                 if (definitelyYieldsValue(attempted.body())
                         && definitelyYieldsValue(attempted.catchBody())) return true;
             }
@@ -7657,7 +7656,7 @@ public final class TypeChecker {
                     && (switched.defaultBody().isEmpty()
                         || definitelyReturns(switched.defaultBody()))) return true;
             if (stmt instanceof Ast.TryStmt attempted) {
-                if (definitelyReturns(attempted.finallyBody())) return true;
+                // Finally runs on unwind, but cannot replace the pending return.
                 if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
             }
         }
