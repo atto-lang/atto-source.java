@@ -6012,7 +6012,6 @@ public final class ActorRuntime implements AutoCloseable {
     private static ExecutorService createCarrierDispatcher(
             int parallelism, int readyQueueCapacity, String threadPrefix,
             String requested, boolean unix) {
-        boolean unix = isNativeCarrierPlatform();
         if (!requested.equals("java") && (requested.equals("native") || unix)) {
             if (!unix) {
                 throw new IllegalStateException(
