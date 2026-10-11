@@ -7494,7 +7494,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             for (Ast.TypeRef parentRef : klass.parents()) {
-                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List") || parentRef.name().equals("Map")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent != null && hasInstanceMethodNamed(parent, name, seen)) {
                     seen.remove(klass);
@@ -7509,7 +7509,7 @@ public final class OresEvalRootNode extends RootNode {
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             LinkedHashMap<String, Ast.FieldDecl> result = new LinkedHashMap<>();
             for (Ast.TypeRef parentRef : klass.parents()) {
-                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List") || parentRef.name().equals("Map")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) throw new IllegalArgumentException("unknown parent class " + parentRef.name());
                 for (Ast.FieldDecl field : effectiveFields(parent, seen)) result.putIfAbsent(field.name(), field);
@@ -7557,7 +7557,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             for (Ast.TypeRef parentRef : klass.parents()) {
-                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List") || parentRef.name().equals("Map")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) continue;
                 OwnedField candidate = findField(parent, name, seen);
@@ -7585,7 +7585,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             for (Ast.TypeRef parentRef : klass.parents()) {
-                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List") || parentRef.name().equals("Map")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) continue;
                 Ast.MethodDecl candidate = findMethod(parent, selector, seen);
@@ -7613,7 +7613,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             for (Ast.TypeRef parentRef : klass.parents()) {
-                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List") || parentRef.name().equals("Map")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) continue;
                 Ast.MethodDecl candidate = findStaticFunction(parent, selector, seen);
@@ -7633,7 +7633,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (fn.isStatic() && fn.name().equals(name)) result.put(fn.arity(), fn);
             }
             for (Ast.TypeRef parentRef : klass.parents()) {
-                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List") || parentRef.name().equals("Map")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) continue;
                 for (Ast.MethodDecl fn : findStaticFunctionsByName(parent, name, seen)) result.putIfAbsent(fn.arity(), fn);
