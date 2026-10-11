@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -19,6 +20,8 @@ final class SerialExecutionTicket {
     private final SerialActorAdmission admission;
     private final SerialActorAdmission.Lease handlerLease;
     private final BooleanSupplier actorAlive;
+    /** A canceled/completed source task must not borrow its still-live handler. */
+    private final AtomicBoolean retired = new AtomicBoolean();
 
     SerialExecutionTicket(
             Object actorId,
@@ -43,9 +46,12 @@ final class SerialExecutionTicket {
 
     long taskId() { return taskId; }
 
+    /** Revoke this task's authority independently of its enclosing actor handler. */
+    void retire() { retired.set(true); }
+
     /** Producer/IO threads can enqueue, but they cannot execute guest code. */
     boolean mayEnqueue() {
-        if (!actorAlive.getAsBoolean()) return false;
+        if (retired.get() || !actorAlive.getAsBoolean()) return false;
         if (admission != null && !admission.acceptsActorScopedCallbacks()) return false;
         return handlerLease == null
                 ? admission == null || admission.canQueueUnownedContinuation()
@@ -58,7 +64,7 @@ final class SerialExecutionTicket {
             Object executingActorId,
             Object executingIncarnation,
             SerialActorAdmission.Lease activeReceive) {
-        if (!actorAlive.getAsBoolean()
+        if (retired.get() || !actorAlive.getAsBoolean()
                 || !actorId.equals(executingActorId)
                 || incarnation != executingIncarnation) {
             throw new IllegalStateException("stale or foreign actor continuation ticket");
