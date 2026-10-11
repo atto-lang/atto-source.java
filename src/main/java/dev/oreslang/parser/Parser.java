@@ -2435,18 +2435,26 @@ public final class Parser {
         boolean bracedArms = canonicalOver && match(LBRACE);
 
         List<Ast.MatchArm> arms = new ArrayList<>();
+        Ast.MatchArm defaultArm = null;
         while (!check(EOF) && !(bracedArms ? check(RBRACE) : check(END))) {
-            if (canonicalOver) {
-                if (!matchContextualIdentifier("on")) {
-                    if (check(ELSE) || check(DEFAULT)) {
-                        throw error(peek(), "match has no default/else keyword; use 'on _ { ... }'");
-                    }
-                    throw error(peek(), "every 'match ... over' arm must start with contextual keyword 'on'");
-                }
+            // Canonical 'default', plus contextual 'on default'/'on _' aliases.
+            boolean hasOn = canonicalOver && matchContextualIdentifier("on");
+            boolean keywordDefault = canonicalOver && match(DEFAULT);
+            boolean wildcardDefault = canonicalOver && check(IDENT)
+                    && peek().lexeme().equals("_");
+            if (wildcardDefault) advance();
+            boolean catchAll = keywordDefault || wildcardDefault;
+            if (canonicalOver && !hasOn && !keywordDefault) {
+                throw error(peek(), "expected 'on Pattern' or 'default' in match");
             }
-
             Ast.Pattern pattern;
-            if (!canonicalOver && match(ELSE)) {
+            if (catchAll) {
+                if (match(AS)) {
+                    pattern = new Ast.BindingPattern(consumeDeclaredName("expected default binding after 'as'"));
+                } else {
+                    pattern = new Ast.WildcardPattern();
+                }
+            } else if (!canonicalOver && match(ELSE)) {
                 pattern = new Ast.WildcardPattern();
             } else {
                 pattern = parsePattern();
@@ -2454,17 +2462,27 @@ public final class Parser {
             }
 
             Ast.Expr guard = matchWhenKeyword() ? parseExpression() : null;
+            if (catchAll && guard != null) {
+                throw error(previous(), "default match arm cannot have a guard; use 'on name when ...'");
+            }
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
-            // Arrow-free braced bodies are canonical; keep '-> { ... }'.
             if (!match(ARROW) && !check(LBRACE)) {
                 throw error(peek(), "match arm requires '{ ... }' or '-> { ... }'");
             }
-            List<Ast.Stmt> body = parseBlock();
-            arms.add(new Ast.MatchArm(pattern, guard, body));
+            Ast.MatchArm arm = new Ast.MatchArm(pattern, guard, parseBlock());
+            if (catchAll) {
+                if (defaultArm != null) throw error(previous(), "match can contain only one default arm");
+                defaultArm = arm;
+            } else {
+                arms.add(arm);
+            }
             if (bracedArms) while (match(COMMA, SEMICOLON)) { /* arm separators */ }
         }
+        // Explicit patterns remain ordered. The default is always last in
+        // dispatch, even if written first.
+        if (defaultArm != null) arms.add(defaultArm);
         if (bracedArms) consume(RBRACE, "expected '}' to close match");
         else consume(END, "expected 'end' to close match");
         if (arms.isEmpty()) {
