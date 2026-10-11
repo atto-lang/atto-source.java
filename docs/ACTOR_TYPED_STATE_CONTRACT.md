@@ -33,11 +33,13 @@ actor Cache {
 }
 ```
 
-No declaration means no implicit untyped map. `handle_state` is a sealed
-actor intrinsic, not user-overridable. It invokes a synchronous callback on the
-actor's logical single-flight lane with a non-escaping access capability.
-Reject suspension, async FFI, reentrant access, capability escape and mutable
-state-backed aliases returned from the callback. Runtime invalidation is a
+No declaration means no implicit untyped map. `critical handle_state` is a sealed actor intrinsic, not user-overridable.
+The callback may await or select. The scheduler must preserve exclusive logical
+ownership across suspension using continuation-aware critical admission, without
+holding a JVM monitor or physical mutex across await. Reentrant calls must obey
+explicit critical ownership semantics; they are not categorically rejected.
+State capabilities and mutable state-backed aliases must not escape their
+valid ownership scope. Runtime invalidation is a
 second line of defense, not a replacement for compiler ownership checks.
 
 The Java host `ActorPersistentI64Map.handleState` API is only a bounded
