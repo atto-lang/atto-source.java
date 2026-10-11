@@ -1472,6 +1472,11 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public interface ActorOwnedGuestState {
         ActorId ownerActorId();
+        /**
+         * Runtime-owned finalization hook, after all admitted actor turns
+         * have quiesced. No guest code executes during this callback.
+         */
+        default void retireFromRuntime() { }
     }
 
     /**
@@ -6229,7 +6234,21 @@ public final class ActorRuntime implements AutoCloseable {
             }
             drainMailboxReservations();
             staticSelectCursors.clear();
+            ActorOwnedGuestState retiringState = codeActorState;
             codeActorState = null;
+            if (retiringState != null) {
+                try {
+                    if (!retiringState.ownerActorId().equals(ref.id())) {
+                        throw new SecurityException("foreign source actor state in lifecycle finalization");
+                    }
+                    retiringState.retireFromRuntime();
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable finalizationFailure) {
+                    // A failed state wipe must never roll back the actor stop.
+                    ref.terminationCause.compareAndSet(null, finalizationFailure);
+                }
+            }
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
             if (memorySlice != null) memorySlice.close();
