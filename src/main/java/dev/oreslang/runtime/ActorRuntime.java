@@ -293,7 +293,47 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorGroupId create() { return new ActorGroupId(UUID.randomUUID()); }
     }
 
-    public static final class ActorTerminatedException extends IllegalStateException {
+    /** Stable machine-readable causes for synchronous mailbox admission failure. */
+    public interface SendError {
+        enum Reason {
+            TERMINATED, MAILBOX_FULL, INVALID_REFERENCE, SEALED,
+            RESOURCE_EXHAUSTED, TRANSPORT_UNAVAILABLE
+        }
+        Reason reason();
+    }
+
+    public static final class ActorMailboxFullException
+            extends IllegalStateException implements SendError {
+        public ActorMailboxFullException(ActorId id) {
+            super("actor mailbox limit exceeded for " + id);
+        }
+        @Override public Reason reason() { return Reason.MAILBOX_FULL; }
+    }
+
+    public static final class ActorSealedException
+            extends IllegalStateException implements SendError {
+        public ActorSealedException(ActorId id) {
+            super("actor " + id + " is sealed against new messages");
+        }
+        @Override public Reason reason() { return Reason.SEALED; }
+    }
+
+    public static final class ActorInvalidReferenceException
+            extends IllegalArgumentException implements SendError {
+        public ActorInvalidReferenceException(String message) { super(message); }
+        @Override public Reason reason() { return Reason.INVALID_REFERENCE; }
+    }
+
+    public static final class ActorTransportException
+            extends IllegalStateException implements SendError {
+        public ActorTransportException(String message, Throwable cause) {
+            super(message, cause);
+        }
+        @Override public Reason reason() { return Reason.TRANSPORT_UNAVAILABLE; }
+    }
+
+    public static final class ActorTerminatedException
+            extends IllegalStateException implements SendError {
         private final ActorId actorId;
         private final ActorKind actorKind;
 
@@ -305,6 +345,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorId actorId() { return actorId; }
         public ActorKind actorKind() { return actorKind; }
+        @Override public Reason reason() { return Reason.TERMINATED; }
     }
 
     /**
@@ -341,6 +382,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private final UUID runtimeInstanceId = UUID.randomUUID();
+    private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
@@ -1550,9 +1593,22 @@ public final class ActorRuntime implements AutoCloseable {
         });
     }
 
+    /** An actor handle is an opaque typed local capability, never a direct actor-state pointer. */
+    public record ActorAddress(UUID runtimeId, ActorId actorId, long generation,
+                               ActorKind kind, String transport) {
+        public ActorAddress {
+            Objects.requireNonNull(runtimeId);
+            Objects.requireNonNull(actorId);
+            Objects.requireNonNull(kind);
+            Objects.requireNonNull(transport);
+            if (generation <= 0) throw new IllegalArgumentException("generation must be positive");
+        }
+    }
+
     public final class ActorRef<M> {
         private final ActorId id;
         private final ActorKind kind;
+        private final long generation;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
@@ -1566,9 +1622,10 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private volatile ActorOutputStream<Object> outputStream;
 
-        private ActorRef(ActorId id, ActorKind kind) {
+        private ActorRef(ActorId id, ActorKind kind, long generation) {
             this.id = id;
             this.kind = kind;
+            this.generation = generation;
             readyFuture.whenCompleteRuntime((ignored, failure) -> {
                 if (failure != null) {
                     readyRefFuture.failFromRuntime(OresFuture.unwrap(failure));
@@ -1580,6 +1637,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorId id() { return id; }
         public ActorKind kind() { return kind; }
+        public long generation() { return generation; }
+        public ActorAddress address() {
+            return new ActorAddress(runtimeInstanceId, id, generation, kind, "local-process");
+        }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
@@ -2265,7 +2326,7 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(ref, "ref");
             requireCallerRuntimeAffinity("join an ActorGroup");
             if (!ref.ownedBy(ActorRuntime.this)) {
-                throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+                throw new ActorInvalidReferenceException("ActorRef belongs to a different ActorRuntime");
             }
             ActorId caller = currentActorId().orElse(null);
             if (caller != null && !caller.equals(ref.id())) {
@@ -3736,7 +3797,11 @@ public final class ActorRuntime implements AutoCloseable {
             reserveActorSlot();
 
             ActorId id = ActorId.create();
-            ActorRef<M> ref = new ActorRef<>(id, kind);
+            long generation = nextActorGeneration.getAndIncrement();
+            if (generation <= 0) {
+                throw new IllegalStateException("actor generation sequence exhausted");
+            }
+            ActorRef<M> ref = new ActorRef<>(id, kind, generation);
             ActorCell<M> cell = null;
             boolean linkedToParent = false;
             try {
@@ -4413,8 +4478,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
-        if (!cell.reserveMailboxSlot()) {
-            throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized) throw terminated(ref);
+            if (cell.sealing) throw new ActorSealedException(ref.id());
+            if (!cell.reserveMailboxSlot()) {
+                throw new ActorMailboxFullException(ref.id());
+            }
         }
         boolean mailboxSlotTransferred = false;
         try {
@@ -4486,8 +4555,11 @@ public final class ActorRuntime implements AutoCloseable {
                     sharedMutexReservations = reserveSharedMutexBindings(prepared);
                 }
                 synchronized (cell.lifecycleLock) {
-                    if (cell.stopped.get()) {
+                    if (cell.stopped.get() || cell.finalized) {
                         throw terminated(ref);
+                    }
+                    if (cell.sealing) {
+                        throw new ActorSealedException(ref.id());
                     }
                     if (cell.forceKillFenced) {
                         throw new IllegalStateException(
@@ -4506,7 +4578,7 @@ public final class ActorRuntime implements AutoCloseable {
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
                     if (!cell.mailbox.tryWrite(envelope)) {
-                        throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
+                        throw new ActorMailboxFullException(ref.id());
                     }
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
@@ -5927,6 +5999,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
+        /** Set under lifecycleLock by gracefulStop; no further user admissions. */
+        private boolean sealing;
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
