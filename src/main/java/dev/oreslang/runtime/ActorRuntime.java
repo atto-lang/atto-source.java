@@ -1540,18 +1540,17 @@ public final class ActorRuntime implements AutoCloseable {
                         else CURRENT_UNTRUSTED_QUOTA.set(previous);
                     }
                 }
-            });
+            }, retireOnce);
         } catch (RuntimeException | Error failure) {
             // No task was admitted. Release the pre-reserved quota slot.
+            // The scheduler's own retirement callback also claims this
+            // once, including a failure published before start() returns.
             retireOnce.run();
             throw failure;
         }
-        // Completion may run after actor retirement; it must reclaim only
-        // the same cohort and never unblock a newer generation. If terminal
-        // callback registration fails, deliberately retain the quota fence:
-        // freeing it while an already-started task is still live could mint
-        // an independent second fuel budget.
-        future.whenCompleteRuntime((ignored, failure) -> retireOnce.run());
+        // A caller may cancel the Future while the source turn is still
+        // executing. The scheduler invokes retireOnce ONLY after guest
+        // carrier quiescence, not merely when the Future settles.
         return future;
     }
 
