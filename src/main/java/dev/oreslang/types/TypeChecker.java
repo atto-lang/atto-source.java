@@ -20,6 +20,7 @@ import dev.oreslang.types.Types.TupleKind;
 import dev.oreslang.types.Types.Union;
 import dev.oreslang.types.Types.Type;
 import dev.oreslang.types.Types.Unknown;
+import dev.oreslang.types.Types.OpenValue;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -918,7 +919,7 @@ public final class TypeChecker {
                             || method.parameters().size() != arity || !method.genericParameters().isEmpty()
                             || resolve(method.returnType(), classGenerics, self) != Primitive.VOID
                             || resolve(method.parameters().getFirst().type(), classGenerics, self) != Primitive.STRING
-                            || (arity == 2 && resolve(method.parameters().get(1).type(), classGenerics, self) != Unknown.INSTANCE)) {
+                            || (arity == 2 && resolve(method.parameters().get(1).type(), classGenerics, self) != OpenValue.INSTANCE)) {
                         throw new IllegalArgumentException("map hook " + method.name()
                                 + " must be synchronous (string key" + (arity == 2 ? ", unknown value" : "") + "): void");
                     }
@@ -4460,7 +4461,7 @@ public final class TypeChecker {
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
-        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
+        if (type == Unknown.INSTANCE || type == OpenValue.INSTANCE || type instanceof Generic || type instanceof SelfType
                 || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
@@ -4553,7 +4554,7 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
+        if (type == Unknown.INSTANCE || type == OpenValue.INSTANCE || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
         if (type instanceof StringLiteral) return true;
@@ -6111,7 +6112,7 @@ public final class TypeChecker {
                 }
             }
         }
-        return Unknown.INSTANCE;
+        return OpenValue.INSTANCE;
     }
 
     private Ast.ClassDecl resolveClassParent(Ast.TypeRef parentRef, Ast.ClassDecl child) {
@@ -7103,14 +7104,14 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
-            case "unknown" -> Unknown.INSTANCE;
+            case "unknown" -> OpenValue.INSTANCE;
             case "Map" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 2
                         || !ref.arguments().get(0).name().equals("string")
                         || !ref.arguments().get(1).name().equals("unknown")) {
                     throw new IllegalArgumentException("initial Map implementation requires Map<string, unknown>");
                 }
-                yield new Named("Map", List.of(Primitive.STRING, Unknown.INSTANCE));
+                yield new Named("Map", List.of(Primitive.STRING, OpenValue.INSTANCE));
             }
             case "void" -> Primitive.VOID;
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
