@@ -450,4 +450,79 @@ final class ValueDispatchControlFlowTest {
                 """));
     }
 
+    @Test
+    void finallyCannotBreakOrContinueAnEnclosingLoop() {
+        for (String control : new String[] { "break", "continue" }) {
+            String source = """
+                    fnc broken(): string {
+                      loop {
+                        try { return "pending"; }
+                        catch (error) { return "caught"; }
+                        finally {
+                          %s;
+                        }
+                      }
+                      return "continued";
+                    }
+                    """.formatted(control);
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> admitted(source), source);
+            assertTrue(error.getMessage().contains(control + " cannot escape a finally block"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void localLoopControlWithinFinallyMayFinishCleanupWithoutReplacingReturn() throws Exception {
+        assertEquals("cleanup\\noriginal\\n", execute("""
+                fnc scoped(): string {
+                  try { return "original"; }
+                  catch (error) { return "caught"; }
+                  finally {
+                    loop {
+                      break;
+                    }
+                    stdio.println("cleanup");
+                  }
+                }
+
+                pub fnc main(): void {
+                  stdio.println(scoped());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void typeCheckerRejectsDirectAstReturnInjectedIntoFinally() {
+        Ast.Program program = Parser.parse("""
+                fnc target(): string {
+                  try { return "original"; }
+                  catch (error) { return "caught"; }
+                  finally { stdio.println("cleanup"); }
+                }
+                """);
+        Ast.ModuleDecl module = program.modules().getFirst();
+        Ast.FunctionDecl original = (Ast.FunctionDecl) module.declarations().getFirst();
+        Ast.TryStmt attempted = (Ast.TryStmt) original.body().getFirst();
+        Ast.TryStmt injected = new Ast.TryStmt(
+                attempted.body(), attempted.errorName(), attempted.catchBody(),
+                java.util.List.of(new Ast.ReturnStmt(new Ast.LiteralExpr("illegal"))));
+        Ast.FunctionDecl forged = new Ast.FunctionDecl(
+                original.name(), original.kind(), original.visibility(),
+                original.async(), original.generator(), original.structural(),
+                original.nonLexical(), original.trapped(), original.actorKind(),
+                original.genericParameters(), original.parameters(),
+                original.returnType(), original.annotations(), java.util.List.of(injected));
+        Ast.Program invalid = new Ast.Program(
+                program.namespace(), program.imports(),
+                java.util.List.of(new Ast.ModuleDecl(
+                        module.name(), module.annotations(), module.contracts(),
+                        java.util.List.of(forged))));
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(invalid));
+        assertTrue(failure.getMessage().contains("return is forbidden inside finally"),
+                failure.getMessage());
+    }
+
 }
