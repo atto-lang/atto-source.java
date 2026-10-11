@@ -313,9 +313,9 @@ final class SourceSupervisorStopLoweringTest {
             assertEquals(0, process.queued());
             assertFalse(process.healthy());
             var failedChild = ambiguous.get().notice().logicalChild().orElseThrow();
-            assertEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.FINALIZED,
+            assertEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.STOPPING,
                     group.childSnapshot(failedChild).phase(),
-                    "throwing host sink may not permanently STOP the child");
+                    "ambiguous host STOP must quarantine the child, not allow RESTART");
             group.close();
             process.close();
         }
