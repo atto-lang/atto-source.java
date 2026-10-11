@@ -358,6 +358,43 @@ final class ValueDispatchControlFlowTest {
     }
 
     @Test
+    void awaitingFinallyPreservesPendingFunctionAndValueArmReturn() throws Exception {
+        assertEquals("cleanup-direct\n42\ncleanup-match\n41\n", execute("""
+                async fnc answer(): int { return 41; }
+                async fnc cleanup(string label): int {
+                  stdio.println(label);
+                  return 1;
+                }
+
+                async fnc direct(): int {
+                  try { return 42; }
+                  catch (failure) { return 0; }
+                  finally {
+                    const cleanupResult = await cleanup("cleanup-direct");
+                  }
+                }
+
+                async fnc viaMatch(): int {
+                  return match 1 over
+                    on _ {
+                      try { return await answer(); }
+                      catch (failure) { return 0; }
+                      finally {
+                        const cleanupResult = await cleanup("cleanup-match");
+                      }
+                    }
+                  end
+                }
+
+                pub async fnc main(): void {
+                  stdio.println(await direct());
+                  stdio.println(await viaMatch());
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void lexicalArmReturnSurvivesTryFinallyAndRunsCleanupExactlyOnce() throws Exception {
         assertEquals("finally\narm-defer\narm\ndo-finally\ndo-defer\nearly\ncase\ndefault\n",
                 execute("""
