@@ -1,0 +1,127 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.TaggedMessageCodec;
+import dev.oreslang.types.TaggedMessageContracts;
+import dev.oreslang.types.TypeChecker;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class TaggedMessageContractTest {
+    private static final String DECLARATIONS = """
+            define enum Status as
+                Message1: Tuple[bool, string] = 1
+                Message2: string = 2
+                Message3: FixedArray[string, string, string] = 3
+                Ready = 4
+            end
+
+            define pattern Messages as
+                Status.Message1
+                Status.Message2
+                Status.Message3
+            end
+            """;
+
+    @Test
+    void parserPreservesTagsShapesAndImplicitNewlineAlternatives() {
+        Ast.Program program = Parser.parse(DECLARATIONS);
+        var registry = TaggedMessageContracts.verify(program);
+        assertEquals(List.of(1, 2, 3, 4),
+                registry.enums().get("Status").cases().stream()
+                        .map(TaggedMessageContracts.Case::tag).toList());
+        assertEquals(3, registry.patterns().get("Messages").cases().size());
+        assertEquals("Status.Message2",
+                registry.patterns().get("Messages").cases().get(1).qualifiedName());
+    }
+
+    @Test
+    void defaultEnumTagsIncrementAndExplicitTagsCanReserveGaps() {
+        var program = Parser.parse("""
+                define enum Codes as
+                    First
+                    Next
+                    Third = 8
+                    Fourth
+                end
+                """);
+        assertEquals(List.of(1, 2, 8, 9),
+                TaggedMessageContracts.verify(program).enums().get("Codes").cases()
+                        .stream().map(TaggedMessageContracts.Case::tag).toList());
+    }
+
+    @Test
+    void rejectsPipeUnknownCaseDuplicateTagsAndNonSerializablePayload() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define pattern Bad as
+                    Status.Message1 | Status.Message2
+                end
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define enum Bad as
+                    A = 1
+                    B = 1
+                end
+                """));
+        assertThrows(IllegalArgumentException.class, () -> TaggedMessageContracts.verify(Parser.parse(
+                DECLARATIONS + """
+                    define pattern Other as
+                        Status.Missing
+                    end
+                    """)));
+        assertThrows(IllegalArgumentException.class, () -> TaggedMessageContracts.verify(Parser.parse("""
+                define enum Bad as
+                    Foo: ActorId = 1
+                end
+                """)));
+    }
+
+    @Test
+    void closedMessagePackDecoderPreservesNominalIdentityAndRejectsWrongCase() {
+        var registry = TaggedMessageContracts.verify(Parser.parse(DECLARATIONS));
+        var codec = new TaggedMessageCodec(registry.requireDomain("Messages"));
+        var original = new TaggedMessageCodec.TaggedValue("Status", "Message2", 2, "hello");
+        byte[] encoded = codec.encode(original);
+        assertEquals(original, codec.decode(encoded));
+        assertThrows(IllegalArgumentException.class, () -> codec.encode(
+                new TaggedMessageCodec.TaggedValue("Status", "Ready", 4, null)));
+        assertThrows(IllegalArgumentException.class, () -> codec.encode(
+                new TaggedMessageCodec.TaggedValue("Status", "Message2", 3, "hello")));
+        var narrower = new TaggedMessageCodec(new TaggedMessageContracts.Domain(
+                "OnlyFirst", List.of(registry.requireCase("Status.Message1"))));
+        assertThrows(IllegalArgumentException.class, () -> narrower.decode(encoded));
+        encoded[encoded.length - 1] ^= 1;
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(encoded));
+    }
+
+    @Test
+    void typecheckerAcceptsCheckedVariantConstructionAndRejectsOtherDomainCases() {
+        var valid = DECLARATIONS + """
+                define actor Worker as
+                    receive(ActorMail<Messages> mail): void {
+                        self.end();
+                        return;
+                    }
+                end
+
+                pub async routine main(): void {
+                    val a = await spawn Worker();
+                    a.send("hello" as Status.Message2);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(valid.replace(
+                        "a.send(\"hello\" as Status.Message2);",
+                        "a.send(Status.Ready());"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(valid.replace(
+                        "a.send(\"hello\" as Status.Message2);",
+                        "a.send(7 as Status.Message2);"))));
+    }
+}
