@@ -126,7 +126,7 @@ final class TypedValueMatchIntegrationTest {
                     default { return 9; }
                   };
                 }
-                """, "typed value match arm result must be a pure scalar expression");
+                """, "typed value match arm result requires a pure scalar expression or admitted await");
         rejects("""
                 fnc compute(): int { return 42; }
                 fnc invalid(int n): int {
@@ -135,19 +135,20 @@ final class TypedValueMatchIntegrationTest {
                     default { return 9; }
                   };
                 }
-                """, "typed value match arm result must be a pure scalar expression");
+                """, "typed value match arm result requires a pure scalar expression or admitted await");
     }
 
     @Test
-    void asyncAndOwnedValueResultsRemainGated() {
-        rejects("""
-                async fnc invalid(int n): int {
+    void asyncOwnedScalarResultsAdmittedButNonScalarResultsRemainGated() {
+        // Async scalar value matches now use SourceTask's owner-tagged ARM_RESULT.
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
+                async fnc valid(int n): int {
                   return match<ret=int> n over {
                     on 7 { return 7; }
                     default { return 9; }
                   };
                 }
-                """, "continuation lowering");
+                """)));
         rejects("""
                 fnc invalid(int n): Option<int> {
                   return match<ret=Option<int>> n over {
