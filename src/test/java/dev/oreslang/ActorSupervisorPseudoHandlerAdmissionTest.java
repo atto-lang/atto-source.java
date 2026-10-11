@@ -65,6 +65,23 @@ final class ActorSupervisorPseudoHandlerAdmissionTest {
     }
 
     @Test
+    void explicitAwaitInSynchronousTeardownFailsAtParseTime() {
+        String source = """
+                define actor Worker as
+                  tear_down(): void {
+                    await work;
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source));
+        assertTrue(rejected.getMessage().contains(
+                "actor tear_down cannot await or cooperate"),
+                rejected.getMessage());
+    }
+
+    @Test
     void ordinaryNonActorMethodsAndActorMethodsAreUnaffected() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define class Example as
