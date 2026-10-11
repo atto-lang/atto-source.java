@@ -240,4 +240,26 @@ class AsyncNativeIoTest {
             io.close();
         }
     }
+
+    @Test
+    void nativeIoExplicitReleaseFailureKeepsReservationForRetry() throws Exception {
+        AsyncNativeIo io = new AsyncNativeIo(1);
+        java.util.concurrent.atomic.AtomicInteger attempts =
+                new java.util.concurrent.atomic.AtomicInteger();
+        io.register(() -> {
+            if (attempts.incrementAndGet() == 1) {
+                throw new IOException("transient native resource-close failure");
+            }
+        });
+        IllegalStateException failure = assertThrows(IllegalStateException.class, io::close);
+        assertTrue(failure.getMessage().contains("resources did not release"),
+                failure.getMessage());
+        assertEquals(1, attempts.get());
+        assertEquals(1, failure.getSuppressed().length);
+        assertInstanceOf(IOException.class, failure.getSuppressed()[0]);
+        assertDoesNotThrow(io::close, "resource must remain owned for retry");
+        assertEquals(2, attempts.get());
+        assertDoesNotThrow(io::close, "successful retirement is idempotent");
+        assertEquals(2, attempts.get());
+    }
 }
