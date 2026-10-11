@@ -144,3 +144,41 @@ cleanup iteration and direct Java regression tests in
 and [native-image guest verification](https://github.com/zed-pkg-test/java-app/actions/runs/38180629619)
 cover this revision; consult each run's completed conclusion before
 claiming production readiness.
+
+## Security audit: effect authority and AST visitor coverage
+
+The lexical `ArmResultStmt` model is represented by the actual
+`Ast.ArmReturnStmt` node; capability checking must explicitly traverse it
+and `Ast.ValueMatchExpr` even though ordinary function-return checks do not.
+
+The audit found and closed two concrete authority-admission gaps:
+
+1. **Built-in shadowing:** syntax-only `stdio.print/println` whitelisting
+   would mistakenly admit a call to a user object named `stdio`. The
+   TypeChecker now proves that `stdio` is not a lexical binding before
+   admitting immediate or deferred stdout effects in a value match.
+2. **Missing capability traversal:** `CapabilityChecker` previously
+   skipped both new match/result AST nodes. It now examines subject,
+   result type, every arm pattern/guard/body, and `ArmReturnStmt.value()`.
+   The same audit extended scanning to nominal/structural/tuple/tagged
+   patterns and constructor names, casts, type tests, pattern tests, and
+   explicit generic call type arguments. These locations must not hide
+   SharedMutex or other restricted capabilities from untrusted actors.
+
+Regression tests cover shadowed cleanup effects, nested matches carrying
+stdout/process-info access, pure capability-free matches, restricted
+SharedMutex types in patterns/casts/generic arguments and zero-arity
+nominal constructor patterns. These are compiler admission tests; host
+and actor-runtime restrictions remain independently necessary.
+
+**Latest implementation source:** `aa97121e32bd989e3a6a5bb87038d2c3c7e27891`.
+Exact `src/main` tree
+`6ef7f3272b03e30724e858d4a0258dbeb7b1c359`;
+exact `src/test` tree
+`62c9c127f148cfad8a49e7da2b723a9a5b911d4c`.
+
+[Exact-source funded JVM CI](https://github.com/zed-pkg-test/java-app/actions/runs/38183135411)
+and [native AOT/hybrid CI](https://github.com/zed-pkg-test/java-app/actions/runs/38183135320)
+are the final verification gates for this revision. Keep draft until
+both conclude successfully. The broader async/SourceFlow/LLVM work is
+not included or asserted complete here.
