@@ -126,4 +126,53 @@ final class ActorGroupFailureControlTest {
             group.close();
         }
     }
+
+    @Test
+    void fullOrdinaryMailboxCannotStarveAnIndependentGroupPanicNotice() throws Exception {
+        IsolatePolicy baseline = IsolatePolicy.developer();
+        IsolatePolicy constrained = new IsolatePolicy(
+                baseline.capabilities(), baseline.maxHeapBytes(), 2,
+                baseline.maxWallTime(), baseline.adversarial());
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime(
+                constrained, new ActorRuntime.DispatcherConfig(2, 2, 1, 8))) {
+            var group = runtime.createActorGroup();
+            var capability = group.joinCapability();
+            var congested = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        if ("hold".equals(message)) {
+                            entered.countDown();
+                            if (!release.await(5, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("test carrier release timed out");
+                            }
+                        }
+                    });
+            group.join(congested, capability);
+            try {
+                congested.send("hold");
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                // The active turn has left the mailbox. Exactly two user-data
+                // slots remain, both of which are consumed before the crash.
+                congested.send("queued-one");
+                congested.send("queued-two");
+                assertThrows(IllegalStateException.class,
+                        () -> congested.send("mailbox-is-full"));
+
+                var failing = runtime.<String>spawnShared(
+                        () -> (message, context) -> { throw new OresPanic("priority"); });
+                group.join(failing, capability);
+                var next = group.nextMemberFailure();
+                failing.send("crash");
+                var notice = next.get(5, TimeUnit.SECONDS);
+                assertEquals(ActorRuntime.ActorFailureKind.PANIC, notice.kind());
+                assertEquals(failing.id(), notice.actorId());
+                assertTrue(congested.isAlive(),
+                        "saturated user mailbox must not receive or absorb a CONTROL panic");
+            } finally {
+                release.countDown();
+                group.close();
+            }
+        }
+    }
 }
