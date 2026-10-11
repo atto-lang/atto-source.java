@@ -191,4 +191,25 @@ final class SerialActorAdmissionTest {
         }
     }
 
+    @Test void enumLifecycleTracksAdmissionSuspensionAndStopWithoutIndependentFlags() {
+        SerialActorAdmission gate = new SerialActorAdmission(2);
+        assertEquals(SerialActorAdmission.Lifecycle.IDLE, gate.lifecycle());
+        var first = gate.submit(MESSAGE).join();
+        assertEquals(SerialActorAdmission.Lifecycle.RUNNING, gate.lifecycle());
+        var pending = gate.submit(HTTP);
+        first.suspend();
+        assertEquals(SerialActorAdmission.Lifecycle.SUSPENDED, gate.lifecycle());
+        assertFalse(pending.isDone());
+        first.resume();
+        assertEquals(SerialActorAdmission.Lifecycle.RUNNING, gate.lifecycle());
+        first.close();
+        var second = pending.join();
+        assertEquals(SerialActorAdmission.Lifecycle.RUNNING, gate.lifecycle());
+        second.close();
+        assertEquals(SerialActorAdmission.Lifecycle.IDLE, gate.lifecycle());
+        gate.close();
+        assertEquals(SerialActorAdmission.Lifecycle.STOPPED, gate.lifecycle());
+        assertThrows(IllegalStateException.class, () -> gate.submit(MESSAGE));
+    }
+
 }
