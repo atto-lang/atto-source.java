@@ -288,4 +288,36 @@ final class SupervisorChildRegistryTest {
         assertThrows(IllegalStateException.class, () -> registry.beginRestart(child.child(), actor, 1));
     }
 
+    @Test
+    void concurrentReconciliationCannotBeDowngradedByLateUncertainty() throws Exception {
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            for (int i = 0; i < 64; i++) {
+                var registry = new SupervisorChildRegistry(
+                        ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+                var actor = ActorRuntime.ActorId.create();
+                var child = registry.register(actor);
+                registry.finalized(child.child(), actor, 1);
+                var permit = registry.beginStop(child.child(), actor, 1, i + 1L);
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var reconcile = pool.submit(() -> {
+                    start.await();
+                    return registry.reconcileVerifiedStop(permit);
+                });
+                var uncertain = pool.submit(() -> {
+                    start.await();
+                    try { registry.markStopUncertain(permit); }
+                    catch (IllegalStateException expectedAfterReconcile) { }
+                    return null;
+                });
+                start.countDown();
+                assertEquals(SupervisorChildRegistry.Phase.STOPPED,
+                        reconcile.get(5, java.util.concurrent.TimeUnit.SECONDS).phase());
+                uncertain.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                assertEquals(SupervisorChildRegistry.StopReceiptStatus.ACKNOWLEDGED,
+                        registry.stopReceipt(child.child()).status());
+                assertTrue(registry.unresolvedStops().isEmpty());
+            }
+        }
+    }
+
 }
