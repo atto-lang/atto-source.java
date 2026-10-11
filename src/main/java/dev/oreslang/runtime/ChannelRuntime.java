@@ -34,6 +34,8 @@ public final class ChannelRuntime {
 
     /** A finite default prevents an idle producer from retaining unbounded select waiters. */
     public static final int DEFAULT_MAX_PENDING_REGISTRATIONS = 4096;
+    /** Bound dynamic select fan-in before allocating waiter registrations. */
+    public static final int MAX_SELECT_CASES = 256;
 
     private static final ReentrantLock COORDINATOR = new ReentrantLock(true);
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
@@ -313,6 +315,10 @@ public final class ChannelRuntime {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
             }
+            if (cases.size() > MAX_SELECT_CASES) {
+                throw new IllegalArgumentException(
+                        "select case count exceeds maximum " + MAX_SELECT_CASES);
+            }
             this.cases = List.copyOf(cases);
             this.fairCursor.set(initialFairCursor);
             long defaults = this.cases.stream()
@@ -331,6 +337,10 @@ public final class ChannelRuntime {
         public static SelectSet from(Iterable<? extends SelectCase> cases) {
             ArrayList<SelectCase> copy = new ArrayList<>();
             for (SelectCase selectCase : cases) {
+                if (copy.size() == MAX_SELECT_CASES) {
+                    throw new IllegalArgumentException(
+                            "select case count exceeds maximum " + MAX_SELECT_CASES);
+                }
                 copy.add(Objects.requireNonNull(selectCase));
             }
             return new SelectSet(copy);
