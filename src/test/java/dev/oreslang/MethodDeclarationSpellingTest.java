@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -60,6 +61,28 @@ final class MethodDeclarationSpellingTest {
         assertTrue(client.methods().get(3).suspends());
         assertEquals("method", client.methods().get(4).name());
         assertTrue(client.methods().get(5).isStatic());
+    }
+
+    @Test
+    void compilerTypeChecksBothInstanceMarkersAndStaticFunctions() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Counter as
+                    fnc legacy(int value): int { return value + 1; }
+                    method explicit(int value): int { return value + 2; }
+                    static fnc independent(int value): int { return value + 3; }
+                end
+                """)));
+    }
+
+    @Test
+    void rejectsAmbiguousDoubleMarkers() {
+        for (String declaration : new String[] {
+                "fnc method both(): int { return 1; }",
+                "method fnc both(): int { return 1; }"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("define class C as " + declaration + " end"));
+        }
     }
 
     @Test
