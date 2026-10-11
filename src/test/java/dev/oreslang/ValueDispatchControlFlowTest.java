@@ -298,6 +298,27 @@ final class ValueDispatchControlFlowTest {
     }
 
     @Test
+    void suspendableNormalBlockRunsDeferredCleanupOnce() throws Exception {
+        assertEquals("41\ncleanup-normal\n7\n", execute("""
+                async fnc answer(): int { return 41; }
+
+                async fnc normal(): int {
+                  block {
+                    defer stdio.println("cleanup-normal");
+                    const value = await answer();
+                    stdio.println(value);
+                  }
+                  return 7;
+                }
+
+                pub async fnc main(): void {
+                  stdio.println(await normal());
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void lexicalArmReturnSurvivesTryFinallyAndRunsCleanupExactlyOnce() throws Exception {
         assertEquals("finally\narm-defer\narm\ndo-finally\ndo-defer\nearly\ncase\ndefault\n",
                 execute("""
