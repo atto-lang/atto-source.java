@@ -7,7 +7,7 @@ import java.util.function.Function;
 /**
  * One actor-owned, bounded native i64-to-i64 state field. The only public
  * read/write operations live on a temporary Access object passed to critical().
- * The map's slots are allocated in ActorArena's persistent FFM region and
+ * Nested synchronous critical calls on the same admitted actor turn are allowed.\n * The map's slots are allocated in ActorArena's persistent FFM region and
  * survive mailbox messages; the Access object does not survive its callback.
  *
  * This is a host ABI, NOT a general Oreslang Map<K,V> or the source-level
@@ -64,20 +64,20 @@ public final class ActorPersistentI64Map implements AutoCloseable {
     /**
      * Exclusive, non-suspending access to native persistent actor state.
      * The actor mailbox is already single-flight; this additional lexical
-     * gate prevents nested/reentrant access and revokes escaped Access views.
+     * gate scopes nested access and revokes escaped Access views.
      * Never block a carrier or retain an Access across await/FFI.
      */
     public synchronized <R> R critical(Function<? super Access, ? extends R> body) {
         Objects.requireNonNull(body, "critical body");
         requireActiveOwner();
-        if (active != null) throw new IllegalStateException("reentrant actor state critical section");
+        Access previous = active;
         Access access = new Access();
         active = access;
         try {
             return body.apply(access);
         } finally {
             access.live = false;
-            active = null;
+            active = previous;
         }
     }
 
