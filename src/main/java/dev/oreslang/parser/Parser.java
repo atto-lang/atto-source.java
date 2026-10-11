@@ -36,6 +36,19 @@ public final class Parser {
      * parse(String) entry point intentionally rejects accelerator execution;
      * callers must opt into this compile-only effect domain explicitly.
      */
+    /**
+     * Typed source-level ActorStream admission shared with LLVM.
+     * This is a restricted compile-only host execution plan; arbitrary
+     * guest actor methods and hardware dispatch are NOT enabled here.
+     */
+    public static dev.oreslang.runtime.accel.PipelineSourceLowering.Plan
+    parseTrustedPipelineSource(String source,
+            dev.oreslang.runtime.DataOrientedLayout.Plan layout,
+            dev.oreslang.runtime.accel.DopKernelIR.GpuTarget target) {
+        return dev.oreslang.runtime.accel.PipelineSourceLowering
+                .compile(source, layout, target);
+    }
+
     public static Ast.GpuF32Decl parseTrustedGpuDeclaration(
             String source, dev.oreslang.runtime.DataOrientedLayout.Plan layout) {
         var result = dev.oreslang.runtime.accel.AcceleratorSourceLowering.compileGpu(source, layout);
