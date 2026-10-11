@@ -153,6 +153,78 @@ final class SourceLoopSoftPreemptionTest {
                 """));
     }
 
+
+    @Test
+    void manyAutomaticCooperatesKeepLexicalDeferAndFinallyUntilCompletion()
+            throws Exception {
+        String output = run("""
+                async fnc compute(): int {
+                  defer stdio.stdout.write("D");
+                  let sum = 0;
+                  try {
+                    for (let i = 0; i < 8192; i = i + 1) {
+                      sum = sum + 1;
+                    }
+                  } catch (err) {
+                    stdio.stdout.write("unexpected");
+                  } finally {
+                    stdio.stdout.write("F");
+                  }
+                  return sum;
+                }
+
+                pub async fnc main(): void {
+                  stdio.stdout.write(await compute());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("FD8192|"), output);
+        assertTrue(Long.parseLong(output.substring("FD8192|".length())) > 0,
+                "automatic handoffs must preserve defer/finally obligations until exit");
+    }
+
+
+    @Test
+    void emptyLoopBodyStillHasSafeCooperationBackedges() throws Exception {
+        String output = run("""
+                async fnc tight(): int {
+                  for (let i = 0; i < 20000; i = i + 1) { }
+                  return 7;
+                }
+                pub async fnc main(): void {
+                  stdio.stdout.write(await tight());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("7|"), output);
+        assertTrue(Long.parseLong(output.substring(2)) > 0,
+                "an empty busy-loop must still reach a safe scheduler backedge");
+    }
+
+    @Test
+    void asyncGeneratorYieldIsNotSchedulerCooperate() throws Exception {
+        assertEquals("12|0", run("""
+                async generator fnc values(): int {
+                  yield 1;
+                  yield 2;
+                  return;
+                }
+                pub async fnc main(): void {
+                  val AsyncIterator<int> iterator = values();
+                  stdio.stdout.write((await iterator.next()).value.unwrap());
+                  stdio.stdout.write((await iterator.next()).value.unwrap());
+                  iterator.close();
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """));
+    }
+
     private static String run(String sourceText) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
