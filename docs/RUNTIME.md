@@ -144,16 +144,27 @@ to implement an OS-process global. The trusted supervisor must own the canonical
 registry and isolated trusted actors must use a request/reply bridge to it. Oreslang
 fails closed rather than silently creating one "global" per native isolate.
 
-### Memory-slot singletons
+### Process-immutable singletons and legacy memory slots
 
-`MemorySlotSingletonRegistry` keys singleton state by semantic memory slot, not
-carrier thread. Main/root and all shared actors use the shared/main slot. A
-private/isolated actor uses its stable actor execution domain as a separate slot.
+Source `singleton module` uses `ProcessSingletonRegistry`: one canonical
+module identity per OS-process host runtime, with a strongly rooted and deeply
+frozen map of deterministic field values. Initialization and cardinality
+checking are serialized for first publication; subsequent reads are lock-free.
+Fields may be `val`/`const`, never `let`. Nested mutable objects, cycles,
+unbounded graphs, and authority values fail graph admission. A schema or
+initializer change must use an explicit versioned identity; stale code cannot
+silently reinterpret the pinned snapshot.
 
-Each cell serializes operations and exposes only a slot-bound opaque handle.
-Arguments/results are frozen. A handle used from another slot is rejected. Private
-slot state is retired with actor finalization; the shared/main slot lives until
-runtime close.
+The previous `MemorySlotSingletonRegistry` remains only an internal
+per-actor/per-shared-slot runtime primitive. It is not the implementation of
+the language's process-wide `singleton module`.
+
+For real separately spawned Graal isolates, Java statics cannot provide a
+single process-wide registry. These deployments require a trusted supervisor
+coordinator with an authenticated read/value bridge and must fail closed
+until it exists; `ProcessSingletonRegistry.requireBackendFor(true)` rejects
+the local backend explicitly. Untrusted actors must never acquire a live
+singleton handle or gain access by nested message transport.
 
 ### Symbols
 
