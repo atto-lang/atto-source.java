@@ -23,7 +23,7 @@ public final class NativeHttp implements AutoCloseable {
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
     });
-    private boolean closed;
+    private volatile boolean closed;
 
     public NativeHttp(OresContext context) {
         this.context = Objects.requireNonNull(context);
@@ -131,6 +131,12 @@ public final class NativeHttp implements AutoCloseable {
                 });
                 actor.send(exchange.moveTo(actor, !serial));
             } catch (RuntimeException failure) {
+                synchronized (exchange.state) {
+                    if (exchange.state.ticket != null) {
+                        transfers.remove(exchange.state.ticket);
+                        exchange.state.ticket = null;
+                    }
+                }
                 if (actor != null && !serial) actor.cancel();
                 exchange.state.abort(500);
             } finally {
@@ -144,6 +150,27 @@ public final class NativeHttp implements AutoCloseable {
      * claims its moved HTTP transfer. No guest method can fabricate authority:
      * transfer ticket, actor identity, and persistent-actor flag must agree.
      */
+    public boolean consumeAbortedSerialRequest(
+            ActorRuntime.ActorId actorId, Object message) {
+        if (!(message instanceof String token)) return false;
+        Exchange exchange = transfers.get(token);
+        if (exchange == null) return false;
+        synchronized (exchange.state) {
+            State state = exchange.state;
+            if (!state.persistentActor || state.actor == null
+                    || !state.actor.id().equals(actorId)
+                    || !actorId.equals(state.owner)
+                    || !Objects.equals(state.ticket, token)
+                    || !state.terminal) return false;
+            // A deadline may expire before the queued mail is processed.
+            // Consume its tombstone instead of killing the persistent actor
+            // with an invalid http.claim(token) call.
+            transfers.remove(token, exchange);
+            state.ticket = null;
+            return true;
+        }
+    }
+
     public OresFuture<?> serialRequestCompletion(
             ActorRuntime.ActorId actorId, Object message) {
         if (!(message instanceof String token)) return null;
@@ -364,7 +391,13 @@ public final class NativeHttp implements AutoCloseable {
                 if (!transportClosed
                         || (actor != null && !persistentActor
                                 && !actor.done().isDone())) return;
-                if (ticket != null) { transfers.remove(ticket); ticket = null; }
+                // Preserve an aborted, unclaimed serial transfer until its
+                // queued actor message is consumed. This prevents a timeout
+                // from crashing the actor with a stale http.claim token.
+                if (ticket != null && !persistentActor) {
+                    transfers.remove(ticket);
+                    ticket = null;
+                }
                 if (deadline != null) deadline.cancel(false);
             }
             if (server.active.remove(this)) {
@@ -412,7 +445,17 @@ public final class NativeHttp implements AutoCloseable {
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
                 transfers.put(token, moved);
-                destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
+                destination.done().whenCompleteRuntime((ignored, failure) -> {
+                    synchronized (state) {
+                        // Actor teardown drains queued mail; an unclaimed
+                        // serial tombstone cannot be consumed afterward.
+                        if (state.ticket != null) {
+                            transfers.remove(state.ticket);
+                            state.ticket = null;
+                        }
+                    }
+                    state.abort(500);
+                });
                 return token;
             }
         }
