@@ -4078,13 +4078,13 @@ public final class OresEvalRootNode extends RootNode {
                                     }
 
                                     if (operation.callback()) {
+                                        OresFuture<Void> completion = null;
                                         try {
                                             if (!ActorRuntime.inActorExecution()) {
                                                 throw new IllegalStateException(
                                                         "nb cb writech requires actor execution");
                                             }
-                                            OresFuture<Void> completion =
-                                                    channel.writeAsync(value);
+                                            completion = channel.writeAsync(value);
                                             ActorRuntime.ContinuationTarget target =
                                                     context.actors()
                                                             .captureCurrentContinuationTarget();
@@ -4108,13 +4108,16 @@ public final class OresEvalRootNode extends RootNode {
                                                             }
                                                         }
                                                     });
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    null);
                                         } catch (RuntimeException | Error failure) {
+                                            // If registration fails after writeAsync, revoke
+                                            // only this newly owned pending producer.
+                                            if (completion != null) completion.cancel(false);
                                             continuation.accept(t2, null, failure);
+                                            return;
                                         }
+                                        // A lexical continuation can itself throw.
+                                        // Never deliver twice or reinterpret it as I/O.
+                                        continuation.accept(t2, null, null);
                                         return;
                                     }
 
