@@ -53,6 +53,10 @@ public final class SerialActorAdmission implements AutoCloseable {
         public State state() {
             synchronized (lock) { return state; }
         }
+        /** A transport adapter must call this before dispatch or continuation reentry. */
+        public void requireActive() {
+            synchronized (lock) { requireCurrent(); }
+        }
         public void suspend() {
             synchronized (lock) {
                 requireCurrent();
