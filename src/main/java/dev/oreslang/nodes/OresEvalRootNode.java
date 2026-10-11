@@ -4183,6 +4183,21 @@ public final class OresEvalRootNode extends RootNode {
                     break;
                 }
             }
+            // Replacing an owned value would silently abandon its resources.
+            // Until an explicit previous-value transfer / destructor API lands,
+            // require the caller to remove and handle the old owner first.
+            if (object.mapEntries.containsKey(key)) {
+                Object previous = object.mapEntries.get(key);
+                validateMapReadValue(object, key, previous);
+                try {
+                    mapCopyForRead(previous, new IdentityHashMap<>(), 0);
+                } catch (IllegalArgumentException nonCopy) {
+                    throw new IllegalArgumentException(
+                            "Map.put cannot overwrite a non-Copy owned value for key '"
+                                    + key + "'; call remove() and handle the old owner first",
+                            nonCopy);
+                }
+            }
             mapHook(object, "on_put", key, value);
             object.mapEntries.put(key, value);
         }
