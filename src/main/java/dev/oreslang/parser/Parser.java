@@ -1547,11 +1547,10 @@ public final class Parser {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
         if (match(RETURN)) {
-            // Match and switch are statements, never returnable values.
-            // Return inside an arm exits the enclosing function instead.
-            if (check(MATCH) || check(SWITCH)) {
-                throw error(peek(), "'return match' and 'return switch' are invalid: use match/switch with return inside each arm");
-            }
+            // Exhaustive control-flow statements, not value expressions.
+            // Return within each admitted arm exits the surrounding function.
+            if (match(MATCH)) return parseMatch(true);
+            if (match(SWITCH)) return parseSwitch(true);
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
@@ -1587,8 +1586,8 @@ public final class Parser {
             return new Ast.ContinueStmt();
         }
         if (match(IF)) return parseIf();
-        if (match(MATCH)) return parseMatch();
-        if (match(SWITCH)) return parseSwitch();
+        if (match(MATCH)) return parseMatch(false);
+        if (match(SWITCH)) return parseSwitch(false);
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
@@ -2366,7 +2365,7 @@ public final class Parser {
         return expr;
     }
 
-    private Ast.MatchStmt parseMatch() {
+    private Ast.MatchStmt parseMatch(boolean returnForm) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
         //     on Pattern -> { ... }
@@ -2432,7 +2431,7 @@ public final class Parser {
         // Canonical match is source-ordered. Legacy bare match retains the
         // old exclusivity/proof semantics unless explicitly written
         // `match first ...`.
-        return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms);
+        return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms, returnForm);
     }
 
     private Ast.Pattern parsePattern() {
@@ -2525,7 +2524,7 @@ public final class Parser {
         throw error(peek(), "expected match pattern");
     }
 
-    private Ast.SwitchStmt parseSwitch() {
+    private Ast.SwitchStmt parseSwitch(boolean returnForm) {
         Ast.Expr subject = parseExpression();
         match(SEMICOLON);
         List<Ast.SwitchCase> cases = new ArrayList<>();
@@ -2558,7 +2557,7 @@ public final class Parser {
         }
 
         consume(END, "expected 'end' to close switch");
-        return new Ast.SwitchStmt(subject, cases, defaultBody);
+        return new Ast.SwitchStmt(subject, cases, defaultBody, returnForm);
     }
 
     private Ast.TryStmt parseTry() {
