@@ -187,6 +187,108 @@ final class SupervisorDecisionCommitFenceTest {
         }
     }
 
+
+    @Test
+    void duplicateCompletionCannotResolveTheNextTurnUsingSameNoticeObject() throws Exception {
+        // A nonconforming CompletionStage can invoke its callback twice.
+        // Reusing the *same immutable notice instance* on the next turn must
+        // not make the stale callback indistinguishable from a fresh lease.
+        try (ExecutorService carrier = Executors.newSingleThreadExecutor()) {
+            var supervisor = ActorRuntime.SupervisorId.create();
+            var group = ActorRuntime.ActorGroupId.create();
+            var sharedNotice = notice(supervisor, group);
+            AtomicInteger policyCalls = new AtomicInteger();
+            AtomicInteger effects = new AtomicInteger();
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisor, group, carrier, 3,
+                    n -> {
+                        if (policyCalls.incrementAndGet() == 1) {
+                            return new CompletableFuture<SupervisorProcess.Directive>() {
+                                @Override
+                                public CompletableFuture<SupervisorProcess.Directive> whenComplete(
+                                        java.util.function.BiConsumer<? super SupervisorProcess.Directive,
+                                                ? super Throwable> action) {
+                                    action.accept(SupervisorProcess.Directive.STOP, null);
+                                    action.accept(SupervisorProcess.Directive.STOP, null);
+                                    return this;
+                                }
+                            };
+                        }
+                        return CompletableFuture.completedFuture(SupervisorProcess.Directive.STOP);
+                    }, r -> effects.incrementAndGet());
+            process.accept(sharedNotice);
+            process.accept(sharedNotice);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (process.resolved() != 2 && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            carrier.submit(() -> { }).get(5, TimeUnit.SECONDS);
+            assertEquals(2, policyCalls.get(), "duplicate completion stole next turn");
+            assertEquals(2, effects.get(), "duplicate stage completion replayed a host effect");
+            assertEquals(2, process.resolved());
+            assertEquals(0, process.undelivered());
+            assertTrue(process.healthy());
+            process.close();
+        }
+    }
+
+    @Test
+    void handlerExceptionClearsTerminalMailboxAndReleasesLease() throws Exception {
+        try (ExecutorService carrier = Executors.newFixedThreadPool(2)) {
+            var supervisor = ActorRuntime.SupervisorId.create();
+            var group = ActorRuntime.ActorGroupId.create();
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisor, group, carrier, 2,
+                    n -> { throw new IllegalStateException("failed policy"); },
+                    r -> fail("failed policy must not apply a lifecycle effect"));
+            process.accept(notice(supervisor, group));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (process.failure().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertTrue(process.failure().orElse("").contains("failed policy"));
+            assertEquals(1, process.undelivered());
+            assertEquals(0, process.queued(), "failure retained unprocessed CONTROL notice");
+            assertFalse(process.callbackActive(), "failure retained logical lease");
+            assertFalse(process.healthy());
+            process.close();
+            assertEquals(1, process.undelivered(), "close counted failed notice again");
+        }
+    }
+
+    @Test
+    void reentrantCloseRejectsNewAdmissionBeforeCommitReturns() throws Exception {
+        try (ExecutorService carrier = Executors.newSingleThreadExecutor()) {
+            var supervisor = ActorRuntime.SupervisorId.create();
+            var group = ActorRuntime.ActorGroupId.create();
+            java.util.concurrent.atomic.AtomicReference<SupervisorProcess> ref =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            AtomicBoolean refused = new AtomicBoolean();
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisor, group, carrier, 2,
+                    n -> CompletableFuture.completedFuture(SupervisorProcess.Directive.STOP),
+                    r -> {
+                        ref.get().close();
+                        try {
+                            ref.get().accept(notice(supervisor, group));
+                        } catch (IllegalStateException expected) {
+                            refused.set(true);
+                        }
+                    });
+            ref.set(process);
+            process.accept(notice(supervisor, group));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (process.resolved() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertTrue(refused.get(), "reentrant close admitted another CONTROL notice");
+            assertEquals(1, process.resolved());
+            assertEquals(1, process.undelivered(), "rejected notice was not accounted");
+            assertFalse(process.healthy());
+            assertEquals(0, process.queued());
+        }
+    }
+
     @Test
     void closedSupervisorRejectsLateFutureCompletionWithoutDecision() throws Exception {
         try (ExecutorService carrier = Executors.newFixedThreadPool(2)) {
