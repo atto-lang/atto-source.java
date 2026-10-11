@@ -570,7 +570,7 @@ final class ReturnedDestructuringTest {
                 end
 
                 fnc vector(): Vector<int> {
-                  let Vector<int> values = new Vector<int>();
+                  let mut Vector<int> values = new Vector<int>();
                   values.add(4);
                   values.add(5);
                   values.add(6);
