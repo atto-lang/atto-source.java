@@ -1840,7 +1840,20 @@ public final class ActorRuntime implements AutoCloseable {
             barrierTicket = cell.serialTurnGate.hold(admittedMail);
         }
 
-        future.whenCompleteRuntime((ignored, failure) -> {
+        // The producer Future may outlive a stopped actor. Keep its waiter
+        // independently detachable so shutdown cannot pin the ActorCell (and
+        // its guest state) until an unrelated producer eventually completes.
+        AtomicBoolean completionObserved = new AtomicBoolean();
+        AtomicReference<OresFuture.RuntimeWaiterRegistration<?>> waiterRef =
+                new AtomicReference<>();
+        var registration = future.whenCompleteRuntimeCancellable((ignored, failure) -> {
+            completionObserved.set(true);
+            var claimed = waiterRef.get();
+            if (claimed != null) {
+                synchronized (cell.lifecycleLock) {
+                    cell.pendingSourceReceiveWaiters.remove(claimed);
+                }
+            }
             if (!enqueueContinuation(cell.ref.id(), () -> {
                 synchronized (cell.lifecycleLock) {
                     if (cell.activeMail != admittedMail || cell.finalized
@@ -1875,6 +1888,17 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
         });
+        waiterRef.set(registration);
+        synchronized (cell.lifecycleLock) {
+            // Completion can run synchronously for an already-settled Future,
+            // and actor shutdown can race with registration. Neither may
+            // leave an orphaned callback in an external Future.
+            if (completionObserved.get() || cell.stopped.get() || cell.finalized) {
+                registration.detach();
+            } else {
+                cell.pendingSourceReceiveWaiters.add(registration);
+            }
+        }
     }
 
     public final class ActorRef<M> {
@@ -5991,6 +6015,9 @@ public final class ActorRuntime implements AutoCloseable {
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
         /** One admitted user mail stays logically active through all awaits. */
         private final SerialActorTurnGate serialTurnGate = new SerialActorTurnGate();
+        /** External Future callbacks owned by this actor's suspended mail. */
+        private final Set<OresFuture.RuntimeWaiterRegistration<?>> pendingSourceReceiveWaiters =
+                new LinkedHashSet<>();
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
@@ -6246,6 +6273,10 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             drainMailboxReservations();
+            // Detach producer callbacks without cancelling shared producer
+            // Futures. Their completion cannot resurrect a stopped actor.
+            for (var waiter : pendingSourceReceiveWaiters) waiter.detach();
+            pendingSourceReceiveWaiters.clear();
             staticSelectCursors.clear();
             ActorOwnedGuestState retiringState = codeActorState;
             codeActorState = null;
