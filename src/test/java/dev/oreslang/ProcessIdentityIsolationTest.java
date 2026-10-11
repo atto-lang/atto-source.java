@@ -22,6 +22,17 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ProcessIdentityIsolationTest {
+    // Test-only host probes keep actor factory closures stateless.
+    private static volatile CountDownLatch symbolReceived;
+    private static final AtomicReference<Object> symbolObserved = new AtomicReference<>();
+    private static volatile CountDownLatch sharedCompleted;
+    private static final AtomicReference<UUID> sharedInstanceId = new AtomicReference<>();
+    private static volatile CountDownLatch privateCompleted;
+    private static final AtomicReference<UUID> privateInstanceId = new AtomicReference<>();
+    private static volatile CountDownLatch secondCompleted;
+    private static final AtomicReference<UUID> secondInstanceId = new AtomicReference<>();
+    private static volatile CountDownLatch sandboxCompleted;
+    private static final AtomicReference<Throwable> sandboxError = new AtomicReference<>();
 
     @Test
     void untrustedMailboxAcceptsOnlyExplicitlyExportedSymbols() throws Exception {
@@ -31,15 +42,15 @@ final class ProcessIdentityIsolationTest {
         OresSymbol hidden = OresSymbol.process("hidden-" + suffix, trusted);
         OresSymbol visible = OresSymbol.process("visible-" + suffix, trusted);
 
-        CountDownLatch received = new CountDownLatch(1);
-        AtomicReference<Object> observed = new AtomicReference<>();
+        symbolReceived = new CountDownLatch(1);
+        symbolObserved.set(null);
 
         try (ActorRuntime runtime = new ActorRuntime(trusted)) {
             ActorRuntime.ActorRef<Object> target = runtime.spawnPrivate(
                     untrusted,
                     factoryContext -> (message, turn) -> {
-                        observed.set(message);
-                        received.countDown();
+                        symbolObserved.set(message);
+                        symbolReceived.countDown();
                         turn.self().stop();
                     });
 
@@ -48,8 +59,8 @@ final class ProcessIdentityIsolationTest {
             OresSymbol.exportToUntrusted(visible, trusted);
             try {
                 target.send(List.of("status", visible));
-                assertTrue(received.await(2, TimeUnit.SECONDS));
-                List<?> delivered = assertInstanceOf(List.class, observed.get());
+                assertTrue(symbolReceived.await(2, TimeUnit.SECONDS));
+                List<?> delivered = assertInstanceOf(List.class, symbolObserved.get());
                 assertEquals(visible, delivered.get(1));
             } finally {
                 OresSymbol.revokeFromUntrusted(visible, trusted);
@@ -129,68 +140,68 @@ final class ProcessIdentityIsolationTest {
                     runtime.singletons().getOrCreate("counter", ArrayList::new);
             UUID mainId = main.instanceId();
 
-            CountDownLatch sharedDone = new CountDownLatch(1);
-            AtomicReference<UUID> sharedId = new AtomicReference<>();
+            sharedCompleted = new CountDownLatch(1);
+            sharedInstanceId.set(null);
             ActorRuntime.ActorRef<String> shared = runtime.spawnShared(
                     factoryContext -> (message, turn) -> {
                         MemorySlotSingletonRegistry.Handle<ArrayList<Integer>> local =
                                 turn.runtime().singletons().getOrCreate(
                                         "counter",
                                         ArrayList::new);
-                        sharedId.set(local.instanceId());
+                        sharedInstanceId.set(local.instanceId());
                         local.call(List.of(7), (state, args) -> {
                             state.add((Integer) args.getFirst());
                             return state.size();
                         });
-                        sharedDone.countDown();
+                        sharedCompleted.countDown();
                         turn.self().stop();
                     });
             shared.send("go");
-            assertTrue(sharedDone.await(2, TimeUnit.SECONDS));
-            assertEquals(mainId, sharedId.get());
+            assertTrue(sharedCompleted.await(2, TimeUnit.SECONDS));
+            assertEquals(mainId, sharedInstanceId.get());
 
             assertEquals(
                     1,
                     main.call(List.of(), (state, args) -> state.size()));
 
-            AtomicReference<UUID> firstPrivateId = new AtomicReference<>();
-            CountDownLatch privateDone = new CountDownLatch(1);
+            privateInstanceId.set(null);
+            privateCompleted = new CountDownLatch(1);
             ActorRuntime.ActorRef<String> firstPrivate = runtime.spawnPrivate(
                     factoryContext -> (message, turn) -> {
-                        firstPrivateId.set(
+                        privateInstanceId.set(
                                 turn.runtime().singletons()
                                         .getOrCreate("counter", ArrayList::new)
                                         .instanceId());
-                        privateDone.countDown();
+                        privateCompleted.countDown();
                         turn.self().stop();
                     });
             firstPrivate.send("go");
-            assertTrue(privateDone.await(2, TimeUnit.SECONDS));
-            assertNotEquals(mainId, firstPrivateId.get());
+            assertTrue(privateCompleted.await(2, TimeUnit.SECONDS));
+            assertNotEquals(mainId, privateInstanceId.get());
             assertTrue(firstPrivate.awaitTermination(2, TimeUnit.SECONDS));
 
-            AtomicReference<UUID> secondPrivateId = new AtomicReference<>();
-            CountDownLatch secondDone = new CountDownLatch(1);
+            secondInstanceId.set(null);
+            secondCompleted = new CountDownLatch(1);
             ActorRuntime.ActorRef<String> secondPrivate = runtime.spawnPrivate(
                     factoryContext -> (message, turn) -> {
-                        secondPrivateId.set(
+                        secondInstanceId.set(
                                 turn.runtime().singletons()
                                         .getOrCreate("counter", ArrayList::new)
                                         .instanceId());
-                        secondDone.countDown();
+                        secondCompleted.countDown();
                         turn.self().stop();
                     });
             secondPrivate.send("go");
-            assertTrue(secondDone.await(2, TimeUnit.SECONDS));
-            assertNotEquals(firstPrivateId.get(), secondPrivateId.get());
+            assertTrue(secondCompleted.await(2, TimeUnit.SECONDS));
+            assertNotEquals(privateInstanceId.get(), secondInstanceId.get());
         }
     }
 
     @Test
     void untrustedActorCannotCreateMemorySlotSingletonEvenThroughRuntimeApi() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
-            CountDownLatch done = new CountDownLatch(1);
-            AtomicReference<Throwable> observed = new AtomicReference<>();
+            sandboxCompleted = new CountDownLatch(1);
+            sandboxError.set(null);
 
             ActorRuntime.ActorRef<String> sandbox = runtime.spawnPrivate(
                     IsolatePolicy.strictFaas(),
@@ -200,16 +211,16 @@ final class ProcessIdentityIsolationTest {
                                     "forbidden",
                                     ArrayList::new);
                         } catch (Throwable failure) {
-                            observed.set(failure);
+                            sandboxError.set(failure);
                         } finally {
-                            done.countDown();
+                            sandboxCompleted.countDown();
                             turn.self().stop();
                         }
                     });
 
             sandbox.send("go");
-            assertTrue(done.await(2, TimeUnit.SECONDS));
-            assertInstanceOf(SecurityException.class, observed.get());
+            assertTrue(sandboxCompleted.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, sandboxError.get());
         }
     }
 
