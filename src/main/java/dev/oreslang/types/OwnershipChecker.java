@@ -98,6 +98,9 @@ public final class OwnershipChecker {
     }
 
     private Ast.ClassDecl initializingClass;
+    // The sealed state callback is authorized only inside an actual actor
+    // instance method, never by a standalone function's spoofed self param.
+    private Ast.ClassDecl currentMethodOwner;
 
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.FieldDecl field : klass.fields()) {
@@ -173,8 +176,14 @@ public final class OwnershipChecker {
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            Ast.ClassDecl previousMethodOwner = currentMethodOwner;
+            currentMethodOwner = klass;
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                currentMethodOwner = previousMethodOwner;
+                scope.close();
+            }
         }
     }
 
@@ -1173,6 +1182,41 @@ public final class OwnershipChecker {
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
+        }
+
+        // self.handle_state is a sealed, actor-owned lexical loan, not an
+        // arbitrary Fnc invocation. Infer a temporary mutable borrow of the
+        // declared state schema ONLY for this inline actor callback. In
+        // particular, this does not make ordinary lambda parameters mutable
+        // and never authorizes a counterfeit self function parameter.
+        if (currentMethodOwner != null
+                && currentMethodOwner.actorKind() != Ast.ActorKind.NONE
+                && call.callee() instanceof Ast.MemberExpr sealed
+                && sealed.member().equals("handle_state")
+                && sealed.receiver() instanceof Ast.NameExpr receiverName
+                && receiverName.name().equals("self")) {
+            VarState actorSelf = scope.lookup("self");
+            Ast.FieldDecl state = ActorStateContract.stateField(currentMethodOwner);
+            if (actorSelf == null || !isActorConfinedBorrow(actorSelf)
+                    || state == null || call.typeArgumentsPresent()
+                    || call.arguments().size() != 1
+                    || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)
+                    || lambda.parameters().size() != 1
+                    || lambda.nonLexical()
+                    || (!currentMethodOwner.serial() && !lambda.critical())) {
+                throw error("self.handle_state requires an inline lexical critical callback and owning actor state");
+            }
+            Ast.Param original = lambda.parameters().getFirst();
+            if (original.name().equals("self") || original.structural()) {
+                throw error("sealed state loan parameter cannot shadow self or become structural");
+            }
+            Ast.Param stateLoan = new Ast.Param(
+                    Ast.TypeRef.borrowed(ActorStateContract.keySchema(state), true),
+                    original.name(), false, false);
+            Ast.LambdaExpr protectedCallback = new Ast.LambdaExpr(
+                    List.of(stateLoan), lambda.expressionBody(), lambda.blockBody());
+            checkLambda(protectedCallback, scope, null);
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null);
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
