@@ -1189,7 +1189,7 @@ public final class ActorRuntime implements AutoCloseable {
          * A missing schema retains the legacy source-actor transport until
          * all compiler backends emit descriptors; not yet release-ready.
          */
-        default Optional<MessagePackCollectionCodec.MailboxSchema> mailboxSchema(
+        default Optional<MessagePackCollectionCodec.MailboxWireCodec> mailboxSchema(
                 String actorTypeName) {
             return Optional.empty();
         }
@@ -4423,7 +4423,7 @@ public final class ActorRuntime implements AutoCloseable {
      * ActorCodeExecutor.mailboxSchema() at spawn time.
      */
     public void bindSerializableMailbox(
-            ActorRef<?> ref, MessagePackCollectionCodec.MailboxSchema schema) {
+            ActorRef<?> ref, MessagePackCollectionCodec.MailboxWireCodec schema) {
         requireCallerRuntimeAffinity("bind actor mailbox schema");
         requireSupervisorContext("bind actor mailbox schema");
         Objects.requireNonNull(ref, "actor reference");
@@ -4472,7 +4472,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         boolean mailboxSlotTransferred = false;
         try {
-        MessagePackCollectionCodec.MailboxSchema schema = cell.mailboxSchema;
+        MessagePackCollectionCodec.MailboxWireCodec schema = cell.mailboxSchema;
         byte[] binaryFrame = null;
         if (schema != null) {
             // The mailbox stores immutable runtime-owned wire bytes, never a
@@ -5995,7 +5995,7 @@ public final class ActorRuntime implements AutoCloseable {
         /** Closed-world source actor declaration selected for this actor. */
         private final String codeActorType;
         /** Trusted binary schema; optional during incremental compiler migration. */
-        private volatile MessagePackCollectionCodec.MailboxSchema mailboxSchema;
+        private volatile MessagePackCollectionCodec.MailboxWireCodec mailboxSchema;
         /** Mutable source actor state, created on this actor's dispatcher. */
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
