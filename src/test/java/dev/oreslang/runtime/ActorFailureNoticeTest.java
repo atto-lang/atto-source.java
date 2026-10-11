@@ -93,6 +93,39 @@ final class ActorFailureNoticeTest {
     }
 
     @Test
+    void malformedUtf16CannotEscapeInAControlNotice() throws Exception {
+        // Java permits isolated UTF-16 surrogates in String. CONTROL messages
+        // must contain well-formed Unicode, matching native invalid-UTF-8
+        // replacement policy rather than copying malformed code units.
+        String malformed = "\uD83D" + "🚨" + "\uDE80";
+        var direct = new ActorRuntime.ActorFailureNotice(
+                ActorRuntime.ActorId.create(),
+                ActorRuntime.ActorFailureKind.PANIC,
+                malformed);
+        assertEquals("?🚨?", direct.summary());
+        assertEquals(6, direct.summary().getBytes(
+                java.nio.charset.StandardCharsets.UTF_8).length);
+
+        var boundary = new ActorRuntime.ActorFailureNotice(
+                ActorRuntime.ActorId.create(),
+                ActorRuntime.ActorFailureKind.RAISE,
+                "x".repeat(1023) + "\uD83D" + "🚨");
+        assertEquals("x".repeat(1023) + "?", boundary.summary());
+        assertEquals(1024, boundary.summary().getBytes(
+                java.nio.charset.StandardCharsets.UTF_8).length);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        throw new OresPanic(malformed);
+                    });
+            actor.send("crash");
+            assertEquals("?🚨?",
+                    actor.failureNotice().get(5, TimeUnit.SECONDS).summary());
+        }
+    }
+
+    @Test
     void ordinaryStopDoesNotFabricateASupervisorPanic() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<String>spawnShared(
