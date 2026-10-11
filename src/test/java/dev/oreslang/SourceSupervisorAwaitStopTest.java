@@ -96,8 +96,9 @@ final class SourceSupervisorAwaitStopTest {
             assertFalse(actor.isAlive());
             assertEquals(Boolean.FALSE, ranInActor.get());
             var logicalChild = decision.notice().logicalChild().orElseThrow();
-            assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
-                    group.childSnapshot(logicalChild).phase());
+            assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                    group.childSnapshot(logicalChild).phase(),
+                    "await must retain exclusive STOP generation across suspension");
             assertTrue(process.callbackActive(), "await dropped logical CONTROL lease");
             assertEquals(0, process.resolved(), "STOP falsely committed before host acknowledgment");
 
@@ -150,8 +151,9 @@ final class SourceSupervisorAwaitStopTest {
             assertEquals(0, process.resolved());
             assertEquals(1, process.undelivered());
             assertEquals(1, count.get());
-            assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
-                    group.childSnapshot(child).phase(), "failed host effect forged STOP");
+            assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                    group.childSnapshot(child).phase(),
+                    "ambiguous host effect must fence RESTART");
             process.close();
             group.close();
         }
@@ -182,8 +184,9 @@ final class SourceSupervisorAwaitStopTest {
             assertEquals(1, process.undelivered());
             ack.complete(null); // late completion must never resurrect CONTROL.
             assertEquals(0, process.resolved());
-            assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
-                    group.childSnapshot(child).phase(), "late ack after close forged STOP");
+            assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                    group.childSnapshot(child).phase(),
+                    "closed turn must not reopen a potentially applied STOP");
             group.close();
         }
     }
