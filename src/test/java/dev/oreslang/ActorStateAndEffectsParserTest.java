@@ -238,6 +238,24 @@ final class ActorStateAndEffectsParserTest {
                 () -> ActorStateContract.verify(Parser.parse(escaped)));
     }
 
+    @Test void handleStateCallbackReturnsTypedValueNotUnknown() {
+        String valid = """
+            define actor Counter as
+                state { count: int = 0; }
+                pub read(): int using state.read {
+                    return self.handle_state(critical |s| -> s.count);
+                }
+                receive(ActorMail<String> mail): void { return; }
+            end
+            """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(valid)));
+
+        String mismatched = valid.replace(
+                "critical |s| -> s.count", "critical |s| -> true");
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(mismatched)));
+    }
+
     @Test void writingStateDoesNotImplicitlyReadIt() {
         Ast.Program writeOnly = Parser.parse("""
             define actor Counter as
