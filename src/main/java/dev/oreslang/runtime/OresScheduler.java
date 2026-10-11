@@ -113,6 +113,9 @@ public final class OresScheduler implements AutoCloseable {
     private final TurnExecutor turnExecutor;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // Read/written only while holding this scheduler's synchronized close().
+    // Retains the original failed-drain exception for concurrent host callers.
+    private Throwable closeFailure;
     private static final long CLOSE_DRAIN_NANOS = TimeUnit.SECONDS.toNanos(5);
 
     /**
@@ -423,15 +426,26 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         if (CURRENT.get() == this) {
             throw new IllegalStateException(
                     "OresScheduler cannot be closed from one of its own task turns; "
                             + "close it from an outside/root scheduler task");
         }
+        // A concurrent caller must wait for this close's cleanup drain.
+        // Returning merely because closed=true would let that caller destroy
+        // its context while the first closer is still unwinding guest tasks.
+        if (closed.get()) {
+            if (closeFailure instanceof RuntimeException failure) throw failure;
+            if (closeFailure instanceof Error failure) throw failure;
+            return;
+        }
+        try {
         Set<TaskRunner<?>> closingTasks;
         synchronized (tasks) {
-            if (!closed.compareAndSet(false, true)) return;
+            if (!closed.compareAndSet(false, true)) {
+                throw new IllegalStateException("scheduler close admission lost its owner");
+            }
             closingTasks = Set.copyOf(tasks);
         }
 
@@ -477,6 +491,10 @@ public final class OresScheduler implements AutoCloseable {
         if (!drained) {
             throw new IllegalStateException(
                     "OresScheduler " + name + " closed with unfinished cancellation cleanup");
+        }
+        } catch (RuntimeException | Error failure) {
+            closeFailure = failure;
+            throw failure;
         }
     }
 
