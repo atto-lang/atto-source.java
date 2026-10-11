@@ -860,6 +860,12 @@ public final class TypeChecker {
         Set<String> parentNames = new HashSet<>();
         for (Ast.TypeRef parent : klass.parents()) {
             if (!parentNames.add(parent.name())) throw new IllegalArgumentException("duplicate parent class '" + parent.name() + "' on " + klass.name());
+            if (parent.name().equals("Map")) {
+                if (klass.actorKind() != Ast.ActorKind.NONE) throw new IllegalArgumentException("actors cannot extend Map directly");
+                if (klass.parents().size() != 1) throw new IllegalArgumentException("Map subclass must have only one parent");
+                resolve(parent, classGenerics, self);
+                continue;
+            }
             if (parent.name().equals("Object") || parent.name().equals("List")) {
                 if (parent.inferArguments() || !parent.arguments().isEmpty()) {
                     throw new IllegalArgumentException("built-in inheritance marker '" + parent.name() + "' does not take type arguments");
@@ -888,6 +894,33 @@ public final class TypeChecker {
         }
 
         validateFieldLayout(klass);
+        boolean mapClass = isTypedMapClass(klass);
+        if (!klass.mapKeys().isEmpty() && !mapClass) {
+            throw new IllegalArgumentException("key declarations require extends Map<string, unknown>");
+        }
+        Set<String> declaredMapKeys = new HashSet<>();
+        for (Ast.MapKeyDecl key : klass.mapKeys()) {
+            if (!declaredMapKeys.add(key.name())) throw new IllegalArgumentException("duplicate map key " + key.name());
+            if (!key.valueType().name().equals("Option") || key.valueType().arguments().size() != 1) {
+                throw new IllegalArgumentException("map key " + key.name() + " must be declared Option<T>");
+            }
+            Type value = resolve(key.valueType().arguments().getFirst(), classGenerics, self);
+            if (value == Primitive.VOID) throw new IllegalArgumentException("map key " + key.name() + " cannot contain void");
+        }
+        if (mapClass) {
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (Set.of("get", "put", "remove").contains(method.name())) {
+                    throw new IllegalArgumentException("Map " + method.name() + " is compiler-managed; use on_" + method.name() + " as an interception hook");
+                }
+                if (Set.of("on_get", "on_put", "on_remove").contains(method.name())
+                        && (method.async() || method.suspends() || method.generator())) {
+                    throw new IllegalArgumentException("map interception hook " + method.name() + " must not suspend");
+                }
+            }
+            for (Ast.FieldDecl field : klass.fields()) if (declaredMapKeys.contains(field.name())) {
+                throw new IllegalArgumentException("map key " + field.name() + " conflicts with a physical field");
+            }
+        }
 
         Set<String> effectiveFieldNames = new LinkedHashSet<>();
         for (ResolvedField field : effectiveFieldTargets(
@@ -1782,11 +1815,17 @@ public final class TypeChecker {
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
+                Ast.ClassDecl mapClass = typedMapClass(receiver);
+                if (mapClass != null) {
+                    requireAssignable(index, Primitive.STRING, "map key");
+                    targetType = typedMapValue(mapClass, index, generics, self);
+                } else {
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
                 else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
                 else throw new IllegalArgumentException(
                         "indexed assignment requires an array/list or tuple; structs have a closed static field set");
+                }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
@@ -2225,6 +2264,22 @@ public final class TypeChecker {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
+
+                Ast.ClassDecl mapOwner = typedMapClass(receiver);
+                if (mapOwner != null && Set.of("get", "put", "remove").contains(member.member())) {
+                    if (call.typeArgumentsPresent()) throw new IllegalArgumentException("map operations do not accept type arguments");
+                    int arity = member.member().equals("put") ? 2 : 1;
+                    if (call.arguments().size() != arity) throw new IllegalArgumentException("Map." + member.member() + " expects " + arity + " arguments");
+                    Type keyType = typeOf(call.arguments().getFirst(), env, generics, self);
+                    requireAssignable(keyType, Primitive.STRING, "Map." + member.member() + " key");
+                    Type valueType = typedMapValue(mapOwner, keyType, generics, self);
+                    if (member.member().equals("put")) {
+                        Type actual = typeOf(call.arguments().get(1), env, generics, self);
+                        requireAssignable(actual, valueType, "Map.put value");
+                        return Primitive.VOID;
+                    }
+                    return new Named("Option", List.of(valueType));
+                }
 
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
                         && member.receiver() instanceof Ast.NameExpr selfName
@@ -3057,6 +3112,11 @@ public final class TypeChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
             Type index = typeOf(indexed.index(), env, generics, self);
+            Ast.ClassDecl mapOwner = typedMapClass(receiver);
+            if (mapOwner != null) {
+                requireAssignable(index, Primitive.STRING, "map key");
+                return new Named("Option", List.of(typedMapValue(mapOwner, index, generics, self)));
+            }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "object/map key");
                 if (index instanceof StringLiteral key) {
@@ -6026,8 +6086,29 @@ public final class TypeChecker {
         return effective;
     }
 
+    private boolean isTypedMapClass(Ast.ClassDecl klass) {
+        return klass.parents().stream().anyMatch(parent -> parent.name().equals("Map"));
+    }
+
+    private Ast.ClassDecl typedMapClass(Type type) {
+        if (!(type instanceof Named named)) return null;
+        Ast.ClassDecl klass = findClass(named.name());
+        return klass != null && isTypedMapClass(klass) ? klass : null;
+    }
+
+    private Type typedMapValue(Ast.ClassDecl klass, Type key, Set<String> generics, Type self) {
+        if (key instanceof StringLiteral literal) {
+            for (Ast.MapKeyDecl entry : klass.mapKeys()) {
+                if (entry.name().equals(literal.value())) {
+                    return resolve(entry.valueType().arguments().getFirst(), generics, self);
+                }
+            }
+        }
+        return Unknown.INSTANCE;
+    }
+
     private Ast.ClassDecl resolveClassParent(Ast.TypeRef parentRef, Ast.ClassDecl child) {
-        if (parentRef.name().equals("Object") || parentRef.name().equals("List")) return null;
+        if (parentRef.name().equals("Object") || parentRef.name().equals("List") || parentRef.name().equals("Map")) return null;
         if (parentRef.name().equals("obj") || parentRef.name().equals("arr")) throw new IllegalArgumentException("inline obj/arr values cannot be subclassed; extend Object or List instead");
         Ast.ClassDecl parent = findClass(parentRef.name());
         if (parent == null) throw new IllegalArgumentException("unknown parent class '" + parentRef.name() + "' for " + child.name());
@@ -7015,6 +7096,15 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "unknown" -> Unknown.INSTANCE;
+            case "Map" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 2
+                        || !ref.arguments().get(0).name().equals("string")
+                        || !ref.arguments().get(1).name().equals("unknown")) {
+                    throw new IllegalArgumentException("initial Map implementation requires Map<string, unknown>");
+                }
+                yield new Named("Map", List.of(Primitive.STRING, Unknown.INSTANCE));
+            }
             case "void" -> Primitive.VOID;
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
