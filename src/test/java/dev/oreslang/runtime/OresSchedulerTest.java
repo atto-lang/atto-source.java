@@ -632,4 +632,62 @@ final class OresSchedulerTest {
         }
     }
 
+    @Test
+    void runtimeOwnedCloseWaitsForCarrierExitBeforeRetiringCompletedTask() throws Exception {
+        // Runtime-owned schedulers have no owned carrier executor to await.
+        // A task can report Done while its guest turn is still leaving the
+        // entered Truffle Context. close() must not observe a drained task
+        // registry or publish the task Future until after that turn unwinds.
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch guestBodyReturned = new CountDownLatch(1);
+        CountDownLatch permitCarrierExit = new CountDownLatch(1);
+        CountDownLatch closeFinished = new CountDownLatch(1);
+        AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "close-carrier-exit-test", 1, carrier,
+                turn -> {
+                    turn.run();
+                    guestBodyReturned.countDown();
+                    try {
+                        if (!permitCarrierExit.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("guest carrier exit gate timed out");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("guest carrier exit interrupted",
+                                interrupted);
+                    }
+                });
+        try {
+            OresFuture<Integer> completed = scheduler.start(
+                    resume -> OresScheduler.done(42));
+            assertTrue(guestBodyReturned.await(5, TimeUnit.SECONDS));
+
+            Thread closing = Thread.ofPlatform().start(() -> {
+                try {
+                    scheduler.close();
+                } catch (Throwable failure) {
+                    closeFailure.set(failure);
+                } finally {
+                    closeFinished.countDown();
+                }
+            });
+            assertFalse(closeFinished.await(150, TimeUnit.MILLISECONDS),
+                    "close must keep the completed-but-still-entered task live");
+            assertFalse(completed.isDone(),
+                    "Future publication must happen after guest carrier exit");
+
+            permitCarrierExit.countDown();
+            assertTrue(closeFinished.await(5, TimeUnit.SECONDS));
+            closing.join(5000);
+            assertNull(closeFailure.get(), "normal guest unwind must drain cleanly");
+            assertEquals(42, completed.get(5, TimeUnit.SECONDS));
+        } finally {
+            permitCarrierExit.countDown();
+            scheduler.close();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
