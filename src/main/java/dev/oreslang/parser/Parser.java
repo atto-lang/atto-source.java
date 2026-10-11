@@ -1170,7 +1170,7 @@ public final class Parser {
     private List<String> parseGenericParameters() {
         if (!match(LT)) return List.of();
         List<String> names = new ArrayList<>();
-        do names.add(consume(IDENT, "expected generic parameter name").lexeme()); while (match(COMMA));
+        do names.add(consumeDeclaredName("expected generic parameter name")); while (match(COMMA));
         consume(GT, "expected '>' after generic parameters");
         return names;
     }
