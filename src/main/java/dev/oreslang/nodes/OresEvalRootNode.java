@@ -446,24 +446,31 @@ public final class OresEvalRootNode extends RootNode {
                                 + " does not match declaration kind " + expectedKind);
             }
 
-            // The source parser models `state { ... }` as a synthetic field
-            // for static analysis. Until the sealed handle_state intrinsic is
-            // lowered into actor-owned persistent FFM storage, it is UNSAFE
-            // to initialize that field as an ordinary JVM Map or class field:
-            // doing so would bypass the promised lifetime/loan authority.
-            // Reject before any guest initializer/on_start code is run.
-            if (dev.oreslang.types.ActorStateContract.stateField(klass) != null) {
-                throw new IllegalStateException(
-                        "actor state schema requires arena-backed handle_state lowering; "
-                        + "ordinary source object field initialization is forbidden");
+            // Compiler-generated state is never an ordinary, aliasable
+            // object field. Allocate a bounded actor-incarnation FFM scalar
+            // region before on_start, and bind the source object's logical
+            // critical gate to that region. Unsupported reference/map schema
+            // shapes fail closed before any guest initializer runs.
+            Ast.FieldDecl sealedSchema =
+                    dev.oreslang.types.ActorStateContract.stateField(klass);
+            SourceScalarState nativeState = null;
+            if (sealedSchema != null) {
+                nativeState = initializeNativeActorState(
+                        sealedSchema, actorContext);
             }
             List<Ast.FieldDecl> classFields =
-                    effectiveFields(klass, new LinkedHashSet<>());
+                    effectiveFields(klass, new LinkedHashSet<>()).stream()
+                            .filter(field -> !dev.oreslang.types.ActorStateContract.isStateField(field))
+                            .toList();
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             for (Ast.FieldDecl field : classFields) {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
             }
             OresObject object = new OresObject(this, klass, fields);
+            if (nativeState != null) {
+                object.nativeState = nativeState;
+                object.criticalGate = nativeState.arena.criticalGate();
+            }
 
             // Field initializers are actor-local state construction. They run
             // only after ActorRuntime has installed this actor's execution
@@ -508,6 +515,80 @@ public final class OresEvalRootNode extends RootNode {
                     actorContext.self().id(),
                     actorTypeName,
                     object);
+        }
+
+        /**
+         * The first executable sealed-state backend supports only fixed
+         * scalar i64/bool keys. All bytes are allocated in the actor's
+         * deterministic, generation-checked FFM persistent region. Java
+         * metadata stores only compiler key names and opaque Slot handles.
+         */
+        private SourceScalarState initializeNativeActorState(
+                Ast.FieldDecl schema,
+                ActorRuntime.ActorContext<Object> context) {
+            Ast.TypeRef keys = dev.oreslang.types.ActorStateContract.keySchema(schema);
+            if (!keys.isRecordType() || keys.recordMembers().isEmpty()) {
+                throw new IllegalStateException(
+                        "native actor state requires at least one fixed scalar key");
+            }
+            if (schema.type().name().equals("$actor_state_map$")
+                    || schema.type().name().equals("Map")) {
+                throw new IllegalStateException(
+                        "dynamic Map actor state requires scoped element lowering; "
+                        + "raw JVM Map projection forbidden");
+            }
+            for (Map.Entry<String, Ast.TypeRef> key : keys.recordMembers().entrySet()) {
+                if (!key.getValue().arguments().isEmpty()
+                        || !List.of("int", "bool", "boolean").contains(key.getValue().name())) {
+                    throw new IllegalStateException(
+                            "native actor state key '" + key.getKey()
+                            + "' requires scalar i64/bool lowering; class/Map references forbidden");
+                }
+            }
+            LinkedHashMap<String, Ast.Expr> defaults = new LinkedHashMap<>();
+            if (schema.initializer() instanceof Ast.ObjectExpr object) {
+                for (Ast.ObjectField entry : object.fields()) {
+                    defaults.put(entry.name(), entry.value());
+                }
+            }
+            // Validate all initializers before acquiring native resources.
+            LinkedHashMap<String, Long> initial = new LinkedHashMap<>();
+            for (Map.Entry<String, Ast.TypeRef> key : keys.recordMembers().entrySet()) {
+                Ast.Expr expression = defaults.get(key.getKey());
+                Object literal = expression == null ? null
+                        : expression instanceof Ast.LiteralExpr value ? value.value() : null;
+                if (expression != null && literal == null) {
+                    throw new IllegalStateException(
+                            "native actor state initializer '" + key.getKey()
+                            + "' must be a literal to keep startup bounded and side-effect free");
+                }
+                boolean bool = List.of("bool", "boolean").contains(key.getValue().name());
+                if (literal != null && !(bool ? literal instanceof Boolean : literal instanceof Number)) {
+                    throw new IllegalStateException(
+                            "native actor state initializer '" + key.getKey()
+                            + "' has incompatible scalar type");
+                }
+                initial.put(key.getKey(), literal == null ? 0L
+                        : bool ? ((Boolean) literal ? 1L : 0L)
+                        : ((Number) literal).longValue());
+            }
+            dev.oreslang.runtime.ActorArena arena =
+                    context.actorOwnedMemory().orElseThrow(
+                            () -> new IllegalStateException("actor-owned native memory unavailable"))
+                            .newActorArena(initial.size(), 1);
+            try {
+                LinkedHashMap<String, dev.oreslang.runtime.ExplicitNativeI64Region.Slot> slots =
+                        new LinkedHashMap<>();
+                for (Map.Entry<String, Long> entry : initial.entrySet()) {
+                    slots.put(entry.getKey(), arena.allocatePersistent(entry.getValue()));
+                }
+                return new SourceScalarState(context.self().id(), arena,
+                        Map.copyOf(slots), Map.copyOf(keys.recordMembers()));
+            } catch (RuntimeException | Error error) {
+                try { arena.close(); }
+                catch (RuntimeException cleanup) { error.addSuppressed(cleanup); }
+                throw error;
+            }
         }
 
         @Override
@@ -8732,7 +8813,8 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private static final class OresObject implements OresMutex.SharedState {
-        private final CriticalGate criticalGate = OresMutex.criticalGate();
+        private CriticalGate criticalGate = OresMutex.criticalGate();
+        private SourceScalarState nativeState;
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
