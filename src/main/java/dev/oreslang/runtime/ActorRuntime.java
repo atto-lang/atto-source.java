@@ -1917,6 +1917,9 @@ public final class ActorRuntime implements AutoCloseable {
         // Explicitly lifecycle-managed workers, distinct from cooperating
         // members: membership never grants cancellation authority.
         private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
+        // Guarded by authorityLock: a stop-admitted actor cannot be released
+        // into a different supervisor before stop actually dispatches.
+        private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
         // Runtime-owned, non-cancellable observer; actor retirement may outlive
         // group admission revocation and clearing managed-worker references.
@@ -1985,8 +1988,8 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (authorityLock) {
                 requireOpen();
                 ActorCell<?> cell = actors.get(worker.id());
-                if (cell == null || cell.stopped.get()) {
-                    throw new IllegalStateException("cannot manage a stopped or unknown worker");
+                if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker.id())) {
+                    throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
                 }
                 if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
                     throw new IllegalStateException(
@@ -2047,6 +2050,37 @@ public final class ActorRuntime implements AutoCloseable {
             return spawnWorker(kind, policy, behaviorFactory).readyRef();
         }
 
+        /**
+         * Transfer one live actor out of the group's lifecycle authority
+         * without stopping it or changing cooperative group membership.
+         * A second group can adopt only after the old cell ownership token
+         * has been atomically cleared under the same admission lock.
+         */
+        public boolean releaseWorker(ActorRef<?> worker) {
+            requireManager("release an ActorGroup worker");
+            Objects.requireNonNull(worker, "worker");
+            if (!worker.ownedBy(ActorRuntime.this)) {
+                throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
+            }
+            synchronized (authorityLock) {
+                requireOpen();
+                if (stoppingWorkers.contains(worker.id())) {
+                    throw new IllegalStateException(
+                            "cannot transfer worker after stop/cancellation was admitted");
+                }
+                if (!managedWorkers.containsKey(worker.id())) return false;
+                ActorCell<?> cell = actors.get(worker.id());
+                if (cell == null || cell.stopped.get()) {
+                    throw new IllegalStateException("cannot transfer a stopped worker");
+                }
+                if (!cell.managedByGroup.compareAndSet(id, null)) {
+                    throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
+                }
+                managedWorkers.remove(worker.id(), worker);
+                return true;
+            }
+        }
+
         /** Live managed workers at a point in time; never exposes cancellation authority. */
         public List<ActorRef<?>> workers() {
             requireObserver("inspect ActorGroup workers");
@@ -2091,7 +2125,15 @@ public final class ActorRuntime implements AutoCloseable {
         /** Manager-only graceful stop. Never acts on membership-only actors. */
         public void stopWorkers() {
             requireManager("stop ActorGroup workers");
-            for (ActorRef<?> ref : workers()) {
+            final List<ActorRef<?>> stopRequests;
+            synchronized (authorityLock) {
+                requireOpen();
+                stopRequests = List.copyOf(managedWorkers.values());
+                for (ActorRef<?> ref : stopRequests) stoppingWorkers.add(ref.id());
+            }
+            // Do not acquire actor lifecycle locks while group authority is
+            // held: actor finalization takes its own lock before group cleanup.
+            for (ActorRef<?> ref : stopRequests) {
                 if (ref.isAlive()) ref.stop();
             }
         }
@@ -2099,8 +2141,14 @@ public final class ActorRuntime implements AutoCloseable {
         /** Manager-only structured cancellation, not force-kill. */
         public int cancelWorkers() {
             requireManager("cancel ActorGroup workers");
+            final List<ActorRef<?>> stopRequests;
+            synchronized (authorityLock) {
+                requireOpen();
+                stopRequests = List.copyOf(managedWorkers.values());
+                for (ActorRef<?> ref : stopRequests) stoppingWorkers.add(ref.id());
+            }
             int cancelled = 0;
-            for (ActorRef<?> ref : workers()) {
+            for (ActorRef<?> ref : stopRequests) {
                 if (ref.cancel()) cancelled++;
             }
             return cancelled;
@@ -2329,6 +2377,7 @@ public final class ActorRuntime implements AutoCloseable {
             // cannot be resurrected after finalization.
             synchronized (authorityLock) {
                 managedWorkers.remove(actorId);
+                stoppingWorkers.remove(actorId);
             }
             leaveId(actorId);
             if (Objects.equals(creator, actorId)) closeFromRuntime();
@@ -2355,6 +2404,7 @@ public final class ActorRuntime implements AutoCloseable {
                 joinSecret = UUID.randomUUID();
                 owned = List.copyOf(managedWorkers.values());
                 managedWorkers.clear();
+                stoppingWorkers.clear();
             }
             // Attach completion handlers before requesting cancellation: an
             // actor might finalize synchronously during the first stop call.
