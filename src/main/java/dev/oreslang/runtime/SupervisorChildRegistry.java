@@ -222,13 +222,31 @@ public final class SupervisorChildRegistry {
             ChildId child, ActorRuntime.ActorId actor,
             long incarnation, long turnGeneration) {
         requireExpected(child, actor, incarnation, Phase.FINALIZED);
+        if (stopReservations.containsKey(child.logicalId())
+                || stopReceipts.containsKey(child.logicalId())) {
+            throw new IllegalStateException("logical child already has a STOP ledger entry");
+        }
+        // Allocate all value objects before touching the authoritative maps.
+        // If index publication fails, never leave a PENDING receipt or lease
+        // attached to a child still seen as FINALIZED.
         StopReservation reservation = new StopReservation(
                 child, actor, incarnation, turnGeneration, UUID.randomUUID());
-        stopReservations.put(child.logicalId(), reservation);
-        stopReceipts.put(child.logicalId(),
-                new StopReceipt(reservation, StopReceiptStatus.PENDING));
-        children.put(child.logicalId(),
-                new Snapshot(child, actor, incarnation, Phase.STOPPING));
+        StopReceipt pending = new StopReceipt(
+                reservation, StopReceiptStatus.PENDING);
+        Snapshot stopping = new Snapshot(child, actor, incarnation, Phase.STOPPING);
+        try {
+            stopReservations.put(child.logicalId(), reservation);
+            stopReceipts.put(child.logicalId(), pending);
+            children.put(child.logicalId(), stopping);
+        } catch (Throwable admissionFailure) {
+            stopReservations.remove(child.logicalId());
+            stopReceipts.remove(child.logicalId());
+            // The previous FINALIZED entry is restored even if publication
+            // failed during the last map write. No host effect has run yet.
+            children.put(child.logicalId(),
+                    new Snapshot(child, actor, incarnation, Phase.FINALIZED));
+            throw admissionFailure;
+        }
         return reservation;
     }
 
