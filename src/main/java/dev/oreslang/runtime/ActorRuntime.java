@@ -1188,6 +1188,19 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Optional, synchronous actor startup callback. Invoked exactly once on the
+     * actor's admitted logical lane after factory construction but BEFORE READY
+     * settles or any receive turn can begin. Source actors already invoke
+     * on_start during initializeActor; never invoke both paths for one actor.
+     *
+     * Startup failure is terminal and reported to the supervisor. Async guest
+     * on_start is reserved for future continuation-based READY lowering.
+     */
+    public interface ActorStartupHook<M> {
+        void onStart(ActorContext<M> context) throws Exception;
+    }
+
+    /**
      * An opt-in host behavior contract for the *failing actor itself*.
      *
      * Only unhandled guest THROW/RAISE effects escaping a receive/continuation
@@ -6493,6 +6506,11 @@ public final class ActorRuntime implements AutoCloseable {
                             validatePrivateBehaviorState(ref.id(), created);
                         }
                         behavior = created;
+                        if (created instanceof ActorStartupHook<?> startup) {
+                            @SuppressWarnings("unchecked")
+                            ActorStartupHook<M> typedStartup = (ActorStartupHook<M>) startup;
+                            typedStartup.onStart(context);
+                        }
                     }
                     synchronized (lifecycleLock) {
                         if (stopped.get() || forceKillFenced) {
