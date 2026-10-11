@@ -342,4 +342,112 @@ final class ValueDispatchControlFlowTest {
         assertTrue(duplicateDefault.getMessage().contains("only one default"), duplicateDefault.getMessage());
     }
 
+    @Test
+    void finallyCannotReplaceReturnButLambdaInsideFinallyCanReturnLocally() throws Exception {
+        assertEquals("lambda\\ncleanup\\nouter\\n", execute("""
+                fnc outer(): string {
+                  try {
+                    return "outer";
+                  } catch (error) {
+                    return "caught";
+                  } finally {
+                    const local = (|| -> {
+                      return "lambda";
+                    })();
+                    stdio.println(local);
+                    stdio.println("cleanup");
+                  }
+                }
+
+                pub fnc main(): void {
+                  stdio.println(outer());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void rejectDirectAndNestedFinallyReturnsButKeepIndependentLambdaScope() {
+        String[] forbidden = {
+                """
+                fnc broken(): string {
+                  try { return "try"; }
+                  catch (e) { return "catch"; }
+                  finally { return "invalid"; }
+                }
+                """,
+                """
+                fnc broken(): string {
+                  try { return "try"; }
+                  catch (e) { return "catch"; }
+                  finally {
+                    if true { return "invalid"; }
+                  }
+                }
+                """,
+                """
+                fnc broken(int v): string {
+                  try { return "try"; }
+                  catch (e) { return "catch"; }
+                  finally {
+                    do switch v
+                      case 1 { return "invalid"; }
+                    end
+                  }
+                }
+                """,
+                """
+                fnc broken(): string {
+                  try { return "try"; }
+                  catch (e) { return "catch"; }
+                  finally {
+                    const x = match 1 over
+                      on _ { return "invalid"; }
+                    end
+                  }
+                }
+                """,
+                """
+                fnc broken(): string {
+                  try { return "try"; }
+                  catch (e) { return "catch"; }
+                  finally {
+                    try { return "invalid"; }
+                    catch (nested) { stdio.println("caught"); }
+                  }
+                }
+                """,
+                """
+                fnc broken(): string {
+                  try { return "try"; }
+                  catch (e) { return "catch"; }
+                  finally {
+                    const nested = (|| -> {
+                      try { return "lambda"; }
+                      catch (inner) { return "caught"; }
+                      finally { return "invalid even in lambda's own finally"; }
+                    })();
+                  }
+                }
+                """
+        };
+        for (String source : forbidden) {
+            IllegalArgumentException problem = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source), source);
+            assertTrue(problem.getMessage().contains("return is forbidden inside finally"),
+                    problem.getMessage());
+        }
+        assertDoesNotThrow(() -> admitted("""
+                fnc legal(): string {
+                  try { return "try"; }
+                  catch (error) { return "catch"; }
+                  finally {
+                    const nested = (|| -> {
+                      return "lambda";
+                    })();
+                  }
+                }
+                """));
+    }
+
 }
