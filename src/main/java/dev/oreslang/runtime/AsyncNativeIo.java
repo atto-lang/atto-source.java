@@ -74,9 +74,13 @@ public final class AsyncNativeIo implements AutoCloseable {
                 try {
                     value = work.call();
                 } catch (Throwable failure) {
-                    synchronized (this) { admitted.remove(result); }
+                    // Closure and worker settlement share one admission lock.
+                    // Otherwise close() can miss a removed-but-pending Future.
+                    synchronized (this) {
+                        admitted.remove(result);
+                        result.failFromRuntime(failure);
+                    }
                     SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
-                    result.failFromRuntime(failure);
                     if (failure instanceof VirtualMachineError fatal) throw fatal;
                     if (failure instanceof ThreadDeath fatal) throw fatal;
                     if (failure instanceof LinkageError fatal) throw fatal;
@@ -84,8 +88,10 @@ public final class AsyncNativeIo implements AutoCloseable {
                 } finally {
                     CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
                 }
-                synchronized (this) { admitted.remove(result); }
-                result.completeFromRuntime(value);
+                synchronized (this) {
+                    admitted.remove(result);
+                    result.completeFromRuntime(value);
+                }
             });
         } catch (RuntimeException failure) {
             admitted.remove(result);
@@ -116,12 +122,14 @@ public final class AsyncNativeIo implements AutoCloseable {
             failing.addAll(controls);
             controls.clear();
             pending.clear();
+            // Make teardown authoritative before workers are interrupted or
+            // handles closed. Late host completions cannot revive these Futures.
+            for (OresFuture<?> future : failing)
+                future.failFromRuntime(new IllegalStateException("I/O context closed"));
         }
         workers.shutdownNow();
         for (AutoCloseable resource : closing) {
             try { resource.close(); } catch (Exception ignored) { /* best-effort shutdown */ }
         }
-        for (OresFuture<?> future : failing)
-            future.failFromRuntime(new IllegalStateException("I/O context closed"));
     }
 }
