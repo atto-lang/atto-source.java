@@ -6421,6 +6421,10 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "ActorGroup.join_capability");
                         return group.joinCapability();
                     };
+                    case "rotate_join_capability" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.rotate_join_capability");
+                        return group.rotateJoinCapability();
+                    };
                     case "leave" -> (Invokable) args -> {
                         requireZero(args, "ActorGroup.leave");
                         group.leaveCurrent();
