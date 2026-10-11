@@ -175,7 +175,7 @@ final class TypedValueMatchIntegrationTest {
 
     @Test
     void enclosingDeferRunsBeforeCallerReceivesMatchValue() throws Exception {
-        assertEquals("cleanup\\n42", execute("""
+        assertEquals("cleanup\n42", execute("""
                 fnc classify(int n): int {
                   defer stdio.println("cleanup");
                   const value: int = match<ret=int> n over {
@@ -190,7 +190,7 @@ final class TypedValueMatchIntegrationTest {
 
     @Test
     void enclosingFinallyRunsBeforeCallerReceivesMatchValue() throws Exception {
-        assertEquals("finalized\\n42", execute("""
+        assertEquals("finalized\n42", execute("""
                 fnc classify(int n): int {
                   try {
                     const value: int = match<ret=int> n over {
