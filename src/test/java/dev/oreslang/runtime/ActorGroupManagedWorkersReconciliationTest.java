@@ -39,9 +39,12 @@ final class ActorGroupManagedWorkersReconciliationTest {
             assertEquals(2, group.workerCount());
             assertEquals(0, group.memberCount());
 
-            group.closeAsync().get(5, TimeUnit.SECONDS);
-            immediate.done().get(5, TimeUnit.SECONDS);
-            awaited.done().get(5, TimeUnit.SECONDS);
+            OresFuture<Void> closed = group.closeAsync();
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> closed.get(5, TimeUnit.SECONDS),
+                    "cancelled workers settle the group with a typed failure");
+            assertTrue(immediate.done().isDone());
+            assertTrue(awaited.done().isDone());
             assertEquals(0, group.workerCount());
             assertThrows(IllegalStateException.class, () -> group.spawnWorker(
                     ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
@@ -64,8 +67,10 @@ final class ActorGroupManagedWorkersReconciliationTest {
             assertEquals(1, group.workerCount());
             assertEquals(1, group.memberCount());
 
-            group.closeAsync().get(5, TimeUnit.SECONDS);
-            owned.done().get(5, TimeUnit.SECONDS);
+            OresFuture<Void> closed = group.closeAsync();
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> closed.get(5, TimeUnit.SECONDS));
+            assertTrue(owned.done().isDone());
             assertFalse(owned.isAlive());
             assertTrue(cooperative.isAlive(),
                     "membership alone cannot grant lifecycle cancellation authority");
@@ -88,8 +93,10 @@ final class ActorGroupManagedWorkersReconciliationTest {
             assertSame(worker, second.manageWorker(worker));
             first.close();
             assertTrue(worker.isAlive(), "old manager must not stop an explicitly released worker");
-            second.closeAsync().get(5, TimeUnit.SECONDS);
-            worker.done().get(5, TimeUnit.SECONDS);
+            OresFuture<Void> closed = second.closeAsync();
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> closed.get(5, TimeUnit.SECONDS));
+            assertTrue(worker.done().isDone());
             assertFalse(worker.isAlive());
         }
     }
@@ -123,8 +130,10 @@ final class ActorGroupManagedWorkersReconciliationTest {
             } finally {
                 exit.countDown();
             }
-            closeFence.get(5, TimeUnit.SECONDS);
-            worker.done().get(5, TimeUnit.SECONDS);
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> closeFence.get(5, TimeUnit.SECONDS),
+                    "manager shutdown should report child cancellation");
+            assertTrue(worker.done().isDone());
             assertFalse(worker.isAlive());
             other.close();
         }
