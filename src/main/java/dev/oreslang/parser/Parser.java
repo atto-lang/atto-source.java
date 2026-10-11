@@ -503,7 +503,8 @@ public final class Parser {
             }
 
             boolean explicitFnc = match(FNC);
-            if (explicitFnc) {
+            boolean explicitMethod = matchExplicitMethodMarker();
+            if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             if (mods.generator) throw error(peek(), "'generator' is not permitted on class methods or static class fnc; declare a module/top-level generator fnc or routine");
@@ -511,13 +512,16 @@ public final class Parser {
             if (mods.trapped) throw error(peek(), "'trap' on class methods/static fnc is not enabled until method callable metadata carries the trap effect");
             if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
             if (mods.isStatic) {
+                if (explicitMethod) {
+                    throw error(previous(), "static class functions use 'static fnc', not 'static method'");
+                }
                 if (!explicitFnc) {
                     consume(FNC, "static class functions must be declared with 'static fnc'");
                 }
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
-            } else if (explicitFnc) {
-                throw error(previous(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
             }
+            // Legacy 'fnc name' and explicit 'method name' both describe instance
+            // methods. The AST's isStatic flag, not the spelling, controls binding.
             methods.add(parseMethod(annotations, mods));
         }
         consume(
@@ -691,12 +695,21 @@ public final class Parser {
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
+            if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                validateActorFieldModifiers(mods);
+                fields.add(parseFinalActorField(annotations, mods.visibility));
+                continue;
+            }
 
             boolean explicitFnc = match(FNC);
-            if (explicitFnc) {
+            boolean explicitMethod = matchExplicitMethodMarker();
+            if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             validateActorMethodModifiers(mods);
+            if (mods.isStatic && explicitMethod) {
+                throw error(previous(), "static actor functions use 'static fnc', not 'static method'");
+            }
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
             }
@@ -852,6 +865,19 @@ public final class Parser {
         type = applyTypeMetadataAnnotations(type, annotations, false);
         consumeExpressionClassFieldTerminator(initializer, "field declaration should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
+    }
+
+    /** Actor-state 'final name: Type' is a const/immutable field spelling. */
+    private Ast.FieldDecl parseFinalActorField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectCallableStructuralAnnotation(annotations, "fields");
+        consumeContextualIdentifier("final", "expected 'final' actor field");
+        String name = consume(IDENT, "expected field name after 'final'").lexeme();
+        consume(COLON, "expected ':' after final field name");
+        Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
+        Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        consumeExpressionClassFieldTerminator(initializer, "final actor field should end with ';'");
+        return new Ast.FieldDecl(name, visibility, Ast.BindingKind.CONST,
+                type, annotations, initializer, false);
     }
 
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
@@ -1016,7 +1042,7 @@ public final class Parser {
                 if (asyncSeen) throw error(previous(), "duplicate 'async' modifier");
                 asyncSeen = true;
                 async = true;
-            } else if (match(SUSPENDS)) {
+            } else if (match(SUSPENDS) || matchContextualSuspendModifier()) {
                 if (suspendsSeen) throw error(previous(), "duplicate 'suspends' modifier");
                 suspendsSeen = true;
                 suspends = true;
@@ -3445,6 +3471,24 @@ public final class Parser {
         // The modifier spelling is only consumed when it is not already
         // syntactically the member/declaration name.
         if (checkNext(LPAREN) || checkNext(LT) || checkNext(COLON)) return false;
+        advance();
+        return true;
+    }
+
+    // 'suspend' is an alias of 'suspends' only in modifier position; preserve
+    // instance methods actually named suspend(...).
+    private boolean matchContextualSuspendModifier() {
+        if (!isContextualIdentifier("suspend")) return false;
+        if (!checkNext(IDENT) && !checkNext(FNC)) return false;
+        advance();
+        return true;
+    }
+
+    // Preserve an ordinary method named 'method' (method(...)) while accepting
+    // the opt-in declaration marker 'method other_name(...)'.
+    private boolean matchExplicitMethodMarker() {
+        if (!isContextualIdentifier("method")) return false;
+        if (!checkNext(IDENT) && !checkNext(LBRACKET)) return false;
         advance();
         return true;
     }
