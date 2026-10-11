@@ -43,4 +43,40 @@ final class FinallyCleanupFailureTest {
         assertArrayEquals(new Throwable[] { original },
                 firstCleanup.getSuppressed());
     }
+    @Test
+    void cancellationWithFailingNestedFinallyCannotEnterAnEnclosingGuestCatch() {
+        var cancellation = new dev.oreslang.runtime.OresScheduler.TaskCancelledException();
+        var cleanupFailure = new IllegalStateException("inner finally failed");
+        OresEvalRootNode.preserveSuppressedCleanupFailure(cleanupFailure, cancellation);
+
+        assertFalse(OresEvalRootNode.shouldEnterSourceCatch(
+                cancellation, true, false),
+                "the cancellation signal itself must never be caught");
+        assertFalse(OresEvalRootNode.shouldEnterSourceCatch(
+                cleanupFailure, true, false),
+                "inner cleanup failure must not turn cancellation into a catchable exit");
+        assertArrayEquals(new Throwable[] { cancellation }, cleanupFailure.getSuppressed(),
+                "the original cancellation must remain diagnosable");
+    }
+
+    @Test
+    void cleanupMayCatchItsOwnOrdinaryErrorsWithoutCatchingCancellation() {
+        var cancellation = new dev.oreslang.runtime.OresScheduler.TaskCancelledException();
+        var localFailure = new IllegalArgumentException("cleanup-local error");
+
+        assertTrue(OresEvalRootNode.shouldEnterSourceCatch(
+                localFailure, true, true),
+                "an explicitly admitted cleanup block may recover its own local failure");
+        assertFalse(OresEvalRootNode.shouldEnterSourceCatch(
+                cancellation, true, true),
+                "even cleanup-local catch cannot swallow the scheduler cancellation");
+    }
+
+    @Test
+    void normalGuestExceptionsRemainCatchableBeforeCancellation() {
+        var failure = new IllegalStateException("ordinary guest error");
+        assertTrue(OresEvalRootNode.shouldEnterSourceCatch(failure, false, false));
+        assertTrue(OresEvalRootNode.shouldEnterSourceCatch(failure, false, true));
+    }
+
 }
