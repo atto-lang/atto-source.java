@@ -3843,7 +3843,11 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 SourceValueCont continuation) {
             if (call.callee() instanceof Ast.MemberExpr member
-                    && member.member().equals("handle_state")) {
+                    && member.member().equals("handle_state")
+                    && member.receiver() instanceof Ast.NameExpr selfName
+                    && selfName.name().equals("self")
+                    && env.lookup("self") instanceof OresObject actor
+                    && actor.actorState != null) {
                 continuation.accept(task, null, new UnsupportedOperationException(
                         "critical handle_state on a suspendable task requires "
                         + "generation-fenced continuation lowering"));
@@ -5362,7 +5366,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.MemberExpr stateCall
-                    && stateCall.member().equals("handle_state")) {
+                    && stateCall.member().equals("handle_state")
+                    && stateCall.receiver() instanceof Ast.NameExpr selfName
+                    && selfName.name().equals("self")
+                    && env.lookup("self") instanceof OresObject actor
+                    && actor.actorState != null) {
                 return criticalStateInvocation(call, stateCall, env);
             }
             if (call.callee() instanceof Ast.NameExpr directName
