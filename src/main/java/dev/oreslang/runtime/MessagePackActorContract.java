@@ -129,7 +129,7 @@ public final class MessagePackActorContract {
      * It NEVER authorizes a payload without subsequently checking its full
      * pinned SHA-256 shape digest and recursively typed MessagePack payload.
      */
-    private static String peekCanonicalSchema(byte[] bytes) {
+    static String peekCanonicalSchema(byte[] bytes) {
         if (bytes.length < 5 || (bytes[0] & 255) != 0x94 || (bytes[1] & 255) != 2) {
             throw new IllegalArgumentException("invalid actor MessagePack v2 envelope");
         }
