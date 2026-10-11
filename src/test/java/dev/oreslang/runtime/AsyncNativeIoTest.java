@@ -110,6 +110,35 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void closingContextWinsOverLateWorkerSuccessAndFailure() throws Exception {
+        for (boolean throwLate : new boolean[] {false, true}) {
+            try (var io = new AsyncNativeIo(1)) {
+                CountDownLatch entered = new CountDownLatch(1);
+                CountDownLatch workerExited = new CountDownLatch(1);
+                var pending = io.submit("interrupt-resistant-host-io", () -> {
+                    entered.countDown();
+                    try {
+                        new CountDownLatch(1).await();
+                    } catch (InterruptedException ignored) {
+                        // Some host operations complete rather than abort after
+                        // close interrupts the worker. They must not revive an
+                        // already-closed Oreslang context.
+                    }
+                    workerExited.countDown();
+                    if (throwLate) throw new IOException("late host failure");
+                    return 123;
+                });
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                io.close();
+                assertTrue(workerExited.await(2, TimeUnit.SECONDS));
+                ExecutionException failure = assertThrows(ExecutionException.class,
+                        () -> pending.get(2, TimeUnit.SECONDS));
+                assertInstanceOf(IllegalStateException.class, failure.getCause());
+                assertEquals("I/O context closed", failure.getCause().getMessage());
+            }
+        }
+    }
+
     @Test void delayedTcpReadReleasesSingleActorCarrierAndSupportsWriteAndEof() throws Exception {
         String previous = System.getProperty("ores.runtime.actor.shared.parallelism");
         System.setProperty("ores.runtime.actor.shared.parallelism", "1");
