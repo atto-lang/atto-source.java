@@ -307,8 +307,26 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorFailureNotice {
             Objects.requireNonNull(actorId, "actorId");
             Objects.requireNonNull(kind, "kind");
-            Objects.requireNonNull(summary, "summary");
+            // Control messages cross actor/isolation domains. Bound the
+            // diagnostic before it is retained by a parent or an observer.
+            summary = boundedFailureSummary(Objects.requireNonNull(summary, "summary"));
         }
+    }
+
+    /** 1024 UTF-8 bytes, never splitting a Unicode scalar/surrogate pair. */
+    private static String boundedFailureSummary(String message) {
+        final int maxUtf8Bytes = 1024;
+        int offset = 0;
+        int usedBytes = 0;
+        while (offset < message.length()) {
+            int codePoint = message.codePointAt(offset);
+            int byteCount = codePoint <= 0x7f ? 1
+                    : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+            if (usedBytes + byteCount > maxUtf8Bytes) break;
+            usedBytes += byteCount;
+            offset += Character.charCount(codePoint);
+        }
+        return offset == message.length() ? message : message.substring(0, offset);
     }
 
     private static ActorFailureNotice failureNotice(ActorId id, Throwable failure) {
