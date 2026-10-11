@@ -6039,7 +6039,9 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeImage = codeImage;
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
-            this.serialAdmission = codeExecutor != null && codeExecutor.isSerialActor(codeActorType)
+            this.serialAdmission = codeExecutor != null
+                    && SourceActorSchedulingPolicy.isSerialActor(
+                            codeImage.program(), codeActorType)
                     ? new SerialActorAdmission(Math.max(1,
                             Math.min(4096, policy.maxMailboxMessages()))) : null;
             this.parent = parent;
