@@ -99,6 +99,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private final BooleanSupplier cancelAdmission;
+    private final boolean deferredTaskCancel;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
@@ -121,10 +122,19 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * Guest code never receives the admission capability.</p>
      */
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook) {
-        this.cancelAdmission = Objects.requireNonNull(
-                cancelAdmission, "cancelAdmission");
-        this.cancelHook = new AtomicReference<>(
-                Objects.requireNonNull(cancelHook, "cancelHook"));
+        this(cancelAdmission, cancelHook, false);
+    }
+
+    /** Only scheduler Task Futures defer terminal publication until cleanup. */
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook, boolean deferredTaskCancel) {
+        this.cancelAdmission = Objects.requireNonNull(cancelAdmission, "cancelAdmission");
+        this.deferredTaskCancel = deferredTaskCancel;
+        this.cancelHook = new AtomicReference<>(Objects.requireNonNull(cancelHook, "cancelHook"));
+    }
+
+    /** The scheduler alone settles a cancelled Task Future after its cleanup drain. */
+    boolean cancelFromRuntime(CancellationException reason) {
+        return settle(new Cancelled(Objects.requireNonNull(reason, "reason")));
     }
 
     public static <T> OresFuture<T> completed(T value) {
@@ -430,9 +440,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         if (state.get() != PENDING) return false;
         if (!cancelAdmission.getAsBoolean()) return false;
 
-        CancellationException cancelled =
-                new CancellationException("OresFuture was cancelled");
-        if (!settle(new Cancelled(cancelled))) return false;
+        if (!deferredTaskCancel) {
+            CancellationException cancelled =
+                    new CancellationException("OresFuture was cancelled");
+            if (!settle(new Cancelled(cancelled))) return false;
+        }
 
         Runnable hook = cancelHook.getAndSet(null);
         if (hook != null && cancelHookRun.compareAndSet(false, true)) {
