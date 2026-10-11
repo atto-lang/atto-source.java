@@ -134,6 +134,17 @@ grant **no** capabilities to individual untrusted actors. Context source
 submission returns completion-only futures; raw guest `Value` and
 `MemorySegment` references never pass back to host code.
 
+**Strict host admission guard:** Set `-Dores.untrusted.require-physical-isolate=true`
+in production host JVMs to reject legacy `ActorRuntime.spawnUntrusted()`
+and source-level untrusted actor spawns attempted in that host runtime, even if
+the host runtime was constructed with an adversarial policy. This property is
+**an interim fail-closed safety gate**, not a host-to-guest message bridge.
+It deliberately rejects these host calls rather than silently executing them
+in a non-isolated dispatcher. `SharedUntrustedGraalIsolate.submitSource()`
+is the separate bounded source-entry API; host actor-reference/message routing
+remains pending. The toggle must be managed by the trusted launcher and must
+not be set or cleared by guest code.
+
 **Integration gap:** The existing Java `ActorRuntime.spawnUntrusted()` direct
 host entrypoint still runs on a distinct **host dispatcher**, not inside this
 physical isolate. Production security must not use that API as an isolation
