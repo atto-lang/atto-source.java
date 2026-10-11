@@ -40,8 +40,6 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
-    /** Plain critical cannot implicitly yield while its lexical ticket is held. */
-    private boolean currentSynchronousCritical;
     private int loopDepth;
     private boolean currentAsyncGenerator;
 
@@ -90,14 +88,11 @@ public final class OwnershipChecker {
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
-        boolean previousCritical = currentSynchronousCritical;
         currentAsyncGenerator = fn.generator() && fn.async();
-        currentSynchronousCritical = fn.critical() && !fn.suspends() && !fn.async();
         try {
             checkBlock(fn.body(), scope, fn.returnType());
         } finally {
             currentAsyncGenerator = previousAsyncGenerator;
-            currentSynchronousCritical = previousCritical;
             scope.close();
         }
     }
@@ -178,14 +173,8 @@ public final class OwnershipChecker {
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            boolean previousCritical = currentSynchronousCritical;
-            currentSynchronousCritical = method.critical() && !method.suspends() && !method.async();
-            try {
-                checkBlock(method.body(), scope, method.returnType());
-            } finally {
-                currentSynchronousCritical = previousCritical;
-                scope.close();
-            }
+            checkBlock(method.body(), scope, method.returnType());
+            scope.close();
         }
     }
 
@@ -610,10 +599,6 @@ public final class OwnershipChecker {
     }
 
     private void checkSuspensionBorrows(Scope scope, String operation) {
-        if (currentSynchronousCritical) {
-            throw error("non-suspending critical callable cannot " + operation
-                    + "; declare suspend critical and use owned continuation-safe values");
-        }
         if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
             throw error("cannot " + operation + " while holding a MutexGuard; release the guard before suspension");
         }
@@ -1167,9 +1152,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
-                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
-                checkArguments(call.arguments(), signature.parameters(), scope,
-                        "function " + fn.name(), fn.critical() && (fn.suspends() || fn.async()));
+                checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -1182,13 +1165,11 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
-                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(
                         call.arguments(),
                         signature.parameters(),
                         scope,
-                        "function " + namespace.name() + "." + qualified.member(),
-                        fn.critical() && (fn.suspends() || fn.async()));
+                        "function " + namespace.name() + "." + qualified.member());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -1248,13 +1229,11 @@ public final class OwnershipChecker {
                             call,
                             scope,
                             Map.of());
-                    if (staticFunction.suspends()) checkSuspensionBorrows(scope, "suspends call " + staticFunction.name());
                     checkArguments(
                             call.arguments(),
                             signature.parameters(),
                             scope,
-                            "static function " + staticClass.name() + "." + staticFunction.name(),
-                            staticFunction.critical() && (staticFunction.suspends() || staticFunction.async()));
+                            "static function " + staticClass.name() + "." + staticFunction.name());
                     Ast.TypeRef callResult = callableResultType(signature.result(), staticFunction.async(), false);
                     return new ValueInfo(callResult, kindOfType(callResult), null);
                 }
@@ -1374,23 +1353,6 @@ public final class OwnershipChecker {
                     : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());
             if (target != null) {
                 Ast.MethodDecl method = target.method();
-                if (method.critical() && (method.suspends() || method.async())
-                        && isBorrowValue(receiverValue)) {
-                    // Receiver evaluation happens before the ordinary lexical
-                    // suspension check. A temporary `(&obj).critical()` or
-                    // `(rt borrow obj).critical()` has no stored VarState and
-                    // would otherwise be captured across mandatory entry yield.
-                    // An actor's original `self` is a separately verified
-                    // incarnation-owned implicit lease, not a guest loan.
-                    boolean pinnedActorSelf = member.receiver() instanceof Ast.NameExpr name
-                            && name.name().equals("self")
-                            && scope.lookup("self") != null
-                            && isActorConfinedBorrow(scope.lookup("self"));
-                    if (!pinnedActorSelf) {
-                        throw error("suspend critical method '" + method.name()
-                                + "' cannot capture a borrowed receiver across mandatory entry yield");
-                    }
-                }
                 if (AnnotationExpander.isGeneratedFromJsonSetter(method)) {
                     ensureMutableReceiver(
                             member.receiver(),
@@ -1417,9 +1379,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
-                if (method.suspends()) checkSuspensionBorrows(scope, "suspends call " + method.name());
-                checkArguments(call.arguments(), signature.parameters(), scope,
-                        "method " + method.name(), method.critical() && (method.suspends() || method.async()));
+                checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
                     throw error("method '" + target.owner().name() + "." + method.name()
@@ -1544,8 +1504,7 @@ public final class OwnershipChecker {
         return new ValueInfo(okType, kindOfType(okType), null);
     }
 
-    private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params,
-                                Scope scope, String callable, boolean criticalEntrySuspends) {
+    private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
         int parameterIndex = 0;
         for (Ast.Expr argument : arguments) {
             if (argument instanceof Ast.SpreadExpr spread) {
@@ -1577,8 +1536,7 @@ public final class OwnershipChecker {
             }
 
             if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
-            checkArgument(argument, params.get(parameterIndex), scope, callable,
-                    parameterIndex + 1, criticalEntrySuspends);
+            checkArgument(argument, params.get(parameterIndex), scope, callable, parameterIndex + 1);
             parameterIndex++;
         }
     }
@@ -1588,12 +1546,7 @@ public final class OwnershipChecker {
             Ast.Param param,
             Scope scope,
             String callable,
-            int position,
-            boolean criticalEntrySuspends) {
-        if (criticalEntrySuspends && (param.structural() || param.type().isBorrow())) {
-            throw error(callable + " cannot capture borrowed or structural parameters "
-                    + "across suspend critical entry");
-        }
+            int position) {
         if (arg instanceof Ast.RuntimeCallExpr runtime && runtime.operation().equals("borrow")
                 && runtime.arguments().size() == 1) {
             arg = new Ast.UnaryExpr("&", runtime.arguments().getFirst());
@@ -1637,10 +1590,6 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
-        if (criticalEntrySuspends && isBorrowValue(argument)) {
-            throw error(callable + " argument " + position
-                    + " cannot retain a temporary borrow across suspend critical entry");
-        }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }

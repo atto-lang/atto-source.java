@@ -55,7 +55,9 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                     "cleaned", cleaned,
                     "tracked_after", trackedAfter,
                     "cleanup_failures", cleanupFailures,
-                    "jvm_gc_requested", jvmGcRequested);
+                    "jvm_gc_requested", jvmGcRequested,
+                    "collection_kind", "host_cleanup",
+                    "actor_heap_independently_collected", false);
         }
     }
 
@@ -232,6 +234,15 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     }
 
     public CollectionReport collectProcess() {
+        // A logical actor domain inside this Graal/JVM runtime is not a
+        // separate physical GC heap. Never allow a guest actor to request
+        // whole-process collection, even if its policy grants GC_CONTROL.
+        // GC_CONTROL permits supervisor process.gc(), not actor escalation.
+        if (ActorRuntime.inActorExecution()) {
+            throw new SecurityException(
+                    "process.gc() is supervisor-only: actors may use actor.gc() "
+                    + "for actor-scoped host cleanup, not JVM-wide garbage collection");
+        }
         ensureOpen();
         boolean requested = requestJvmGcIfAllowed();
         return sweep(null, requested, Integer.MAX_VALUE);
