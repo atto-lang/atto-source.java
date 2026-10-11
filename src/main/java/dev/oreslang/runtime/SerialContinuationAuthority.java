@@ -25,8 +25,11 @@ public final class SerialContinuationAuthority {
 
     /** Cheap rejection before using a bounded continuation mailbox slot. */
     public boolean mayQueue() {
-        return originatingReceive == null
-                || originatingReceive.state() != SerialActorAdmission.State.FINISHED;
+        if (originatingReceive != null) {
+            return originatingReceive.state() != SerialActorAdmission.State.FINISHED;
+        }
+        // Unowned callbacks must not jump ahead of the active serial handler.
+        return admission == null || !admission.busy();
     }
 
     /** Check on the real actor carrier immediately before executing callback. */
