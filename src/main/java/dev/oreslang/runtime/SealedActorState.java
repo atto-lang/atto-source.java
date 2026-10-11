@@ -76,7 +76,7 @@ public final class SealedActorState {
         private Access(long token) { this.token = token; }
         private void check() {
             requireOwner();
-            if (!live || current != this || token != serialOf(this)) {
+            if (!live || current != this || token <= 0) {
                 throw new IllegalStateException("expired or fenced actor state loan");
             }
         }
@@ -95,8 +95,6 @@ public final class SealedActorState {
             values.put(name, value);
         }
     }
-
-    private long serialOf(Access access) { return access.token; }
 
     public <T> T critical(Function<Access, T> callback) {
         Objects.requireNonNull(callback, "critical state callback");
@@ -127,10 +125,18 @@ public final class SealedActorState {
         return false;
     }
 
-    /** Only the actor lifecycle owner may retire persistent state. */
-    public void retire() {
-        requireOwner();
-        if (current != null) throw new IllegalStateException("active critical state loan");
+    /**
+     * Called once by ActorRuntime after the actor's execution turn has fully
+     * quiesced, not by arbitrary guest code. The owner ID fences accidental
+     * cross-actor finalization or stale actor incarnation references.
+     */
+    public void retireFromRuntime(ActorRuntime.ActorId confirmedOwner) {
+        if (!owner.equals(confirmedOwner)) {
+            throw new SecurityException("cannot retire state for a foreign actor");
+        }
+        if (current != null) {
+            throw new IllegalStateException("cannot retire actor state with live critical loan");
+        }
         retired = true;
         values.clear();
     }
