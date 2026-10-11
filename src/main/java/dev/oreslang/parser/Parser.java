@@ -2477,7 +2477,7 @@ public final class Parser {
             return new Ast.TuplePattern(elements);
         }
 
-        if (match(INT)) return new Ast.LiteralPattern(Long.parseLong(previous().lexeme().replace("_", "")));
+        if (match(INT)) return new Ast.LiteralPattern(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
         if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
@@ -2988,8 +2988,19 @@ public final class Parser {
         };
     }
 
+    // A guest-language literal must not leak Java's NumberFormatException.
+    // Both expression and pattern literals use the same signed-i64 bound.
+    // Wider integers require a separately admitted type and backend contract.
+    private long parseSignedI64(Token token) {
+        try {
+            return Long.parseLong(token.lexeme().replace("_", ""));
+        } catch (NumberFormatException invalid) {
+            throw error(token, "integer literal overflows signed 64-bit: " + token.lexeme());
+        }
+    }
+
     private Ast.Expr parsePrimary() {
-        if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
+        if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
             String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
