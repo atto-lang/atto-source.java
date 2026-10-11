@@ -1,8 +1,12 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -14,14 +18,18 @@ import java.util.concurrent.TimeUnit;
  * concurrent producer notifications cannot lose wakeups or fill an unbounded
  * event queue. The underlying carrier pool still owns bounded work admission.</p>
  *
- * <p>This is the pool lifecycle/control substrate; actual runBatch admission
- * remains on ActorRuntime's established bounded dispatcher path until the
- * scheduler-dispatch migration has its own source-actor cancellation proof.</p>
+ * <p>The pool scheduler is the sole authority admitting runnable actor turns
+ * into the established bounded carrier executor. A request's caller waits for
+ * the fast admission decision (not actor execution), so rejection remains
+ * synchronous and actor cancellation semantics are unchanged. All guest code
+ * still executes on carrier threads, never on the control thread.</p>
  */
 final class ActorPoolControlScheduler {
     private final Object monitor = new Object();
     private final Set<ActorRuntime.ActorId> actors = new HashSet<>();
+    private final ArrayDeque<DispatchRequest> dispatches = new ArrayDeque<>();
     private final String threadName;
+    private final int capacity;
     private Thread thread;
     private boolean closed;
     private boolean terminated;
@@ -29,7 +37,66 @@ final class ActorPoolControlScheduler {
     private long handledWakeups;
 
     ActorPoolControlScheduler(String name) {
+        this(name, 16_384);
+    }
+
+    ActorPoolControlScheduler(String name, int capacity) {
         threadName = Objects.requireNonNull(name, "name") + "-pool-scheduler";
+        if (capacity <= 0) throw new IllegalArgumentException("pool scheduler capacity must be positive");
+        this.capacity = capacity;
+    }
+
+    private static final class DispatchRequest {
+        final ExecutorService workerPool;
+        final int lane;
+        final Runnable command;
+        final CountDownLatch admitted = new CountDownLatch(1);
+        volatile Throwable failure;
+
+        private DispatchRequest(ExecutorService workerPool, int lane, Runnable command) {
+            this.workerPool = workerPool;
+            this.lane = lane;
+            this.command = command;
+        }
+
+        void complete(Throwable failed) {
+            failure = failed;
+            admitted.countDown();
+        }
+    }
+
+    /**
+     * Fast synchronous admission handshake with the pool's dedicated CONTROL
+     * thread. Does not await actor execution, only carrier queue placement.
+     */
+    void dispatch(ExecutorService workerPool, int lane, Runnable command) {
+        Objects.requireNonNull(workerPool, "workerPool");
+        Objects.requireNonNull(command, "command");
+        DispatchRequest request = new DispatchRequest(workerPool, lane, command);
+        synchronized (monitor) {
+            if (closed || thread == null || Thread.currentThread() == thread)
+                throw new RejectedExecutionException("pool scheduler is not accepting turns");
+            if (dispatches.size() >= capacity)
+                throw new RejectedExecutionException("pool scheduler admission queue full");
+            dispatches.addLast(request);
+            signalLocked();
+        }
+        boolean interrupted = false;
+        for (;;) {
+            try {
+                request.admitted.await();
+                break;
+            } catch (InterruptedException exception) {
+                // This has already been admitted to the scheduler queue.
+                // Abandoning the handshake would orphan its actor schedule.
+                interrupted = true;
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+        if (request.failure instanceof RuntimeException runtime) throw runtime;
+        if (request.failure instanceof Error fatal) throw fatal;
+        if (request.failure != null)
+            throw new IllegalStateException("unexpected pool dispatch failure", request.failure);
     }
 
     void registerActor(ActorRuntime.ActorId actor) {
@@ -79,25 +146,51 @@ final class ActorPoolControlScheduler {
 
     private void controlLoop() {
         try {
-            synchronized (monitor) {
-                for (;;) {
-                    while (!closed && pendingWakeups == 0) {
+            for (;;) {
+                DispatchRequest request;
+                synchronized (monitor) {
+                    while (!closed && pendingWakeups == 0 && dispatches.isEmpty()) {
                         try {
-                            monitor.wait(); // host-level *_blocking/select wakeup
+                            monitor.wait(); // event-driven select/_blocking wakeup
                         } catch (InterruptedException interrupted) {
-                            // Interrupt is a wakeup, never an implicit shutdown.
+                            // A spurious external interrupt must not end the
+                            // pool's CONTROL loop or silently cancel actors.
                             if (!closed) continue;
                         }
                     }
-                    if (closed) return;
+                    if (closed) {
+                        while (!dispatches.isEmpty()) {
+                            dispatches.removeFirst().complete(
+                                    new RejectedExecutionException("pool scheduler shutting down"));
+                        }
+                        return;
+                    }
                     pendingWakeups = 0;
-                    // All actor bookkeeping and CONTROL observations stay on
-                    // this thread. Never invoke guest handlers while locked.
                     handledWakeups++;
+                    request = dispatches.pollFirst();
+                }
+                if (request == null) continue;
+                Throwable failure = null;
+                try {
+                    // This queues onto worker carriers; it must never invoke
+                    // guest code inline on this CONTROL thread.
+                    if (request.workerPool instanceof ActorAffinityDispatcher lanes) {
+                        lanes.executeOnLane(request.lane, request.command);
+                    } else {
+                        request.workerPool.execute(request.command);
+                    }
+                } catch (RuntimeException | Error admissionFailure) {
+                    failure = admissionFailure;
+                } finally {
+                    request.complete(failure);
                 }
             }
         } finally {
             synchronized (monitor) {
+                while (!dispatches.isEmpty()) {
+                    dispatches.removeFirst().complete(
+                            new RejectedExecutionException("pool scheduler thread terminated"));
+                }
                 terminated = true;
                 monitor.notifyAll();
             }
@@ -120,6 +213,10 @@ final class ActorPoolControlScheduler {
         synchronized (monitor) {
             closed = true;
             actors.clear();
+            while (!dispatches.isEmpty()) {
+                dispatches.removeFirst().complete(
+                        new RejectedExecutionException("pool scheduler shutting down"));
+            }
             monitor.notifyAll();
         }
     }
