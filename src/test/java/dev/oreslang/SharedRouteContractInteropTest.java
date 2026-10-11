@@ -1,5 +1,8 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
@@ -87,6 +90,24 @@ final class SharedRouteContractInteropTest {
               return;
             }
             """;
+
+    @Test
+    void linkedGuestParseScopeIsExactAndNeverPersistsIntoRuntime() {
+        String name = "/verified/Route.ores";
+        String source = "pub routine main(): void { return; }";
+        Ast.Program reviewed = Parser.parse(source);
+        assertNull(OresCompiler.takeVerifiedGuestProgram(name, source));
+        try (OresCompiler.LinkedGuestParseScope ignored =
+                     OresCompiler.linkVerifiedGuestParse(name, source, reviewed)) {
+            assertSame(reviewed, OresCompiler.takeVerifiedGuestProgram(name, source));
+            assertThrows(SecurityException.class,
+                    () -> OresCompiler.takeVerifiedGuestProgram(name, source + " "));
+            assertThrows(SecurityException.class,
+                    () -> OresCompiler.takeVerifiedGuestProgram("/different/Route.ores", source));
+        }
+        assertNull(OresCompiler.takeVerifiedGuestProgram(name, source),
+                "host-only parse lease must be retired before any guest turn");
+    }
 
     @Test
     void correctModulePassesRealCrossFileCompilation() throws Exception {
