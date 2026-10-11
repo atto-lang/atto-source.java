@@ -418,6 +418,46 @@ final class TypedOpenMapKeysTest {
         }
     }
 
+    @Test
+    void hookReentryIsRejectedAtTheMapBoundary() throws Exception {
+        for (String operation : java.util.List.of("get", "put", "remove")) {
+            String signature = operation.equals("put")
+                    ? "on_put(string key, unknown value)"
+                    : "on_" + operation + "(string key)";
+            String invocation = operation.equals("put")
+                    ? "self.put(\"label\", \"nested\");"
+                    : "self." + operation + "(\"label\");";
+            String outer = operation.equals("put")
+                    ? "m.put(\"label\", \"initial\");"
+                    : "m.put(\"label\", \"initial\"); m." + operation + "(\"label\");";
+            String program = """
+                    define class ReentrantMap extends Map<string, unknown> as
+                      key label: Option<string>;
+                      %s: void {
+                        %s
+                        return;
+                      }
+                    end
+                    pub routine main(): void {
+                      val m = new ReentrantMap();
+                      %s
+                      return;
+                    }
+                    """.formatted(signature, invocation, outer);
+            TypeChecker.check(Parser.parse(program));
+            Source source = Source.newBuilder(OresLanguage.ID, program,
+                    "typed-map-reentrant-" + operation + ".ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                PolyglotException failure = assertThrows(
+                        PolyglotException.class, () -> context.eval(source));
+                assertTrue(failure.getMessage().contains("reentrant map hook access"),
+                        () -> operation + ": " + failure.getMessage());
+            }
+        }
+    }
+
     private static String execute(String program) throws Exception {
         TypeChecker.check(Parser.parse(program));
         ByteArrayOutputStream output = new ByteArrayOutputStream();
