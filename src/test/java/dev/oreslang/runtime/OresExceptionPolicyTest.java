@@ -79,6 +79,32 @@ final class OresExceptionPolicyTest {
     }
 
     @Test
+    void everyCleanupFailureCombinationFollowsTheCrossBackendPriorityLattice() {
+        java.util.List<java.util.function.Supplier<? extends Throwable>> factories =
+                java.util.List.of(
+                        () -> new IllegalStateException("throw"),
+                        () -> new OresRaised("raise"),
+                        () -> new OresPanic("panic"),
+                        () -> new CancellationException("cancelled"),
+                        () -> new ProcessExitSignal(9),
+                        () -> new AssertionError("host failure"));
+        int[] priority = {1, 2, 3, 4, 5, 5};
+        for (int pendingKind = 0; pendingKind < factories.size(); pendingKind++) {
+            for (int cleanupKind = 0; cleanupKind < factories.size(); cleanupKind++) {
+                Throwable pending = factories.get(pendingKind).get();
+                Throwable cleanup = factories.get(cleanupKind).get();
+                Throwable result = OresExceptionPolicy.combine(pending, cleanup);
+                boolean cleanupWins = priority[cleanupKind] > priority[pendingKind];
+                assertSame(cleanupWins ? cleanup : pending, result,
+                        "precedence mismatch: " + pendingKind + " -> " + cleanupKind);
+                assertArrayEquals(new Throwable[]{cleanupWins ? pending : cleanup},
+                        result.getSuppressed(),
+                        "suppressed ordering mismatch: " + pendingKind + " -> " + cleanupKind);
+            }
+        }
+    }
+
+    @Test
     void selfSuppressionIsNotAttempted() {
         OresPanic same = new OresPanic("same");
         assertSame(same, OresExceptionPolicy.combine(same, same));
