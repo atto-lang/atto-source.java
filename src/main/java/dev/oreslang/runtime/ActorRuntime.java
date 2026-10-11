@@ -6643,11 +6643,7 @@ public final class ActorRuntime implements AutoCloseable {
                 Consumer<ActorKind> notifyMaster = masterPoolWakeup;
                 if (notifyMaster != null) notifyMaster.accept(kind);
                 ExecutorService dispatcher = dispatcherFor(kind);
-                if (dispatcher instanceof ActorAffinityDispatcher lanes) {
-                    lanes.executeOnLane(dispatchLane, this::runBatch);
-                } else {
-                    dispatcher.execute(this::runBatch);
-                }
+                poolSchedulerFor(kind).dispatch(dispatcher, dispatchLane, this::runBatch);
             } catch (RejectedExecutionException rejected) {
                 scheduled.set(false);
                 stop();
