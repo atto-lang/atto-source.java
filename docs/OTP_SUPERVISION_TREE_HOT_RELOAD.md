@@ -205,3 +205,28 @@ quiescence-aware; avoid directly calling `Generation.start()` inside the
 currently executing supervisor turn. Test old-code drain, paused Future
 completion, context-close races, capability narrowing, failed migrations
 and rollback before enabling compiler-level hot reload.
+
+## Incremental executable code-revision substrate (new)
+
+`SupervisorCodeSlot<P>` now implements compare-and-activate of immutable
+host-controlled policy revisions. Acquired leases pin the exact revision that
+a logical supervisor CONTROL turn was admitted under; old code is not
+reclaimed until the last lease releases. A mismatched revision or ABI fails
+closed; pinned retired generations consume a bounded revision budget.
+Enqueue-only reclamation callbacks must run resource teardown on the owning
+runtime; guest code must never execute from the releasing thread.
+
+`ActorSupervisor.installPolicyCode(slot)` binds a code slot once to a
+stable runtime supervisor identity, and `policyRevision()` exposes a
+host-only immutable descriptor. A slot cannot be shared by Daddy1 and Daddy2.
+ActorGroup bindings and supervisor parentage are unchanged when the
+slot's active policy revision changes. ActorRuntime shutdown retires
+supervisor slots after the ActorGroups have closed.
+
+**Not yet done:** the compiler still rejects source supervisor-actor entities.
+The code slot does not itself execute user source, call `code_change`,
+migrate actor-owned state, track automatically compiled continuations, or
+bind to a live Graal `HotReloadManager.Generation`. Real guest source
+upgrades remain gated by the compiler's suspend-aware ownership and
+scheduler-owned CONTROL safepoint work, and full Java runtime tests are
+required before merge.
