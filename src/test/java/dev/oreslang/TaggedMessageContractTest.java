@@ -176,6 +176,52 @@ final class TaggedMessageContractTest {
                         "a.send(7 as Status.Message2);"))));
     }
     @Test
+    void compilerGeneratedLlvmIntegerCasesMatchJavaWireBytes() {
+        var program = Parser.parse("""
+                define enum Signals as
+                    Ping = 1
+                    Add: int = 2
+                    Sub: int = 3
+                end
+                define pattern WorkerMessages as
+                    Signals.Sub
+                    Signals.Ping
+                    Signals.Add
+                end
+                """);
+        var codec = new TaggedMessageCodec(
+                TaggedMessageContracts.verify(program).requireDomain("WorkerMessages"));
+        var add = new TaggedMessageCodec.TaggedValue("Signals", "Add", 2, 19L);
+        var sub = new TaggedMessageCodec.TaggedValue("Signals", "Sub", 3, 4L);
+        // Exact immutable canonical vectors are consumed by the LLVM guest
+        // codegen fixture. Both have shape T[S,I,I], yet different schemas.
+        assertEquals("9402d98f6f7265736c616e672e656e756d2e393135616365616630616462333361333834366638356336343566616164626462343666363763306662303363613230383437633232376339313130343739632e36623038666232373863653432656430373134633162396339653836643464623032333930653832326464373464303239313834316439633138363732366562c420a6beba4faeb2ff46f0abfa2d43f23c0653129a9047a64e424bacc97fd5be855193a75369676e616c730213",
+                java.util.HexFormat.of().formatHex(codec.encode(add)));
+        assertEquals("9402d98f6f7265736c616e672e656e756d2e393135616365616630616462333361333834366638356336343566616164626462343666363763306662303363613230383437633232376339313130343739632e34383864373162356364633238303231626565376264623935393232383038663932613262393237363339613664393830393331663237666231633662653864c420a6beba4faeb2ff46f0abfa2d43f23c0653129a9047a64e424bacc97fd5be855193a75369676e616c730304",
+                java.util.HexFormat.of().formatHex(codec.encode(sub)));
+        assertEquals(add, codec.decode(codec.encode(add)));
+        assertEquals(sub, codec.decode(codec.encode(sub)));
+        assertThrows(IllegalArgumentException.class, () ->
+                codec.decode(corruptTaggedIntEnumTag(codec.encode(add))));
+    }
+
+    private static byte[] corruptTaggedIntEnumTag(byte[] frame) {
+        byte[] corrupted = frame.clone();
+        byte[] owner = "Signals".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        for (int i = 1; i + owner.length < corrupted.length; i++) {
+            if ((corrupted[i - 1] & 0xff) != 0xa7) continue;
+            boolean same = true;
+            for (int j = 0; j < owner.length; j++)
+                if (corrupted[i + j] != owner[j]) { same = false; break; }
+            if (same) {
+                corrupted[i + owner.length] ^= 1;
+                return corrupted;
+            }
+        }
+        throw new IllegalStateException("missing trusted enum owner in fixture");
+    }
+
+    @Test
     void largeClosedPatternRoutesOneSchemaWithoutTrialDecoding() {
         // Hundreds of nominal alternatives share one structural payload
         // shape. A receiver must select exactly one compiler-registered
