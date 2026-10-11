@@ -1,6 +1,10 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.Objects;
 import java.util.function.Function;
 
@@ -77,7 +81,13 @@ public final class ActorPersistentI64Map implements AutoCloseable {
         Access access = new Access();
         active = access;
         try {
-            return body.apply(access);
+            R result = body.apply(access);
+            // Even the synchronous host prototype must not return an
+            // ephemeral state view (including via List/Map containers).
+            // Suspending Future/callback results are not implemented: they
+            // must not carry a live state access outside this critical turn.
+            rejectEscapedStateView(result, new IdentityHashMap<>(), 0);
+            return result;
         } finally {
             access.live = false;
             active = previous;
@@ -90,6 +100,52 @@ public final class ActorPersistentI64Map implements AutoCloseable {
      */
     public <R> R handleState(Function<? super Access, ? extends R> callback) {
         return critical(callback);
+    }
+
+    private void rejectEscapedStateView(
+            Object result,
+            IdentityHashMap<Object, Boolean> visited,
+            int depth) {
+        if (result == null || result instanceof String
+                || result instanceof Number || result instanceof Boolean
+                || result instanceof Character || result instanceof Enum<?>) {
+            return;
+        }
+        if (result instanceof Access || result instanceof OresFuture<?>
+                || result instanceof java.util.function.Function<?, ?>
+                || result instanceof Runnable) {
+            throw new IllegalArgumentException(
+                    "critical actor state callback must not return a state loan or deferred callable");
+        }
+        if (depth >= 32 || visited.put(result, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("critical state result graph is cyclic or too deep");
+        }
+        try {
+            if (result instanceof List<?> list) {
+                for (Object child : list) rejectEscapedStateView(child, visited, depth + 1);
+            } else if (result instanceof Set<?> set) {
+                for (Object child : set) rejectEscapedStateView(child, visited, depth + 1);
+            } else if (result instanceof Map<?, ?> map) {
+                for (var entry : map.entrySet()) {
+                    rejectEscapedStateView(entry.getKey(), visited, depth + 1);
+                    rejectEscapedStateView(entry.getValue(), visited, depth + 1);
+                }
+            } else if (result.getClass().isArray()) {
+                int size = java.lang.reflect.Array.getLength(result);
+                for (int i = 0; i < size; i++) {
+                    rejectEscapedStateView(
+                            java.lang.reflect.Array.get(result, i),
+                            visited, depth + 1);
+                }
+            } else {
+                // Cannot prove arbitrary host objects, Futures or closures
+                // lack a captured state view without source ownership checks.
+                throw new IllegalArgumentException(
+                        "critical state callback returned an unverified mutable host object");
+            }
+        } finally {
+            visited.remove(result);
+        }
     }
 
     private void requireActiveOwner() {
