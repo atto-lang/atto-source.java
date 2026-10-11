@@ -92,6 +92,7 @@ final class OresVMTest {
     @Test
     void vmOwnsActorRuntimeAndClosesAllThreeActorDomainsBeforeControl() {
         OresVM vm = OresVM.create(Runnable::run);
+        OresScheduler root = vm.rootScheduler();
         ActorRuntime actors = vm.createActorRuntime(
                 IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(2, 3, 64, 128),
@@ -111,7 +112,7 @@ final class OresVMTest {
             vm.close();
         }
         assertTrue(actors.isClosed(), "VM close must retire the owned actor runtime");
-        assertTrue(vm.rootScheduler().isClosed(), "VM close must retire CONTROL");
+        assertTrue(root.isClosed(), "VM close must retire CONTROL");
         assertThrows(IllegalStateException.class, () ->
                 vm.createActorRuntime(
                         IsolatePolicy.developer(),
