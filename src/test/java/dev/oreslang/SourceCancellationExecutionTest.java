@@ -136,4 +136,59 @@ final class SourceCancellationExecutionTest {
                     """, output.toString(StandardCharsets.UTF_8));
         }
     }
+
+    @Test
+    void contextCloseWithSuspendedGuestFinallyReportsIncompleteCleanup() throws Exception {
+        String source = """
+                pub async fnc work(): int {
+                  try {
+                    val Channel<int> gate = Channel.new<int>(0);
+                    stdio.println("armed");
+                    const ignored = await (nb readch gate);
+                  } catch (error) {
+                    stdio.println("INVALID-catch");
+                  } finally {
+                    val Channel<int> cleanup = Channel.new<int>(0);
+                    stdio.println("cleanup-armed");
+                    const cleanupResult = await (nb readch cleanup);
+                    stdio.println("INVALID-cleanup-complete");
+                  }
+                  return 1;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).out(output).build();
+        try {
+            OresFuture<?> task = start(context, source);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!output.toString(StandardCharsets.UTF_8).contains("armed")
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("armed"));
+            assertTrue(task.cancel(false));
+
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!output.toString(StandardCharsets.UTF_8).contains("cleanup-armed")
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("cleanup-armed"),
+                    "the real source finally must suspend before context close");
+            assertFalse(task.isDone(), "unresolved finally cannot publish task completion");
+
+            RuntimeException closeFailure = assertThrows(
+                    RuntimeException.class, context::close,
+                    "context close must not advertise successful teardown");
+            assertTrue(closeFailure.toString().contains("unfinished cancellation cleanup"),
+                    "timeout must remain explicit: " + closeFailure);
+            var terminal = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertTrue(terminal.getCause().toString().contains("cleanup drain timed out"),
+                    "task must preserve the explicit failed-drain cause");
+            assertEquals("armed\ncleanup-armed\n",
+                    output.toString(StandardCharsets.UTF_8));
+        } finally {
+            // Cleanup is deliberately unresolved in this fault-injection test.
+            // close() is idempotent after its first terminal failed-drain outcome.
+            try { context.close(); } catch (RuntimeException expected) { }
+        }
+    }
 }
