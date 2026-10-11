@@ -912,9 +912,16 @@ public final class TypeChecker {
                 if (Set.of("get", "put", "remove").contains(method.name())) {
                     throw new IllegalArgumentException("Map " + method.name() + " is compiler-managed; use on_" + method.name() + " as an interception hook");
                 }
-                if (Set.of("on_get", "on_put", "on_remove").contains(method.name())
-                        && (method.async() || method.suspends())) {
-                    throw new IllegalArgumentException("map interception hook " + method.name() + " must not suspend");
+                if (Set.of("on_get", "on_put", "on_remove").contains(method.name())) {
+                    int arity = method.name().equals("on_put") ? 2 : 1;
+                    if (method.isStatic() || method.isAbstract() || method.async() || method.suspends()
+                            || method.parameters().size() != arity || !method.genericParameters().isEmpty()
+                            || resolve(method.returnType(), classGenerics, self) != Primitive.VOID
+                            || resolve(method.parameters().getFirst().type(), classGenerics, self) != Primitive.STRING
+                            || (arity == 2 && resolve(method.parameters().get(1).type(), classGenerics, self) != Unknown.INSTANCE)) {
+                        throw new IllegalArgumentException("map hook " + method.name()
+                                + " must be synchronous (string key" + (arity == 2 ? ", unknown value" : "") + "): void");
+                    }
                 }
             }
             for (Ast.FieldDecl field : klass.fields()) if (declaredMapKeys.contains(field.name())) {
@@ -1821,10 +1828,10 @@ public final class TypeChecker {
                     targetType = typedMapValue(mapClass, index, generics, self);
                 } else {
                 requireAssignable(index, Primitive.INT, "array/list index");
-                if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException(
-                        "indexed assignment requires an array/list or tuple; structs have a closed static field set");
+                    if (receiver instanceof ListType list) targetType = list.element();
+                    else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                    else throw new IllegalArgumentException(
+                            "indexed assignment requires an array/list or tuple; structs have a closed static field set");
                 }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
