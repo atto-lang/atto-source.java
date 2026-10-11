@@ -954,20 +954,23 @@ public final class OresScheduler implements AutoCloseable {
                 // original cancellation must remain inspectable. Preserve it
                 // once, without self-suppression or duplicate suppressed
                 // reasons from nested defer/finally propagation.
-                if (cancelRequested.get() && failure != cancellation
-                        && !(failure instanceof TaskCancelledException)) {
-                    boolean preserved = false;
+                // Cancellation is identified by this task's exact token,
+                // never merely by the exception class. A foreign task may
+                // throw its own cancellation during cleanup, and a shared
+                // cleanup error may be thrown by multiple cancelling tasks.
+                // Each owner must retain its own cancellation provenance.
+                if (cancelRequested.get() && failure != cancellation) {
+                    boolean alreadyPreserved = false;
                     for (Throwable prior : failure.getSuppressed()) {
-                        if (prior == cancellation
-                                || prior instanceof TaskCancelledException) {
-                            preserved = true;
+                        if (prior == cancellation) {
+                            alreadyPreserved = true;
                             break;
                         }
                     }
-                    if (!preserved) failure.addSuppressed(cancellation);
+                    if (!alreadyPreserved) failure.addSuppressed(cancellation);
                 }
                 terminalOutcome.compareAndSet(null,
-                        failure instanceof TaskCancelledException
+                        failure == cancellation
                                 ? new TerminalCancelled<T>(cancellation)
                                 : new TerminalFailure<T>(failure));
             }

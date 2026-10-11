@@ -197,4 +197,71 @@ final class OresSchedulerCancellationFaultTest {
             assertTrue(racers.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+    @Test
+    void foreignCancellationSignalCannotImpersonateThisTaskTerminalOutcome() throws Exception {
+        OresScheduler.TaskCancelledException foreign =
+                new OresScheduler.TaskCancelledException();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                throw foreign;
+            });
+            ExecutionException reported = assertThrows(ExecutionException.class,
+                    () -> result.get(3, TimeUnit.SECONDS));
+            assertSame(foreign, reported.getCause(),
+                    "a foreign cancellation exception is a failed task, not cancellation");
+            assertFalse(result.isCancelled(),
+                    "only the scheduler-issued exact task token can cancel this task");
+        }
+    }
+
+    @Test
+    void sharedCleanupFailurePreservesEachTasksDistinctCancellationIdentity()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            IllegalStateException sharedFailure =
+                    new IllegalStateException("same cleanup exception reused");
+            CountDownLatch bothAwaiting = new CountDownLatch(2);
+            java.util.List<OresFuture<Integer>> results = new java.util.ArrayList<>();
+            java.util.List<OresFuture<Integer>> upstream = new java.util.ArrayList<>();
+            for (int index = 0; index < 2; index++) {
+                OresFuture<Integer> gate = new OresFuture<>();
+                upstream.add(gate);
+                AtomicInteger stages = new AtomicInteger();
+                results.add(scheduler.start(new OresScheduler.CancellationAwareTask<Integer>() {
+                    @Override public void cancellationRequested(
+                            OresScheduler.TaskCancelledException reason) { }
+                    @Override public boolean cleanupInProgress() { return false; }
+                    @Override public OresScheduler.Step<Integer> resume(
+                            OresScheduler.Resume resumed) {
+                        if (stages.getAndIncrement() == 0) {
+                            bothAwaiting.countDown();
+                            return OresScheduler.await(gate);
+                        }
+                        assertInstanceOf(OresScheduler.TaskCancelledException.class,
+                                resumed.failure());
+                        throw sharedFailure;
+                    }
+                }));
+            }
+            assertTrue(bothAwaiting.await(4, TimeUnit.SECONDS));
+            for (OresFuture<Integer> gate : upstream) untilRegistered(gate);
+            for (OresFuture<Integer> result : results) assertTrue(result.cancel(false));
+            for (OresFuture<Integer> result : results) {
+                ExecutionException reported = assertThrows(ExecutionException.class,
+                        () -> result.get(4, TimeUnit.SECONDS));
+                assertSame(sharedFailure, reported.getCause());
+                assertFalse(result.isCancelled());
+            }
+            Throwable[] causes = sharedFailure.getSuppressed();
+            assertEquals(2, causes.length,
+                    "each task must preserve its own cancellation despite shared failure");
+            assertInstanceOf(OresScheduler.TaskCancelledException.class, causes[0]);
+            assertInstanceOf(OresScheduler.TaskCancelledException.class, causes[1]);
+            assertNotSame(causes[0], causes[1],
+                    "cancellation token identity must remain task-specific");
+            for (OresFuture<Integer> gate : upstream)
+                assertEquals(0, gate.pendingRuntimeWaiterCount());
+        }
+    }
+
 }
