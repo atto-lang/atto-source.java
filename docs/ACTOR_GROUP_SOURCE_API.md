@@ -48,6 +48,27 @@ actor by invoking these source methods on its behalf. Untrusted actor code
 does not gain ambient group-creation rights. Java interop/reflection must
 never be required or implicitly enabled.
 
+## Security audit hardening
+
+- Group handles and join permits are opaque control-plane capabilities, not
+  generic ActorRef/ActorMail/ActorOutput payloads. Both ordinary `isSharedSafe`
+  and actor-specific boundary validation must reject them, including nested
+  `Option<T>`, `List<T>`, tuple and record payloads. Until a dedicated
+  capability-transport envelope exists, matching payload type annotations must
+  not make a join permit sendable.
+- `ActorGroup.new()` requires `ACTOR_SPAWN` at isolate compilation/admission,
+  the interpreter factory, **and** the currently executing actor's own runtime
+  policy. Otherwise an untrusted actor could call a non-actor helper routine to
+  escape a source-local creation check. This is independent from the ability
+  to join a group with an authorized permit.
+- Native cooperative registry incarnations use a strictly nonwrapping origin
+  counter; exhaustion is fatal to new registry construction, not permission to
+  reuse stale join-capability authority.
+- Creator-owned group quota follows the structural creator index even after
+  that actor leaves a group. Quota-rejected joins and creation attempts must
+  not allocate orphan reverse-index entries. Actor-local `joinCurrent`
+  explicitly verifies the caller's runtime affinity.
+
 ## Delivery and authorization
 
 This slice exposes **membership** only. A production room message needs a
