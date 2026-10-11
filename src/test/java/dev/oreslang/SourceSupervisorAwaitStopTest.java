@@ -156,6 +156,9 @@ final class SourceSupervisorAwaitStopTest {
             assertEquals(SupervisorChildRegistry.Phase.STOPPING,
                     group.childSnapshot(child).phase(),
                     "ambiguous host effect must fence RESTART");
+            assertEquals(SupervisorChildRegistry.StopReceiptStatus.UNCERTAIN,
+                    group.stopReceipt(child).status(),
+                    "failed awaited host acknowledgment must classify its CONTROL receipt");
             process.close();
             group.close();
         }
