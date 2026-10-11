@@ -27,7 +27,9 @@ def main():
     # Truffle needs host native access to load its runtime library on JDK 25.
     # Explicitly authorize that capability for this isolated test process;
     # never suppress or discard process stderr (including guest failures).
-    argv = ["java", "--enable-native-access=ALL-UNNAMED",
+    # Enable the runtime compiler rather than masking Truffle's interpreted-only
+    # advisory. This test process must still expose all stderr to the runner.
+    argv = ["java", "-XX:+EnableJVMCI", "--enable-native-access=ALL-UNNAMED",
             "-cp", str(classes) + os.pathsep + deps,
             "dev.oreslang.launcher.OresMain",
             *([] if execute else ["--check"]), str(path)]
