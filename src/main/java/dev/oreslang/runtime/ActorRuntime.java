@@ -1490,6 +1490,9 @@ public final class ActorRuntime implements AutoCloseable {
     public interface ActorCodeExecutor {
         SharedCodeImageStore.CodeImage codeImage();
 
+        /** Trusted immutable code-image declaration; never guest-provided. */
+        default boolean serialActor(String actorTypeName) { return false; }
+
         ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorContext<Object> context) throws Exception;
@@ -5946,6 +5949,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final SharedCodeImageStore.CodeImage codeImage;
         /** Shared compiler/interpreter code executor; never exposed to guest source. */
         private final ActorCodeExecutor codeExecutor;
+        /** Runtime-owned serial source handler lifetime, across continuations. */
+        private final SerialActorAdmission serialAdmission;
+        private SerialActorAdmission.Lease serialReceiveLease;
         /** Closed-world source actor declaration selected for this actor. */
         private final String codeActorType;
         /** Mutable source actor state, created on this actor's dispatcher. */
@@ -6028,6 +6034,9 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeImage = codeImage;
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
+            this.serialAdmission = codeExecutor != null && codeExecutor.serialActor(codeActorType)
+                    ? new SerialActorAdmission(Math.max(1,
+                            Math.min(4096, policy.maxMailboxMessages()))) : null;
             this.parent = parent;
             int mailboxCapacity = policy.maxMailboxMessages() >
                             Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
@@ -6238,6 +6247,11 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             drainMailboxReservations();
+            if (serialAdmission != null) {
+                // After physical quiescence, fence every stale continuation.
+                serialAdmission.close();
+                serialReceiveLease = null;
+            }
             staticSelectCursors.clear();
             ActorOwnedGuestState retiringState = codeActorState;
             codeActorState = null;
@@ -6604,7 +6618,24 @@ public final class ActorRuntime implements AutoCloseable {
                         }
 
                         if (activeEnvelope.isContinuation()) {
-                            activeEnvelope.continuation().run();
+                            SerialActorAdmission.Lease held = serialReceiveLease;
+                            if (held != null) {
+                                if (held.state() == SerialActorAdmission.State.SUSPENDED) held.resume();
+                                held.requireActive();
+                            }
+                            try {
+                                activeEnvelope.continuation().run();
+                            } finally {
+                                held = serialReceiveLease;
+                                if (held != null) {
+                                    if (sourceReceiveSuspended) {
+                                        if (held.state() == SerialActorAdmission.State.RUNNING) held.suspend();
+                                    } else {
+                                        serialReceiveLease = null;
+                                        if (!stopped.get()) held.close();
+                                    }
+                                }
+                            }
                         } else {
                             ActorInboxMail<M> mail = new ActorInboxMail<>(
                                     ref.id(),
@@ -6613,6 +6644,16 @@ public final class ActorRuntime implements AutoCloseable {
                                     (M) activeEnvelope.value());
                             activeMail = mail;
                             try {
+                                if (serialAdmission != null) {
+                                    if (serialReceiveLease != null) throw new IllegalStateException(
+                                            "serial actor received a second handler while first is active");
+                                    // Existing single-writer mailbox turn must have instant admission.
+                                    var admitted = serialAdmission.submit(SerialActorAdmission.Kind.MESSAGE);
+                                    if (!admitted.isDone() || admitted.isCompletedExceptionally()) throw new IllegalStateException(
+                                            "serial actor mailbox admission unexpectedly queued");
+                                    serialReceiveLease = admitted.join();
+                                    serialReceiveLease.requireActive();
+                                }
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
                                             || !codeActorState.ownerActorId().equals(ref.id())) {
@@ -6635,6 +6676,15 @@ public final class ActorRuntime implements AutoCloseable {
                                 }
                             } finally {
                                 if (!sourceReceiveSuspended) activeMail = null;
+                                if (serialReceiveLease != null) {
+                                    SerialActorAdmission.Lease held = serialReceiveLease;
+                                    if (sourceReceiveSuspended) {
+                                        if (held.state() == SerialActorAdmission.State.RUNNING) held.suspend();
+                                    } else {
+                                        serialReceiveLease = null;
+                                        if (!stopped.get()) held.close();
+                                    }
+                                }
                             }
                         }
                         // Both synchronous messages and cooperative continuation
