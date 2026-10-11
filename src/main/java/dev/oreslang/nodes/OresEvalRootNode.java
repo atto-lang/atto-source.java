@@ -2929,14 +2929,14 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 selectSuspendableValueMatchArm(t, match, subject, env, 0,
-                        null, null, continuation);
+                        null, null, false, continuation);
             });
         }
 
         private void selectSuspendableValueMatchArm(
                 SourceTask task, Ast.ValueMatchExpr matched, Object subject,
                 Env env, int index, Ast.MatchArm selected, Env selectedEnv,
-                SourceValueCont continuation) {
+                boolean selectedIsFallback, SourceValueCont continuation) {
             if (index == matched.arms().size()) {
                 if (selected == null) {
                     continuation.accept(task, null, new IllegalStateException(
@@ -2947,6 +2947,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return;
             }
+
             Ast.MatchArm arm = matched.arms().get(index);
             boolean fallback = !matched.ordered() && arm.guard() == null
                     && (arm.pattern() instanceof Ast.WildcardPattern
@@ -2954,43 +2955,49 @@ public final class OresEvalRootNode extends RootNode {
             LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
             if (!patternMatches(arm.pattern(), subject, bindings)) {
                 selectSuspendableValueMatchArm(task, matched, subject, env,
-                        index + 1, selected, selectedEnv, continuation);
+                        index + 1, selected, selectedEnv,
+                        selectedIsFallback, continuation);
                 return;
             }
+
             Env armEnv = new Env(env);
             bindings.forEach((name, value) -> armEnv.define(
                     name, value, Ast.BindingKind.VAL));
             if (fallback) {
-                // An unguarded fallback is considered only after concrete arms.
+                // A fallback is a candidate, never a concrete selected arm.
+                // Even a fallback written first cannot mask a later case.
                 selectSuspendableValueMatchArm(task, matched, subject, env,
                         index + 1, selected == null ? arm : selected,
-                        selected == null ? armEnv : selectedEnv, continuation);
+                        selected == null ? armEnv : selectedEnv,
+                        selected == null || selectedIsFallback, continuation);
                 return;
             }
-            SourceValueCont matchedGuard = (resumed, value, failure) -> {
+
+            SourceValueCont checkedGuard = (resumed, value, failure) -> {
                 if (failure != null) {
                     continuation.accept(resumed, null, failure);
                     return;
                 }
                 if (!truth(value)) {
                     selectSuspendableValueMatchArm(resumed, matched, subject, env,
-                            index + 1, selected, selectedEnv, continuation);
+                            index + 1, selected, selectedEnv,
+                            selectedIsFallback, continuation);
                     return;
                 }
                 if (matched.ordered()) {
                     finishSuspendableValueArm(resumed, arm.body(), armEnv, continuation);
-                } else if (selected != null) {
+                } else if (selected != null && !selectedIsFallback) {
                     continuation.accept(resumed, null, new IllegalStateException(
                             "exclusive value match selected more than one arm"));
                 } else {
                     selectSuspendableValueMatchArm(resumed, matched, subject, env,
-                            index + 1, arm, armEnv, continuation);
+                            index + 1, arm, armEnv, false, continuation);
                 }
             };
             if (arm.guard() == null) {
-                matchedGuard.accept(task, true, null);
+                checkedGuard.accept(task, true, null);
             } else {
-                evalSuspendableExpr(task, arm.guard(), armEnv, matchedGuard);
+                evalSuspendableExpr(task, arm.guard(), armEnv, checkedGuard);
             }
         }
 
