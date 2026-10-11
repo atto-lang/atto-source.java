@@ -42,8 +42,11 @@ the evaluator; only the runtime's lifecycle lane invokes the hook.
 - Startup failure, unhandled failure, cancellation, runtime-wide close,
   force-kill, and suspended source-receive retirement **do not execute guest
   teardown** in this slice; trusted runtime finalization remains responsible.
-- `tear_down` with `await`, `suspend`, or other detected suspension is
-  rejected, not silently parked on a carrier. There is no claim that arbitrary
+- `tear_down` with direct `await`, `suspend` or `rt cooperate` is
+  rejected at parser admission, before shutdown can execute guest code.
+  Suspension through indirect calls remains runtime-checked by the evaluator
+  until compiler-wide effect admission is implemented; it must not be
+  advertised as statically proven nonblocking. There is no claim that arbitrary
   sync user operations can never block: compiler-enforced I/O effect
   restrictions and nonblocking async teardown remain follow-ups.
 - For Java heap objects, dropping actor roots only makes them eligible for GC.
