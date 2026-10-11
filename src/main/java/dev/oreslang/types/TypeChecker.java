@@ -980,6 +980,30 @@ public final class TypeChecker {
             }
         }
 
+        if (klass.actorKind() != Ast.ActorKind.NONE) {
+            // A supervisor's typed effect hooks are an all-or-nothing contract.
+            // Actor classes without a contract remain valid leaves, but the
+            // runtime refuses to admit children under such a source actor.
+            Set<String> declaredHooks = new HashSet<>();
+            for (Ast.MethodDecl method : effectiveInstanceMethods(
+                    klass, new LinkedHashSet<>()).values()) {
+                if (method.name().equals("on_throw")
+                        || method.name().equals("on_raise")
+                        || method.name().equals("on_panic")) {
+                    declaredHooks.add(method.name());
+                }
+            }
+            if (!declaredHooks.isEmpty()
+                    && !declaredHooks.containsAll(Set.of(
+                            "on_throw", "on_raise", "on_panic"))) {
+                throw new IllegalArgumentException(
+                        "source supervisor '" + klass.name()
+                                + "' must implement all of on_throw, on_raise, "
+                                + "on_panic or use only supervision_policy() "
+                                + "for explicit escalation; partial effect hooks are unsafe");
+            }
+        }
+
         for (Ast.MethodDecl method : klass.methods()) {
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
@@ -989,6 +1013,39 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "actor method name '" + method.name()
                                 + "' is reserved by the non-overridable actor transport/lifecycle API");
+            }
+
+            boolean actorSupervisionHook = klass.actorKind() != Ast.ActorKind.NONE
+                    && Set.of("on_throw", "on_raise", "on_panic",
+                              "on_cancel", "on_host_failure").contains(method.name());
+            boolean actorSupervisionPolicy = klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("supervision_policy");
+            if (actorSupervisionHook || actorSupervisionPolicy) {
+                String fullName = klass.name() + "." + method.name();
+                if (method.isStatic() || method.visibility() == Ast.Visibility.PUBLIC
+                        || method.isAbstract() || method.async() || method.suspends()
+                        || !method.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor supervisor hook '" + fullName
+                                    + "' must be implemented, private, synchronous, "
+                                    + "non-static and non-generic");
+                }
+                if (actorSupervisionHook) {
+                    if (method.parameters().size() != 1
+                            || !method.parameters().getFirst().type().name().equalsIgnoreCase("string")
+                            || !method.parameters().getFirst().type().arguments().isEmpty()
+                            || !method.returnType().name().equalsIgnoreCase("void")) {
+                        throw new IllegalArgumentException(
+                                "actor supervisor hook '" + fullName
+                                        + "' requires (String summary): void; "
+                                        + "guest failure identity is conveyed by the selected hook");
+                    }
+                } else if (!method.parameters().isEmpty()
+                        || !method.returnType().name().equalsIgnoreCase("string")) {
+                    throw new IllegalArgumentException(
+                            "actor supervision_policy() requires (): String "
+                                    + "returning 'escalate' or 'acknowledge'");
+                }
             }
 
             boolean actorStartupHook = method.name().equals("on_start");
