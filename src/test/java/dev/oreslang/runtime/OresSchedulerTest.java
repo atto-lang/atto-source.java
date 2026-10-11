@@ -561,4 +561,75 @@ final class OresSchedulerTest {
         assertFalse(awaited.isDone());
     }
 
+    @Test
+    void cancellationDuringSuspendedCleanupWaitsForOwningLaneAndNeverReplaysIt()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> normalWork = new OresFuture<>();
+            OresFuture<Integer> cleanupGate = new OresFuture<>();
+            CountDownLatch enteredCleanup = new CountDownLatch(1);
+            AtomicInteger cleanupEntries = new AtomicInteger();
+            AtomicReference<OresScheduler> cleanupLane = new AtomicReference<>();
+
+            OresFuture<Integer> result = scheduler.start(
+                    new OresScheduler.CancellationAwareTask<>() {
+                        private volatile boolean cleaning;
+                        private volatile boolean cancelSeen;
+
+                        @Override
+                        public boolean cleanupInProgress() {
+                            return cleaning;
+                        }
+
+                        @Override
+                        public void cancellationRequested(
+                                OresScheduler.TaskCancelledException reason) {
+                            cancelSeen = true;
+                        }
+
+                        @Override
+                        public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume resume) {
+                            if (resume.initial()) {
+                                return OresScheduler.await(normalWork);
+                            }
+                            if (!cleaning) {
+                                assertNull(resume.failure());
+                                assertEquals(12, resume.value());
+                                cleaning = true;
+                                cleanupLane.set(OresScheduler.current());
+                                cleanupEntries.incrementAndGet();
+                                enteredCleanup.countDown();
+                                return OresScheduler.await(cleanupGate);
+                            }
+                            assertTrue(cancelSeen);
+                            assertNull(resume.failure(),
+                                    "cancellation may not replace an admitted cleanup await");
+                            assertEquals(7, resume.value());
+                            assertSame(cleanupLane.get(), OresScheduler.current());
+                            return OresScheduler.done(42);
+                        }
+                    });
+
+            assertTrue(normalWork.completeFromRuntime(12));
+            assertTrue(enteredCleanup.await(5, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (cleanupGate.pendingRuntimeWaiterCount() != 1
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(1, cleanupGate.pendingRuntimeWaiterCount());
+
+            assertTrue(result.cancel(false));
+            assertFalse(result.cancel(false));
+            assertFalse(result.isDone(),
+                    "pending finally/defer cleanup must retain the task lifetime");
+            assertEquals(1, cleanupGate.pendingRuntimeWaiterCount(),
+                    "cancellation must not detach an already-running cleanup await");
+            assertTrue(cleanupGate.completeFromRuntime(7));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertEquals(1, cleanupEntries.get());
+            assertNotNull(cleanupLane.get());
+        }
+    }
+
 }
