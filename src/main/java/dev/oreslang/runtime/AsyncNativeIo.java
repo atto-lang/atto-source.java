@@ -87,9 +87,11 @@ public final class AsyncNativeIo implements AutoCloseable {
             transport = Objects.requireNonNull(start.get(),
                     "nonblocking I/O transport returned null future");
         } catch (Throwable failure) {
-            synchronized (this) { pending.remove(result); }
             SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
-            result.failFromRuntime(failure);
+            synchronized (this) {
+                pending.remove(result);
+                result.failFromRuntime(failure);
+            }
             if (failure instanceof VirtualMachineError fatal) throw fatal;
             if (failure instanceof ThreadDeath fatal) throw fatal;
             if (failure instanceof LinkageError fatal) throw fatal;
@@ -109,23 +111,24 @@ public final class AsyncNativeIo implements AutoCloseable {
             return result;
         }
         transport.whenComplete((value, failure) -> {
-            boolean closedAtCompletion;
+            Throwable cause = failure instanceof CompletionException completion
+                    && completion.getCause() != null ? completion.getCause() : failure;
+            if (cause != null) {
+                SourceBoundaryTrace.record(cause, "native:io", operation, "I/O");
+            }
+            // Closure and completion are serialized, including the Future
+            // settlement itself. Removing pending first would let close()
+            // miss an unsettled operation and permit success after teardown.
             synchronized (AsyncNativeIo.this) {
-                closedAtCompletion = closed;
                 pending.remove(result);
                 nonblocking.remove(result);
-            }
-            // A context close wins over transport cancellation to retain one
-            // stable error contract for all admitted I/O operations.
-            if (closedAtCompletion) {
-                result.failFromRuntime(new IllegalStateException("I/O context closed"));
-            } else if (failure != null) {
-                Throwable cause = failure instanceof CompletionException completion
-                        && completion.getCause() != null ? completion.getCause() : failure;
-                SourceBoundaryTrace.record(cause, "native:io", operation, "I/O");
-                result.failFromRuntime(cause);
-            } else {
-                result.completeFromRuntime(value);
+                if (closed) {
+                    result.failFromRuntime(new IllegalStateException("I/O context closed"));
+                } else if (cause != null) {
+                    result.failFromRuntime(cause);
+                } else {
+                    result.completeFromRuntime(value);
+                }
             }
         });
         return result;
@@ -156,16 +159,20 @@ public final class AsyncNativeIo implements AutoCloseable {
                 try {
                     value = work.call();
                 } catch (Throwable failure) {
-                    synchronized (this) { admitted.remove(result); }
                     SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
-                    result.failFromRuntime(failure);
+                    synchronized (this) {
+                        admitted.remove(result);
+                        result.failFromRuntime(failure);
+                    }
                     if (failure instanceof VirtualMachineError fatal) throw fatal;
                     if (failure instanceof ThreadDeath fatal) throw fatal;
                     if (failure instanceof LinkageError fatal) throw fatal;
                     return;
                 }
-                synchronized (this) { admitted.remove(result); }
-                result.completeFromRuntime(value);
+                synchronized (this) {
+                    admitted.remove(result);
+                    result.completeFromRuntime(value);
+                }
             });
         } catch (RuntimeException failure) {
             admitted.remove(result);
@@ -199,13 +206,15 @@ public final class AsyncNativeIo implements AutoCloseable {
             pending.clear();
             cancelling = new HashSet<>(nonblocking.values());
             nonblocking.clear();
+            // Close must settle every admitted Future before any worker or
+            // transport callback can publish a late result.
+            for (OresFuture<?> future : failing)
+                future.failFromRuntime(new IllegalStateException("I/O context closed"));
         }
         for (CompletableFuture<?> stage : cancelling) stage.cancel(true);
         workers.shutdownNow();
         for (AutoCloseable resource : closing) {
             try { resource.close(); } catch (Exception ignored) { /* best-effort shutdown */ }
         }
-        for (OresFuture<?> future : failing)
-            future.failFromRuntime(new IllegalStateException("I/O context closed"));
     }
 }
