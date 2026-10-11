@@ -3451,6 +3451,18 @@ public final class ActorRuntime implements AutoCloseable {
             String codeActorType) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
+        // The legacy ActorRuntime can run in a trusted host JVM. A separate
+        // dispatcher is NOT a Graal physical isolate. Production embedders
+        // requiring the boundary must use SharedUntrustedGraalIsolate and
+        // must not silently admit untrusted guest code on this host runtime.
+        if (kind == ActorKind.UNTRUSTED
+                && Boolean.getBoolean("ores.untrusted.require-physical-isolate")
+                && !policyCeiling.adversarial()) {
+            throw new SecurityException(
+                    "UNTRUSTED actor rejected in host ActorRuntime: "
+                    + "physical shared Graal isolate is required; "
+                    + "use SharedUntrustedGraalIsolate instead");
+        }
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
         if ((behaviorFactory == null) == (codeExecutor == null)) {
