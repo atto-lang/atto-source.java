@@ -134,6 +134,14 @@ public final class ActorStateContract {
                     "actor state access capability cannot escape handle_state callback");
         }
         if (node instanceof Ast.LambdaExpr lambda) {
+            // A critical state callback is a sealed lexical capability and
+            // cannot be passed to an arbitrary function, stored, or invoked
+            // outside self.handle_state. The intrinsic case above consumes
+            // the only permitted critical lambda before this generic path.
+            if (lambda.critical()) {
+                throw new IllegalArgumentException(
+                        "critical state callback may only appear inline in self.handle_state");
+            }
             visit(lambda.expressionBody(), actor, keys, activeAccess, true);
             visit(lambda.blockBody(), actor, keys, activeAccess, true);
             return;
