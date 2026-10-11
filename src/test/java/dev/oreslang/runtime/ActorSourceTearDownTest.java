@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -31,6 +33,8 @@ final class ActorSourceTearDownTest {
         private final AtomicInteger teardowns = new AtomicInteger();
         private final AtomicInteger finalCleanups = new AtomicInteger();
         private final boolean teardownFails;
+        private volatile CountDownLatch teardownEntered;
+        private volatile CountDownLatch releaseTeardown;
 
         Executor(SharedCodeImageStore.CodeImage image, boolean teardownFails) {
             this.image = image;
@@ -73,12 +77,20 @@ final class ActorSourceTearDownTest {
         public void tearDownActor(
                 String actorName,
                 ActorRuntime.ActorOwnedGuestState state,
-                ActorRuntime.ActorContext<Object> context) {
+                ActorRuntime.ActorContext<Object> context) throws Exception {
             assertEquals("Worker", actorName);
             assertEquals(context.self().id(), state.ownerActorId());
             assertTrue(context.currentMail().isEmpty(),
                     "tear_down must not inherit receive envelope authority");
             teardowns.incrementAndGet();
+            CountDownLatch entered = teardownEntered;
+            CountDownLatch release = releaseTeardown;
+            if (entered != null && release != null) {
+                entered.countDown();
+                if (!release.await(2, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test teardown release timed out");
+                }
+            }
             if (teardownFails) throw new IllegalStateException("teardown failure");
         }
     }
@@ -135,6 +147,30 @@ final class ActorSourceTearDownTest {
             assertThrows(CompletionException.class, () -> ref.done().join());
             assertEquals(0, executor.teardowns.get());
             assertEquals("receive failure", ref.failure().orElseThrow().getMessage());
+        }
+    }
+
+    @Test
+    void cancellationDuringTeardownRevokesTheFinalGuestCallback() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(image(store), false);
+            executor.teardownEntered = new CountDownLatch(1);
+            executor.releaseTeardown = new CountDownLatch(1);
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            ref.ready().join();
+            ref.send("self-with-cleanup");
+            assertTrue(executor.teardownEntered.await(2, TimeUnit.SECONDS));
+            try {
+                assertTrue(ref.cancel(), "cancellation must reach a stopping actor");
+            } finally {
+                executor.releaseTeardown.countDown();
+            }
+            assertThrows(CompletionException.class, () -> ref.done().join());
+            assertEquals(1, executor.teardowns.get());
+            assertEquals(0, executor.finalCleanups.get(),
+                    "cancel must not enter the last guest callback");
         }
     }
 
