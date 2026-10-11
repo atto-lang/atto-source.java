@@ -199,6 +199,10 @@ public final class SerialActorAdmission implements AutoCloseable {
         synchronized (lock) { return !closed && active == null; }
     }
 
+    boolean acceptsActorScopedCallbacks() {
+        synchronized (lock) { return !closed; }
+    }
+
     void requireIdleActorScopedCallback() {
         synchronized (lock) {
             if (closed || active != null) {
