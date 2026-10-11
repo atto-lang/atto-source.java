@@ -100,7 +100,16 @@ public final class SourceSupervisorLowering {
                 // effect throws, STOPPING remains quarantined for manual
                 // reconciliation rather than silently reopening RESTART.
                 var permit = group.reserveFinalizedStop(resolution);
-                hostDecision.accept(resolution);
+                try {
+                    hostDecision.accept(resolution);
+                } catch (Throwable error) {
+                    // A failed host sink can have partially applied STOP.
+                    try { group.recordUncertainStop(permit); }
+                    catch (Throwable secondary) {
+                        if (secondary != error) error.addSuppressed(secondary);
+                    }
+                    throw error;
+                }
                 group.recordAppliedStop(permit);
                 group.commitReservedStop(permit);
             });
