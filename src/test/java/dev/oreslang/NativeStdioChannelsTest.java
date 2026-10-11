@@ -57,6 +57,11 @@ final class NativeStdioChannelsTest {
         assertEquals("", run(code, "").stdout());
         assertEquals("[]\n[]\n[last]\n", run(code, "\n\nlast").stdout());
         assertEquals("[CRLF]\n", run(code, "CRLF\r\n").stdout());
+        assertEquals("[CR]\n", run(code, "CR\r").stdout());
+        assertEquals("[a]\n[b]\n", run(code, "a\rb").stdout());
+        assertEquals("[a]\n[b]\n", run(code, "a\r\nb").stdout());
+        assertEquals("[a]\n[]\n[b]\n", run(code, "a\r\r\nb").stdout());
+        assertEquals("[a]\n[]\n", run(code, "a\r\r").stdout());
     }
 
     @Test
