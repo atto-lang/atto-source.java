@@ -2992,10 +2992,15 @@ public final class Parser {
     // Both expression and pattern literals use the same signed-i64 bound.
     // Wider integers require a separately admitted type and backend contract.
     private long parseSignedI64(Token token) {
+        String literal = token.lexeme();
+        // Do not silently turn malformed token separators into valid integers.
+        if (literal.endsWith("_") || literal.contains("__")) {
+            throw error(token, "malformed integer separator: " + literal);
+        }
         try {
-            return Long.parseLong(token.lexeme().replace("_", ""));
+            return Long.parseLong(literal.replace("_", ""));
         } catch (NumberFormatException invalid) {
-            throw error(token, "integer literal overflows signed 64-bit: " + token.lexeme());
+            throw error(token, "integer literal overflows signed 64-bit: " + literal);
         }
     }
 
