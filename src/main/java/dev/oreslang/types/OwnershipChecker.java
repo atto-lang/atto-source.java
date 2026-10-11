@@ -1191,6 +1191,15 @@ public final class OwnershipChecker {
             // harmless reads. TypeChecker validates method availability/arity.
             // A const/let read-only view must not gain mutation via .add/.set.
             Ast.TypeRef memberReceiverType = receiverType(member.receiver(), scope);
+            if (memberReceiverType == null
+                    && (member.member().equals("add") || member.member().equals("set"))
+                    && (member.receiver() instanceof Ast.MemberExpr
+                        || member.receiver() instanceof Ast.IndexExpr)) {
+                // Nested collection receivers are mutable *places*, not opaque
+                // host callables. Resolve the owning root so a live projected
+                // loan cannot be bypassed by holder.items.add(...) or set(...).
+                memberReceiverType = borrowPlace(member.receiver(), scope).type();
+            }
             if (memberReceiverType != null) {
                 Ast.TypeRef concreteCollection = memberReceiverType.isBorrow()
                         ? memberReceiverType.borrowedTarget() : memberReceiverType;
