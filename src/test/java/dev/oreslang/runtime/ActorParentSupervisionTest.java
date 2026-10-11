@@ -45,8 +45,10 @@ final class ActorParentSupervisionTest {
         final AtomicReference<ActorRuntime.ActorId> parentIdentity = new AtomicReference<>();
         final AtomicReference<SupervisorFailureLane.Failure> handled = new AtomicReference<>();
         final CountDownLatch notification = new CountDownLatch(1);
+        final AtomicInteger messagesBeforeControl = new AtomicInteger(-1);
         @Override public ActorRuntime.SupervisionDecision onPanic(SupervisorFailureLane.Failure f) {
             parentIdentity.set(ActorRuntime.currentActorId().orElseThrow());
+            messagesBeforeControl.set(normalDelivered.get());
             handled.set(f);
             notification.countDown();
             return ActorRuntime.SupervisionDecision.ACKNOWLEDGE;
@@ -88,7 +90,7 @@ final class ActorParentSupervisionTest {
             assertEquals(supervisor.id().value().toString(), behavior.handled.get().parentId());
             // Root has an unused reserved slot, but no spurious event.
             assertTrue(runtime.pollSupervisionFailure().isEmpty());
-            assertEquals(0, behavior.normalDelivered.get());
+            assertEquals(0, behavior.messagesBeforeControl.get());
             runtime.stop(supervisor);
         }
     }
