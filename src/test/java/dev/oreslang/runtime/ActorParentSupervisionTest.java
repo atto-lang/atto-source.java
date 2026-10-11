@@ -67,6 +67,64 @@ final class ActorParentSupervisionTest {
         }
     }
 
+    private static final class RestartingParent extends Parent
+            implements ActorRuntime.SupervisionHandler {
+        final AtomicInteger restarted = new AtomicInteger();
+        final CountDownLatch budgetSpent = new CountDownLatch(3);
+        @Override public ActorRuntime.SupervisionDecision onPanic(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.RESTART;
+        }
+        @Override public ActorRuntime.SupervisionDecision onThrow(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onRaise(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onCancel(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onHostFailure(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public void onRestarted(
+                SupervisorFailureLane.Failure previous, ActorRuntime.ActorRef<?> replacement) {
+            assertNotEquals(previous.actor().id(), replacement.id().value().toString(),
+                    "restarted child needs fresh identity and actor-owned memory");
+            restarted.incrementAndGet();
+            budgetSpent.countDown();
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<Integer> next = (ActorRuntime.ActorRef<Integer>) replacement;
+            next.send(1);
+        }
+    }
+
+    @Test
+    void repeatedGuestPanicsExhaustBoundedRestartAndEscalateWithoutKillingParent()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            RestartingParent behavior = new RestartingParent();
+            var supervisor = runtime.<Integer>spawnSharedTrusted(ctx -> behavior);
+            supervisor.send(0);
+            assertTrue(behavior.entered.await(5, TimeUnit.SECONDS));
+            behavior.child.get().send(1);
+            behavior.release.countDown();
+
+            SupervisorFailureLane.Failure root = null;
+            long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            while (System.nanoTime() < end && root == null) {
+                root = runtime.pollSupervisionFailure().orElse(null);
+                if (root == null) Thread.sleep(5);
+            }
+            assertNotNull(root, "fourth panic must exhaust the three-attempt budget");
+            assertEquals(SupervisorFailureLane.Kind.PANIC, root.kind());
+            assertEquals(3, behavior.restarted.get());
+            assertTrue(behavior.budgetSpent.await(1, TimeUnit.SECONDS));
+            assertTrue(supervisor.isAlive());
+            runtime.acknowledgeSupervisionFailure(root.actor());
+            runtime.stop(supervisor);
+        }
+    }
+
     @Test
     void parentControlPreemptsQueuedUserMailAndAckPreventsRootDuplicate() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
