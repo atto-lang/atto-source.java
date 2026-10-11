@@ -76,4 +76,55 @@ final class SourceCancellationExecutionTest {
                     """, output.toString(StandardCharsets.UTF_8));
         }
     }
+
+    @Test
+    void failingInnerFinallyDoesNotTurnCancellationIntoAnOuterCatchableError()
+            throws Exception {
+        String source = """
+                pub async fnc work(): int {
+                  try {
+                    try {
+                      val Channel<int> gate = Channel.new<int>(0);
+                      stdio.println("armed");
+                      const unused = await (nb readch gate);
+                    } catch (inner) {
+                      stdio.println("INVALID-inner-catch");
+                    } finally {
+                      stdio.println("inner-finally");
+                      const failure = 1 / 0;
+                    }
+                  } catch (outer) {
+                    stdio.println("INVALID-outer-catch");
+                  } finally {
+                    stdio.println("outer-finally");
+                  }
+                  return 1;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).out(output).build()) {
+            OresFuture<?> task = start(context, source);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!output.toString(StandardCharsets.UTF_8).contains("armed")
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertFalse(task.isDone(), "worker should still await its rendezvous channel");
+            assertTrue(task.cancel(false));
+
+            var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            Throwable failure = observed.getCause();
+            assertInstanceOf(ArithmeticException.class, failure);
+            assertTrue(java.util.Arrays.stream(failure.getSuppressed())
+                            .anyMatch(dev.oreslang.runtime.OresScheduler.TaskCancelledException.class::isInstance),
+                    "cleanup failure must preserve cancellation as suppressed evidence");
+            assertFalse(task.isCancelled(),
+                    "an explicitly failed cleanup must not be misreported as clean cancellation");
+            assertEquals("""
+                    armed
+                    inner-finally
+                    outer-finally
+                    """, output.toString(StandardCharsets.UTF_8));
+        }
+    }
 }
