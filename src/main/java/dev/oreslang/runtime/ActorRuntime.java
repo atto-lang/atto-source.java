@@ -1565,7 +1565,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         future.whenCompleteRuntime((ignored, failure) -> {
             if (!enqueueContinuation(cell.ref.id(), () -> {
+                long completedSequence;
                 synchronized (cell.lifecycleLock) {
+                    completedSequence = cell.activeMail == null
+                            ? -1L : cell.activeMail.sequence();
                     cell.sourceReceiveSuspended = false;
                     cell.activeMail = null;
                     cell.lifecycleLock.notifyAll();
@@ -1580,6 +1583,10 @@ public final class ActorRuntime implements AutoCloseable {
                     if (terminal instanceof Error error) throw error;
                     throw new RuntimeException(terminal);
                 }
+                if (completedSequence < 0) {
+                    throw new IllegalStateException("source receive lost pending mail sequence");
+                }
+                cell.markMessageProcessed(completedSequence);
             })) {
                 synchronized (cell.lifecycleLock) {
                     if (!cell.stopped.get() && !cell.finalized) {
@@ -1711,6 +1718,19 @@ public final class ActorRuntime implements AutoCloseable {
 
         public void send(M message) {
             ActorRuntime.this.send(this, message);
+        }
+
+        /** Successful completion covers messages admitted before this call.
+         * Processing failures, cancellation or stop-before-processing fail it.
+         * No carrier thread blocks awaiting the barrier. */
+        public OresFuture<Void> drain() {
+            return ActorRuntime.this.drain(this);
+        }
+
+        /** Seal admission and finish previously admitted messages before stopping.
+         * An actor failure still fails getDone(); this is NOT a restart policy. */
+        public OresFuture<Void> gracefulStop() {
+            return ActorRuntime.this.gracefulStop(this);
         }
 
         public void stop() {
@@ -4465,6 +4485,45 @@ public final class ActorRuntime implements AutoCloseable {
         return new ActorTerminatedException(ref.id(), ref.kind(), ref.terminationCause.get());
     }
 
+    /** Non-cancellable observer over all mail accepted before this call.
+     * This is a processed-message barrier, not an actor termination barrier. */
+    public OresFuture<Void> drain(ActorRef<?> ref) {
+        requireCallerRuntimeAffinity("drain actor messages");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new ActorInvalidReferenceException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) return OresFuture.failed(terminated(ref));
+        return cell.drainAcceptedMessages();
+    }
+
+    /** Graceful stop seals new mail, drains prior admissions, then terminates.
+     * Never blocks a carrier: done is resolved after physical finalization. */
+    public OresFuture<Void> gracefulStop(ActorRef<?> ref) {
+        requireCallerRuntimeAffinity("gracefully stop actors");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new ActorInvalidReferenceException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        requireActorLifecycleAuthority(ref, "gracefulStop");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) return ref.done();
+        final OresFuture<Void> barrier;
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized) return ref.done();
+            cell.sealing = true;
+            barrier = cell.drainAcceptedMessages();
+        }
+        barrier.whenCompleteRuntime((ignored, failure) -> {
+            if (failure == null) cell.stop();
+        });
+        cell.schedule();
+        return ref.done();
+    }
+
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
         requireCallerRuntimeAffinity("send messages");
@@ -6014,6 +6073,9 @@ public final class ActorRuntime implements AutoCloseable {
         /** Separate control-lane quota; never borrow user mailbox headroom. */
         private int queuedContinuations;
         private long nextUserMessageSequence;
+        private long lastProcessedUserMessageSequence = -1L;
+        private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
+        private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -6155,6 +6217,36 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor user-mailbox accounting underflow for " + ref.id());
                     }
                     queuedUserMessages--;
+                }
+            }
+        }
+
+        private OresFuture<Void> drainAcceptedMessages() {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) return OresFuture.failed(terminated(ref));
+                final long target = nextUserMessageSequence - 1L;
+                if (lastProcessedUserMessageSequence >= target)
+                    return OresFuture.completed(null);
+                // Observers cannot cancel the barrier, or forge progress.
+                OresFuture<Void> result = new OresFuture<>(() -> false, () -> { });
+                pendingDrains.add(new DrainWaiter(target, result));
+                return result;
+            }
+        }
+
+        private void markMessageProcessed(long sequence) {
+            synchronized (lifecycleLock) {
+                if (sequence != lastProcessedUserMessageSequence + 1L) {
+                    throw new IllegalStateException(
+                            "nonsequential actor message completion for " + ref.id());
+                }
+                lastProcessedUserMessageSequence = sequence;
+                for (int i = pendingDrains.size() - 1; i >= 0; --i) {
+                    DrainWaiter waiter = pendingDrains.get(i);
+                    if (waiter.sequence() <= sequence) {
+                        pendingDrains.remove(i);
+                        waiter.completion().completeFromRuntime(null);
+                    }
                 }
             }
         }
@@ -6665,6 +6757,11 @@ public final class ActorRuntime implements AutoCloseable {
                             validatePrivateBehaviorState(ref.id(), behavior);
                         }
                     }
+                    // A source receive that suspended is not processed until
+                    // its continuation completes; the continuation marks it.
+                    if (!envelope.isContinuation() && !sourceReceiveSuspended) {
+                        markMessageProcessed(envelope.sequence());
+                    }
                     processed++;
 
                     synchronized (lifecycleLock) {
@@ -6753,6 +6850,12 @@ public final class ActorRuntime implements AutoCloseable {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
                 stopped.set(true);
+                sealing = true;
+                for (DrainWaiter waiter : pendingDrains) {
+                    waiter.completion().failFromRuntime(
+                            cause == null ? terminated(ref) : cause);
+                }
+                pendingDrains.clear();
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
