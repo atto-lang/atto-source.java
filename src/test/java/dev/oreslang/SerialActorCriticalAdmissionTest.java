@@ -79,6 +79,40 @@ final class SerialActorCriticalAdmissionTest {
         assertEquals(1, actor.fields().size());
     }
 
+    @Test void serialActorsWithLegacyFieldsMustMigrateToSingleStateAggregate() {
+        var legacy = Parser.parse("""
+            define serial actor Legacy as
+                let count: int = 0;
+                receive(ActorMail<String> mail): void { return; }
+            end
+            """);
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(legacy));
+        // Legacy scalar fields remain supported for non-serial migration.
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
+            define actor Legacy as
+                let count: int = 0;
+                receive(ActorMail<String> mail): void { return; }
+            end
+            """)));
+    }
+
+    @Test void nonSerialInstanceAndStaticMethodCannotAcquireImplicitCritical() {
+        String staticallyBound = """
+            define serial actor Counter as
+                state { count: int = 0; }
+                static fnc bad(): int using state.read {
+                    return self.handle_state(|s| -> s.count);
+                }
+            end
+            """;
+        var program = Parser.parse(staticallyBound);
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(program));
+        assertThrows(IllegalArgumentException.class,
+                () -> DeclaredEffectVerifier.verify(program));
+    }
+
     @Test void invalidSerialDeclarationsAndUsingBoundsFailClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("define serial class Counter as end"));
