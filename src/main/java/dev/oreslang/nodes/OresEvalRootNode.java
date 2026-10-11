@@ -4600,7 +4600,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
             } catch (TailCallSignal signal) {
                 throw signal;
-            } catch (ReturnSignal | BreakSignal | ContinueSignal signal) {
+            } catch (ReturnSignal | ArmResultSignal | BreakSignal | ContinueSignal signal) {
                 throw signal;
             } catch (RuntimeException | Error failure) {
                 abnormalExit = true;
@@ -4657,6 +4657,11 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 return;
+            }
+            if (stmt instanceof Ast.ArmReturnStmt returned) {
+                // This completion is consumed only by the nearest lexical
+                // ValueMatchExpr, after all nested defers/finally unwind.
+                throw new ArmResultSignal(eval(returned.value(), env));
             }
             if (stmt instanceof Ast.ReturnStmt ret) {
                 returnFrom(
@@ -4822,7 +4827,7 @@ public final class OresEvalRootNode extends RootNode {
                 // caller still owns exception/cleanup semantics after the call.
                 try { executeBlock(tried.body(), env, true); }
                 catch (TailCallSignal signal) { throw signal; }
-                catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
+                catch (ReturnSignal | ArmResultSignal | BreakSignal | ContinueSignal signal) { throw signal; }
                 catch (OresPanic panic) { throw panic; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
@@ -5603,13 +5608,18 @@ public final class OresEvalRootNode extends RootNode {
                     bindings.forEach((name, value) ->
                             armEnv.define(name, value, Ast.BindingKind.VAL));
                     if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
-                    if (arm.body().size() != 1
-                            || !(arm.body().getFirst() instanceof Ast.ReturnStmt value)
-                            || value.value() == null) {
+                    try {
+                        executeBlock(arm.body(), armEnv, true);
+                    } catch (ArmResultSignal result) {
+                        return result.value;
+                    } catch (ReturnSignal escaped) {
+                        // A procedural/nonlocal return inside a value arm
+                        // must not silently become a function return.
                         throw new IllegalStateException(
-                                "unlowered typed value match arm reached runtime");
+                                "nonlocal function return reached typed value match arm", escaped);
                     }
-                    return eval(value.value(), armEnv);
+                    throw new IllegalStateException(
+                            "typed value match arm completed without ARM_RESULT");
                 }
                 throw new IllegalStateException(
                         "exhaustive typed value match invariant violated: no arm matched");
@@ -8634,6 +8644,15 @@ public final class OresEvalRootNode extends RootNode {
         private Object value;
         private final Ast.BindingKind kind;
         private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+    }
+
+    /** A value-match result is not a function return or a catchable guest error. */
+    private static final class ArmResultSignal extends RuntimeException {
+        private final Object value;
+        private ArmResultSignal(Object value) {
+            super(null, null, false, false);
+            this.value = value;
+        }
     }
 
     private static final class ReturnSignal extends RuntimeException {
