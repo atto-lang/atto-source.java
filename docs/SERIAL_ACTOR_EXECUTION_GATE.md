@@ -222,3 +222,53 @@ source lowering or AOT release validation. The mirror's unrelated
 Production transport must continue rejecting serial actors until a persistent
 actor per route shares admission between HTTP requests and messages. An
 isolated synthetic gate or AST parser pass is not proof of transport safety.
+
+## Runtime-issued per-task continuation tickets (2026-10-11)
+
+`ActorCell.issueSourceTaskTicket()` now issues a monotonic task identifier
+within one actor incarnation and captures the exact actor ID, opaque incarnation
+identity, and originating serial handler lease. The ticket is **host-only** and
+cannot be promoted or used by guest code as a scheduling permission.
+
+`OresScheduler.startActorBound(task, taskPlacement)` pins one trusted
+per-task placement for the entire generated async state machine: initial
+dispatch, each `await` continuation, and each `rt cooperate` segment.
+Physical carriers remain managed by the existing actor scheduler. The
+execution context and compiler-lowered task retain the actual locals,
+cleanup stack and resume position; the ticket carries permission and identity,
+not a second copy of guest state.
+
+The actor's bounded CONTROL mailbox now carries an optional
+`SerialExecutionTicket`. Before any serial handler transitions from SUSPENDED
+to RUNNING, the actor runtime validates the ticket against the current
+actor/incarnation and the exact active lease; it rechecks runnable permission
+immediately before running the queued source task. Future callbacks captured
+inside source actors and the source receive's terminal completion also carry
+tickets. An anonymous/unattributed continuation cannot resume a busy serial
+handler. The serial actor scheduler's old anonymous fallback is rejected.
+
+Ticket numbers and handler generations alone are **not** security identities:
+different actors can share the same numbers. The opaque actor incarnation and
+the issuing admission lease must both match. Actor shutdown and supervisor
+replacement fence all prior tickets.
+
+### Executed focused verification
+
+[Funded CI #38179876034](https://github.com/akrion-sim/akrion-sim-e2e/actions/runs/38179876034)
+passed the exact-source Java 25 compilation and **execution** of upstream
+`OresScheduler`, `OresFuture`, `Awaitable`,
+`MixedInteropBridge`, `SerialActorAdmission` and
+`SerialExecutionTicket` using a minimal test-only `ActorRuntime` stub.
+The test exercises actual source scheduler await/cooperate dispatch and stale,
+foreign-incarnation, canceled and post-restart ticket rejection. The real
+`ActorRuntime.java` source was separately JDK syntax-parsed with static
+integration assertions. The previous Java admission stress and LLVM native
+sanitizer checks also passed on that run.
+
+**Not yet proven:** type-linked full `ActorRuntime` and Graal evaluator Maven
+build, source guest JUnit `SourceSerialActorCooperateAdmissionTest`,
+GraalVM native-image, persistent serial HTTP request ingress, and native LLVM
+source-level continuation ticket parity. The mirror's unrelated
+`secrets-audit` environment job still fails due to missing `ores-sops`.
+Keep both backend PRs in draft. Do not confuse focused upstream-source
+scheduler execution with full Oreslang guest continuation execution.
