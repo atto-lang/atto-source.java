@@ -1547,6 +1547,11 @@ public final class Parser {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
         if (match(RETURN)) {
+            // Match and switch are statements, never returnable values.
+            // Return inside an arm exits the enclosing function instead.
+            if (check(MATCH) || check(SWITCH)) {
+                throw error(peek(), "'return match' and 'return switch' are invalid: use match/switch with return inside each arm");
+            }
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
@@ -2406,7 +2411,14 @@ public final class Parser {
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
-            consume(ARROW, "match arms use the slim arrow '->'");
+            // Canonical 'match expr over' uses 'on Pattern as binding { ... }'.
+            // Keep the historical '-> {' spelling for existing sources.
+            if (!match(ARROW) && (!canonicalOver || !check(LBRACE))) {
+                throw error(peek(),
+                        canonicalOver
+                                ? "match arm requires '{ ... }' after its pattern (optional legacy '->')"
+                                : "legacy match arms use the slim arrow '->'");
+            }
             List<Ast.Stmt> body = parseBlock();
             arms.add(new Ast.MatchArm(pattern, guard, body));
         }
@@ -2434,7 +2446,9 @@ public final class Parser {
 
         if (match(IS)) {
             Ast.TypeRef target = parseTypeRef();
-            String binding = check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
+            String binding = match(AS)
+                    ? consume(IDENT, "expected binding after 'as' in match arm").lexeme()
+                    : check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
             return new Ast.TypePattern(target, binding);
         }
 
@@ -2464,9 +2478,23 @@ public final class Parser {
             int patternStart = current;
             try {
                 Ast.TypeRef target = parseTypeRef();
+                if (match(AS)) {
+                    String binding = consume(IDENT,
+                            "expected binding after 'as' in match arm").lexeme();
+                    return new Ast.TypePattern(target, binding);
+                }
                 if (check(IDENT) && !peek().lexeme().equals("_")) {
                     String binding = advance().lexeme();
                     return new Ast.TypePattern(target, binding);
+                }
+                // Qualified nominal enum cases may be matched without a
+                // binding. Bare names retain historical constructor semantics.
+                boolean qualified = false;
+                for (int i = patternStart; i < current; i++) {
+                    if (tokens.get(i).type() == DOT) { qualified = true; break; }
+                }
+                if (qualified && (check(LBRACE) || check(ARROW))) {
+                    return new Ast.TypePattern(target, null);
                 }
             } catch (IllegalArgumentException ignored) {
                 // Fall through to constructor/binding parsing from the same token.
