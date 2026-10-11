@@ -192,9 +192,22 @@ physical-batch quota checks. Task entry and step completion independently
 check the persistent wall and CPU budgets, even without a loop backedge.
 
 An await cannot restart the deadline; a cooperate cannot refund fuel.
-The budget is bound to the source task object's scheduled execution and
-does not remain installed on reusable carrier thread-local storage after
-the resume exits.
+One live top-level source-task quota cohort is permitted per UNTRUSTED actor.
+Additional top-level task admission fails closed while it is active; nested
+source tasks must share the same actor-bound quota and each completion
+releases exactly one cohort reference. Last-Future settlement retires the
+cohort, including cancellation and synchronous completion/error races.
+A synchronous actor mailbox turn cannot consume a separate physical-turn
+quota at a safepoint while the cohort is live: it must run inside the
+authorized continuation or wait for quota retirement.
+
+The quota is bound to the owning runtime and actor incarnation. A
+different actor/runtime cannot import it through carrier ThreadLocal state;
+a parallel segment entry is rejected atomically. This deliberately
+restricts parallel untrusted source-task spawning until aggregate
+per-actor/per-isolate accounting can be proven. The budget is bound to
+the source task's scheduled execution and does not remain installed on
+reusable carrier thread-local storage after its resume exits.
 
 **Not an authorization to enable UNTRUSTED automatic loop cooperation.**
 Other continuation/cancellation/cleanup paths, nested source scopes, early
