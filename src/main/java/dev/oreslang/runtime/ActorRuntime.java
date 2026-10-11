@@ -3731,6 +3731,14 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException(
                         "source actor type name cannot be blank");
             }
+            // The runtime-owned immutable image is scheduling authority.
+            // Reject custom executors that disagree about serial admission.
+            boolean serial = SourceActorSchedulingPolicy.isSerialActor(
+                    codeImage.program(), codeActorType);
+            if (codeExecutor.isSerialActor(codeActorType) != serial) {
+                throw new SecurityException(
+                        "source actor executor scheduling metadata disagrees with linked code image");
+            }
         } else {
             Objects.requireNonNull(behaviorFactory, "behaviorFactory");
         }
