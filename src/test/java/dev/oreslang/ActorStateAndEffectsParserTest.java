@@ -277,4 +277,79 @@ final class ActorStateAndEffectsParserTest {
         assertThrows(IllegalArgumentException.class, () -> FunctionEffects.ofNames(List.of("io", "io")));
         assertNotEquals(FunctionEffects.Effect.THROW, FunctionEffects.Effect.PANIC);
     }
+    @Test void serialActorInfersCriticalForInlineStateCallbacks() {
+        String source = """
+            define serial actor Counter as
+                state { count: int = 0; }
+                pub increment(): int using state.read, state.write {
+                    return self.handle_state(|s| -> {
+                        s.count = s.count + 1;
+                        return s.count;
+                    });
+                }
+                pub get_count(): int using state.read {
+                    return self.handle_state(|s| -> s.count);
+                }
+            end
+            """;
+        Ast.Program program = Parser.parse(source);
+        Ast.ClassDecl counter = actor(source);
+        assertTrue(counter.serial());
+        Ast.CallExpr call = (Ast.CallExpr) ((Ast.ReturnStmt) counter.methods()
+                .getFirst().body().getFirst()).value();
+        assertFalse(((Ast.LambdaExpr) call.arguments().getFirst()).critical());
+        assertDoesNotThrow(() -> ActorStateContract.verify(program));
+        assertDoesNotThrow(() -> dev.oreslang.types.DeclaredEffectVerifier.verify(program));
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(program));
+    }
+
+    @Test void builtinSerialBaseAndExplicitCriticalAreEquivalentAtSourceAdmission() {
+        String source = """
+            define actor Counter from serial actor as
+                state { count: int = 0; }
+                pub increment(): int using state.read, state.write {
+                    return self.handle_state(critical |s| -> {
+                        s.count = s.count + 1;
+                        return s.count;
+                    });
+                }
+            end
+            """;
+        assertTrue(actor(source).serial());
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                source.replace("from serial actor", "from serial actor from serial actor")));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                source.replace("define actor Counter from serial actor",
+                        "define serial actor Counter from serial actor")));
+    }
+
+    @Test void nonSerialActorsDoNotAcquireImplicitCriticalPrivilege() {
+        String serial = """
+            define serial actor Counter as
+                state { count: int = 0; }
+                pub update(): void using state.write {
+                    self.handle_state(|s| -> { s.count = 1; });
+                    return;
+                }
+            end
+            """;
+        String normal = serial.replace("define serial actor", "define actor");
+        assertThrows(IllegalArgumentException.class, () ->
+                ActorStateContract.verify(Parser.parse(normal)));
+        assertThrows(IllegalArgumentException.class, () ->
+                dev.oreslang.types.DeclaredEffectVerifier.verify(Parser.parse(normal)));
+        assertThrows(IllegalArgumentException.class, () ->
+                dev.oreslang.types.DeclaredEffectVerifier.verify(Parser.parse(
+                        serial.replace("using state.write", "using state.read"))));
+        assertThrows(IllegalArgumentException.class, () ->
+                ActorStateContract.verify(Parser.parse(serial.replace(
+                        "self.handle_state(|s| -> { s.count = 1; })",
+                        "self.handle_state(|s| -> s)"))));
+        assertThrows(IllegalArgumentException.class, () ->
+                ActorStateContract.verify(Parser.parse(serial.replace(
+                        "self.handle_state(|s| -> { s.count = 1; })",
+                        "self.handle_state(nlex |s| -> { s.count = 1; })"))));
+    }
+
 }
