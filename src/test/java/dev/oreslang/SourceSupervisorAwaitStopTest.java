@@ -114,6 +114,7 @@ final class SourceSupervisorAwaitStopTest {
             assertEquals(0, process.undelivered());
             assertEquals(SupervisorChildRegistry.Phase.STOPPED,
                     group.childSnapshot(logicalChild).phase());
+            assertEquals(SupervisorChildRegistry.StopReceiptStatus.ACKNOWLEDGED, group.stopReceipt(logicalChild).status());
             assertTrue(process.healthy());
             assertFalse(process.callbackActive());
             process.close();
