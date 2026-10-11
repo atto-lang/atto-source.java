@@ -86,6 +86,28 @@ class CooperativeBlockingIoTest {
         assertTrue(actual.contains("hello"), actual);
     }
 
+    @Test void blockingIoFailureReentersSourceCatchAndFinallyOnlyOnce()
+            throws Exception {
+        Path missing = root.resolve("does-not-exist.txt");
+        String source = """
+            pub routine main(): void {
+              try {
+                val String value = fs.read_text_blocking("%s");
+                stdio.println_blocking("unexpected:" + value);
+              } catch (failure) {
+                stdio.println_blocking("caught-once");
+              } finally {
+                stdio.println_blocking("finally-once");
+              }
+              return;
+            }
+            """.formatted(missing.toString().replace("\\\\", "\\\\\\\\"));
+        String output = run(source, RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, root.toString()),
+                new ByteArrayOutputStream()).replace("\\r", "");
+        assertEquals("caught-once\\nfinally-once\\n", output);
+    }
+
     @Test void firstClassBlockingNativeIoAliasFailsClosed() {
         String source = """
                 pub routine main(): void {
