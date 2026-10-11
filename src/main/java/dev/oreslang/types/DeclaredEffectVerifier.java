@@ -22,7 +22,8 @@ public final class DeclaredEffectVerifier {
                     check(function.name(), function.annotations(), function.body(), false);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.MethodDecl method : klass.methods()) {
-                        check(klass.name() + "." + method.name(), method.annotations(), method.body(), klass.serial());
+                        check(klass.name() + "." + method.name(), method.annotations(),
+                                method.body(), klass.serial() && !method.isStatic());
                     }
                 }
             }
