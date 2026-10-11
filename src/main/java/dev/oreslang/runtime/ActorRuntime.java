@@ -277,8 +277,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public static DispatcherConfig defaults() {
-            int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
-            int shared = Integer.getInteger("ores.runtime.actor.shared.parallelism", cpus);
+            // Default carrier pool policy: between one and five physical
+            // workers per activated pool. Descriptors start with zero.
+            int cpus = Math.max(1, Math.min(5, Runtime.getRuntime().availableProcessors()));
+            int requestedShared = Integer.getInteger("ores.runtime.actor.shared.parallelism", cpus);
+            if (requestedShared < 1) {
+                throw new IllegalArgumentException("shared actor parallelism must be positive");
+            }
+            int shared = Math.min(5, requestedShared);
             return new DispatcherConfig(cpus, shared, 64, 16_384);
         }
     }
