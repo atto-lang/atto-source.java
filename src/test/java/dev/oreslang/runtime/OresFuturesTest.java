@@ -304,4 +304,29 @@ final class OresFuturesTest {
 
         assertEquals(7, race.join());
     }
+    @Test
+    void runtimeCancellationReleasesHookRetainedByObservedTerminalFuture() throws Exception {
+        // Inspect runtime-only ownership to catch a retention regression that
+        // cannot be detected by asking a completed Future to cancel again.
+        java.lang.reflect.Field hookField = OresFuture.class.getDeclaredField("cancelHook");
+        hookField.setAccessible(true);
+        var hookInvocations = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = new OresFuture<>(
+                () -> true, hookInvocations::incrementAndGet, true);
+        @SuppressWarnings("unchecked")
+        var hook = (java.util.concurrent.atomic.AtomicReference<Runnable>)
+                hookField.get(future);
+        assertNotNull(hook.get());
+
+        var cancellation = new java.util.concurrent.CancellationException("shutdown");
+        assertTrue(future.cancelFromRuntime(cancellation));
+        assertNull(hook.get(),
+                "terminal Futures must not retain a scheduler/task cancellation hook");
+        assertSame(cancellation, assertThrows(
+                java.util.concurrent.CancellationException.class, future::join));
+        assertFalse(future.cancel(false));
+        assertEquals(0, hookInvocations.get(),
+                "late cancellation must not rerun a completed producer's hook");
+    }
+
 }
