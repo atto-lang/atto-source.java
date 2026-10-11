@@ -2000,6 +2000,18 @@ public final class ActorRuntime implements AutoCloseable {
             return supervisorId;
         }
 
+        /** Value-only identity inspection, never a lifecycle capability. */
+        public SupervisorChildRegistry.Snapshot childSnapshot(
+                SupervisorChildRegistry.ChildId child) {
+            requireObserver("inspect supervised logical child");
+            return childRegistry.snapshot(child);
+        }
+
+        public int trackedLogicalChildren() {
+            requireObserver("inspect supervised logical child count");
+            return childRegistry.trackedChildren();
+        }
+
         /** Host-only callback: delivered on shared CONTROL carriers, never inline. */
         public void installSupervisorFailureHandler(
                 Consumer<SupervisorFailureControl.Notice> handler) {
