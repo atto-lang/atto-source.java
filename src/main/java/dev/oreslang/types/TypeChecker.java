@@ -987,7 +987,8 @@ public final class TypeChecker {
                     && !method.isStatic() && method.name().equals("handle_state")) {
                 throw new IllegalArgumentException("handle_state is a sealed actor intrinsic");
             }
-            if (method.annotations().stream().anyMatch(a -> a.name().equals("$critical$"))) {
+            if (method.annotations().stream().anyMatch(a -> a.name().equals("$critical$"))
+                    && !(klass.serial() && !method.isStatic())) {
                 throw new IllegalArgumentException("source critical method requires scheduler ticket and continuation lowering");
             }
             if (klass.actorKind() != Ast.ActorKind.NONE
@@ -1982,7 +1983,7 @@ public final class TypeChecker {
                 if (call.typeArgumentsPresent() || call.arguments().size() != 1
                         || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda))
                     throw new IllegalArgumentException("self.handle_state requires one callback lambda");
-                if (!lambda.critical() || lambda.nonLexical()) {
+                if ((!lambda.critical() && !currentClassOwner.serial()) || lambda.nonLexical()) {
                     throw new IllegalArgumentException(
                             "sealed critical handle_state requires a critical lexical callback");
                 }
