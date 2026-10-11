@@ -4623,8 +4623,13 @@ public final class ActorRuntime implements AutoCloseable {
      * this point; it must keep running until a real resumable boundary.</p>
      */
     public void schedulerSafepoint() {
-        if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
+        // Closing revokes ordinary guest work, not already-owned lexical
+        // cancellation cleanup dispatched on the actor-only CONTROL lane.
+        // Never generalize this exception to normal user/mail callbacks.
+        if (closed.get() && (cell == null || !cell.sourceCleanupTurn)) {
+            throw new ActorCancellationSignal("actor runtime is closing");
+        }
         if (cell != null && cell.stopped.get() && !cell.endRequested
                 && !cell.sourceCleanupTurn) {
             throw new ActorCancellationSignal("actor execution stopped");
