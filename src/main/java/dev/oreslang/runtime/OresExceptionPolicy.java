@@ -14,6 +14,11 @@ public final class OresExceptionPolicy {
                 || failure instanceof LinkageError) return 5;
         if (failure instanceof ActorRuntime.ActorCancellationSignal
                 || failure instanceof CancellationException) return 4;
+        // Any uncaught Java Error is a host failure at an actor boundary,
+        // not an ordinary Oreslang throw. Preserve that classification during
+        // defer/finally cleanup instead of allowing a later guest panic to hide
+        // it. ActorCancellationSignal (also an Error) is handled above.
+        if (failure instanceof Error) return 5;
         if (failure instanceof OresPanic) return 3;
         if (failure instanceof OresRaised) return 2;
         return 1;
