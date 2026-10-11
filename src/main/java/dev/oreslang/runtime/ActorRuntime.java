@@ -4222,13 +4222,31 @@ public final class ActorRuntime implements AutoCloseable {
                             : SupervisorFailureControl.Kind.TERMINAL_FAILURE;
             ActorGroupId ownerGroup = cell.managedByGroup.get();
             if (ownerGroup != null) {
-                lane.publish(new SupervisorFailureControl.Notice(
-                        lane.supervisorId(), ownerGroup, cell.ref.id(),
-                        cell.parent == null
-                                ? Optional.empty() : Optional.of(cell.parent.ref.id()),
-                        failureKind,
-                        failure.getClass().getName(),
-                        failure.getMessage() == null ? "" : failure.getMessage()));
+                // Capture the exact, immutable failure envelope while the
+                // actor still owns its supervision association. Publish only
+                // AFTER doneFuture and finalizedFuture settle: otherwise a
+                // fast CONTROL carrier can authorize STOP while the failed
+                // child is still externally observable as unfinished.
+                SupervisorFailureControl.Notice notice =
+                        new SupervisorFailureControl.Notice(
+                                lane.supervisorId(), ownerGroup, cell.ref.id(),
+                                cell.parent == null
+                                        ? Optional.empty() : Optional.of(cell.parent.ref.id()),
+                                failureKind,
+                                failure.getClass().getName(),
+                                failure.getMessage() == null ? "" : failure.getMessage());
+                cell.finalizedFuture.whenCompleteRuntime((ignored, completionFailure) -> {
+                    if (completionFailure == null) {
+                        // A CONTROL enqueue, never guest execution on this
+                        // child carrier. The captured lane survives group
+                        // registry removal and actor retirement.
+                        lane.publish(notice);
+                    } else {
+                        // The finalization barrier is not trustworthy. Never
+                        // present an incomplete child as a finalized Failure.
+                        lane.rejectUnfinalizedFailure();
+                    }
+                });
             }
         }
         // Keep the actor discoverable until all runtime-owned teardown that is
