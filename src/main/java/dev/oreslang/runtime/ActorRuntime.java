@@ -1189,6 +1189,17 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorOwnedGuestState state,
                 ActorInboxMail<Object> mail,
                 ActorContext<Object> context) throws Exception;
+
+        /**
+         * Once-only, actor-affine cooperative teardown before owned state is
+         * released. No suspension is admitted in this first source-level slice.
+         * A default no-op preserves existing host ActorCodeExecutor bridges.
+         */
+        default void tearDownActor(
+                String actorTypeName,
+                ActorOwnedGuestState state,
+                ActorContext<Object> context) throws Exception {
+        }
     }
 
     public interface ActorContext<M> {
@@ -5963,6 +5974,10 @@ public final class ActorRuntime implements AutoCloseable {
         private Runnable finalCleanup;
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
+        /** Graceful source teardown is a reserved once-only actor turn. */
+        private boolean gracefulTeardownPending;
+        private boolean gracefulTeardownStarted;
+        private boolean gracefulTeardownActive;
         private boolean finalized;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
@@ -6118,7 +6133,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
-                if (stopped.get() || forceKillFenced || finalized) return false;
+                if ((stopped.get() && !gracefulTeardownPending)
+                        || forceKillFenced || finalized) return false;
                 if (activeTurns != 0) {
                     throw new IllegalStateException(
                             "actor single-writer execution lease violation for " + ref.id()
@@ -6146,12 +6162,40 @@ public final class ActorRuntime implements AutoCloseable {
             stop();
         }
 
+        private void runGracefulTeardownIfNeeded(ActorContext<M> context) throws Exception {
+            ActorOwnedGuestState state;
+            synchronized (lifecycleLock) {
+                if (!gracefulTeardownPending || gracefulTeardownStarted
+                        || forceKillFenced || finalized
+                        || ref.terminationCause.get() != null) return;
+                gracefulTeardownStarted = true;
+                gracefulTeardownActive = true;
+                state = codeActorState;
+            }
+            try {
+                if (state != null && codeExecutor != null) {
+                    @SuppressWarnings("unchecked")
+                    ActorContext<Object> sourceContext =
+                            (ActorContext<Object>) (ActorContext<?>) context;
+                    codeExecutor.tearDownActor(codeActorType, state, sourceContext);
+                }
+            } finally {
+                synchronized (lifecycleLock) {
+                    gracefulTeardownActive = false;
+                    gracefulTeardownPending = false;
+                    lifecycleLock.notifyAll();
+                }
+            }
+        }
+
         private void runFinalCleanupIfNeeded() {
             Runnable cleanup;
             synchronized (lifecycleLock) {
                 if (!endRequested
                         || finalCleanupStarted
-                        || finalCleanup == null) return;
+                        || finalCleanup == null
+                        || (ref.terminationCause.get() != null
+                                && !gracefulTeardownStarted)) return;
                 finalCleanupStarted = true;
                 finalCleanupActive = true;
                 cleanup = finalCleanup;
@@ -6189,6 +6233,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
+                    || gracefulTeardownPending
                     || !children.isEmpty()) return;
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
@@ -6281,7 +6326,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // self.end/self.endWithCleanup seals the mailbox immediately, but
                 // the current turn and its final cleanup retain the actor's output
                 // capability until finalization closes the stream.
-                if ((stopped.get() && !endRequested) || finalized) {
+                if ((stopped.get() && !endRequested && !gracefulTeardownActive) || finalized) {
                     throw terminated(ref);
                 }
 
@@ -6369,7 +6414,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void schedule() {
-            if (stopped.get() || forceKillFenced || closed.get()) return;
+            if ((stopped.get() && !gracefulTeardownPending)
+                    || forceKillFenced || closed.get()) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);
@@ -6400,7 +6446,8 @@ public final class ActorRuntime implements AutoCloseable {
                     // won that race, this task is an inert no-op.
                     if (!scheduled.get()) return;
 
-                    if (stopped.get() || closed.get() || forceKillFenced) {
+                    if ((stopped.get() && !gracefulTeardownPending)
+                            || closed.get() || forceKillFenced) {
                         scheduled.set(false);
                         if (activeTurns == 0 && stopped.get()) finalizeStopLocked();
                         lifecycleLock.notifyAll();
@@ -6447,6 +6494,7 @@ public final class ActorRuntime implements AutoCloseable {
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain));
             boolean turnActive = false;
+            ActorContext<M> teardownContext = null;
             try {
                 // Admission may throw on a single-writer lease violation.
                 // The carrier's actor identity must still be cleared.
@@ -6475,6 +6523,11 @@ public final class ActorRuntime implements AutoCloseable {
                         return Optional.ofNullable(codeImage);
                     }
                 };
+
+                teardownContext = context;
+                // External stop may have sealed the user mailbox before this
+                // reserved lifecycle turn began. Never initialize or receive.
+                if (stopped.get()) return;
 
                 if (behavior == null && codeActorState == null) {
                     if (codeExecutor != null) {
@@ -6615,13 +6668,16 @@ public final class ActorRuntime implements AutoCloseable {
             } finally {
                 if (turnActive && stopped.get()) {
                     try {
+                        if (teardownContext != null) {
+                            runGracefulTeardownIfNeeded(teardownContext);
+                        }
+                    } catch (Throwable teardownFailure) {
+                        recordFinalizationFailure(teardownFailure);
+                    }
+                    try {
                         runFinalCleanupIfNeeded();
                     } catch (Throwable cleanupFailure) {
-                        // Cleanup is the final guest action. Preserve its
-                        // failure for ActorRef.failure/done before finalization.
-                        ref.terminationCause.compareAndSet(
-                                null,
-                                cleanupFailure);
+                        recordFinalizationFailure(cleanupFailure);
                     }
                 }
                 try {
@@ -6658,6 +6714,13 @@ public final class ActorRuntime implements AutoCloseable {
             activeMail = null;
         }
 
+        private void recordFinalizationFailure(Throwable failure) {
+            Throwable original = ref.terminationCause.get();
+            if (original == null && ref.terminationCause.compareAndSet(null, failure)) return;
+            original = ref.terminationCause.get();
+            if (original != null && original != failure) original.addSuppressed(failure);
+        }
+
         private void fail(Throwable failure) {
             terminateTree(failure, true);
         }
@@ -6673,10 +6736,20 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            boolean scheduleTeardown;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
+                }
+                // Only an initialized, quiescent source actor gets a guest
+                // teardown turn. Panic/cancel/failure, runtime shutdown, and
+                // a suspended receive use trusted-only retirement.
+                if (cause != null || closed.get() || forceKillFenced) {
+                    gracefulTeardownPending = false;
+                } else if (!stopped.get() && codeExecutor != null
+                        && codeActorState != null && !sourceReceiveSuspended) {
+                    gracefulTeardownPending = true;
                 }
                 stopped.set(true);
                 if (cause == null) mailbox.close();
@@ -6687,8 +6760,11 @@ public final class ActorRuntime implements AutoCloseable {
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
                 finalizeStopLocked();
+                scheduleTeardown = gracefulTeardownPending
+                        && activeTurns == 0 && !scheduled.get();
                 lifecycleLock.notifyAll();
             }
+            if (scheduleTeardown) schedule();
 
             // Cancellation removes channel/select waiter registrations before
             // any future channel activity can revive work for this dead actor.
