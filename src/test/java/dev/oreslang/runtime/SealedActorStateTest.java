@@ -43,6 +43,12 @@ final class SealedActorStateTest {
                             assertEquals(12L, outer.read("count"));
                             assertThrows(IllegalArgumentException.class,
                                     () -> current.critical(inner -> inner));
+                            assertThrows(IllegalArgumentException.class,
+                                    () -> current.critical(inner ->
+                                            new java.util.concurrent.atomic.AtomicInteger(7)));
+                            assertThrows(IllegalArgumentException.class,
+                                    () -> current.critical(inner ->
+                                            new java.util.concurrent.atomic.AtomicLong(9)));
                             assertEquals(12L, outer.read("count"));
                             return null;
                         });
