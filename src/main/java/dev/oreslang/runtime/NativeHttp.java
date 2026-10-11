@@ -652,6 +652,16 @@ public final class NativeHttp implements AutoCloseable {
 
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
                 try {
+                    // An executor may reject a cleanup admission even before
+                    // shutdown (e.g. carrier allocation failure). Once such
+                    // a rejection is recorded, no further I/O admission can
+                    // be relied upon. Drain existing carrier work, then use
+                    // the physical-exit guarded fallback for the rejected
+                    // socket aborts. Never wait for a reservation that is
+                    // blocked on its own rejected cleanup callback.
+                    if (!rejectedAborts.isEmpty() && !io.isShutdown()) {
+                        io.shutdown();
+                    }
                     if (io.isShutdown()) {
                         // Recovery for a rejected abort after an unexpected
                         // executor stop: wait for physical exit before closing
