@@ -38,6 +38,40 @@ end
 function values, callbacks, generics, interface/trait slots, virtual dispatch,
 tree shaking, JIT/AOT lowering, and interop metadata.
 
+## Expression-level trap
+
+Use `trap expression` for a one-off non-throwing boundary without declaring
+a separate `trap fnc`:
+
+```ores
+const result = trap worker.send(42);
+```
+
+The expression has type `Option<T>` where `T` is the ordinary type of the
+operand. The operand is evaluated exactly once, using normal precedence:
+`trap worker.send(42)` wraps that call; use `trap (a + b)` to wrap a larger
+expression. On success it produces `Some(value)`, including `Some(void)`
+for a void call; on an ordinary recoverable runtime throw it produces `None`.
+Neither `Option<T>` nor `Future<T>` results are implicitly flattened.
+`trap` does not catch `panic`, `raise`, cancellation, termination-control
+signals, process exits, or fatal host errors.
+
+```ores
+const accepted: Option<void> = trap worker.send(42);
+const value: Option<int> = trap parse_number(text);
+```
+
+In an async function `trap await operation()` keeps the trap boundary across
+the suspension. By contrast, `await trap operation()` first traps the call to
+`operation()` itself and then awaits the resulting Option (where applicable).
+Use a typed `Result` or explicit `try/catch` when the original error detail
+matters; `trap` deliberately discards it.
+
+Expression-level trap and the callable modifier have the same control-effect
+rules. An untrapped `send()` still throws on definite admission failure; prefix
+`trap` converts that recoverable failure to `None`, **not** a delivery receipt.
+Successful send admission does not prove processing or actor completion.
+
 ## Call result type
 
 The declared return type remains the success type.
