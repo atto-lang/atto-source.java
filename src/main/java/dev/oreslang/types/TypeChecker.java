@@ -1964,7 +1964,8 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
-            if (isBuiltinStdoutCall(call, "log", env)) {
+            if (isBuiltinStdoutCall(call, "log", env)
+                    || isBuiltinStdoutCall(call, "log_async", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
                 }
@@ -1975,7 +1976,8 @@ public final class TypeChecker {
                         typeOf(argument, env, generics, self);
                     }
                 }
-                return Primitive.VOID;
+                return isBuiltinStdoutCall(call, "log_async", env)
+                        ? new Named("Future", List.of(Primitive.VOID)) : Primitive.VOID;
             }
             if (isBuiltinStdoutCall(call, "logList", env)) {
                 if (call.typeArgumentsPresent()) {
@@ -2825,6 +2827,7 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+                if (member.member().equals("flush_async_logs")) return new Function(List.of(), new Named("Future", List.of(Primitive.VOID)));
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin") || member.member().equals("in")
                         || member.member().equals("out") || member.member().equals("err")
@@ -3012,9 +3015,9 @@ public final class TypeChecker {
                 if (member.member().equals("write") || member.member().equals("println") || member.member().equals("logList")) {
                     return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 }
-                if (member.member().equals("log")) {
+                if (member.member().equals("log") || member.member().equals("log_async")) {
                     throw new IllegalArgumentException(
-                            "variadic stdio.stdout.log is direct-call-only; wrap it in an explicit lambda to reify logging behavior");
+                            "variadic stdio.stdout.log/log_async is direct-call-only; wrap it in an explicit lambda to reify logging behavior");
                 }
             }
             if (receiver instanceof Named named

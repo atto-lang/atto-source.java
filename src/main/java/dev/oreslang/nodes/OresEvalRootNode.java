@@ -6214,6 +6214,14 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "print" -> (Invokable) stdio::print;
                     case "println" -> (Invokable) stdio::println;
+                    case "flush_async_logs" -> (Invokable) args -> {
+                        requireZero(args, "stdio.flush_async_logs");
+                        stdio.context().requireCapability(IsolatePolicy.Capability.STDOUT,
+                                "stdio.flush_async_logs");
+                        // A zero-byte output frame is admitted only after the
+                        // sole stdout pump flushed every preceding accepted frame.
+                        return stdio.context().standardChannels().output().writeAsync("");
+                    };
                     case "stdout" -> new StdoutFacade(stdio.context());
                     case "stdin", "in" -> stdio.context().standardChannels().input();
                     case "out" -> stdio.context().standardChannels().output();
@@ -6232,6 +6240,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "write" -> (Invokable) stdout::write;
                     case "println" -> (Invokable) stdout::println;
                     case "log" -> (Invokable) stdout::log;
+                    case "log_async" -> (Invokable) stdout::logAsync;
                     case "logList" -> (Invokable) stdout::logList;
                     default -> throw new IllegalArgumentException("unknown stdout member " + name);
                 };
@@ -9170,6 +9179,16 @@ public final class OresEvalRootNode extends RootNode {
             context.output().println();
             context.output().flush();
             return null;
+        }
+        private Object logAsync(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.stdout.log_async");
+            StringBuilder line = new StringBuilder();
+            for (Object arg : args) line.append(String.valueOf(arg));
+            line.append('\n');
+            // One bounded, FIFO, context-owned descriptor and output worker.
+            // Return the admission Future; awaiting flush_async_logs proves
+            // that accepted records have passed the pump's flush barrier.
+            return context.standardChannels().output().writeAsync(line.toString());
         }
         private Object logList(List<Object> args){
             context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.logList");

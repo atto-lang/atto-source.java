@@ -18,6 +18,31 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class StdioLogAndSpreadTest {
     @Test
+    void asyncLogAndFlushShareOneBoundedOutputPump() throws Exception {
+        String output = run("""
+                pub async routine main(): void {
+                  await stdio.stdout.log_async("first", "-", 1);
+                  await stdio.stdout.log_async("second");
+                  await stdio.flush_async_logs();
+                  return;
+                }
+                """);
+        assertEquals("first-1\nsecond\n", output);
+    }
+
+    @Test
+    void asyncLogAdmissionAndFlushHaveFutureVoidType() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub async routine main(): void {
+                  val Future<void> queued = stdio.stdout.log_async("test");
+                  await queued;
+                  await stdio.flush_async_logs();
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void stdoutLogConcatenatesArgumentsAndAppendsOneNewline() throws Exception {
         String output = run("""
                 pub routine main(): void {
