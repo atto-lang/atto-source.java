@@ -147,6 +147,31 @@ end
 
 **Current implementation gap (as of this RFC):** Java source currently has `ActorMail<T>` typing and frozen/isolated-copy runtime transport, and formerly uses a broader `sendable` check that can admit explicitly scoped capabilities; the parser does **not** yet generate `@Serializable` codecs or named enums/patterns. This PR adds a *first strict source-level admission pass* for primitive and structural built-in types and rejects `@Serializable` until derivation exists; it **does not yet certify a portable binary codec or change every host-privileged transport path**. LLVM still lacks full source-level actor/send/receive lowering. Migrating previously permitted host capability mail must use a separate audited control path or a genuinely serializable capability type; do not silently weaken the new public `send` contract.
 
+## Binary wire v1: MessagePack by default, copying only as a proven fast path
+
+**Decision:** use standard **MessagePack** for actor message payloads, in a schema-guided Oreslang envelope. Avoid JSON/text in the hot path. ProtoBuf/FlatBuffers can be revisited for extremely large or specialized workloads without changing language semantics; CBOR is a valid alternative but would not remove the need for Oreslang type schemas. MessagePack's binary format is simple to implement across Java/Graal and native C++ and provides native compact arrays, strings, scalar numbers, booleans, maps and extension types. Do not confuse built-in MessagePack arrays with the five distinct Oreslang collection types.
+
+Initial frame for the isolated scalar/sequence codec:
+
+```text
+MessagePack array(3):
+  [1, "fully.qualified.Schema.v1", payload]
+payload:
+  Tuple[T1,...Tn]         -> MessagePack array(n) [element_1,...element_n]
+  FixedArray[T1,...Tn]    -> MessagePack array(n), enforce exact length
+  FixedList[T1,...Tn]     -> MessagePack array(n), enforce exact length
+  Array[T] / List[T]      -> MessagePack array(n), all items recursively T
+  string / bool / i64 / f64 -> native MessagePack scalars
+```
+
+The **compiler-owned schema descriptor** determines whether an array payload is a tuple, fixed array, fixed list, dynamic Array or dynamic List. These kinds are *not* inferred from MessagePack bytes and must not be silently interconverted by a mismatched shape; the decoder checks the expected schema ID/version and correct type/arity. A future variant/pattern union must carry a stable resolved alternative tag for ambiguous overlapping types; do not decode it by guessing. Source-level `byte[]` versus `List[int]` and UTF-8 `str` versus binary `bin` remain distinct. Do not serialize a JVM `OresObject` or a native struct by reflecting or copying its physical memory layout.
+
+A Java **standalone reference subset** is now provided by `MessagePackCollectionCodec`, with the same six golden vectors in both repositories' `contracts/v1/design/messagepack_collection_vectors.json`: primitive UTF-8 string/bool/signed i64/finite f64 and nested homogeneous/different-typed list, array and tuple shapes. It checks schema ID, version, fixed arity, UTF-8 validity, numeric range/type, trailing bytes, graph cycles, byte/node/depth/length quotas and disallows arbitrary host objects. This is *not yet the ActorRuntime.send transport*, nor a complete `Serializable` implementation for structs, maps, enums, options, decimals, complex numbers or all signed/unsigned widths.
+
+**Default send:** immediately encode/snapshot before publishing a message to a mailbox, reserve bytes/quota, and deliver a recipient-owned decoded value. Serialization semantics must apply to SHARED, PRIVATE and UNTRUSTED actors alike. For `SHARED` local actors, `rt copy` **may** later replace the byte encoding only when a compiler/runtime proof establishes recursive serializability, identical semantics, ownership-safe deep copy and exactly the same failure/quota behavior. Even a `SHARED` actor cannot inspect or mutate the sender's live heap by retaining a pointer. Absolutely never use a faster alias-sharing path merely because the actors happen to be in the same process.
+
+**Benchmark admission:** compare `serialize + decode`, `rt copy`, and (where proven safe) immutable ownership transfer across 8B, 64B, 1KB, 64KB and 1MB payloads, plus nested tuples/lists. Measure wall latency p50/p95/p99, throughput, allocations, retained bytes and cache pressure under SHARED/PRIVATE/UNTRUSTED placement and contention. Enable a fast path only on a reproducible performance win *and* identical semantics. Keep it internal; neither a sender's source syntax nor observable value semantics may depend on placement.
+
 ## Cross-runtime identity and durability
 
 Separate three layers:
