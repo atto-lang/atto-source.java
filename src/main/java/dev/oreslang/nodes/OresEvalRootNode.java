@@ -139,6 +139,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
+        private final dev.oreslang.types.TaggedMessageContracts.Registry messageTypes;
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
 
@@ -193,6 +194,7 @@ public final class OresEvalRootNode extends RootNode {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.messageTypes = dev.oreslang.types.TaggedMessageContracts.verify(program);
             indexImports();
             indexDeclarations();
         }
@@ -447,8 +449,19 @@ public final class OresEvalRootNode extends RootNode {
                     aliases.put(alias.name(), alias.target());
                 }
             }
+            Ast.TypeRef payloadType = declaredMail.arguments().getFirst();
+            var namedDomain = messageTypes.patterns().get(payloadType.name());
+            if (namedDomain == null && messageTypes.enums().containsKey(payloadType.name())) {
+                var declaredEnum = messageTypes.enums().get(payloadType.name());
+                namedDomain = new dev.oreslang.types.TaggedMessageContracts.Domain(
+                        declaredEnum.name(), declaredEnum.cases());
+            }
+            if (namedDomain != null) {
+                return java.util.Optional.of(
+                        new dev.oreslang.runtime.TaggedMessageCodec(namedDomain));
+            }
             var shape = dev.oreslang.types.ActorWireSchema.fromSource(
-                    declaredMail.arguments().getFirst(), aliases);
+                    payloadType, aliases);
 
             // Stable code-unit-qualified domain, independent of native host
             // object identity or JVM hashCode. Evolve schema major explicitly.
@@ -3231,6 +3244,15 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 try {
+                                    if (messageCase(cast.targetType().name()) != null) {
+                                        if (cast.mode() != Ast.CastMode.CHECKED) {
+                                            throw new IllegalArgumentException(
+                                                    "enum variant construction uses 'as', not 'as?'");
+                                        }
+                                        continuation.accept(t,
+                                                enumCast(cast.targetType(), value), null);
+                                        return;
+                                    }
                                     boolean matches =
                                             oresTypeMatches(
                                                     value,
@@ -5636,6 +5658,37 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
+        private record EnumNamespace(String name) {}
+
+        private dev.oreslang.types.TaggedMessageContracts.Case messageCase(String name) {
+            int dot = name.indexOf('.');
+            if (dot <= 0) return null;
+            var owner = messageTypes.enums().get(name.substring(0, dot));
+            if (owner == null) return null;
+            for (var c : owner.cases()) {
+                if (c.name().equals(name.substring(dot + 1))) return c;
+            }
+            return null;
+        }
+
+        private Object constructVariant(
+                dev.oreslang.types.TaggedMessageContracts.Case c, Object payload) {
+            if (c.sourcePayload() == null && payload != null) {
+                throw new IllegalArgumentException("payloadless enum case cannot carry data");
+            }
+            if (c.sourcePayload() != null && payload == null) {
+                throw new IllegalArgumentException("enum case requires payload");
+            }
+            return new dev.oreslang.runtime.TaggedMessageCodec.TaggedValue(
+                    c.owner(), c.name(), c.tag(), payload);
+        }
+
+        private Object enumCast(Ast.TypeRef target, Object value) {
+            var caseInfo = messageCase(target.name());
+            if (caseInfo == null) return null;
+            return constructVariant(caseInfo, value);
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
@@ -5645,6 +5698,9 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.NameExpr name) {
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
+                if (messageTypes.enums().containsKey(name.name())) {
+                    return new EnumNamespace(name.name());
+                }
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("std")) return new StdFacade(context);
                 if (name.name().equals("fs") || name.name().equals("File")) return new FileSystemFacade(context);
@@ -5833,6 +5889,11 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.CastExpr cast) {
                 Object value = eval(cast.value(), env);
+                if (messageCase(cast.targetType().name()) != null) {
+                    if (cast.mode() != Ast.CastMode.CHECKED) throw new IllegalArgumentException(
+                            "enum variant construction uses 'as', not 'as?'");
+                    return enumCast(cast.targetType(), value);
+                }
                 boolean matches = oresTypeMatches(value, cast.targetType());
                 if (cast.mode() == Ast.CastMode.OPTIONAL) {
                     return new OptionValue(matches, matches ? value : null);
@@ -6067,6 +6128,19 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof EnumNamespace symbol) {
+                var c = messageCase(symbol.name() + "." + name);
+                if (c == null) throw new IllegalArgumentException(
+                        "unknown enum case " + symbol.name() + "." + name);
+                return (Invokable) args -> {
+                    int expected = c.sourcePayload() == null ? 0 : 1;
+                    if (args.size() != expected) {
+                        throw new IllegalArgumentException(
+                                "enum case constructor expected " + expected + " payload(s)");
+                    }
+                    return constructVariant(c, expected == 0 ? null : args.getFirst());
+                };
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -7644,7 +7718,12 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (pattern instanceof Ast.TypePattern typed) {
                 if (!oresTypeMatches(value, typed.type())) return false;
-                if (typed.binding() != null && bindings.putIfAbsent(typed.binding(), value) != null) {
+                Object bindingValue = value;
+                if (value instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue variant
+                        && messageCase(typed.type().name()) != null) {
+                    bindingValue = variant.payload();
+                }
+                if (typed.binding() != null && bindings.putIfAbsent(typed.binding(), bindingValue) != null) {
                     throw new IllegalStateException("pattern binds '" + typed.binding() + "' more than once");
                 }
                 return true;
@@ -7838,6 +7917,15 @@ public final class OresEvalRootNode extends RootNode {
          * (directly or through the narrow JNI bridge), never JVM Class.isInstance/instanceof.
          */
         private boolean oresTypeMatches(Object value, Ast.TypeRef target) {
+            if (value instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue variant) {
+                if (target.name().equals(variant.qualifiedName())
+                        || target.name().equals(variant.enumName())) return true;
+                var domain = messageTypes.patterns().get(target.name());
+                if (domain != null) {
+                    return domain.cases().stream().anyMatch(c ->
+                            c.qualifiedName().equals(variant.qualifiedName()));
+                }
+            }
             if (target.isUnion()) {
                 for (Ast.TypeRef option : target.arguments()) {
                     if (oresTypeMatches(value, option)) return true;
