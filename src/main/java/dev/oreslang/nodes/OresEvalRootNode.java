@@ -4858,15 +4858,38 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.TryStmt tried) {
                 // A call under catch/finally is not a proper tail call: the
                 // caller still owns exception/cleanup semantics after the call.
-                try { executeBlock(tried.body(), env, true); }
-                catch (TailCallSignal signal) { throw signal; }
-                catch (ReturnSignal | ArmResultSignal | BreakSignal | ContinueSignal signal) { throw signal; }
-                catch (OresPanic panic) { throw panic; }
-                catch (RuntimeException failure) {
-                    Env catchEnv = new Env(env);
-                    catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
-                    executeBlock(tried.catchBody(), catchEnv, true);
-                } finally { executeBlock(tried.finallyBody(), env, true); }
+                Throwable originalFailure = null;
+                try {
+                    try { executeBlock(tried.body(), env, true); }
+                    catch (TailCallSignal signal) { throw signal; }
+                    catch (ReturnSignal | ArmResultSignal | BreakSignal | ContinueSignal signal) { throw signal; }
+                    catch (OresPanic panic) { throw panic; }
+                    catch (RuntimeException failure) {
+                        Env catchEnv = new Env(env);
+                        catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
+                        executeBlock(tried.catchBody(), catchEnv, true);
+                    }
+                } catch (TailCallSignal signal) {
+                    throw signal;
+                } catch (ReturnSignal | ArmResultSignal | BreakSignal | ContinueSignal signal) {
+                    // A pending lexical completion is not an exception. A
+                    // failed finally must override it, never be suppressed.
+                    throw signal;
+                } catch (RuntimeException | Error failure) {
+                    // Includes a panic or a failure from the catch body. If
+                    // finally also fails, preserve this original identity.
+                    originalFailure = failure;
+                    throw failure;
+                } finally {
+                    try {
+                        executeBlock(tried.finallyBody(), env, true);
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        if (originalFailure != null && originalFailure != cleanupFailure)
+                            preserveCleanupFailure(originalFailure, cleanupFailure);
+                        else
+                            throw cleanupFailure;
+                    }
+                }
                 return;
             }
             if (stmt instanceof Ast.ForOfDestructureStmt loop) {
