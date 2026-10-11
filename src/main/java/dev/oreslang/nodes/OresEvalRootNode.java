@@ -1023,7 +1023,8 @@ public final class OresEvalRootNode extends RootNode {
                         // is held: the guard is a no-yield critical region.
                         if (!untrusted
                                 && (backedges >= MAX_LOOP_BACKEDGES_PER_TURN
-                                    || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS)
+                                    || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS
+                                    || context.watchdogPreemptionRequested())
                                 && !guardEnv.hasLiveMutexGuards()) {
                             context.recordSourceLoopCooperate();
                             cooperate(next);
