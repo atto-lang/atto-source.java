@@ -1717,7 +1717,74 @@ public final class TypeChecker {
         return java.util.Collections.unmodifiableSet(declared);
     }
 
+    /**
+     * Strict first admission stage for PR #567's arm-local completion model.
+     * Only scalar, single-return, non-suspending arms are lowered today.
+     * Never reinterpret a procedural do-match return as an expression result.
+     */
+    private Type checkTypedValueMatch(
+            Ast.ValueMatchExpr matched, Env env, Set<String> generics, Type self) {
+        if (currentMaySuspend || currentAsyncCallable || currentGenerator) {
+            throw new IllegalArgumentException(
+                    "value match continuation lowering is not enabled in async/suspends/generator callables");
+        }
+        Type result = deref(resolve(matched.returnContract(), generics, self));
+        if (result != Primitive.INT && result != Primitive.BOOL
+                && result != Primitive.STRING && result != Primitive.FLOAT
+                && result != Primitive.DECIMAL) {
+            throw new IllegalArgumentException(
+                    "typed value match currently supports scalar int/bool/string/float/decimal results only");
+        }
+        if (!safeValueMatchScalarExpr(matched.subject())) {
+            throw new IllegalArgumentException(
+                    "typed value match subject may not suspend or have unverified effects");
+        }
+        Type subject = deref(typeOf(matched.subject(), env, generics, self));
+        if (subject != Primitive.INT && subject != Primitive.BOOL
+                && subject != Primitive.STRING && subject != Primitive.FLOAT
+                && subject != Primitive.DECIMAL && !(subject instanceof StringLiteral)) {
+            throw new IllegalArgumentException(
+                    "typed value match currently supports scalar subjects only");
+        }
+        for (Ast.MatchArm arm : matched.arms()) {
+            if (arm.guard() != null && !safeValueMatchScalarExpr(arm.guard())) {
+                throw new IllegalArgumentException("typed value match guards must be non-suspending scalar expressions");
+            }
+            if (arm.body().size() != 1 || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
+                    || returned.value() == null || !safeValueMatchScalarExpr(returned.value())) {
+                throw new IllegalArgumentException(
+                        "typed value match currently requires one direct return of a non-suspending scalar expression per arm; "
+                                + "defer/finally/loops and nested control-flow await continuation lowering");
+            }
+        }
+        // The enclosing callable return type is intentionally NOT consulted.
+        // Here each arm's return is checked against this expression's contract,
+        // rather than escaping the containing callable.
+        Ast.MatchStmt checked = new Ast.MatchStmt(
+                matched.subject(), matched.ordered(), matched.arms(), false, null, false);
+        checkMatch(checked, subject, env, generics, result, self);
+        return result;
+    }
+
+    private boolean safeValueMatchScalarExpr(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return true;
+        if (expr instanceof Ast.UnaryExpr unary)
+            return safeValueMatchScalarExpr(unary.operand());
+        if (expr instanceof Ast.BinaryExpr binary)
+            return safeValueMatchScalarExpr(binary.left())
+                    && safeValueMatchScalarExpr(binary.right());
+        if (expr instanceof Ast.ConditionalExpr conditional)
+            return safeValueMatchScalarExpr(conditional.condition())
+                    && safeValueMatchScalarExpr(conditional.whenTrue())
+                    && safeValueMatchScalarExpr(conditional.whenFalse());
+        // No calls, await, assignment, channel I/O, macros or nested value
+        // dispatch until their ownership/effect/continuation IR is admitted.
+        return false;
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.ValueMatchExpr matched)
+            return checkTypedValueMatch(matched, env, generics, self);
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
