@@ -1490,9 +1490,6 @@ public final class ActorRuntime implements AutoCloseable {
     public interface ActorCodeExecutor {
         SharedCodeImageStore.CodeImage codeImage();
 
-        /** Trusted immutable code-image declaration; never guest-provided. */
-        default boolean serialActor(String actorTypeName) { return false; }
-
         ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorContext<Object> context) throws Exception;
@@ -6034,7 +6031,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeImage = codeImage;
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
-            this.serialAdmission = codeExecutor != null && codeExecutor.serialActor(codeActorType)
+            this.serialAdmission = codeExecutor != null && codeExecutor.isSerialActor(codeActorType)
                     ? new SerialActorAdmission(Math.max(1,
                             Math.min(4096, policy.maxMailboxMessages()))) : null;
             this.parent = parent;
