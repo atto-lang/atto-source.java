@@ -2089,6 +2089,59 @@ public final class ActorRuntime implements AutoCloseable {
             return childRegistry.commitStop(Objects.requireNonNull(reservation));
         }
 
+        /**
+         * Only trusted CONTROL may recover an outstanding STOP reservation.
+         * The compiler does not hold its own copy: the lifecycle registry is
+         * the authoritative owner, including after the process closes.
+         */
+        public SupervisorChildRegistry.StopReservation reservedStopFor(
+                SupervisorProcess.Resolution resolution) {
+            requireSupervisorContext("inspect reserved supervisor STOP");
+            Objects.requireNonNull(resolution);
+            var notice = resolution.notice();
+            if (resolution.directive() != SupervisorProcess.Directive.STOP
+                    || resolution.turnGeneration() < 1
+                    || !supervisorId.equals(notice.supervisorId())
+                    || !id.equals(notice.groupId())
+                    || notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE) {
+                throw new SecurityException("invalid STOP turn");
+            }
+            var child = notice.logicalChild().orElseThrow(() ->
+                    new IllegalStateException("missing supervisor child in STOP turn"));
+            var receipt = childRegistry.stopReceipt(child);
+            var reserved = receipt.reservation();
+            if (receipt.status() == SupervisorChildRegistry.StopReceiptStatus.ACKNOWLEDGED
+                    || !reserved.failedActor().equals(notice.actorId())
+                    || reserved.incarnation() != notice.incarnation()
+                    || reserved.turnGeneration() != resolution.turnGeneration()) {
+                throw new IllegalStateException("stale or mismatched reserved STOP turn");
+            }
+            return reserved;
+        }
+
+        /** Unresolved receipt snapshots survive supervisor process closure. */
+        public java.util.List<SupervisorChildRegistry.StopReceipt> unresolvedSupervisorStops() {
+            requireSupervisorContext("inspect supervisor STOP reconciliation inventory");
+            return childRegistry.unresolvedStops();
+        }
+
+        /**
+         * Reconcile only with an independently verified, read-only host proof.
+         * Never run or retry STOP here. A false result or throwing probe has
+         * no registry effect; exact ticket checks are revalidated atomically.
+         */
+        public SupervisorChildRegistry.Snapshot reconcileConfirmedStop(
+                SupervisorChildRegistry.StopReservation reservation,
+                java.util.function.BooleanSupplier hostEffectAlreadyApplied) {
+            requireSupervisorContext("reconcile confirmed supervisor STOP");
+            Objects.requireNonNull(reservation);
+            Objects.requireNonNull(hostEffectAlreadyApplied);
+            if (!hostEffectAlreadyApplied.getAsBoolean()) {
+                throw new IllegalStateException("host STOP effect was not independently verified");
+            }
+            return childRegistry.reconcileVerifiedStop(reservation);
+        }
+
         /** Host-only callback: delivered on shared CONTROL carriers, never inline. */
         public void installSupervisorFailureHandler(
                 Consumer<SupervisorFailureControl.Notice> handler) {
