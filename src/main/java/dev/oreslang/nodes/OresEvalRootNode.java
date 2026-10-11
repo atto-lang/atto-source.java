@@ -4010,22 +4010,20 @@ public final class OresEvalRootNode extends RootNode {
                                 == Ast.ChannelOperation.READ) {
                             if (operation.mode()
                                     == Ast.WaitMode.IMMEDIATE) {
+                                final Object channelResult;
                                 try {
                                     java.util.Optional<Object> result =
                                             channel.tryRead();
-                                    continuation.accept(
-                                            t,
-                                            result.isPresent()
-                                                    ? new OptionValue(
-                                                            true,
-                                                            result.get())
-                                                    : new OptionValue(
-                                                            false,
-                                                            null),
-                                            null);
+                                    channelResult = result.isPresent()
+                                            ? new OptionValue(true, result.get())
+                                            : new OptionValue(false, null);
                                 } catch (RuntimeException | Error failure) {
                                     continuation.accept(t, null, failure);
+                                    return;
                                 }
+                                // A lexical continuation may throw after executing
+                                // side effects; never re-enter it as a channel fault.
+                                continuation.accept(t, channelResult, null);
                                 return;
                             }
 
@@ -4045,14 +4043,14 @@ public final class OresEvalRootNode extends RootNode {
                             }
 
                             if (future.isDone()) {
+                                final Object channelResult;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            future.join(),
-                                            null);
+                                    channelResult = future.join();
                                 } catch (RuntimeException | Error failure) {
                                     continuation.accept(t, null, failure);
+                                    return;
                                 }
+                                continuation.accept(t, channelResult, null);
                             } else {
                                 t.suspend(
                                         future,
@@ -4060,7 +4058,8 @@ public final class OresEvalRootNode extends RootNode {
                                                 continuation.accept(
                                                         t2,
                                                         value,
-                                                        failure));
+                                                        failure),
+                                        true); // This SourceTask owns the direct channel registration.
                             }
                             return;
                         }
@@ -4121,17 +4120,14 @@ public final class OresEvalRootNode extends RootNode {
 
                                     if (operation.mode()
                                             == Ast.WaitMode.IMMEDIATE) {
+                                        final boolean written;
                                         try {
-                                            continuation.accept(
-                                                    t2,
-                                                    channel.tryWrite(value),
-                                                    null);
+                                            written = channel.tryWrite(value);
                                         } catch (RuntimeException | Error failure) {
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    failure);
+                                            continuation.accept(t2, null, failure);
+                                            return;
                                         }
+                                        continuation.accept(t2, written, null);
                                         return;
                                     }
 
@@ -4153,16 +4149,11 @@ public final class OresEvalRootNode extends RootNode {
                                     if (future.isDone()) {
                                         try {
                                             future.join();
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    null);
                                         } catch (RuntimeException | Error failure) {
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    failure);
+                                            continuation.accept(t2, null, failure);
+                                            return;
                                         }
+                                        continuation.accept(t2, null, null);
                                     } else {
                                         t2.suspend(
                                                 future,
@@ -4170,7 +4161,8 @@ public final class OresEvalRootNode extends RootNode {
                                                         continuation.accept(
                                                                 t3,
                                                                 null,
-                                                                failure));
+                                                                failure),
+                                                true); // This SourceTask owns the direct channel registration.
                                     }
                                 });
                     });
