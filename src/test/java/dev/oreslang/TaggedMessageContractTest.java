@@ -67,6 +67,12 @@ final class TaggedMessageContractTest {
                     B = 1
                 end
                 """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define enum Bad as
+                    Newer = 10
+                    Older = 9
+                end
+                """));
         assertThrows(IllegalArgumentException.class, () -> TaggedMessageContracts.verify(Parser.parse(
                 DECLARATIONS + """
                     define pattern Other as
