@@ -61,6 +61,8 @@ public final class SupervisorProcess implements AutoCloseable {
     private State state = State.RUNNING;
     /** Single-flight lease, including while an await is suspended. */
     private boolean callbackActive;
+    /** Admission guard against a scheduler replaying the current turn. */
+    private boolean callbackStarted;
     /** Monotonic turn identity; notice object identity is NOT a continuation fence. */
     private long callbackGeneration;
     // close() invoked reentrantly from a lifecycle decision cannot erase that
@@ -129,6 +131,7 @@ public final class SupervisorProcess implements AutoCloseable {
         }
         final long generation = ++callbackGeneration;
         callbackActive = true;
+        callbackStarted = false;
         try {
             // Must enqueue; ActorRuntime supplies its shared CONTROL pool.
             SupervisorDispatchGuard.enqueue(controlDispatcher, () -> beginCallback(generation));
@@ -140,11 +143,13 @@ public final class SupervisorProcess implements AutoCloseable {
     private void beginCallback(long generation) {
         SupervisorFailureControl.Notice notice;
         synchronized (this) {
-            if (state != State.RUNNING || !callbackActive
+            if (state != State.RUNNING || !callbackActive || callbackStarted
                     || generation != callbackGeneration) return;
+            callbackStarted = true;
             notice = mailbox.peekFirst();
             if (notice == null) {
                 callbackActive = false;
+                callbackStarted = false;
                 return;
             }
         }
@@ -228,6 +233,7 @@ public final class SupervisorProcess implements AutoCloseable {
             mailbox.removeFirst();
             resolved.incrementAndGet();
             callbackActive = false;
+            callbackStarted = false;
             if (closeAfterCommit) {
                 state = State.CLOSED;
                 undelivered.addAndGet(mailbox.size());
@@ -246,6 +252,7 @@ public final class SupervisorProcess implements AutoCloseable {
         undelivered.addAndGet(mailbox.size());
         mailbox.clear(); // Terminal errors must not retain failed guest metadata.
         callbackActive = false;
+        callbackStarted = false;
     }
 
     /**
@@ -267,6 +274,7 @@ public final class SupervisorProcess implements AutoCloseable {
                 state = State.CLOSED;
                 mailbox.clear();
                 callbackActive = false;
+                callbackStarted = false;
             }
         }
     }
