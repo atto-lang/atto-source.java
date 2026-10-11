@@ -7,6 +7,9 @@ import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -47,6 +50,42 @@ final class ActorAsyncTeardownGateTest {
             pending.complete(null);
             assertEquals(ActorAsyncTeardownGate.State.TIMED_OUT,
                     gate.outcome().orElseThrow().state());
+        }
+    }
+
+    @Test
+    void immediateTimerCallbackCannotRaceAnUninitializedFutureHandle() {
+        try (var timer = new ScheduledThreadPoolExecutor(1) {
+            @Override
+            public ScheduledFuture<?> schedule(
+                    Runnable command, long delay, TimeUnit unit) {
+                // Adversarial timer: completion happens before schedule()
+                // returns its handle to the gate constructor.
+                command.run();
+                return super.schedule(() -> { }, 1, TimeUnit.HOURS);
+            }
+        }) {
+            var count = new AtomicInteger();
+            var gate = new ActorAsyncTeardownGate(
+                    new CompletableFuture<Void>(), Duration.ofNanos(1),
+                    timer, count::incrementAndGet);
+            assertEquals(ActorAsyncTeardownGate.State.TIMED_OUT,
+                    gate.outcome().orElseThrow().state());
+            assertEquals(1, count.get());
+        }
+    }
+
+    @Test
+    void rejectedControlWakeRemainsObservableAfterCompletedOperation() {
+        try (var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var completed = CompletableFuture.completedFuture(null);
+            var gate = new ActorAsyncTeardownGate(
+                    completed, Duration.ofSeconds(1), timer,
+                    () -> { throw new RejectedExecutionException("CONTROL rejected"); });
+            assertEquals(ActorAsyncTeardownGate.State.SUCCESS,
+                    gate.outcome().orElseThrow().state());
+            assertInstanceOf(RejectedExecutionException.class,
+                    gate.notificationFailure().orElseThrow());
         }
     }
 
