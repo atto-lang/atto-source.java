@@ -219,7 +219,14 @@ public final class SupervisorProcess implements AutoCloseable {
         synchronized (this) {
             if (state != State.RUNNING || generation != callbackGeneration) return;
             // The lease is never released while a callback is unfinished.
-            if (!callbackActive || mailbox.peekFirst() != notice) {
+            if (!callbackActive) {
+                // A delayed duplicate completion after the last queued turn
+                // was committed is harmless. There may be no next generation
+                // yet, so generation equality alone is insufficient to fence
+                // a replay. Never poison the supervisor for this stale task.
+                return;
+            }
+            if (!callbackStarted || mailbox.peekFirst() != notice) {
                 failLocked(new IllegalStateException(
                         "supervisor continuation lost its exclusive lease"));
                 return;
