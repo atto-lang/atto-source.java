@@ -115,6 +115,7 @@ public final class SupervisorFailureControl {
             handlerFailure = dispatchFailure;
             draining = false;
             undelivered.addAndGet(pending.size());
+            pending.clear(); // Failed CONTROL lane must release owned notices.
         }
     }
 
@@ -138,6 +139,7 @@ public final class SupervisorFailureControl {
                 synchronized (this) {
                     handlerFailure = failure;
                     undelivered.addAndGet(pending.size());
+                    pending.clear(); // No further delivery is possible.
                     draining = false;
                 }
                 return;
