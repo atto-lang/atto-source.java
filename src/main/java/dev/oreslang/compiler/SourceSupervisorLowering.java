@@ -156,12 +156,10 @@ public final class SourceSupervisorLowering {
         }, resolution -> {
             verifyStopResolution(resolution, expectedGroup, expectedSupervisor);
             // Runs on the resumed CONTROL carrier after authoritative ack.
-            var permit = pendingStops.get(resolution.turnGeneration());
-            if (permit == null)
-                throw new IllegalStateException("missing reserved STOP turn");
+            var permit = group.reservedStopFor(resolution);
             group.recordAppliedStop(permit);
             group.commitReservedStop(permit);
-            pendingStops.remove(resolution.turnGeneration(), permit);
+
         }, resolution -> {
             // Invoked by SupervisorProcess on CONTROL, never on a Future's
             // arbitrary completing thread. No retry after an uncertain effect.
