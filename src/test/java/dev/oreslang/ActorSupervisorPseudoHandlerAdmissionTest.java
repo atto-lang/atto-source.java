@@ -37,17 +37,30 @@ final class ActorSupervisorPseudoHandlerAdmissionTest {
     }
 
     @Test
-    void teardownIsReservedRatherThanSilentlyCompiledAsOrdinaryActorMethod() {
+    void synchronousActorTeardownIsCompilerRecognized() {
         for (String declaration : new String[] {
                 "tear_down(): void { return; }",
-                "pub tear_down(): void { return; }",
                 "@Implements\n  tear_down(): void { return; }"
         }) {
-            String source = "define actor Worker as\n  " + declaration + "\nend\n";
-            IllegalArgumentException error = assertThrows(
-                    IllegalArgumentException.class, () -> Parser.parse(source), declaration);
-            assertTrue(error.getMessage().contains("actor tear_down lifecycle hook"),
-                    () -> declaration + ": " + error.getMessage());
+            assertDoesNotThrow(
+                    () -> Parser.parse("define actor Worker as\n  " + declaration
+                            + "\nend\n"),
+                    declaration);
+        }
+    }
+
+    @Test
+    void malformedOrDuplicateTeardownIsRejected() {
+        for (String declaration : new String[] {
+                "async tear_down(): void { return; }",
+                "suspend tear_down(): void { return; }",
+                "tear_down(int value): void { return; }",
+                "tear_down(): int { return 0; }",
+                "tear_down(): void { return; }\n  tear_down(): void { return; }"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("define actor Worker as\n  "
+                            + declaration + "\nend\n"), declaration);
         }
     }
 
