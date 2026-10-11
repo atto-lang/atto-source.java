@@ -459,6 +459,7 @@ public final class Parser {
         boolean braceStyle = match(LBRACE);
         Token.Type classTerminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
+        List<Ast.MapKeyDecl> mapKeys = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
         Ast.ConstructorDecl constructor = null;
 
@@ -470,6 +471,18 @@ public final class Parser {
                     || check(ACTOR) || check(ISOACTOR)) {
                 throw error(peek(),
                         "declarations cannot be nested inside classes; declare nested types at file or module scope");
+            }
+
+            if (isContextualIdentifier("key") && checkNext(IDENT)) {
+                validateClassFieldModifiers(mods);
+                if (!annotations.isEmpty()) throw error(peek(), "map key declarations cannot have field annotations");
+                advance(); // contextual 'key'; usable as an identifier outside declarations
+                String keyName = consume(IDENT, "expected map key name").lexeme();
+                consume(COLON, "expected ':' after map key name");
+                Ast.TypeRef declared = parseTypeRef();
+                consume(SEMICOLON, "map key declaration should end with ';'");
+                mapKeys.add(new Ast.MapKeyDecl(keyName, declared, mods.visibility));
+                continue;
             }
 
             if (isContextualIdentifier("constructor")) {
@@ -527,7 +540,7 @@ public final class Parser {
                         : "expected 'end' to close class " + name);
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
-                parents, interfaces, fields, constructor, methods);
+                parents, interfaces, fields, constructor, methods, mapKeys);
     }
 
     private Ast.ConstructorDecl parseConstructor(
