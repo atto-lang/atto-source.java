@@ -5,6 +5,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -60,6 +61,8 @@ public final class SupervisorProcess implements AutoCloseable {
     private State state = State.RUNNING;
     /** Single-flight lease, including while an await is suspended. */
     private boolean callbackActive;
+    /** Monotonic turn identity; notice object identity is NOT a continuation fence. */
+    private long callbackGeneration;
     // close() invoked reentrantly from a lifecycle decision cannot erase that
     // already-admitted decision before its successful host commit is counted.
     private boolean committingDecision;
@@ -93,7 +96,7 @@ public final class SupervisorProcess implements AutoCloseable {
     public synchronized int queued() { return mailbox.size(); }
     public synchronized boolean callbackActive() { return callbackActive; }
     public synchronized boolean healthy() {
-        return state == State.RUNNING && undelivered.get() == 0;
+        return state == State.RUNNING && !closeAfterCommit && undelivered.get() == 0;
     }
     public synchronized Optional<String> failure() {
         return Optional.ofNullable(fatal).map(Throwable::toString);
@@ -107,7 +110,7 @@ public final class SupervisorProcess implements AutoCloseable {
             throw new SecurityException("foreign supervisor process notice");
         }
         synchronized (this) {
-            if (state != State.RUNNING || mailbox.size() >= capacity) {
+            if (state != State.RUNNING || closeAfterCommit || mailbox.size() >= capacity) {
                 undelivered.incrementAndGet();
                 // Stop consuming CONTROL rather than misreporting loss as success.
                 throw new IllegalStateException("supervisor process cannot admit notice");
@@ -120,19 +123,25 @@ public final class SupervisorProcess implements AutoCloseable {
 
     private void scheduleLocked() {
         if (callbackActive || mailbox.isEmpty() || state != State.RUNNING) return;
+        if (callbackGeneration == Long.MAX_VALUE) {
+            failLocked(new IllegalStateException("supervisor CONTROL turn generation exhausted"));
+            return;
+        }
+        final long generation = ++callbackGeneration;
         callbackActive = true;
         try {
             // Must enqueue; ActorRuntime supplies its shared CONTROL pool.
-            SupervisorDispatchGuard.enqueue(controlDispatcher, this::beginCallback);
+            SupervisorDispatchGuard.enqueue(controlDispatcher, () -> beginCallback(generation));
         } catch (Throwable schedulingFailure) {
             failLocked(schedulingFailure);
         }
     }
 
-    private void beginCallback() {
+    private void beginCallback(long generation) {
         SupervisorFailureControl.Notice notice;
         synchronized (this) {
-            if (state != State.RUNNING) return;
+            if (state != State.RUNNING || !callbackActive
+                    || generation != callbackGeneration) return;
             notice = mailbox.peekFirst();
             if (notice == null) {
                 callbackActive = false;
@@ -150,12 +159,16 @@ public final class SupervisorProcess implements AutoCloseable {
         }
         // No user callback, decision or mailbox state mutation happens here.
         // Completion may occur on an arbitrary foreign or child carrier.
+        final AtomicBoolean completionAccepted = new AtomicBoolean();
         try {
             pending.whenComplete((decision, failure) -> {
+                // CompletionStage implementations are pluggable. Even a broken
+                // stage that calls whenComplete twice cannot replay a decision.
+                if (!completionAccepted.compareAndSet(false, true)) return;
                 try {
                     SupervisorDispatchGuard.enqueue(
                             controlDispatcher,
-                            () -> finishCallback(notice, decision, failure));
+                            () -> finishCallback(notice, generation, decision, failure));
                 } catch (Throwable schedulingFailure) {
                     synchronized (this) { failLocked(schedulingFailure); }
                 }
@@ -167,11 +180,12 @@ public final class SupervisorProcess implements AutoCloseable {
 
     private void finishCallback(
             SupervisorFailureControl.Notice notice,
+            long generation,
             Directive decision,
             Throwable error) {
         synchronized (decisionFence) {
         synchronized (this) {
-            if (state != State.RUNNING) return;
+            if (state != State.RUNNING || generation != callbackGeneration) return;
             // The lease is never released while a callback is unfinished.
             if (!callbackActive || mailbox.peekFirst() != notice) {
                 failLocked(new IllegalStateException(
@@ -230,6 +244,7 @@ public final class SupervisorProcess implements AutoCloseable {
         fatal = error;
         state = State.FAILED;
         undelivered.addAndGet(mailbox.size());
+        mailbox.clear(); // Terminal errors must not retain failed guest metadata.
         callbackActive = false;
     }
 
