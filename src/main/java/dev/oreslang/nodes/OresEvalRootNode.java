@@ -5331,7 +5331,7 @@ public final class OresEvalRootNode extends RootNode {
             if (call.typeArgumentsPresent()
                     || call.arguments().size() != 1
                     || !(call.arguments().getFirst() instanceof Ast.LambdaExpr callback)
-                    || (!callback.critical() && !actor.owner.serial()) || callback.nonLexical()
+                    || (!callback.critical() && !actor.klass.serial()) || callback.nonLexical()
                     || callback.parameters().size() != 1) {
                 throw new IllegalArgumentException(
                         "critical handle_state expects exactly one inline lexical critical callback");
