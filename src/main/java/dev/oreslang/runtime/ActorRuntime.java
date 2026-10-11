@@ -1150,7 +1150,8 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable release,
             Runnable continuation,
             ActorId sender,
-            long sequence) implements AutoCloseable {
+            long sequence,
+            SerialExecutionTicket taskTicket) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
@@ -1159,16 +1160,22 @@ public final class ActorRuntime implements AutoCloseable {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            return new MessageEnvelope(value, release, null, sender, sequence, null);
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
+            return continuation(continuation, null);
+        }
+
+        private static MessageEnvelope continuation(
+                Runnable continuation, SerialExecutionTicket taskTicket) {
             return new MessageEnvelope(
                     null,
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L);
+                    -1L,
+                    taskTicket);
         }
 
         private boolean isContinuation() {
@@ -1748,7 +1755,29 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        return cell.sourceScheduler().start(task);
+        final SerialExecutionTicket ticket;
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || closed.get()) {
+                throw terminated(cell.ref);
+            }
+            // Monotonic within this actor incarnation. Never wrap a task ID.
+            cell.nextSourceTaskId = Math.addExact(cell.nextSourceTaskId, 1L);
+            ticket = new SerialExecutionTicket(
+                    cell.ref.id(), cell.executionDomain,
+                    cell.nextSourceTaskId, cell.serialAdmission, cell.serialReceiveLease,
+                    () -> !cell.stopped.get() && !cell.finalized
+                            && !cell.forceKillFenced && !closed.get());
+        }
+        return cell.sourceScheduler().startActorBound(task, command -> {
+            if (!ticket.mayEnqueue()) {
+                throw new RejectedExecutionException(
+                        "actor task ticket revoked before enqueue");
+            }
+            if (!enqueueContinuation(cell.ref.id(), command, ticket)) {
+                throw new RejectedExecutionException(
+                        "actor task " + ticket.taskId() + " lost its continuation lane");
+            }
+        });
     }
 
     private boolean ownFuture(
@@ -1794,6 +1823,11 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
+        return enqueueContinuation(actorId, continuation, null);
+    }
+
+    private boolean enqueueContinuation(
+            ActorId actorId, Runnable continuation, SerialExecutionTicket taskTicket) {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
@@ -1809,7 +1843,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || closed.get()) return false;
                 if (!cell.continuationMailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation))) {
+                        MessageEnvelope.continuation(continuation, taskTicket))) {
                     throw new IllegalStateException(
                             "actor continuation mailbox capacity invariant violated for " + actorId);
                 }
@@ -6005,6 +6039,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** Separate control-lane quota; never borrow user mailbox headroom. */
         private int queuedContinuations;
         private long nextUserMessageSequence;
+        /** Scheduler task IDs are monotonic per actor incarnation, never reused. */
+        private long nextSourceTaskId;
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -6646,12 +6682,24 @@ public final class ActorRuntime implements AutoCloseable {
                         }
 
                         if (activeEnvelope.isContinuation()) {
+                            // Check immutable scheduler identity before altering a
+                            // suspended handler's runnable state. A queued task
+                            // from another receive or actor must not wake it.
+                            SerialExecutionTicket ticket = activeEnvelope.taskTicket();
+                            if (ticket != null) {
+                                ticket.requireAdmissible(
+                                        ref.id(), executionDomain, serialReceiveLease);
+                            }
                             SerialActorAdmission.Lease held = serialReceiveLease;
                             if (held != null) {
                                 if (held.state() == SerialActorAdmission.State.SUSPENDED) held.resume();
                                 held.requireActive();
                             }
                             try {
+                                if (ticket != null) {
+                                    ticket.requireRunnable(
+                                            ref.id(), executionDomain, serialReceiveLease);
+                                }
                                 activeEnvelope.continuation().run();
                             } finally {
                                 held = serialReceiveLease;
