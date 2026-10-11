@@ -1802,12 +1802,25 @@ public final class OresEvalRootNode extends RootNode {
             // that throws. That is NOT a second outcome for this statement.
             java.util.concurrent.atomic.AtomicBoolean delivered =
                     new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicReference<Throwable> consumerFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
             SourceFlowCont continuation = (resumed, flow) -> {
                 if (!delivered.compareAndSet(false, true)) {
+                    // A nested producer catch may erroneously retry after its
+                    // consumer throws. Never disguise the consumer's original
+                    // security/type diagnostic as a duplicate-completion error.
+                    Throwable prior = consumerFailure.get();
+                    if (prior instanceof RuntimeException runtime) throw runtime;
+                    if (prior instanceof Error error) throw error;
                     throw new IllegalStateException(
                             "suspendable statement completed more than once");
                 }
-                downstream.accept(resumed, flow);
+                try {
+                    downstream.accept(resumed, flow);
+                } catch (RuntimeException | Error failure) {
+                    consumerFailure.compareAndSet(null, failure);
+                    throw failure;
+                }
             };
             try {
                 if (stmt instanceof Ast.BindingStmt binding) {
@@ -3092,12 +3105,22 @@ public final class OresEvalRootNode extends RootNode {
             // or its consumer fails while unwinding an outer block.
             java.util.concurrent.atomic.AtomicBoolean delivered =
                     new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicReference<Throwable> consumerFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
             SourceValueCont continuation = (resumed, value, failure) -> {
                 if (!delivered.compareAndSet(false, true)) {
+                    Throwable prior = consumerFailure.get();
+                    if (prior instanceof RuntimeException runtime) throw runtime;
+                    if (prior instanceof Error error) throw error;
                     throw new IllegalStateException(
                             "suspendable expression completed more than once");
                 }
-                downstream.accept(resumed, value, failure);
+                try {
+                    downstream.accept(resumed, value, failure);
+                } catch (RuntimeException | Error raised) {
+                    consumerFailure.compareAndSet(null, raised);
+                    throw raised;
+                }
             };
             try {
                 // A source-task expression can now preserve the selected value
