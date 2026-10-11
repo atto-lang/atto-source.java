@@ -5813,10 +5813,19 @@ public final class ActorRuntime implements AutoCloseable {
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
 
-        // Do not shutdownNow() or interrupt the actor carriers here. Finalizers
-        // can suspend on Futures and require these dispatchers to re-enter the
-        // actor's cleanup-only CONTROL lane. Timed-out cleanup must remain owned
-        // and reported, not falsely published as a completed actor.
+        // Native/host blocking actor turns do not necessarily cooperate with
+        // cancellation. Preserve the historical emergency interrupt + queued
+        // batch cancellation if *no* actor has a suspended source finalizer.
+        // Otherwise retain all carrier pools so already-owned cleanup-only
+        // CONTROL continuations can resume, and fail explicitly on timeout.
+        final boolean sourceCleanupPending =
+                snapshot.stream().anyMatch(ActorCell::hasPendingSourceCleanup);
+        if (!sourceCleanupPending) {
+            privateDispatcher.shutdownNow();
+            sharedDispatcher.shutdownNow();
+            untrustedDispatcher.shutdownNow();
+            for (ActorCell<?> cell : snapshot) cell.cancelQueuedScheduleOnShutdown();
+        }
 
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
         boolean interrupted = false;
@@ -5835,7 +5844,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         boolean dispatchersTerminated = stillRunning.isEmpty() && !interrupted;
-        if (dispatchersTerminated) {
+        if (dispatchersTerminated && sourceCleanupPending) {
             // Quiescence is proven. Graceful shutdown does not discard queued
             // tasks or interrupt the final carrier-exit boundary.
             for (ExecutorService dispatcher :
@@ -5862,9 +5871,24 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        // Do not reclaim runtime-shared objects while an actor owns suspended
-        // finalizers or while carrier quiescence is unproven. A failed close is
-        // retryable and retains owned resources for later cleanup.
+        // Source tasks retain their owned resources across failed cleanup
+        // drains. When there were no source tasks to unwind, preserve the
+        // older fail-closed revocation of shared handles even if a hostile
+        // host callback ignores shutdown interruption and runs too long.
+        if (!sourceCleanupPending || (stillRunning.isEmpty() && dispatchersTerminated)) {
+            for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
+            actorGroups.clear();
+            for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
+                stream.closeAndDrainFromRuntime();
+            }
+            actorOutputStreams.clear();
+            for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
+            syncCells.clear();
+            for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
+            sharedValues.clear();
+            sharedMemoryBytes.set(0L);
+        }
+
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
             if (interrupted) {
@@ -5879,18 +5903,6 @@ public final class ActorRuntime implements AutoCloseable {
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
                             + dispatchersTerminated);
         }
-
-        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
-        actorGroups.clear();
-        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
-            stream.closeAndDrainFromRuntime();
-        }
-        actorOutputStreams.clear();
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
-        syncCells.clear();
-        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
-        sharedValues.clear();
-        sharedMemoryBytes.set(0L);
 
         actors.clear();
         actorCount.set(0);
@@ -6352,6 +6364,12 @@ public final class ActorRuntime implements AutoCloseable {
                 children.remove(child);
                 if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                 lifecycleLock.notifyAll();
+            }
+        }
+
+        private boolean hasPendingSourceCleanup() {
+            synchronized (lifecycleLock) {
+                return sourceCleanupDraining || !sourceTaskFutures.isEmpty();
             }
         }
 
