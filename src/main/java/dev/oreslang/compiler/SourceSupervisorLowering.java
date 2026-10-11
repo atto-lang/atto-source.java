@@ -163,8 +163,8 @@ public final class SourceSupervisorLowering {
         }, resolution -> {
             // Invoked by SupervisorProcess on CONTROL, never on a Future's
             // arbitrary completing thread. No retry after an uncertain effect.
-            var permit = pendingStops.remove(resolution.turnGeneration());
-            if (permit != null) group.recordUncertainStop(permit);
+            var permit = group.reservedStopFor(resolution);
+            group.recordUncertainStop(permit);
         });
     }
 
