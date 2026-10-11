@@ -81,6 +81,25 @@ application-level conflict semantics, and is out of scope.
    after retirement/reuse. Physical native release waits for pinned loans,
    while logical access is revoked immediately.
 
+## Related implementation branches and reconciliation
+
+- [Java critical callable PR #577](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/577)
+  has a bounded logical `CriticalGate`, FIFO tickets, source evaluator
+  integration and cancellation work on a **different branch**. It is not
+  yet merged into this actor arena branch. The host-only `ReentrantLock`
+  below is temporary and **must not become a second production critical
+  gate**. Source state admission should ultimately use the verified
+  continuation-owned `CriticalGate`, with a per-state/per-actor authority.
+- [Guaranteed suspension follow-up #632](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/632)
+  updates #577's previously inline uncontended `suspend critical` fast path
+  to use the scheduler's already-completed-future handoff. This is separate
+  from borrowing actor-state memory: a logical invocation ticket may survive
+  suspension, but a raw mutable Access/loan may not.
+- Merge/rebase and re-run executable cross-branch tests before permitting a
+  source critical callable to access arena-backed persistent state. The
+  duplicate gates cannot simply be nested without proving ordering and
+  cancellation/teardown behavior.
+
 ## Current implementation and release gates
 
 - `ActorPersistentI64Map.critical` and `close` use `tryLock`, not
