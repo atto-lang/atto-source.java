@@ -204,13 +204,39 @@ final class SourceSupervisorStopLoweringTest {
     }
 
     @Test
+    void normallyStoppedManagedActorRetiresItsLogicalChild() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var actor = group.spawnWorker(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    factory -> (message, ctx) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            assertEquals(1, group.trackedLogicalChildren(),
+                    "spawn admission failed to register a logical child");
+            actor.stop();
+            actor.getDone().get(5, TimeUnit.SECONDS);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (group.trackedLogicalChildren() != 0
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(0, group.trackedLogicalChildren(),
+                    "normal physical finalization did not retire child registry record");
+            group.close();
+        }
+    }
+
+    @Test
     void compiledStopDoesNotAcknowledgeThrowingHostCommit() throws Exception {
         var compiled = OresCompiler.compileStopOnlySupervisor(SOURCE);
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup();
             AtomicInteger calls = new AtomicInteger();
             CountDownLatch attempted = new CountDownLatch(1);
+            AtomicReference<SupervisorProcess.Resolution> ambiguous =
+                    new AtomicReference<>();
             var process = compiled.install(group, 2, decision -> {
+                ambiguous.set(decision);
                 assertEquals(SupervisorProcess.Directive.STOP, decision.directive());
                 assertTrue(decision.turnGeneration() > 0);
                 calls.incrementAndGet();
@@ -235,6 +261,10 @@ final class SourceSupervisorStopLoweringTest {
             assertEquals(1, process.undelivered());
             assertEquals(0, process.queued());
             assertFalse(process.healthy());
+            var failedChild = ambiguous.get().notice().logicalChild().orElseThrow();
+            assertEquals(dev.oreslang.runtime.SupervisorChildRegistry.Phase.FINALIZED,
+                    group.childSnapshot(failedChild).phase(),
+                    "throwing host sink may not permanently STOP the child");
             group.close();
             process.close();
         }
