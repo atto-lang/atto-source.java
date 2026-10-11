@@ -95,6 +95,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         ActorStateContract.verify(program);
+        DeclaredEffectVerifier.verify(program);
         checker.validate(program);
         return new TypeCheckResult(program, checker.warnings);
     }
