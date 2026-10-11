@@ -319,22 +319,20 @@ final class ValueDispatchControlFlowTest {
     }
 
     @Test
-    void unorderedMatchFallbackDoesNotMaskLaterConcreteAwaitedArm() throws Exception {
-        assertEquals("42\n", execute("""
-                async fnc answer(int value): int { return value; }
+    void sourceOrderedMatchRejectsWildcardBeforeLaterConcreteArm() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> admitted("""
+                        async fnc answer(int value): int { return value; }
 
-                async fnc choose(): int {
-                  return match 1
-                    _ -> { return await answer(0); }
-                    1 -> { return await answer(42); }
-                  end
-                }
-
-                pub async fnc main(): void {
-                  stdio.println(await choose());
-                  return;
-                }
-                """));
+                        async fnc choose(): int {
+                          return match 1
+                            _ -> { return await answer(0); }
+                            1 -> { return await answer(42); }
+                          end
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("unreachable match arm"),
+                error.getMessage());
     }
 
     @Test
