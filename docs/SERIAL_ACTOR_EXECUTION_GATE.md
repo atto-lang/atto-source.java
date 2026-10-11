@@ -74,3 +74,37 @@ including panic/cancellation, to admit the next waiting request/message.
   state and critical policy prototypes have targeted CI.
 
 Do not report HTTP-capable serial actors as complete until these gates run.
+
+## Audit hardening: re-entrancy, runnable state and shutdown
+
+The bounded Java gate now uses an **iterative non-reentrant drainer**:
+`CompletableFuture.complete` can run dependent callbacks synchronously, and
+those callbacks can close their lease immediately. The drainer must never
+recurse through 4,096 queued callbacks or leave an active ticket stranded
+when pending cancellation races promotion. The runtime test and funded JDK
+smoke cover 4,096 immediate completion callbacks, ordered cancellation,
+and cancellation-versus-promotion races.
+
+`requireActive()` now demands a **RUNNING** lease. A SUSPENDED lease still
+owns actor-wide admission but cannot authorize guest execution. The same
+separation appears in native LLVM as `admitted(ticket)` (logical ownership)
+versus `may_execute(ticket)` (runnable now).
+
+**Critical release condition:** an admission future is a scheduler signal,
+not permission for its completion thread to run guest code. In particular,
+Java `CompletableFuture` dependent callbacks may run inline on a transport
+completion thread. Production adapters must schedule guest execution through
+the trusted actor scheduler with a current execution-context and generation
+ticket, then check runnable ownership immediately before entry; never invoke
+the guest from a bare completion callback. The gate is not a replacement for
+the actor scheduler.
+
+Neither gate can forcibly unwind a handler that is *already executing* when
+supervisor stop occurs. Revocation prevents later admission/re-entry; the
+scheduler must cancel/interrupt cooperatively, await all existing physical
+turns and state loans becoming quiescent, then retire actor-owned state.
+Likewise `lease.close()` must be called only after handler cleanup/unwind,
+not before `defer`, `finally`, `recover`, critical guards or response
+finalization complete. Double completion and stale continuation tickets
+remain forbidden. No HTTP/message production wiring or full native-image
+verification is claimed by these targeted admission tests.
