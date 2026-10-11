@@ -28,15 +28,38 @@ public final class SupervisorFailureControl {
             Optional<ActorRuntime.ActorId> spawnedBy,
             Kind kind,
             String failureType,
-            String diagnostic) {
+            String diagnostic,
+            Optional<SupervisorChildRegistry.ChildId> logicalChild,
+            long incarnation) {
         public Notice {
             Objects.requireNonNull(supervisorId);
             Objects.requireNonNull(groupId);
             Objects.requireNonNull(actorId);
             spawnedBy = Objects.requireNonNull(spawnedBy);
             Objects.requireNonNull(kind);
+            logicalChild = Objects.requireNonNull(logicalChild);
+            if (logicalChild.isPresent()) {
+                var child = logicalChild.get();
+                if (!child.supervisorId().equals(supervisorId)
+                        || !child.groupId().equals(groupId)
+                        || incarnation < 1) {
+                    throw new IllegalArgumentException("foreign or invalid logical child incarnation");
+                }
+            } else if (incarnation != 0) {
+                throw new IllegalArgumentException("unbound logical child incarnation");
+            }
             failureType = bounded(Objects.requireNonNull(failureType));
             diagnostic = bounded(Objects.requireNonNull(diagnostic));
+        }
+
+        /** Compatibility for host notices without a trusted registry binding. */
+        public Notice(ActorRuntime.SupervisorId supervisorId,
+                      ActorRuntime.ActorGroupId groupId,
+                      ActorRuntime.ActorId actorId,
+                      Optional<ActorRuntime.ActorId> spawnedBy,
+                      Kind kind, String failureType, String diagnostic) {
+            this(supervisorId, groupId, actorId, spawnedBy, kind, failureType,
+                    diagnostic, Optional.empty(), 0);
         }
     }
 
