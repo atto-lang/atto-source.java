@@ -1565,11 +1565,15 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId actorId;
         /** Origin cannot be forged by guest code or rebound to a later mail. */
         private final SerialContinuationAuthority authority;
+        private final SerialExecutionTicket taskTicket;
 
         private ContinuationTarget(
-                ActorId actorId, SerialContinuationAuthority authority) {
+                ActorId actorId,
+                SerialContinuationAuthority authority,
+                SerialExecutionTicket taskTicket) {
             this.actorId = Objects.requireNonNull(actorId, "actorId");
             this.authority = Objects.requireNonNull(authority, "authority");
+            this.taskTicket = Objects.requireNonNull(taskTicket, "taskTicket");
         }
 
         public ActorId actorId() {
@@ -1578,12 +1582,12 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean enqueue(Runnable continuation) {
             // Skip already-retired origins before spending CONTROL capacity.
-            if (!authority.mayQueue()) return false;
+            if (!authority.mayQueue() || !taskTicket.mayEnqueue()) return false;
             return enqueueContinuation(actorId, () -> {
                 // Origin may have retired since enqueue. Re-check on carrier.
                 authority.requireRunnable();
                 continuation.run();
-            });
+            }, taskTicket);
         }
     }
 
@@ -1602,7 +1606,8 @@ public final class ActorRuntime implements AutoCloseable {
         return new ContinuationTarget(
                 cell.ref.id(),
                 new SerialContinuationAuthority(
-                        cell.serialAdmission, cell.serialReceiveLease));
+                        cell.serialAdmission, cell.serialReceiveLease),
+                cell.issueSourceTaskTicket());
     }
 
     /**
@@ -1755,19 +1760,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        final SerialExecutionTicket ticket;
-        synchronized (cell.lifecycleLock) {
-            if (cell.stopped.get() || cell.finalized || closed.get()) {
-                throw terminated(cell.ref);
-            }
-            // Monotonic within this actor incarnation. Never wrap a task ID.
-            cell.nextSourceTaskId = Math.addExact(cell.nextSourceTaskId, 1L);
-            ticket = new SerialExecutionTicket(
-                    cell.ref.id(), cell.executionDomain,
-                    cell.nextSourceTaskId, cell.serialAdmission, cell.serialReceiveLease,
-                    () -> !cell.stopped.get() && !cell.finalized
-                            && !cell.forceKillFenced && !closed.get());
-        }
+        final SerialExecutionTicket ticket = cell.issueSourceTaskTicket();
         return cell.sourceScheduler().startActorBound(task, command -> {
             if (!ticket.mayEnqueue()) {
                 throw new RejectedExecutionException(
@@ -1893,8 +1886,12 @@ public final class ActorRuntime implements AutoCloseable {
             cell.sourceReceiveSuspended = true;
         }
 
+        // The terminal completion is itself a trusted continuation of this
+        // exact source receive. It must not resume another handler's lease.
+        SerialExecutionTicket completionTicket = cell.issueSourceTaskTicket();
         future.whenCompleteRuntime((ignored, failure) -> {
-            if (!enqueueContinuation(cell.ref.id(), () -> {
+            if (!completionTicket.mayEnqueue()
+                    || !enqueueContinuation(cell.ref.id(), () -> {
                 synchronized (cell.lifecycleLock) {
                     cell.sourceReceiveSuspended = false;
                     cell.activeMail = null;
@@ -1910,7 +1907,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (terminal instanceof Error error) throw error;
                     throw new RuntimeException(terminal);
                 }
-            })) {
+            }, completionTicket)) {
                 synchronized (cell.lifecycleLock) {
                     if (!cell.stopped.get() && !cell.finalized) {
                         cell.sourceReceiveSuspended = false;
@@ -6199,11 +6196,29 @@ public final class ActorRuntime implements AutoCloseable {
             return !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
         }
 
+        private SerialExecutionTicket issueSourceTaskTicket() {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized || closed.get() || forceKillFenced) {
+                    throw terminated(ref);
+                }
+                nextSourceTaskId = Math.addExact(nextSourceTaskId, 1L);
+                return new SerialExecutionTicket(
+                        ref.id(), executionDomain, nextSourceTaskId,
+                        serialAdmission, serialReceiveLease,
+                        () -> !stopped.get() && !finalized
+                                && !forceKillFenced && !closed.get());
+            }
+        }
+
         private OresScheduler sourceScheduler() {
             synchronized (lifecycleLock) {
                 if (sourceScheduler != null) return sourceScheduler;
 
                 java.util.concurrent.Executor mailboxExecutor = command -> {
+                    if (serialAdmission != null) {
+                        throw new RejectedExecutionException(
+                                "serial actor source scheduler requires an issued per-task ticket");
+                    }
                     if (!enqueueContinuation(ref.id(), command)) {
                         throw new RejectedExecutionException(
                                 "actor " + ref.id()
@@ -6682,6 +6697,11 @@ public final class ActorRuntime implements AutoCloseable {
                         }
 
                         if (activeEnvelope.isContinuation()) {
+                            if (serialReceiveLease != null
+                                    && activeEnvelope.taskTicket() == null) {
+                                throw new SecurityException(
+                                        "unticketed continuation cannot resume a serial actor handler");
+                            }
                             // Check immutable scheduler identity before altering a
                             // suspended handler's runnable state. A queued task
                             // from another receive or actor must not wake it.
