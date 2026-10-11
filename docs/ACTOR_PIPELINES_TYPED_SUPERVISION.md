@@ -166,3 +166,26 @@ does not intercept its own panic.
 
 The contract-only tests do not establish message transport,
 hot-code replacement, source grammar support or full parity.
+
+## Incremental bounded transport substrate (new)
+
+`ActorPipeTransport.open(runtime, supervisor, stages, hostTypes, capacity)`
+now allocates bounded `ChannelRuntime` forward edges and binds a new
+ActorGroup to its same-runtime supervisor **before** publication. Host
+wiring returns separate writer and reader capabilities. Writes and reads
+use nonblocking `OresFuture` results, with per-edge outstanding waiter
+limits in addition to bounded buffers. ActorGroup close runs an infrastructure
+close hook to fence pending pipeline operations even when the host closes
+the group without first closing its transport object.
+
+Until real compiler-checked Sendable serialization is available, host
+payload types are limited to an explicit immutable-scalar whitelist and
+messages have a 1 MiB maximum representation budget. Mutable Java maps,
+lists, arrays and generic Objects are not admitted.
+
+There is still **no source actor spawning/connection or automatic transform
+execution** in this class, nor a reverse reply channel; a source PipelineExpr
+must be compiled and checked before user code can instantiate stages.
+The native `NativeActorPipeTransport` currently offers similarly bounded
+host-side forward-byte channels and nonblocking host futures, but source
+continuation lowering and message codecs are still missing.
