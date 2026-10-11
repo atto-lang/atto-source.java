@@ -552,6 +552,33 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        @Override
+        public void tearDownActor(
+                String actorTypeName,
+                ActorRuntime.ActorOwnedGuestState rawState,
+                ActorRuntime.ActorContext<Object> actorContext) {
+            if (!(rawState instanceof SourceActorState state)
+                    || !state.ownerActorId().equals(actorContext.self().id())
+                    || !state.actorTypeName().equals(actorTypeName)) {
+                throw new SecurityException(
+                        "source actor tear_down does not match actor-owned state");
+            }
+            Ast.MethodDecl teardown = findMethod(
+                    state.object().klass,
+                    CallableSelector.instance("tear_down", 0),
+                    new LinkedHashSet<>());
+            if (teardown == null) return;
+            if (teardown.async() || teardown.suspends()
+                    || methodContainsPotentialSuspension(teardown)) {
+                throw new IllegalStateException(
+                        "actor tear_down cannot suspend until scheduler-owned teardown awaits are supported");
+            }
+            // Deliberately bypass ordinary method lookup/call: actor tear_down
+            // is not callable by guest source and can only enter from the
+            // runtime's once-only lifecycle turn.
+            executeActorLifecycleMethod(state.object(), teardown, "tear_down");
+        }
+
         private Ast.ClassDecl requireLocalActorClass(String actorTypeName) {
             Ast.ClassDecl klass = findClass(actorTypeName);
             if (klass == null) {
@@ -569,31 +596,29 @@ public final class OresEvalRootNode extends RootNode {
             return klass;
         }
 
-        private void executeActorStartup(
-                OresObject object,
-                Ast.MethodDecl startup) {
-            Env env =
-                    new Env(
-                            null,
-                            false,
-                            declaringClass(startup),
-                            object);
+        private void executeActorStartup(OresObject object, Ast.MethodDecl startup) {
+            executeActorLifecycleMethod(object, startup, "on_start");
+        }
+
+        private void executeActorLifecycleMethod(
+                OresObject object, Ast.MethodDecl method, String hook) {
+            Env env = new Env(null, false, declaringClass(method), object);
             env.define("self", object, Ast.BindingKind.VAL);
-            bindCallableArguments(env, startup.parameters(), List.of(), "actor on_start");
+            bindCallableArguments(env, method.parameters(), List.of(), "actor " + hook);
             try {
-                executeBlock(startup.body(), env);
+                executeBlock(method.body(), env);
             } catch (ReturnSignal signal) {
                 if (signal.value != null) {
                     throw new IllegalStateException(
-                            "actor on_start cannot return a value");
+                            "actor " + hook + " cannot return a value");
                 }
             } catch (TailCallSignal signal) {
                 throw new IllegalStateException(
-                        "actor on_start cannot tail-call across the startup initialization boundary",
+                        "actor " + hook + " cannot tail-call across a lifecycle boundary",
                         signal);
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException(
-                        "loop control cannot cross actor on_start",
+                        "loop control cannot cross actor " + hook,
                         signal);
             }
         }
@@ -4554,6 +4579,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethodRaw(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("tear_down")) {
+                throw new SecurityException(
+                        "actor tear_down is a runtime-only lifecycle hook, not a callable method");
+            }
             if (args.size() != method.parameters().size()) {
                 throw new IllegalArgumentException(
                         "method " + method.name() + " arity mismatch");
