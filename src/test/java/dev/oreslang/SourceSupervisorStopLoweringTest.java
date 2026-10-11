@@ -70,6 +70,12 @@ final class SourceSupervisorStopLoweringTest {
         var compiled = OresCompiler.compileStopOnlySupervisor(source);
         assertEquals("Root", compiled.sourceName());
         assertTrue(compiled.explicitlyBoundFailure());
+        var childSource = source.replace("self.stop(problem);", "self.stop(problem.child);");
+        var childPlan = OresCompiler.compileStopOnlySupervisor(childSource);
+        assertTrue(childPlan.explicitlyBoundFailure());
+        assertTrue(childPlan.targetsLogicalChild(),
+                "checked Failure.child is a restricted logical-child STOP target");
+        assertFalse(compiled.targetsLogicalChild());
         assertFalse(OresCompiler.compileStopOnlySupervisor(SOURCE)
                 .explicitlyBoundFailure());
         // Normal compilation is still closed until general guest CONTROL
@@ -80,7 +86,7 @@ final class SourceSupervisorStopLoweringTest {
         for (String body : new String[] {
                 "self.stop(wrong); return;",
                 "self.stop(self); return;",
-                "self.stop(problem.child); return;",
+                "self.stop(problem.child.actor); return;",
                 "self.stop(problem.actor); return;",
                 "using self.control { self.stop(); } return;",
                 "using supervisor.control { self.stop(); } return;",
@@ -140,12 +146,13 @@ final class SourceSupervisorStopLoweringTest {
         String source = """
                 define supervisor Root as
                   on_panic(problem: Failure): void {
-                    self.stop(problem);
+                    self.stop(problem.child);
                     return;
                   }
                 end
                 """;
         var compiled = OresCompiler.compileStopOnlySupervisor(source);
+        assertTrue(compiled.targetsLogicalChild());
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup();
             CountDownLatch delivered = new CountDownLatch(1);
