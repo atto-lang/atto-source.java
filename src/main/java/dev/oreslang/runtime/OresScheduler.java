@@ -438,15 +438,11 @@ public final class OresScheduler implements AutoCloseable {
                     "OresScheduler cannot be closed from one of its own task turns; "
                             + "close it from an outside/root scheduler task");
         }
-        // A concurrent caller must wait for this close's cleanup drain.
-        // Returning merely because closed=true would let that caller destroy
-        // its context while the first closer is still unwinding guest tasks.
-        if (closed.get()) {
-            if (closeFailure instanceof RuntimeException failure) throw failure;
-            if (closeFailure instanceof Error failure) throw failure;
-            return;
-        }
-        try {
+        // close() is synchronized: concurrent host closers cannot observe a
+        // half-drained scheduler. The closed flag seals admissions, NOT the
+        // lifecycle of task-owned finally/defer continuations. A timed-out
+        // caller may retry after the outstanding cleanup Future settles.
+        if (!closed.get()) {
             Set<TaskRunner<?>> closingTasks;
             synchronized (tasks) {
                 if (!closed.compareAndSet(false, true)) {
@@ -454,54 +450,51 @@ public final class OresScheduler implements AutoCloseable {
                 }
                 closingTasks = Set.copyOf(tasks);
             }
-
             for (TaskRunner<?> task : closingTasks) {
                 task.cancelFromSchedulerClose();
             }
+        }
 
-            // Host close waits for task-owned cleanup without occupying a carrier.
-            long deadline = System.nanoTime() + CLOSE_DRAIN_NANOS;
-            boolean drained;
-            synchronized (tasks) {
-                while (!tasks.isEmpty()) {
-                    long remaining = deadline - System.nanoTime();
-                    if (remaining <= 0) break;
-                    try {
-                        TimeUnit.NANOSECONDS.timedWait(tasks, remaining);
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-                drained = tasks.isEmpty();
-            }
-            if (!drained) {
-                for (TaskRunner<?> task : Set.copyOf(tasks)) {
-                    task.failTerminal(new IllegalStateException(
-                            "cancellation cleanup drain timed out in " + name));
-                }
-            }
-            if (ownedExecutor != null) {
-                ownedExecutor.shutdownNow();
+        long deadline = System.nanoTime() + CLOSE_DRAIN_NANOS;
+        synchronized (tasks) {
+            while (!tasks.isEmpty()) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) break;
                 try {
-                    if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException(
-                                "OresScheduler " + name + " carriers did not terminate");
-                    }
+                    TimeUnit.NANOSECONDS.timedWait(tasks, remaining);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     throw new java.util.concurrent.CancellationException(
-                            "interrupted while closing OresScheduler " + name);
+                            "interrupted while awaiting OresScheduler cleanup " + name);
                 }
             }
-            if (!drained) {
+            if (!tasks.isEmpty()) {
+                // Never failTerminal() or shutdownNow() the owning carriers
+                // while a cleanup Future is still suspended. A terminal Future
+                // would lie about lexical cleanup, context ownership and
+                // resource release. Retain the live execution contexts for
+                // explicit escalation or a later successful close() retry.
                 throw new IllegalStateException(
-                        "OresScheduler " + name + " closed with unfinished cancellation cleanup");
+                        "OresScheduler " + name + " has unfinished cancellation cleanup");
             }
-        } catch (RuntimeException | Error failure) {
-            closeFailure = failure;
-            throw failure;
         }
+
+        if (ownedExecutor != null) {
+            // Graceful only after all logical contexts have retired. An
+            // interrupting shutdown would violate cleanup single ownership.
+            ownedExecutor.shutdown();
+            try {
+                if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException(
+                            "OresScheduler " + name + " carriers did not terminate");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new java.util.concurrent.CancellationException(
+                        "interrupted while closing OresScheduler " + name);
+            }
+        }
+        closeFailure = null;
     }
 
     private final class TaskRunner<T> implements OresFuture.TaggedRuntimeWaiter {
@@ -932,6 +925,23 @@ public final class OresScheduler implements AutoCloseable {
                     if (observed == TERMINAL) return;
                 } while (!phase.compareAndSet(observed, TERMINAL));
 
+                // Cleanup failure is the primary outcome, but losing the
+                // original cancellation hides the reason lexical finally/defer
+                // ran. Preserve that reason exactly once as suppressed evidence.
+                if (cancelRequested.get() && failure != cancellation
+                        && !(failure instanceof TaskCancelledException)) {
+                    boolean reasonAlreadyRecorded = false;
+                    for (Throwable earlier : failure.getSuppressed()) {
+                        if (earlier == cancellation
+                                || earlier instanceof TaskCancelledException) {
+                            reasonAlreadyRecorded = true;
+                            break;
+                        }
+                    }
+                    if (!reasonAlreadyRecorded) {
+                        failure.addSuppressed(cancellation);
+                    }
+                }
                 terminalOutcome.compareAndSet(null,
                         failure == cancellation
                                 ? new TerminalCancelled<T>(cancellation)
