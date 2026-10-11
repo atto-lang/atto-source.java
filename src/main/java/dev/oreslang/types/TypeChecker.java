@@ -7468,7 +7468,10 @@ public final class TypeChecker {
                 }
                 case "-" -> {
                     if (!(value instanceof Number number)) throw new IllegalArgumentException("unary - switch constant must be numeric");
-                    yield isSwitchIntegral(number) ? -number.longValue() : -number.doubleValue();
+                    // Do not use a numeric ternary here: Java promotes the
+                    // integral arm to double, destroying exactness above 2^53.
+                    if (isSwitchIntegral(number)) yield -number.longValue();
+                    yield -number.doubleValue();
                 }
                 case "!" -> {
                     if (!(value instanceof Boolean bool)) throw new IllegalArgumentException("unary ! switch constant must be boolean");
