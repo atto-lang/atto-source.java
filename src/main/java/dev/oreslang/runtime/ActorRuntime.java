@@ -372,6 +372,13 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
+    // Eager descriptors; exactly one sleeping CONTROL thread per pool once it has an actor.
+    private final ActorPoolControlScheduler privatePoolScheduler =
+            new ActorPoolControlScheduler("ores-private");
+    private final ActorPoolControlScheduler sharedPoolScheduler =
+            new ActorPoolControlScheduler("ores-shared");
+    private final ActorPoolControlScheduler untrustedPoolScheduler =
+            new ActorPoolControlScheduler("ores-untrusted");
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
@@ -3872,9 +3879,14 @@ public final class ActorRuntime implements AutoCloseable {
                 } else {
                     actors.put(id, cell);
                 }
+                // The pool scheduler is created eagerly, but only its first
+                // actor registration starts its dedicated CONTROL thread.
+                poolSchedulerFor(kind).registerActor(id);
                 return ref;
             } catch (RuntimeException | Error failure) {
                 if (linkedToParent && cell != null) parent.children.remove(cell);
+                actors.remove(id);
+                poolSchedulerFor(kind).unregisterActor(id);
                 actorCount.decrementAndGet();
                 throw failure;
             }
@@ -4161,6 +4173,7 @@ public final class ActorRuntime implements AutoCloseable {
             group.actorTerminated(cell.ref.id());
         }
         if (actors.remove(cell.ref.id(), cell)) {
+            poolSchedulerFor(cell.kind).unregisterActor(cell.ref.id());
             int remaining = actorCount.decrementAndGet();
             if (remaining < 0) {
                 actorCount.incrementAndGet();
@@ -5898,6 +5911,26 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        // A pool's dedicated CONTROL loop never executes guest code; stop it
+        // independently of physical carrier cleanup, including failed drains.
+        for (ActorPoolControlScheduler scheduler :
+                List.of(privatePoolScheduler, sharedPoolScheduler, untrustedPoolScheduler)) {
+            scheduler.shutdown();
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                dispatchersTerminated = false;
+                continue;
+            }
+            try {
+                if (!scheduler.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+                    dispatchersTerminated = false;
+                }
+            } catch (InterruptedException waitInterrupted) {
+                interrupted = true;
+                dispatchersTerminated = false;
+            }
+        }
+
         // Source tasks retain their owned resources across failed cleanup
         // drains. When there were no source tasks to unwind, preserve the
         // older fail-closed revocation of shared handles even if a hostile
@@ -5941,6 +5974,26 @@ public final class ActorRuntime implements AutoCloseable {
             case SHARED -> sharedDispatcher;
             case UNTRUSTED -> untrustedDispatcher;
         };
+    }
+
+    private ActorPoolControlScheduler poolSchedulerFor(ActorKind kind) {
+        return switch (kind) {
+            case PRIVATE -> privatePoolScheduler;
+            case SHARED -> sharedPoolScheduler;
+            case UNTRUSTED -> untrustedPoolScheduler;
+        };
+    }
+
+    /** Only physical actor pool scheduler CONTROL threads, not carrier or VM threads. */
+    public int activatedActorPoolSchedulers() {
+        return (privatePoolScheduler.started() ? 1 : 0)
+                + (sharedPoolScheduler.started() ? 1 : 0)
+                + (untrustedPoolScheduler.started() ? 1 : 0);
+    }
+
+    /** Host-owned master scheduler sends a wakeup, never a cross-thread guest callback. */
+    void wakeActorPoolSchedulerFromMaster(ActorKind kind) {
+        poolSchedulerFor(Objects.requireNonNull(kind)).signalMasterControl();
     }
 
     private static boolean usesNativeCarriers(ExecutorService executor) {
@@ -6568,6 +6621,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || forceKillFenced || (closed.get() && !sourceCleanupDraining)) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
+                poolSchedulerFor(kind).signalActorWork();
                 ExecutorService dispatcher = dispatcherFor(kind);
                 if (dispatcher instanceof ActorAffinityDispatcher lanes) {
                     lanes.executeOnLane(dispatchLane, this::runBatch);
