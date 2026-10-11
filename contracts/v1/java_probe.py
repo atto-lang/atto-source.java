@@ -37,7 +37,13 @@ def main():
     log_dir.mkdir(parents=True, exist_ok=True)
     log_name = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:20] + ".log"
     engine_log = log_dir / log_name
-    argv = ["java", "-XX:+EnableJVMCI", "--enable-native-access=ALL-UNNAMED",
+    # JDK 25 warns on the existing Truffle dependency's deprecated Unsafe
+    # adapter. This runner-only compatibility option retains its current
+    # (already permitted) behavior while preserving every guest stderr byte.
+    # Production compatibility with future JDK deny/removal is a separate gate.
+    argv = ["java", "-XX:+EnableJVMCI",
+            "--sun-misc-unsafe-memory-access=allow",
+            "--enable-native-access=ALL-UNNAMED",
             "-Dpolyglot.log.file=" + str(engine_log),
             "-cp", str(classes) + os.pathsep + deps,
             "dev.oreslang.launcher.OresMain",
