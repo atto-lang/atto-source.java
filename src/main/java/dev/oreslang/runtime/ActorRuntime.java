@@ -2041,6 +2041,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final OresFuture<Void> closedWorkersDone =
                 new OresFuture<>(() -> false, () -> { });
         private final Object authorityLock = new Object();
+        // Trusted runtime resource closures, not guest callbacks. Invoked
+        // outside authorityLock after the group is fenced but before worker
+        // cancellation and event-bus teardown.
+        private final Set<Runnable> infrastructureCloseHooks = new LinkedHashSet<>();
         private final ActorEventBus eventBus;
         private final AtomicReference<GroupMailmanState<?>> mailmanState = new AtomicReference<>();
         private UUID joinSecret = UUID.randomUUID();
@@ -2082,6 +2086,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public boolean closed() { return groupClosed.get(); }
+
+        void registerInfrastructureClose(Runnable hook) {
+            Objects.requireNonNull(hook, "hook");
+            synchronized (authorityLock) {
+                requireOpen();
+                infrastructureCloseHooks.add(hook);
+            }
+        }
 
         public int memberCount() {
             requireObserver("inspect ActorGroup membership");
@@ -2520,14 +2532,28 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void closeFromRuntime() {
             List<ActorRef<?>> owned;
+            List<Runnable> infrastructureClosures;
             synchronized (authorityLock) {
                 if (!groupClosed.compareAndSet(false, true)) return;
                 // Revocation is part of close: even a capability held by code
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
                 owned = List.copyOf(managedWorkers.values());
+                infrastructureClosures = List.copyOf(infrastructureCloseHooks);
+                infrastructureCloseHooks.clear();
                 managedWorkers.clear();
                 stoppingWorkers.clear();
+            }
+            // Runtime resources are fenced immediately; this must happen
+            // without authorityLock and failures must not strand other hooks.
+            RuntimeException infrastructureFailure = null;
+            for (Runnable closure : infrastructureClosures) {
+                try {
+                    closure.run();
+                } catch (RuntimeException failure) {
+                    if (infrastructureFailure == null) infrastructureFailure = failure;
+                    else infrastructureFailure.addSuppressed(failure);
+                }
             }
             // Attach completion handlers before requesting cancellation: an
             // actor might finalize synchronously during the first stop call.
@@ -2573,6 +2599,11 @@ public final class ActorRuntime implements AutoCloseable {
                     members.clear();
                     actorGroups.remove(id, this);
                 }
+            }
+            if (infrastructureFailure != null) {
+                if (cancellationFailure != null)
+                    infrastructureFailure.addSuppressed(cancellationFailure);
+                throw infrastructureFailure;
             }
             if (cancellationFailure != null) throw cancellationFailure;
         }
