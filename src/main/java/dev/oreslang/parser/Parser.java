@@ -704,9 +704,25 @@ public final class Parser {
             // silently treated as ordinary actor methods before runtime
             // teardown dispatch and typed exceptional-effect lowering exist.
             if (check(IDENT) && peek().lexeme().equals("tear_down")) {
-                throw error(peek(), "actor tear_down lifecycle hook requires "
-                        + "compiler-managed once-only teardown and resource cleanup; "
-                        + "source hook is not yet enabled");
+                Ast.MethodDecl teardown = parseMethod(annotations, mods);
+                // tear_down is a runtime-only lifecycle entry point, not an
+                // ordinary user-invokable actor method. The first executable
+                // slice is synchronous; suspend/async awaits require a pinned
+                // teardown continuation and are rejected until implemented.
+                if (teardown.isStatic() || teardown.async() || teardown.suspends()
+                        || teardown.arity() != 0
+                        || !teardown.genericParameters().isEmpty()
+                        || !teardown.returnType().name().equals("void")
+                        || !teardown.returnType().arguments().isEmpty()) {
+                    throw error(previous(),
+                            "actor tear_down must be a synchronous, nonstatic, "
+                                    + "zero-argument, nongeneric void lifecycle method");
+                }
+                if (methods.stream().anyMatch(m -> m.name().equals("tear_down"))) {
+                    throw error(previous(), "actor tear_down may be declared only once");
+                }
+                methods.add(teardown);
+                continue;
             }
             if (check(IDENT) && peek().lexeme().equals("on_panic")) {
                 throw error(peek(), "actor-local on_panic is forbidden: "
