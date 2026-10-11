@@ -2753,6 +2753,7 @@ public final class Parser {
             boolean mutable = match(MUT);
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
         }
+        if (match(TRAP)) return new Ast.UnaryExpr("trap", parseUnary());
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
         if (match(RT)) return parseRuntimeExpression();
 
