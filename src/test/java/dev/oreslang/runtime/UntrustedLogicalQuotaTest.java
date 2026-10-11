@@ -153,6 +153,7 @@ final class UntrustedLogicalQuotaTest {
             throws Exception {
         AtomicReference<OresFuture<Integer>> retained = new AtomicReference<>();
         AtomicReference<Throwable> secondRejected = new AtomicReference<>();
+        AtomicReference<Throwable> physicalBudgetDenied = new AtomicReference<>();
         java.util.concurrent.CountDownLatch attempted =
                 new java.util.concurrent.CountDownLatch(1);
         OresFuture<Integer> wait = new OresFuture<>();
@@ -169,6 +170,11 @@ final class UntrustedLogicalQuotaTest {
                     } catch (SecurityException expected) {
                         secondRejected.set(expected);
                     } finally {
+                        try {
+                            turn.runtime().schedulerSafepoint();
+                        } catch (SecurityException expected) {
+                            physicalBudgetDenied.set(expected);
+                        }
                         attempted.countDown();
                     }
                 }
@@ -183,10 +189,48 @@ final class UntrustedLogicalQuotaTest {
             assertTrue(attempted.await(3, TimeUnit.SECONDS));
             assertTrue(secondRejected.get() instanceof SecurityException,
                     "a second top-level source task cannot mint another quota");
+            assertTrue(physicalBudgetDenied.get() instanceof SecurityException,
+                    "a physical user turn cannot spend another quota while suspended");
             // First source Future is still registered while the second message
             // runs; completing it lets the quota cohort retire.
             wait.completeFromRuntime(1);
             assertEquals(7, retained.get().get(3, TimeUnit.SECONDS));
+            actor.stop();
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void nestedUntrustedTasksShareOneQuotaAndRetireWithoutUnderflow()
+            throws Exception {
+        AtomicReference<OresFuture<Integer>> outerRef = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnUntrusted(context -> (message, turn) ->
+                    outerRef.set(turn.runtime().startActorTask(new OresScheduler.Task<>() {
+                        private OresFuture<Integer> child;
+
+                        @Override
+                        public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume resume) {
+                            turn.runtime().schedulerSafepoint();
+                            if (resume.initial()) {
+                                child = turn.runtime().startActorTask(
+                                        next -> {
+                                            turn.runtime().schedulerSafepoint();
+                                            return OresScheduler.done(7);
+                                        });
+                                return OresScheduler.await(child);
+                            }
+                            return OresScheduler.done((Integer) resume.value());
+                        }
+                    })));
+            actor.send("nested");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (outerRef.get() == null && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(outerRef.get() != null, "parent task was not admitted");
+            assertEquals(7, outerRef.get().get(3, TimeUnit.SECONDS));
             actor.stop();
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
         }
