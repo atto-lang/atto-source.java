@@ -420,6 +420,14 @@ public final class ActorEventBus implements AutoCloseable {
         try {
             synchronized (topic.deliveryLock) {
                 requireOpen();
+                // A publisher may lose membership while its payload is being
+                // frozen. Revalidate at the delivery admission boundary so
+                // no post-revocation publication can commit to subscribers.
+                // System publications have a separately checked authority.
+                if (publisher != null && !group.isMember(publisher)) {
+                    throw new SecurityException(
+                            "ActorGroup membership revoked before event publication");
+                }
                 if (topics.get(topic.name) != topic) {
                     throw new IllegalStateException(
                             "ActorGroup event topic is no longer registered: " + topic.name);
