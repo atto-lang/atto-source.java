@@ -152,7 +152,13 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     /** The scheduler alone settles a cancelled Task Future after its cleanup drain. */
     boolean cancelFromRuntime(CancellationException reason) {
-        return settle(new Cancelled(Objects.requireNonNull(reason, "reason")));
+        boolean cancelled = settle(new Cancelled(Objects.requireNonNull(reason, "reason")));
+        // A scheduler-close cancellation can settle a deferred task without
+        // ever calling the public cancel() hook. Drop that hook just as normal
+        // success/failure publication does, so an observed terminal Future
+        // cannot retain its completed TaskRunner and owning scheduler.
+        if (cancelled) cancelHook.set(null);
+        return cancelled;
     }
 
     public static <T> OresFuture<T> completed(T value) {
