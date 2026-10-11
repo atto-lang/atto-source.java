@@ -179,3 +179,37 @@ Release gates: full Java/Graal guest execution CI; LLVM actor state source
 lowering; scheduler-owned await/loan retirement and continuation ID proof;
 live restart/cancel/panic/teardown races; FFM/native arena budget accounting;
 identical actor source/output/failure fixtures through both backends.
+
+## Builtin serial actor critical inference and runtime gate (2026-10-11)
+
+The Java/Graal source parser now understands `define serial actor Counter as ... end`
+and `define actor Counter from serial actor as ... end`. Both construct the
+builtin, compiler-owned serial actor base. It is a scheduling type and its
+`handle_state` implementation is **sealed**, never user-overridable.
+
+Serial actors may omit the `critical` keyword on actor instance methods and
+inline `self.handle_state(|s| -> ...)` callbacks; explicit `critical` remains
+valid. Ordinary actors **must** retain `critical` on the state callback.
+The verifier, `using` checker, type checker, and runtime evaluator all apply
+the serial-specific rule. The callback still cannot escape, suspend with a
+live state loan, mutate fields without declared effects, or bypass the
+actor's ownership and lifecycle checks.
+
+`SerialActorAdmission` is an initial bounded, nonblocking Java runtime gate
+for an **actor-wide lifetime**, with exactly one admitted HTTP request
+**or** one actor message (not one of each). It keeps a single reservation
+during suspension even when the physical carrier is released, fences stale
+leases after shutdown, removes canceled waiters, and uses FIFO admission
+without invoking continuations while holding a JVM monitor. This primitive
+is independently testable, but the production HTTP transport adapter does
+**not** yet attach to it; do not advertise serial HTTP dispatch as complete.
+The current Java source actor mailbox already supports single-flight
+message execution and synchronous sealed scalar state callbacks.
+
+A source guest JUnit test covers the unannotated serial Counter with three
+actor messages and a scoped read/write. A separate admission test exercises
+1,000 mixed synthetic HTTP/message lifetimes, suspension, queue capacity,
+cancellation and shutdown. Full current-head GraalVM Maven/native-image
+verification and real HTTP+message integration are release gates. LLVM
+continues to support the corresponding trusted native admission policy,
+not yet source-level guest actor state codegen.
