@@ -98,6 +98,46 @@ final class CleanupReturnFinalityTest {
     }
 
     @Test
+    void deferredArrayMutationPreservesTheOriginalReturnedObject() {
+        String code = """
+                fnc make(): Array<int> {
+                  let mut Array<int> result = new Array<int>();
+                  result.add(1);
+                  defer result.add(4);
+                  return result;
+                }
+                pub fnc main(): int {
+                  val Array<int> result = make();
+                  return result.get(1);
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(code)));
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            assertEquals(4L, context.eval(Source.newBuilder("ores", code, "deferred-array.ores").build()).asLong());
+        }
+    }
+
+    @Test
+    void deferredArrayMutationsExecuteInLifoOrder() {
+        String code = """
+                fnc make(): Array<int> {
+                  let mut Array<int> result = new Array<int>();
+                  defer result.add(1);
+                  defer result.add(2);
+                  return result;
+                }
+                pub fnc main(): int {
+                  val Array<int> result = make();
+                  return result.get(0) * 10 + result.get(1);
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(code)));
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            assertEquals(21L, context.eval(Source.newBuilder("ores", code, "deferred-array-lifo.ores").build()).asLong());
+        }
+    }
+
+    @Test
     void mutableReturnedObjectIsModifiedByDefer() {
         String code = BOX + """
                 fnc bump(borrow mut Box box): void {
