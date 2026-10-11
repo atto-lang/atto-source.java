@@ -118,4 +118,35 @@ final class TaggedActorMessageBindingTest {
         assertEquals(new TaggedActorMessageBinding.TaggedMessage("Flags.Ping", 1, null),
                 compiled.decode(compiled.encode("Flags.Ping", null)));
     }
+
+    @Test
+    void portableSourceBindingRejectsNativeOverLimitWithoutReducingJavaCodecCapacity() {
+        var alternatives = new java.util.ArrayList<TaggedMessageContracts.Case>();
+        for (int tag = 1; tag <= 65; tag++) {
+            alternatives.add(new TaggedMessageContracts.Case(
+                    "Many", "Case" + tag, tag,
+                    dev.oreslang.ast.Ast.TypeRef.simple("string"),
+                    dev.oreslang.runtime.MessagePackCollectionCodec.string()));
+        }
+        var registry = new TaggedMessageContracts.Registry(
+                java.util.Map.of(), java.util.Map.of(
+                        "Many", new TaggedMessageContracts.Domain("Many", alternatives)));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TaggedActorMessageBinding.fromRegistry(registry, "Many"));
+        assertTrue(error.getMessage().contains("1..64"), error.getMessage());
+
+        var portable = new TaggedMessageContracts.Registry(
+                java.util.Map.of(), java.util.Map.of("Many",
+                        new TaggedMessageContracts.Domain("Many", alternatives.subList(0, 64))));
+        var binding = TaggedActorMessageBinding.fromRegistry(portable, "Many");
+        assertEquals(64, binding.variantCount());
+        // Java's independent generic tagged codec may still support larger
+        // host-only domains; the source actor binding must not imply LLVM parity.
+        var javaOnly = new dev.oreslang.runtime.TaggedMessageCodec(
+                new TaggedMessageContracts.Domain("Many", alternatives));
+        var value = new dev.oreslang.runtime.TaggedMessageCodec.TaggedValue(
+                "Many", "Case65", 65, "java-host-only");
+        assertEquals(value, javaOnly.decode(javaOnly.encode(value)));
+    }
+
 }
