@@ -99,6 +99,7 @@ final class SourceSupervisorAwaitStopTest {
             assertEquals(SupervisorChildRegistry.Phase.STOPPING,
                     group.childSnapshot(logicalChild).phase(),
                     "await must retain exclusive STOP generation across suspension");
+            assertEquals(SupervisorChildRegistry.StopReceiptStatus.PENDING, group.stopReceipt(logicalChild).status());
             assertTrue(process.callbackActive(), "await dropped logical CONTROL lease");
             assertEquals(0, process.resolved(), "STOP falsely committed before host acknowledgment");
 
