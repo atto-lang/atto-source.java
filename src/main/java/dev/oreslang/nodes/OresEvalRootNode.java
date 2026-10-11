@@ -2925,12 +2925,178 @@ public final class OresEvalRootNode extends RootNode {
                     Map.copyOf(bindings));
         }
 
+        /**
+         * Completes a heap-backed value arm after all defers/finalizers have run.
+         * An arm-local return is a distinct flow, not a guest exception or
+         * containing-function return. The SourceTask retains this callback
+         * across Await without retaining a native carrier stack.
+         */
+        private void finishSuspendableValueArm(
+                SourceTask task, List<Ast.Stmt> body, Env env,
+                SourceValueCont continuation) {
+            runBlock(task, body, env, (resumed, flow) -> {
+                switch (flow.kind()) {
+                    case ARM_RETURN ->
+                            continuation.accept(resumed, flow.value(), null);
+                    case THROW ->
+                            continuation.accept(resumed, null, flow.failure());
+                    case NORMAL ->
+                            continuation.accept(resumed, null,
+                                    new IllegalStateException(
+                                            "value dispatch arm completed without result"));
+                    case RETURN, BREAK, CONTINUE ->
+                            continuation.accept(resumed, null,
+                                    new IllegalStateException(
+                                            "invalid nonlocal flow from suspendable value arm: "
+                                                    + flow.kind()));
+                }
+            });
+        }
+
+        private void evalSuspendableValueMatch(
+                SourceTask task, Ast.ValueMatchExpr match,
+                Env env, SourceValueCont continuation) {
+            evalSuspendableExpr(task, match.subject(), env, (t, subject, failure) -> {
+                if (failure != null) {
+                    continuation.accept(t, null, failure);
+                    return;
+                }
+                selectSuspendableValueMatchArm(t, match, subject, env, 0,
+                        null, null, continuation);
+            });
+        }
+
+        private void selectSuspendableValueMatchArm(
+                SourceTask task, Ast.ValueMatchExpr matched, Object subject,
+                Env env, int index, Ast.MatchArm selected, Env selectedEnv,
+                SourceValueCont continuation) {
+            if (index == matched.arms().size()) {
+                if (selected == null) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "exhaustive value match reached uncovered input"));
+                } else {
+                    finishSuspendableValueArm(task, selected.body(),
+                            selectedEnv, continuation);
+                }
+                return;
+            }
+            Ast.MatchArm arm = matched.arms().get(index);
+            boolean fallback = !matched.ordered() && arm.guard() == null
+                    && (arm.pattern() instanceof Ast.WildcardPattern
+                        || arm.pattern() instanceof Ast.BindingPattern);
+            LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+            if (!patternMatches(arm.pattern(), subject, bindings)) {
+                selectSuspendableValueMatchArm(task, matched, subject, env,
+                        index + 1, selected, selectedEnv, continuation);
+                return;
+            }
+            Env armEnv = new Env(env);
+            bindings.forEach((name, value) -> armEnv.define(
+                    name, value, Ast.BindingKind.VAL));
+            if (fallback) {
+                // An unguarded fallback is considered only after concrete arms.
+                selectSuspendableValueMatchArm(task, matched, subject, env,
+                        index + 1, selected == null ? arm : selected,
+                        selected == null ? armEnv : selectedEnv, continuation);
+                return;
+            }
+            SourceValueCont matchedGuard = (resumed, value, failure) -> {
+                if (failure != null) {
+                    continuation.accept(resumed, null, failure);
+                    return;
+                }
+                if (!truth(value)) {
+                    selectSuspendableValueMatchArm(resumed, matched, subject, env,
+                            index + 1, selected, selectedEnv, continuation);
+                    return;
+                }
+                if (matched.ordered()) {
+                    finishSuspendableValueArm(resumed, arm.body(), armEnv, continuation);
+                } else if (selected != null) {
+                    continuation.accept(resumed, null, new IllegalStateException(
+                            "exclusive value match selected more than one arm"));
+                } else {
+                    selectSuspendableValueMatchArm(resumed, matched, subject, env,
+                            index + 1, arm, armEnv, continuation);
+                }
+            };
+            if (arm.guard() == null) {
+                matchedGuard.accept(task, true, null);
+            } else {
+                evalSuspendableExpr(task, arm.guard(), armEnv, matchedGuard);
+            }
+        }
+
+        private void evalSuspendableValueSwitch(
+                SourceTask task, Ast.ValueSwitchExpr switched,
+                Env env, SourceValueCont continuation) {
+            evalSuspendableExpr(task, switched.subject(), env, (t, subject, failure) -> {
+                if (failure != null) {
+                    continuation.accept(t, null, failure);
+                    return;
+                }
+                selectSuspendableValueSwitchCase(t, switched, subject, env, 0,
+                        0, continuation);
+            });
+        }
+
+        private void selectSuspendableValueSwitchCase(
+                SourceTask task, Ast.ValueSwitchExpr switched, Object subject,
+                Env env, int caseIndex, int constantIndex,
+                SourceValueCont continuation) {
+            if (caseIndex >= switched.cases().size()) {
+                if (switched.defaultBody().isEmpty()) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "exhaustive value switch reached uncovered input"));
+                } else {
+                    finishSuspendableValueArm(task, switched.defaultBody(),
+                            env, continuation);
+                }
+                return;
+            }
+            Ast.SwitchCase arm = switched.cases().get(caseIndex);
+            if (constantIndex >= arm.constants().size()) {
+                selectSuspendableValueSwitchCase(task, switched, subject, env,
+                        caseIndex + 1, 0, continuation);
+                return;
+            }
+            evalSuspendableExpr(task, arm.constants().get(constantIndex), env,
+                    (resumed, value, failure) -> {
+                        if (failure != null) {
+                            continuation.accept(resumed, null, failure);
+                        } else if (valueEquals(subject, value)) {
+                            finishSuspendableValueArm(resumed, arm.body(),
+                                    env, continuation);
+                        } else {
+                            selectSuspendableValueSwitchCase(resumed, switched,
+                                    subject, env, caseIndex,
+                                    constantIndex + 1, continuation);
+                        }
+                    });
+        }
+
         private void evalSuspendableExpr(
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
                 SourceValueCont continuation) {
             try {
+                // A source-task expression can now preserve the selected value
+                // arm and cleanup obligations across a pending Await.
+                if (expr instanceof Ast.ValueMatchExpr matched
+                        && expressionContainsPotentialSuspension(expr,
+                                java.util.Collections.newSetFromMap(
+                                        new IdentityHashMap<>()))) {
+                    evalSuspendableValueMatch(task, matched, env, continuation);
+                    return;
+                }
+                if (expr instanceof Ast.ValueSwitchExpr switched
+                        && expressionContainsPotentialSuspension(expr,
+                                java.util.Collections.newSetFromMap(
+                                        new IdentityHashMap<>()))) {
+                    evalSuspendableValueSwitch(task, switched, env, continuation);
+                    return;
+                }
                 if (!expressionContainsPotentialSuspension(
                         expr,
                         java.util.Collections.newSetFromMap(
