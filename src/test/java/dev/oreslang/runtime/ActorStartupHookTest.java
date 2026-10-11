@@ -42,7 +42,7 @@ final class ActorStartupHookTest {
             try {
                 assertFalse(ref.ready().isDone(),
                         "READY must remain pending until on_start has completed");
-                assertEquals(0, order.get() - 1);
+                assertEquals(1, order.get());
             } finally {
                 releaseStartup.countDown();
             }
