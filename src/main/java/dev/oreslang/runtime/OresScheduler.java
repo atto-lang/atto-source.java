@@ -391,7 +391,8 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     private void executeTurn(Runnable turn, Runnable afterTurn,
-            java.util.function.Consumer<Throwable> admissionFailure) {
+            java.util.function.Consumer<Throwable> admissionFailure,
+            java.util.function.BooleanSupplier enterContext) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         // Existing admitted tasks may resume cancellation cleanup after close().
@@ -399,7 +400,12 @@ public final class OresScheduler implements AutoCloseable {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
             SCHEDULER_CARRIER.set(Boolean.TRUE);
             try {
-                turnExecutor.execute(() -> runBoundAdmittedTask(turn));
+                // A queued cancellation may revoke its unclaimed carrier
+                // ticket. In that case the already-submitted Runnable is a
+                // no-op and must never enter the Truffle/VM context.
+                if (enterContext.getAsBoolean()) {
+                    turnExecutor.execute(() -> runBoundAdmittedTask(turn));
+                }
             } catch (RuntimeException | Error failure) {
                 // Context admission can fail before runTurn starts. Settle the
                 // owning task instead of leaving the host waiting forever.
@@ -512,6 +518,40 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicBoolean executing = new AtomicBoolean();
         // Reserved before QUEUED publication; released after VM carrier exit.
         private final AtomicInteger outstandingCarrierTurns = new AtomicInteger();
+        private final AtomicReference<CarrierLease> queuedCarrierLease =
+                new AtomicReference<>();
+
+        /** CAS arbitration between VM admission and revocation of queued work. */
+        private final class CarrierLease {
+            // 0 reserved/queued, 1 context entry claimed, 2 revoked.
+            private final AtomicInteger admission = new AtomicInteger();
+            private final AtomicBoolean released = new AtomicBoolean();
+
+            boolean enterContext() {
+                boolean entered = admission.compareAndSet(0, 1);
+                if (entered) queuedCarrierLease.compareAndSet(this, null);
+                return entered;
+            }
+
+            boolean revoke() {
+                if (!admission.compareAndSet(0, 2)) return false;
+                queuedCarrierLease.compareAndSet(this, null);
+                release();
+                return true;
+            }
+
+            void release() {
+                queuedCarrierLease.compareAndSet(this, null);
+                if (released.compareAndSet(false, true)) releaseCarrierReservation();
+            }
+        }
+
+        private CarrierLease reserveCarrier() {
+            CarrierLease lease = new CarrierLease();
+            outstandingCarrierTurns.incrementAndGet();
+            queuedCarrierLease.set(lease);
+            return lease;
+        }
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -560,6 +600,13 @@ public final class OresScheduler implements AutoCloseable {
                 int observed = phase.get();
                 if (observed != NEW && observed != QUEUED && observed != WAITING) {
                     return false;
+                }
+                if (observed == QUEUED) {
+                    // Do not settle a carrier that has already claimed VM entry.
+                    // A still-queued carrier can be revoked without executing
+                    // any guest code or consuming the actor CONTROL queue.
+                    CarrierLease lease = queuedCarrierLease.get();
+                    if (lease == null || !lease.revoke()) return false;
                 }
                 if (!phase.compareAndSet(observed, TERMINAL)) return false;
                 terminalOutcome.set(new TerminalCancelled<T>(cancellation));
@@ -612,30 +659,24 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void scheduleInitial() {
-            outstandingCarrierTurns.incrementAndGet();
+            CarrierLease lease = reserveCarrier();
             if (!phase.compareAndSet(NEW, QUEUED)) {
-                releaseCarrierReservation();
+                lease.release();
                 throw new IllegalStateException("scheduler task was already started");
             }
-            enqueueTurn();
+            enqueueTurn(lease);
         }
 
-        private void enqueueTurn() {
-            // Every submission owns one reservation, including a cancelled
-            // QUEUED turn which never enters runTurn(). Atomic release handles
-            // inline executors and rejection without double retirement.
-            AtomicBoolean released = new AtomicBoolean();
-            Runnable release = () -> {
-                if (released.compareAndSet(false, true)) releaseCarrierReservation();
-            };
+        private void enqueueTurn(CarrierLease lease) {
             try {
                 executeTurn(() -> {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn();
                     }
-                }, () -> afterCarrierTurn(release), this::failTerminal);
+                }, () -> afterCarrierTurn(lease::release),
+                        this::failTerminal, lease::enterContext);
             } catch (RuntimeException | Error rejected) {
-                release.run();
+                lease.release();
                 failTerminal(rejected);
                 throw rejected;
             }
@@ -841,13 +882,13 @@ public final class OresScheduler implements AutoCloseable {
             if (pendingResume.get() == null) return;
             // Reserve before WAITING->QUEUED so concurrent cancellation sees
             // the still-pending physical carrier rather than a drained task.
-            outstandingCarrierTurns.incrementAndGet();
+            CarrierLease lease = reserveCarrier();
             if (!phase.compareAndSet(WAITING, QUEUED)) {
-                releaseCarrierReservation();
+                lease.release();
                 return;
             }
             try {
-                enqueueTurn();
+                enqueueTurn(lease);
             } catch (RejectedExecutionException rejected) {
                 // enqueueTurn already failed the task and released its lease.
             }
