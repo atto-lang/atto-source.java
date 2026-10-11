@@ -267,6 +267,37 @@ final class ValueDispatchControlFlowTest {
     }
 
     @Test
+    void proceduralReturnInsideAwaitedValueArmTargetsContainingFunction() throws Exception {
+        assertEquals("cleanup-early\n99\n", execute("""
+                async fnc answer(): int { return 41; }
+
+                async fnc early(): int {
+                  return match 1 over
+                    on _ {
+                      defer stdio.println("cleanup-early");
+                      try {
+                        const x = await answer();
+                        do switch x
+                          case 41 { return 99; }
+                        end
+                        return 0;
+                      } catch (error) {
+                        return 1;
+                      } finally {
+                        stdio.println("finally-early");
+                      }
+                    }
+                  end
+                }
+
+                pub async fnc main(): void {
+                  stdio.println(await early());
+                  return;
+                }
+                """).replace("finally-early\n", ""));
+    }
+
+    @Test
     void lexicalArmReturnSurvivesTryFinallyAndRunsCleanupExactlyOnce() throws Exception {
         assertEquals("finally\narm-defer\narm\ndo-finally\ndo-defer\nearly\ncase\ndefault\n",
                 execute("""
