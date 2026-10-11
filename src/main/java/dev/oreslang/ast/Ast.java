@@ -610,8 +610,19 @@ public final class Ast {
      * flag is retained for AST compatibility; canonical source syntax is
      * always ordered and the parser emits true.
      */
-    public record MatchStmt(Expr subject, boolean ordered, List<MatchArm> arms) implements Stmt {
+    public record MatchStmt(
+            Expr subject,
+            boolean ordered,
+            List<MatchArm> arms,
+            boolean procedural,
+            TypeRef returnContract,
+            boolean shorthandReturnContract) implements Stmt {
         public MatchStmt { arms = List.copyOf(arms); }
+
+        /** Compatibility for unannotated match statements and AST consumers. */
+        public MatchStmt(Expr subject, boolean ordered, List<MatchArm> arms) {
+            this(subject, ordered, arms, false, null, false);
+        }
     }
 
     public record SwitchCase(List<Expr> constants, List<Stmt> body) {
