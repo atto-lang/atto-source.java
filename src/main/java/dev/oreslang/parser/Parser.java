@@ -2477,7 +2477,7 @@ public final class Parser {
             return new Ast.TuplePattern(elements);
         }
 
-        if (match(INT)) return new Ast.LiteralPattern(parseIntLiteral(previous()));
+        if (match(INT)) return new Ast.LiteralPattern(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
         if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
@@ -2988,8 +2988,24 @@ public final class Parser {
         };
     }
 
+    // A guest-language literal must not leak Java's NumberFormatException.
+    // Both expression and pattern literals use the same signed-i64 bound.
+    // Wider integers require a separately admitted type and backend contract.
+    private long parseSignedI64(Token token) {
+        String literal = token.lexeme();
+        // Do not silently turn malformed token separators into valid integers.
+        if (literal.endsWith("_") || literal.contains("__")) {
+            throw error(token, "malformed integer separator: " + literal);
+        }
+        try {
+            return Long.parseLong(literal.replace("_", ""));
+        } catch (NumberFormatException invalid) {
+            throw error(token, "integer literal overflows signed 64-bit: " + literal);
+        }
+    }
+
     private Ast.Expr parsePrimary() {
-        if (match(INT)) return new Ast.LiteralExpr(parseIntLiteral(previous()));
+        if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
             String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
@@ -3445,24 +3461,6 @@ public final class Parser {
 
     private static boolean isIdentifierLikeToken(Token.Type type) {
         return type == IDENT || type == SHARED || type == UNTRUSTED;
-    }
-
-    /**
-     * Oreslang int literals are signed i64 in the portable source fragment.
-     * Normalize overflow to an Oreslang diagnostic instead of leaking the
-     * JVM's NumberFormatException and its platform-specific wording.
-     * Keep the same admission policy for expression and match-pattern ints.
-     */
-    private long parseIntLiteral(Token token) {
-        String raw = token.lexeme();
-        if (raw.endsWith("_") || raw.contains("__")) {
-            throw error(token, "malformed integer separator");
-        }
-        try {
-            return Long.parseLong(raw.replace("_", ""));
-        } catch (NumberFormatException invalid) {
-            throw error(token, "integer literal overflows signed 64-bit result");
-        }
     }
 
     private boolean match(Token.Type... types) {
