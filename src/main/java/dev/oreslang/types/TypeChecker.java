@@ -2334,7 +2334,7 @@ public final class TypeChecker {
                         return new Named("ActorGroup", List.of());
                     }
                     return switch (member.member()) {
-                        case "join_capability" -> new Named("ActorGroupJoinCapability", List.of());
+                        case "join_capability", "rotate_join_capability" -> new Named("ActorGroupJoinCapability", List.of());
                         case "leave", "close" -> Primitive.VOID;
                         case "is_closed" -> Primitive.BOOL;
                         case "member_count" -> Primitive.INT;
