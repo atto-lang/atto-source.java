@@ -4596,24 +4596,49 @@ public final class OresEvalRootNode extends RootNode {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
+            Throwable originalFailure = null;
             try {
-                for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
+                for (Ast.Stmt stmt : statements)
+                    executeStatement(stmt, env, deferred, inheritedTailBarrier);
             } catch (TailCallSignal signal) {
                 throw signal;
             } catch (ReturnSignal | ArmResultSignal | BreakSignal | ContinueSignal signal) {
+                // Lexical completions are not guest exceptions. Cleanup still
+                // runs exactly once before their nearest lexical handler.
                 throw signal;
             } catch (RuntimeException | Error failure) {
                 abnormalExit = true;
+                originalFailure = failure;
                 throw failure;
             } finally {
-                boolean deferredFailure = false;
+                Throwable cleanupFailure = null;
+                // Run every deferred cleanup in LIFO order, even after one
+                // fails. Preserve the first cleanup failure as the leader.
+                while (!deferred.isEmpty()) {
+                    try {
+                        eval(deferred.pop(), env);
+                    } catch (RuntimeException | Error failure) {
+                        if (cleanupFailure == null) cleanupFailure = failure;
+                        else if (cleanupFailure != failure)
+                            cleanupFailure.addSuppressed(failure);
+                    }
+                }
                 try {
-                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                    env.releaseMutexGuards(abnormalExit || cleanupFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    deferredFailure = true;
+                    if (cleanupFailure == null) cleanupFailure = failure;
+                    else if (cleanupFailure != failure)
+                        cleanupFailure.addSuppressed(failure);
+                }
+                if (originalFailure != null) {
+                    // Never mask the original guest failure with a later
+                    // deferred expression or MutexGuard release failure.
+                    if (cleanupFailure != null && cleanupFailure != originalFailure)
+                        originalFailure.addSuppressed(cleanupFailure);
+                } else if (cleanupFailure instanceof RuntimeException failure) {
                     throw failure;
-                } finally {
-                    env.releaseMutexGuards(abnormalExit || deferredFailure);
+                } else if (cleanupFailure instanceof Error failure) {
+                    throw failure;
                 }
             }
         }
