@@ -301,6 +301,7 @@ public final class CapabilityChecker {
             }
             else if (stmt instanceof Ast.DestructureStmt s) checkExpr(s.initializer(), policy);
             else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) checkExpr(s.value(), policy);
+            else if (stmt instanceof Ast.ArmReturnStmt s) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.YieldStmt s) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
@@ -353,6 +354,18 @@ public final class CapabilityChecker {
     }
 
     private void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
+        if (expr instanceof Ast.ValueMatchExpr matched) {
+            // Arm-local completions carry effects independently of the outer
+            // function return. A missing traversal would let restricted actors
+            // hide authority-bearing calls inside expression-valued matches.
+            checkExpr(matched.subject(), policy);
+            checkType(matched.returnContract(), policy);
+            for (Ast.MatchArm arm : matched.arms()) {
+                if (arm.guard() != null) checkExpr(arm.guard(), policy);
+                checkStatements(arm.body(), policy);
+            }
+            return;
+        }
         if (expr instanceof Ast.NameExpr javaName) {
             String javaClass = javaImports.get(javaName.name());
             if (javaClass != null) {
