@@ -598,6 +598,20 @@ final class PatternMatchingHardeningTest {
     }
 
     @Test
+    void largeNegativeI64SwitchConstantsRemainDistinctAboveDoublePrecision() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc classify(int n): int {
+                  switch n {
+                    case -9007199254740992 { return 1; }
+                    case -9007199254740993 { return 2; }
+                    default { return 0; }
+                  }
+                  return -1;
+                }
+                """)));
+    }
+
+    @Test
     void asyncAndSyncSwitchAgreeOnFallbackSemantics() throws Exception {
         String program = """
                 async fnc answer(): string {
