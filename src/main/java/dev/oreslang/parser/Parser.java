@@ -700,14 +700,23 @@ public final class Parser {
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
             }
-            // Do not silently admit methods that look like checked supervisor
-            // handlers before typed exhaustiveness and CONTROL dispatch exist.
+            // Reserved lifecycle and unhandled-failure methods must not be
+            // silently treated as ordinary actor methods before runtime
+            // teardown dispatch and typed exceptional-effect lowering exist.
+            if (check(IDENT) && peek().lexeme().equals("tear_down")) {
+                throw error(peek(), "actor tear_down lifecycle hook requires "
+                        + "compiler-managed once-only teardown and resource cleanup; "
+                        + "source hook is not yet enabled");
+            }
+            if (check(IDENT) && peek().lexeme().equals("on_panic")) {
+                throw error(peek(), "actor-local on_panic is forbidden: "
+                        + "panic goes directly to the supervisor CONTROL lane");
+            }
             if (check(IDENT) && (peek().lexeme().equals("on_throw")
                     || peek().lexeme().equals("on_throws")
                     || peek().lexeme().equals("on_raise")
-                    || peek().lexeme().equals("on_panic")
                     || peek().lexeme().equals("on_recover"))) {
-                throw error(peek(), "actor supervision on_* handlers require "
+                throw error(peek(), "actor unhandled-failure on_* handlers require "
                         + "compiler-enforced exhaustiveness and CONTROL dispatch; "
                         + "source handlers are not yet enabled");
             }
