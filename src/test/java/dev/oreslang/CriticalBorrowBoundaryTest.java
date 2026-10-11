@@ -122,6 +122,22 @@ final class CriticalBorrowBoundaryTest {
     }
 
     @Test
+    void temporaryBorrowedReceiverCannotCrossSuspendCriticalEntry() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    define class Store as
+                      suspend critical get(): int { return 1; }
+                    end
+                    async fnc caller(): int {
+                      let Store store = new Store();
+                      return (rt borrow store).get();
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("borrowed receiver"),
+                failure::getMessage);
+    }
+
+    @Test
     void ownedCriticalArgumentsAreAccepted() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 suspend critical fnc commit(int x): int { return x; }
