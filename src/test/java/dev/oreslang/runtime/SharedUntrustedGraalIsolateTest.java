@@ -97,7 +97,10 @@ class SharedUntrustedGraalIsolateTest {
             assertThrows(IllegalStateException.class, () ->
                     SharedUntrustedGraalIsolate.open(128L * 1024 * 1024));
             // No host Value or Context escapes the source-submission API.
-            domain.submitSource("").get(15, TimeUnit.SECONDS);
+            // A successful native-isolate smoke must use syntactically
+            // valid Oreslang. Empty source is intentionally a parse error.
+            domain.submitSource("pub routine main(): void { return; }")
+                    .get(15, TimeUnit.SECONDS);
             if (Boolean.getBoolean("ores.untrusted.require-native-isolate")) {
                 // This positive Native Image gate is deliberately stronger than
                 // the JVM fail-closed smoke: both actors must start, exchange
