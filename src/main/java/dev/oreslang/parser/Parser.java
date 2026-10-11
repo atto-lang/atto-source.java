@@ -2439,8 +2439,8 @@ public final class Parser {
         if (match(LT)) {
             if (matchContextualIdentifier("ret")) {
                 consume(EQUAL, "match<ret=T> requires '=' after ret");
-            } else if (check(IDENT) && checkNext(EQUAL)) {
-                throw error(peek(), "unknown match parameter; use 'ret=Type'");
+            } else if ((check(IDENT) || check(TYPE)) && checkNext(EQUAL)) {
+                throw error(peek(), "unknown match parameter; use 'ret=Type' (not 'type=Type')");
             } else {
                 shorthandContract = true;
             }
