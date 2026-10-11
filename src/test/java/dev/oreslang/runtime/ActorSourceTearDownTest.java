@@ -58,6 +58,9 @@ final class ActorSourceTearDownTest {
             assertEquals(context.self().id(), state.ownerActorId());
             receives.incrementAndGet();
             if ("self".equals(mail.value())) {
+                // Queue a second envelope deterministically before fencing
+                // mailbox admission. It must be discarded without dispatch.
+                context.self().send("queued-after-self");
                 context.self().stop();
             } else if ("self-with-cleanup".equals(mail.value())) {
                 context.runtime().endCurrentActorWithCleanup(finalCleanups::incrementAndGet);
