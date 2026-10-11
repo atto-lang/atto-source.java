@@ -3742,14 +3742,17 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (future.isDone()) {
+                // Future failure and consumer failure are distinct. Never call
+                // a lexical continuation twice if its first invocation throws
+                // (it might already have released ownership or run defers).
+                final Object completed;
                 try {
-                    continuation.accept(
-                            task,
-                            future.join(),
-                            null);
+                    completed = future.join();
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(task, null, failure);
+                    return;
                 }
+                continuation.accept(task, completed, null);
                 return;
             }
 
