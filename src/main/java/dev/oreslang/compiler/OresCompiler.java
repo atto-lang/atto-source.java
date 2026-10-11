@@ -28,6 +28,57 @@ public final class OresCompiler {
         return program;
     }
 
+    /*
+     * Context.parse() invokes the Truffle language parser again after the
+     * linked host has already checked every imported contract and the borrow
+     * rules. Share that exact verified AST ONLY during one synchronous host
+     * parse call; never install mutable compiler state in an actor context,
+     * VM-global cache, or carrier-thread-local at runtime.
+     */
+    private record LinkedSource(String codeUnitId, String source, Ast.Program checked) { }
+    private static final ThreadLocal<LinkedSource> HOST_LINKED_SOURCE = new ThreadLocal<>();
+
+    public static final class LinkedGuestParseScope implements AutoCloseable {
+        private final LinkedSource prior;
+        private final Thread owner = Thread.currentThread();
+        private boolean closed;
+
+        private LinkedGuestParseScope(LinkedSource prior) {
+            this.prior = prior;
+        }
+
+        @Override public void close() {
+            if (closed || Thread.currentThread() != owner) {
+                throw new IllegalStateException("linked guest parse scope closed incorrectly");
+            }
+            closed = true;
+            if (prior == null) HOST_LINKED_SOURCE.remove();
+            else HOST_LINKED_SOURCE.set(prior);
+        }
+    }
+
+    /** Host-only, fail-closed bridge from a verified build unit to Truffle parsing. */
+    public static LinkedGuestParseScope linkVerifiedGuestParse(
+            String codeUnitId, String source, Ast.Program checked) {
+        if (codeUnitId == null || codeUnitId.isBlank()
+                || source == null || checked == null) {
+            throw new IllegalArgumentException("linked source identity and checked AST are required");
+        }
+        LinkedSource previous = HOST_LINKED_SOURCE.get();
+        HOST_LINKED_SOURCE.set(new LinkedSource(codeUnitId, source, checked));
+        return new LinkedGuestParseScope(previous);
+    }
+
+    /** Null means ordinary standalone parsing; any active mismatched lease is fatal. */
+    public static Ast.Program takeVerifiedGuestProgram(String codeUnitId, String source) {
+        LinkedSource snapshot = HOST_LINKED_SOURCE.get();
+        if (snapshot == null) return null;
+        if (!snapshot.codeUnitId().equals(codeUnitId) || !snapshot.source().equals(source)) {
+            throw new SecurityException("Truffle parse source differs from verified linked compilation");
+        }
+        return snapshot.checked();
+    }
+
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
     public record AnalysisResult(Ast.Program program, java.util.List<String> warnings) {
         public AnalysisResult { warnings = java.util.List.copyOf(warnings); }
