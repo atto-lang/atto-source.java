@@ -31,6 +31,14 @@ public final class SupervisorChildRegistry {
         }
     }
     public enum Phase { ACTIVE, FINALIZED, RESTARTING, STOPPING, STOPPED }
+    /** Authoritative, monotonic in-memory decision receipt. No implicit retry. */
+    public enum StopReceiptStatus { PENDING, APPLIED, ACKNOWLEDGED, UNCERTAIN }
+    public record StopReceipt(StopReservation reservation, StopReceiptStatus status) {
+        public StopReceipt {
+            Objects.requireNonNull(reservation);
+            Objects.requireNonNull(status);
+        }
+    }
 
     /** Host-only STOP claim; holds a logical generation across an await. */
     public record StopReservation(ChildId child, ActorRuntime.ActorId failedActor,
@@ -73,6 +81,8 @@ public final class SupervisorChildRegistry {
     private final Map<ActorRuntime.ActorId, UUID> activeActors = new HashMap<>();
     private final Map<UUID, RestartReservation> reservations = new HashMap<>();
     private final Map<UUID, StopReservation> stopReservations = new HashMap<>();
+    /** Per logical-child ledger: bounded by the existing child registry. */
+    private final Map<UUID, StopReceipt> stopReceipts = new HashMap<>();
     // ActorId must not be recycled (A -> B -> A is another form of ABA).
     // This is a host bookkeeping ledger, bounded by a per-supervisor ceiling.
     private static final int MAX_ACTOR_IDENTITIES = 1_000_000;
@@ -215,21 +225,68 @@ public final class SupervisorChildRegistry {
         StopReservation reservation = new StopReservation(
                 child, actor, incarnation, turnGeneration, UUID.randomUUID());
         stopReservations.put(child.logicalId(), reservation);
+        stopReceipts.put(child.logicalId(),
+                new StopReceipt(reservation, StopReceiptStatus.PENDING));
         children.put(child.logicalId(),
                 new Snapshot(child, actor, incarnation, Phase.STOPPING));
         return reservation;
     }
 
-    /** Mark authoritative host STOP acknowledgment for the reserved turn. */
-    synchronized Snapshot commitStop(StopReservation permit) {
+    /** A host receipt is trusted only for the exact reserved CONTROL turn. */
+    public synchronized StopReceipt stopReceipt(ChildId child) {
+        requireCurrent(child);
+        StopReceipt current = stopReceipts.get(child.logicalId());
+        if (current == null) throw new IllegalStateException("no STOP decision receipt");
+        return current;
+    }
+
+    private StopReceipt requireStopReceipt(StopReservation permit) {
         Objects.requireNonNull(permit);
         requireExpected(permit.child(), permit.failedActor(),
                 permit.incarnation(), Phase.STOPPING);
         if (!permit.equals(stopReservations.get(permit.child().logicalId())))
             throw new IllegalStateException("stale or foreign STOP reservation");
+        StopReceipt receipt = stopReceipts.get(permit.child().logicalId());
+        if (receipt == null || !permit.equals(receipt.reservation()))
+            throw new IllegalStateException("missing or mismatched STOP ledger turn");
+        return receipt;
+    }
+
+    /** Confirmed external STOP effect, but logical finalization still pending. */
+    synchronized StopReceipt markStopApplied(StopReservation permit) {
+        StopReceipt current = requireStopReceipt(permit);
+        if (current.status() != StopReceiptStatus.PENDING)
+            throw new IllegalStateException("STOP host effect already classified");
+        StopReceipt updated = new StopReceipt(permit, StopReceiptStatus.APPLIED);
+        stopReceipts.put(permit.child().logicalId(), updated);
+        return updated;
+    }
+
+    /**
+     * Unknown host-effect outcome: leave the child STOPPING and prohibit
+     * automatic RESTART, retry, or reclassification as cleanly finalized.
+     * Idempotent for the exact turn; never overwrite an acknowledged receipt.
+     */
+    synchronized StopReceipt markStopUncertain(StopReservation permit) {
+        StopReceipt current = requireStopReceipt(permit);
+        if (current.status() == StopReceiptStatus.ACKNOWLEDGED)
+            throw new IllegalStateException("cannot invalidate acknowledged STOP");
+        if (current.status() == StopReceiptStatus.UNCERTAIN) return current;
+        StopReceipt updated = new StopReceipt(permit, StopReceiptStatus.UNCERTAIN);
+        stopReceipts.put(permit.child().logicalId(), updated);
+        return updated;
+    }
+
+    /** Record only an already applied STOP as acknowledged and terminal. */
+    synchronized Snapshot commitStop(StopReservation permit) {
+        StopReceipt receipt = requireStopReceipt(permit);
+        if (receipt.status() != StopReceiptStatus.APPLIED)
+            throw new IllegalStateException("STOP must have applied host receipt");
         Snapshot stopped = new Snapshot(permit.child(), permit.failedActor(),
                 permit.incarnation(), Phase.STOPPED);
         children.put(permit.child().logicalId(), stopped);
+        stopReceipts.put(permit.child().logicalId(),
+                new StopReceipt(permit, StopReceiptStatus.ACKNOWLEDGED));
         stopReservations.remove(permit.child().logicalId());
         return stopped;
     }
@@ -249,6 +306,7 @@ public final class SupervisorChildRegistry {
         if (state.phase() != Phase.STOPPED)
             throw new IllegalStateException("cannot retire active/restartable child");
         children.remove(child.logicalId());
+        stopReceipts.remove(child.logicalId());
     }
 
     public synchronized int trackedChildren() { return children.size(); }
