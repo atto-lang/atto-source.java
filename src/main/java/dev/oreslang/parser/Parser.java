@@ -959,6 +959,13 @@ public final class Parser {
         List<Ast.Annotation> result = new ArrayList<>();
         while (match(AT)) {
             String name = consume(IDENT, "expected annotation name").lexeme();
+            // Do not silently drop a claimed serialization derivation: class
+            // declarations do not yet retain/generate portable codec metadata.
+            if (name.equals("Serializable")) {
+                throw error(previous(),
+                        "@Serializable codec derivation is reserved but not yet implemented; "
+                        + "built-in data-only actor messages are admitted without an annotation");
+            }
             List<Ast.TypeRef> args = new ArrayList<>();
             Token.Type close = null;
             if (match(LT)) close = GT;
