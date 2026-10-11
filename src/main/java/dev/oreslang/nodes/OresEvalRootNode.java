@@ -3969,26 +3969,25 @@ public final class OresEvalRootNode extends RootNode {
                 Invocation invocation,
                 boolean declaredFuture,
                 SourceValueCont continuation) {
+            // Only invocation failures belong to this error boundary. A
+            // continuation may throw while completing a SourceTask; catching
+            // that exception here would invoke the same continuation twice,
+            // potentially turning one source return into two terminal steps.
+            Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
-                }
+                result = invoke(invocation);
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
+                return;
             }
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                // Registration is scheduler plumbing, not a second call to the
+                // guest operation. Fail-fast on invalid double suspension.
+                task.suspend(future, (t, value, failure) ->
+                        continuation.accept(t, value, failure));
+                return;
+            }
+            continuation.accept(task, result, null);
         }
 
         private boolean invocationDeclaresAsync(Invocation invocation) {
