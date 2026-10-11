@@ -463,4 +463,100 @@ final class OresSchedulerTest {
         assertEquals(1, pc.get(),
                 "detached continuation must never resume after producer completion");
     }
+
+    @Test
+    void cancellationReentersOwningLaneAndPublishesAfterAwaitedCleanup() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresFuture<Void> cleanupGate = new OresFuture<>();
+            AtomicInteger cleanupEntries = new AtomicInteger();
+            AtomicReference<OresScheduler> cleanupLane = new AtomicReference<>();
+            CountDownLatch enteredAwait = new CountDownLatch(1);
+
+            OresScheduler.CancellationAwareTask<Integer> work =
+                    new OresScheduler.CancellationAwareTask<>() {
+                        private volatile boolean cleaning;
+                        private volatile boolean cancellationRequested;
+
+                        @Override
+                        public void cancellationRequested() {
+                            cancellationRequested = true;
+                        }
+
+                        @Override
+                        public boolean cleanupInProgress() {
+                            return cleaning;
+                        }
+
+                        @Override
+                        public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume input) {
+                            if (input.initial()) {
+                                enteredAwait.countDown();
+                                return OresScheduler.await(source);
+                            }
+                            if (!cleaning) {
+                                assertTrue(cancellationRequested);
+                                assertInstanceOf(OresScheduler.TaskCancelledException.class,
+                                        input.failure());
+                                cleaning = true;
+                                cleanupLane.set(OresScheduler.current());
+                                cleanupEntries.incrementAndGet();
+                                return OresScheduler.await(cleanupGate);
+                            }
+                            assertNull(input.failure());
+                            return OresScheduler.done(42);
+                        }
+                    };
+
+            OresFuture<Integer> task = scheduler.start(work);
+            assertTrue(enteredAwait.await(5, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (source.pendingRuntimeWaiterCount() != 1
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(1, source.pendingRuntimeWaiterCount());
+
+            assertTrue(task.cancel(false));
+            assertFalse(task.cancel(false), "a second cancellation cannot re-enter cleanup");
+            assertFalse(task.isDone(), "task cancellation is not terminal before cleanup");
+            assertFalse(source.isCancelled(), "shared producer remains independent");
+
+            assertTrue(cleanupGate.completeFromRuntime(null));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertSame(scheduler, cleanupLane.get());
+            assertEquals(1, cleanupEntries.get());
+            assertEquals(0, source.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
+    void schedulerCloseDrainsAnAdmittedCancellationContinuation() throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        OresFuture<Integer> awaited = new OresFuture<>();
+        AtomicInteger cleaned = new AtomicInteger();
+        CountDownLatch started = new CountDownLatch(1);
+        OresFuture<Integer> task = scheduler.start(
+                new OresScheduler.CancellationAwareTask<>() {
+                    @Override public void cancellationRequested() { }
+                    @Override public boolean cleanupInProgress() { return false; }
+                    @Override public OresScheduler.Step<Integer> resume(
+                            OresScheduler.Resume input) {
+                        if (input.initial()) {
+                            started.countDown();
+                            return OresScheduler.await(awaited);
+                        }
+                        assertInstanceOf(OresScheduler.TaskCancelledException.class,
+                                input.failure());
+                        cleaned.incrementAndGet();
+                        return OresScheduler.done(12);
+                    }
+                });
+        assertTrue(started.await(5, TimeUnit.SECONDS));
+        scheduler.close();
+        assertTrue(task.isCancelled());
+        assertEquals(1, cleaned.get());
+        assertFalse(awaited.isDone());
+    }
+
 }
