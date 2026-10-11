@@ -114,7 +114,9 @@ final class SharedRouteContractInteropTest {
                 end
                 pub routine main(): void { return; }
                 """);
-        assertThrows(Exception.class, () -> LinkedProgramRunner.validate(invalid));
+        Exception failure = assertThrows(Exception.class, () -> LinkedProgramRunner.validate(invalid));
+        assertTrue(failure.getMessage().contains("does not conform"),
+                "negative contract test must fail for conformance, not an unrelated linker error: " + failure);
     }
 
     @Test
@@ -126,6 +128,8 @@ final class SharedRouteContractInteropTest {
                 end
                 pub routine main(): void { return; }
                 """);
-        assertThrows(Exception.class, () -> LinkedProgramRunner.validate(invalid));
+        Exception failure = assertThrows(Exception.class, () -> LinkedProgramRunner.validate(invalid));
+        assertTrue(failure.getMessage().contains("does not conform"),
+                "negative contract test must fail for conformance, not an unrelated linker error: " + failure);
     }
 }
