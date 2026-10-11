@@ -96,7 +96,6 @@ class NativeHttpTest {
               await holder.outputs.next();
               await server.shutdown(0);
               stdio.println("drained");
-              await holder.done;
               return;
             }
             """, port -> {
