@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
@@ -168,6 +169,53 @@ final class ValueDispatchControlFlowTest {
                         }
                         """));
         assertTrue(noReturn.getMessage().contains("must return"), noReturn.getMessage());
+    }
+
+    @Test
+    void nestedLambdaReturnDoesNotEscapeIntoValueArm() {
+        var ast = Parser.parse("""
+                fnc scoped(int x): int {
+                  return match x over
+                    on _ {
+                      const handler = || -> { return 7; };
+                      return 42;
+                    }
+                  end
+                }
+                """);
+        Ast.FunctionDecl function = (Ast.FunctionDecl)
+                ast.modules().getFirst().declarations().getFirst();
+        Ast.ReturnStmt outer = (Ast.ReturnStmt) function.body().getFirst();
+        Ast.ValueMatchExpr value = (Ast.ValueMatchExpr) outer.value();
+        Ast.BindingStmt binding = (Ast.BindingStmt) value.arms().getFirst().body().getFirst();
+        Ast.LambdaExpr lambda = (Ast.LambdaExpr) binding.initializer();
+        assertInstanceOf(Ast.ReturnStmt.class, lambda.blockBody().getFirst());
+        assertInstanceOf(Ast.ArmReturnStmt.class, value.arms().getFirst().body().get(1));
+    }
+
+    @Test
+    void directAwaitInsideValueArmsFailsClosedUntilResumableLowering() {
+        IllegalArgumentException matchError = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc forbidden(Future<int> pending): int {
+                          return match 1 over
+                            on _ { return await pending; }
+                          end
+                        }
+                        """)));
+        assertTrue(matchError.getMessage().contains("continuation lowering"),
+                matchError.getMessage());
+
+        IllegalArgumentException switchError = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc forbidden(Future<int> pending): int {
+                          return switch 1
+                            default { return await pending; }
+                          end
+                        }
+                        """)));
+        assertTrue(switchError.getMessage().contains("continuation lowering"),
+                switchError.getMessage());
     }
 
     @Test
