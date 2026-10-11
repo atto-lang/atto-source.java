@@ -185,3 +185,40 @@ do not establish end-to-end runtime correctness.
 
 Both LLVM and GraalVM still need source-level HTTP/mailbox cross-ingress
 tests and full build/test verification before draft PRs may merge.
+
+## ActorCell audit hardening (2026-10-11)
+
+The serial source actor now stages a finished receive lease inside the active
+envelope but does **not** call `close()` until the `MessageEnvelope`
+try-with-resources scope has finished. This orders native scratch checks,
+private-behavior validation and message-envelope release callbacks **before**
+any subsequent actor admission. If a release or earlier check throws, normal
+fail-stop shutdown fences the still-active admission; it must not be
+prematurely promoted.
+
+`SerialContinuationAuthority` captures the exact issuing admission instance
+and source receive lease. Constructing authority with a lease issued by a
+*different* actor gate is rejected even when both actors' numeric lease
+generations coincide. Unbound actor-scoped callbacks are allowed only while
+their gate is both **open and idle**, checked together. A callback cannot
+queue or enter after stop, and an older handler's callback cannot execute
+using a later handler's lease. The originating bound receive may still queue
+while suspended, but cannot execute until its own lease has resumed.
+
+### Executed evidence and limitations
+
+[Funded exact-source targeted CI 38178159875](https://github.com/akrion-sim/akrion-sim-e2e/actions/runs/38178159875)
+passed: JDK25 compiled real `SerialActorAdmission` and
+`SerialContinuationAuthority` with cross-actor, equal-generation, suspended,
+stale and post-stop negative tests. The exact current `ActorRuntime.java`
+source was syntax-parsed by the JDK compiler and its resource-release ordering
+checked against the actual source structure. Previous JVM admission stress
+(1,000 mixed, 4,096 inline, 300 cancellation races) and native LLVM
+GCC/Clang sanitizer tests ran on the same mirror. This is **not** full Maven
+type linking, guest JUnit execution, persistent HTTP ingress, LLVM guest
+source lowering or AOT release validation. The mirror's unrelated
+`secrets-audit` workflow still fails its `ores-sops` environment check.
+
+Production transport must continue rejecting serial actors until a persistent
+actor per route shares admission between HTTP requests and messages. An
+isolated synthetic gate or AST parser pass is not proof of transport safety.
