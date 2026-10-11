@@ -449,4 +449,104 @@ final class PatternMatchingHardeningTest {
         });
         assertTrue(error.getMessage().contains("moved value"));
     }
+
+    @Test
+    void defaultIsCanonicalMatchCatchAllWithExplicitBindingAndFallbackPriority() {
+        var typed = TypeChecker.check(Parser.parse("""
+                fnc decide(int n): int {
+                  match n over {
+                    default as remaining { return remaining; }
+                    on 7 { return 42; }
+                  }
+                  return -1;
+                }
+                fnc aliasUnderscore(int n): int {
+                  match n over {
+                    on _ as remaining { return remaining; }
+                    on 7 { return 42; }
+                  }
+                  return -1;
+                }
+                fnc aliasKeyword(int n): int {
+                  match n over {
+                    on default { return 0; }
+                    on 7 { return 42; }
+                  }
+                  return -1;
+                }
+                """));
+        assertNotNull(typed);
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc duplicate(int n): int {
+                  match n over {
+                    default { return 0; }
+                    on _ { return 1; }
+                  }
+                  return 2;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc guardedDefault(int n): int {
+                  match n over {
+                    default when n > 0 { return 1; }
+                  }
+                  return 0;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc unbound(int n): int {
+                  match n over {
+                    default { return m; }
+                  }
+                  return 0;
+                }
+                """)));
+    }
+
+    @Test
+    void wildcardCannotBeDeclaredAsClassTypeOrOrdinaryValueName() {
+        for (String code : new String[] {
+                "define class _ as end",
+                "define class default as end",
+                "type _ = int;",
+                "fnc test(): void { val _ = 5; }",
+                "define module _ as end",
+                "define actor _ as end",
+                "fnc _(): void { return; }"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(code), code);
+        }
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc ok(int n): int {
+                  val (head, _) = (n, 0);
+                  return head;
+                }
+                """));
+    }
+
+    @Test
+    void defaultFirstForMatchIsExecutedOnlyAfterSpecificArms() throws Exception {
+        String program = """
+                fnc decide(int n): int {
+                  match n over {
+                    default as remaining { return remaining; }
+                    on 7 { return 42; }
+                  }
+                  return -1;
+                }
+                pub fnc main(): void {
+                  stdio.println(decide(7));
+                  stdio.println(decide(9));
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "match-default-first.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("42\\n9", output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+    }
+
 }
