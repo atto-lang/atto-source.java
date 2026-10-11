@@ -49,7 +49,17 @@ public final class ActorStateContract {
 
     private static void verifyActor(Ast.ClassDecl klass) {
         Ast.FieldDecl state = stateField(klass);
-        if (state == null) return; // migration: legacy actor fields retain old behavior
+        if (state == null) {
+            // Legacy scalar actor fields are not the one-state aggregate
+            // contract. Serial actors with no storage are valid, but serial
+            // actors with storage must declare precisely one state schema.
+            if (klass.serial() && !klass.fields().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "serial actor '" + klass.name()
+                        + "' must use one state { ... } aggregate; legacy fields are forbidden");
+            }
+            return;
+        } // migration: non-serial legacy actor fields retain old behavior
         if (klass.fields().size() != 1) {
             throw new IllegalArgumentException(
                     "actor '" + klass.name() + "' may declare only the state schema");
@@ -71,7 +81,8 @@ public final class ActorStateContract {
             if (method.name().equals("handle_state")) {
                 throw new IllegalArgumentException("handle_state is a sealed actor intrinsic");
             }
-            visit(method.body(), klass.name(), keys, null, false, klass.serial());
+            visit(method.body(), klass.name(), keys, null, false,
+                    klass.serial() && !method.isStatic());
         }
     }
 
