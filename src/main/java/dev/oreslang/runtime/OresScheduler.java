@@ -490,12 +490,16 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void runTurn() {
-            if (!phase.compareAndSet(QUEUED, RUNNING)) return;
+            // Claim the physical guest execution lease BEFORE transitioning to
+            // RUNNING. Otherwise cancellation can observe RUNNING with
+            // executing=false, announce quiescence and release actor memory
+            // while this carrier is about to begin task.resume().
             if (!executing.compareAndSet(false, true)) {
                 failTerminal(new IllegalStateException(
                         "OresScheduler task execution lease violation"));
                 return;
             }
+            if (!phase.compareAndSet(QUEUED, RUNNING)) return;
 
             ActorTurnWatchdog.Lease lease = ActorTurnWatchdog.enter(
                     ignored -> watchdogOverruns.incrementAndGet());
