@@ -234,6 +234,12 @@ public final class OresScheduler implements AutoCloseable {
         return watchdogOverruns.get();
     }
 
+    /** Poll records forward progress without claiming a physical carrier handoff. */
+    static void checkpointCurrentTurn() {
+        ActorTurnWatchdog.Lease lease = CURRENT_WATCHDOG_LEASE.get();
+        if (lease != null) lease.checkpoint();
+    }
+
     /** Advisory request; only a compiler-lowered continuation may actually yield. */
     public static boolean preemptionRequested() {
         ActorTurnWatchdog.Lease lease = CURRENT_WATCHDOG_LEASE.get();
