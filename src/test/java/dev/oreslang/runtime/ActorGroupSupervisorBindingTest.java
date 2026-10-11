@@ -91,8 +91,8 @@ final class ActorGroupSupervisorBindingTest {
 
             assertEquals(Set.of(daddy1.id(), daddy2.id()), grandaddy.childSupervisorIds());
             assertEquals(Set.of(subSupervisor.id()), daddy1.childSupervisorIds());
-            assertEquals(Set.of(daddy1.id()), subSupervisor.parentId());
-            assertEquals(Set.of(grandaddy.id()), daddy2.parentId());
+            assertEquals(java.util.Optional.of(daddy1.id()), subSupervisor.parentId());
+            assertEquals(java.util.Optional.of(grandaddy.id()), daddy2.parentId());
             assertTrue(grandaddy.parentId().isEmpty());
 
             assertEquals(Set.of(one.id()), daddy1.advisedGroupIds());
