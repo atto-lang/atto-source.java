@@ -162,4 +162,42 @@ and suspended runtime entrypoints.
 
 ## Audit / certification status (2026-10-11)
 
-Formatter PR #32: private funded exact-blob CI passed `cargo test --all-targets` and `cargo fmt --check` (see gha-indie-worker/gha-indie-worker-docs Actions run 38166794034). Java parser in PR #634: exact four source Git blobs compiled with JDK 21 and 23 parser/AST smoke checks passed in the same run. The whole Java Truffle/typechecker/runtime, LLVM, actor mail variant payload extraction, and source organization's current-head CI have **not** been certified by this smoke test. Keep implementation PRs draft until those gates execute and pass.
+**Java/GraalVM JVM: PASS on the exact original source/test Git trees.**
+PR #634 source revision `a96afe733aa45d27921ef9af022237678c840d39`
+passed [funded CI 38175134793](https://github.com/zed-pkg-test/java-app/actions/runs/38175134793):
+**1,438 Maven tests; zero failures/errors/skips**, including 35 focused
+pattern/typed-flow/finally-select cases. `src/main` tree
+`f8ad81a190fc4fa4b57abbd0d24481d815e7418f` and `src/test`
+tree `d79328c70263fe5880f2ed3d620514b3eb190a4a` were verified
+before execution.
+
+**Native image:** both GraalVM AOT and hybrid builds and their compiled
+`--build-info` executable smoke checks passed on these trees in
+[funded CI 38175134872](https://github.com/zed-pkg-test/java-app/actions/runs/38175134872).
+This does not by itself prove execution of typed guest match syntax.
+A stronger actual-guest match-hit/miss and invalid-finally check is separately
+tracked in [native CI 38175463551](https://github.com/zed-pkg-test/java-app/actions/runs/38175463551);
+do not claim it passed until its jobs have completed.
+
+**LLVM restricted i64 scalar dispatch:** exact 179-file source tree
+`da56380e9faf791ebeb12836fd126ac445c73482` passed 112/112
+native CTests (including actual match fallback hit/miss, default aliases
+and duplicate-case rejection), actor stress checks and field-layout
+tests in [CI 38175273749](https://github.com/zed-pkg-test/java-app/actions/runs/38175273749).
+LLVM does **not** yet implement general typed `match<ret=T>`, tagged tuple
+payloads, ownership-aware union extraction, source `finally` lowering,
+or suspended expression matching. The LLVM draft is significantly
+diverged from current main and needs merge-tree admission testing.
+
+**Finally and control flow:** a direct `return` in `finally` is
+forbidden through nested `do select` arms as well as blocks and matches.
+Unlike select arms, independently scoped lambda/callable returns are
+allowed. The typed procedural return proof tracks fallthrough, return,
+and break/continue escapes; nonterminating loops and unreachable returns
+are not sufficient proofs of `do match<ret=T>`.
+
+Formatter PR #32 separately passed exact-blob Rust tests and formatting
+checks (funded workflow 38166794034). Keep source and compiler
+integration PRs **draft** until branch merge-tree verification,
+guest-level cross-backend conformance, independent review and unsupported
+value-producing forms are resolved.
