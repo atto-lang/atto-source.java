@@ -234,6 +234,42 @@ final class SupervisorFailureControlTest {
     }
 
     @Test
+    void duplicateExecutorCallbacksCannotReplayControlOrCrossBatchBoundaries() {
+        java.util.ArrayDeque<Runnable> jobs = new java.util.ArrayDeque<>();
+        java.util.concurrent.Executor duplicate = callback -> {
+            jobs.addLast(callback);
+            jobs.addLast(callback); // Broken executor replays identical runnable.
+        };
+        var supervisor = ActorRuntime.SupervisorId.create();
+        var group = ActorRuntime.ActorGroupId.create();
+        var actor = ActorRuntime.ActorId.create();
+        var lane = new SupervisorFailureControl(supervisor, group, duplicate, 40);
+        var invocations = new AtomicInteger();
+        lane.install(notice -> invocations.incrementAndGet());
+        for (int i = 0; i < 34; i++) {
+            lane.publish(new SupervisorFailureControl.Notice(
+                    supervisor, group, actor, java.util.Optional.empty(),
+                    SupervisorFailureControl.Kind.TERMINAL_FAILURE, "Panic", "test"));
+        }
+        assertEquals(2, jobs.size());
+        jobs.removeFirst().run(); // First 32-notice CONTROL batch.
+        assertEquals(32, invocations.get());
+        assertEquals(2, lane.queued());
+
+        jobs.removeFirst().run(); // Late duplicate for previous generation.
+        assertEquals(32, invocations.get(), "old batch drained current notices");
+        assertEquals(2, lane.queued());
+        assertEquals(2, jobs.size(), "next batch was never scheduled");
+
+        jobs.removeFirst().run();
+        jobs.removeFirst().run(); // Duplicate of latest batch.
+        assertEquals(34, invocations.get(), "CONTROL delivered a notice twice");
+        assertEquals(0, lane.queued());
+        assertEquals(0, lane.undelivered());
+        assertTrue(lane.healthy());
+    }
+
+    @Test
     void failureHandlerMayNotBeInstalledFromActorCode() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
