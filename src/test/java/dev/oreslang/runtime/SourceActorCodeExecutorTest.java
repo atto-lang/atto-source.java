@@ -58,6 +58,20 @@ final class SourceActorCodeExecutorTest {
     }
 
     @Test
+    void absentActorDeclarationCannotBeForgedByAHostExecutor() {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            SharedCodeImageStore.CodeImage image =
+                    store.publish("missing-worker.ores", program);
+            assertThrows(SecurityException.class, () ->
+                    runtime.spawnCodeActor(
+                            ActorRuntime.ActorKind.PRIVATE,
+                            new Executor(image), "Worker"));
+        }
+    }
+
+    @Test
     void sourceActorStateIsCreatedOnActorDomainAndReceivesTypedEnvelope()
             throws Exception {
         Ast.Program program =
