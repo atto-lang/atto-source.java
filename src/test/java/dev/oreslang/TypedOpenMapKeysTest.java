@@ -296,6 +296,70 @@ final class TypedOpenMapKeysTest {
     }
 
     @Test
+    void nonCopyMapReadsAreRejectedWhileRemoveTransfersOwnership() throws Exception {
+        String schema = """
+                define class OwnedMap extends Map<string, unknown> as
+                  key items: Option<Array<string>>;
+                end
+                """;
+        IllegalArgumentException forbiddenMethod = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(schema + """
+                        fnc invalid(): void {
+                          val m = new OwnedMap();
+                          m.get("items");
+                          return;
+                        }
+                        """)));
+        assertTrue(forbiddenMethod.getMessage().contains("non-Copy"));
+
+        IllegalArgumentException forbiddenIndex = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(schema + """
+                        fnc invalid(): void {
+                          val m = new OwnedMap();
+                          m["items"];
+                          return;
+                        }
+                        """)));
+        assertTrue(forbiddenIndex.getMessage().contains("non-Copy"));
+
+        assertEquals("true", execute(schema + """
+                pub routine main(): void {
+                  val m = new OwnedMap();
+                  val items = new Array<string>();
+                  items.add("hello");
+                  m.put("items", items);
+                  stdio.stdout.write(m.remove("items").is_some());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void openKeyCannotExposeMoveOnlyValueThroughDynamicGet() throws Exception {
+        String program = """
+                define class OwnedMap extends Map<string, unknown> as
+                end
+                pub routine main(): void {
+                  val m = new OwnedMap();
+                  val items = new Array<string>();
+                  items.add("hello");
+                  m.put("extra", items);
+                  m.get("extra");
+                  return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(program));
+        Source source = Source.newBuilder(OresLanguage.ID, program, "map-noncopy-read.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            PolyglotException failure = assertThrows(
+                    PolyglotException.class, () -> context.eval(source));
+            assertTrue(failure.getMessage().contains("move-only"));
+        }
+    }
+
+    @Test
     void dynamicKeyCannotSmuggleWrongValue() throws Exception {
         String program = MAP + """
                 pub routine main(): void {
