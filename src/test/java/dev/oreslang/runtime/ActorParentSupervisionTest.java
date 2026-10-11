@@ -274,6 +274,67 @@ final class ActorParentSupervisionTest {
         }
     }
 
+    private static final class RestartingGrandparent
+            implements ActorRuntime.Behavior<Integer>, ActorRuntime.SupervisionHandler {
+        final CountDownLatch restarted = new CountDownLatch(1);
+        final AtomicReference<ActorRuntime.ActorRef<?>> replacement = new AtomicReference<>();
+        final AtomicReference<SupervisorFailureLane.Failure> handled = new AtomicReference<>();
+
+        @Override public void onMessage(
+                Integer ignored, ActorRuntime.ActorContext<Integer> context) {
+            var middle = context.runtime().<Integer>spawn(
+                    ActorRuntime.ActorKind.SHARED, context.policy(),
+                    x -> new MiddleSupervisor());
+            middle.send(0);
+        }
+
+        @Override public ActorRuntime.SupervisionDecision onPanic(SupervisorFailureLane.Failure f) {
+            assertTrue(ActorRuntime.inActorExecution(),
+                    "grandparent must decide restart on its own actor turn");
+            return ActorRuntime.SupervisionDecision.RESTART;
+        }
+        @Override public void onRestarted(
+                SupervisorFailureLane.Failure failure, ActorRuntime.ActorRef<?> child) {
+            assertNotEquals(failure.actor().id(), child.id().value().toString());
+            handled.set(failure);
+            replacement.set(child);
+            // Do not replay the failed child's mailbox or use its old arena.
+            child.stop();
+            restarted.countDown();
+        }
+        @Override public ActorRuntime.SupervisionDecision onThrow(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onRaise(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onCancel(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onHostFailure(
+                SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+    }
+
+    @Test
+    void grandparentRestartsEscalatedGrandchildWithFreshActorIdentity()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            RestartingGrandparent handler = new RestartingGrandparent();
+            var root = runtime.<Integer>spawnSharedTrusted(context -> handler);
+            root.send(0);
+            assertTrue(handler.restarted.await(5, TimeUnit.SECONDS),
+                    "grandparent needs the original descendant factory metadata");
+            assertNotNull(handler.handled.get());
+            assertEquals(SupervisorFailureLane.Kind.PANIC, handler.handled.get().kind());
+            assertTrue(handler.replacement.get().awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(runtime.pollSupervisionFailure().isEmpty());
+            assertTrue(root.isAlive());
+            runtime.stop(root);
+        }
+    }
+
     private record ShutdownGate(
             CountDownLatch entered,
             CountDownLatch release,
