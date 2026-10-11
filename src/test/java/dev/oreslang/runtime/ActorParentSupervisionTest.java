@@ -274,6 +274,100 @@ final class ActorParentSupervisionTest {
         }
     }
 
+    private record ShutdownGate(
+            CountDownLatch entered,
+            CountDownLatch release,
+            AtomicReference<ActorRuntime.ActorRef<Integer>> child) { }
+
+    private static final class PausedMiddle implements ActorRuntime.Behavior<Integer> {
+        private static final AtomicReference<ShutdownGate> GATE = new AtomicReference<>();
+        @Override
+        public void onMessage(Integer value, ActorRuntime.ActorContext<Integer> context)
+                throws Exception {
+            ShutdownGate gate = GATE.get();
+            if (gate == null) throw new IllegalStateException("missing test gate");
+            var child = context.runtime().<Integer>spawn(
+                    ActorRuntime.ActorKind.SHARED, context.policy(), ignored -> new Child());
+            gate.child().set(child);
+            child.send(1);
+            gate.entered().countDown();
+            assertTrue(gate.release().await(5, TimeUnit.SECONDS));
+        }
+    }
+
+    private static final class StoppingGrandparent
+            implements ActorRuntime.Behavior<Integer>, ActorRuntime.SupervisionHandler {
+        final AtomicReference<ActorRuntime.ActorRef<Integer>> middle = new AtomicReference<>();
+        final AtomicReference<SupervisorFailureLane.Failure> handled = new AtomicReference<>();
+        final CountDownLatch delivered = new CountDownLatch(1);
+
+        @Override
+        public void onMessage(Integer value, ActorRuntime.ActorContext<Integer> context) {
+            var created = context.runtime().<Integer>spawn(
+                    ActorRuntime.ActorKind.SHARED, context.policy(),
+                    ignored -> new PausedMiddle());
+            middle.set(created);
+            created.send(0);
+        }
+        @Override
+        public ActorRuntime.SupervisionDecision onPanic(SupervisorFailureLane.Failure f) {
+            assertTrue(ActorRuntime.inActorExecution(),
+                    "grandparent CONTROL must use the grandparent actor lane");
+            assertEquals(middle.get().id().value().toString(), f.parentId());
+            handled.set(f);
+            delivered.countDown();
+            return ActorRuntime.SupervisionDecision.ACKNOWLEDGE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onThrow(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onRaise(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onCancel(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+        @Override public ActorRuntime.SupervisionDecision onHostFailure(SupervisorFailureLane.Failure f) {
+            return ActorRuntime.SupervisionDecision.ESCALATE;
+        }
+    }
+
+    @Test
+    void stoppingMiddleFlushesPendingDescendantPanicToGrandparent()
+            throws Exception {
+        ShutdownGate gate = new ShutdownGate(
+                new CountDownLatch(1), new CountDownLatch(1), new AtomicReference<>());
+        PausedMiddle.GATE.set(gate);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            StoppingGrandparent handler = new StoppingGrandparent();
+            var grandparent = runtime.<Integer>spawnSharedTrusted(ignored -> handler);
+            grandparent.send(0);
+            assertTrue(gate.entered().await(5, TimeUnit.SECONDS));
+            var child = gate.child().get();
+            assertNotNull(child);
+            assertTrue(child.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(child.failure().isPresent());
+
+            var middle = handler.middle.get();
+            assertNotNull(middle);
+            var stopping = java.util.concurrent.CompletableFuture.runAsync(middle::stop);
+            long limit = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (middle.isAlive() && System.nanoTime() < limit) {
+                Thread.yield();
+            }
+            assertFalse(middle.isAlive(), "stop must fence new middle actor turns");
+            gate.release().countDown();
+            stopping.get(5, TimeUnit.SECONDS);
+            assertTrue(handler.delivered.await(5, TimeUnit.SECONDS));
+            assertEquals(SupervisorFailureLane.Kind.PANIC, handler.handled.get().kind());
+            assertTrue(runtime.pollSupervisionFailure().isEmpty());
+            runtime.stop(grandparent);
+        } finally {
+            gate.release().countDown();
+            PausedMiddle.GATE.set(null);
+        }
+    }
+
     @Test
     void missingParentHandlerEscalatesExactChildFaultToRoot() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
