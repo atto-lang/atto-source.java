@@ -99,6 +99,42 @@ public final class TypeChecker {
         return new TypeCheckResult(program, checker.warnings);
     }
 
+    /**
+     * Checked, public, explicitly imported class declarations supply field
+     * signatures to this compilation unit without importing foreign bodies.
+     * A missing linked signature must remain Unknown (and fail on arithmetic)
+     * rather than fabricating an integer or disabling type checking.
+     */
+    public static Ast.Program checkTypesWithImportedClasses(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses) {
+        if (linkedClasses == null) {
+            throw new IllegalArgumentException("linked public classes cannot be null");
+        }
+        program = AnnotationExpander.expand(program);
+        TypeChecker checker = new TypeChecker();
+        checker.validateImports(program);
+        checker.collect(program);
+        for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
+            String name = entry.getKey();
+            Ast.ClassDecl declaration = entry.getValue();
+            if (name == null || declaration == null || !name.equals(declaration.name())
+                    || declaration.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException("invalid linked public class: " + name);
+            }
+            boolean imported = program.imports().stream().anyMatch(use ->
+                    use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
+                            && use.names().contains(name));
+            if (!imported || checker.classes.containsKey(name)
+                    || checker.ambiguousClasses.contains(name)) {
+                throw new IllegalArgumentException(
+                        "linked public class was not uniquely imported: " + name);
+            }
+            checker.classes.put(name, declaration);
+        }
+        checker.validate(program);
+        return program;
+    }
+
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
