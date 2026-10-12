@@ -1823,7 +1823,20 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Stmt stmt,
                 Env env,
                 ArrayDeque<Ast.Expr> defers,
-                SourceFlowCont continuation) {
+                SourceFlowCont downstream) {
+            // A statement may finish synchronously or through a suspended
+            // continuation. Its downstream flow must be published only once.
+            // Otherwise a downstream failure thrown during delivery would
+            // enter this method's catch and replay completion as an error.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            SourceFlowCont continuation = (t, flow) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "source statement continuation attempted multiple deliveries");
+                }
+                downstream.accept(t, flow);
+            };
             try {
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
@@ -2178,9 +2191,8 @@ public final class OresEvalRootNode extends RootNode {
                         "unsupported suspendable statement "
                                 + stmt.getClass().getName());
             } catch (RuntimeException | Error failure) {
-                continuation.accept(
-                        task,
-                        SourceFlow.throwing(failure));
+                if (delivered.get()) throw failure;
+                continuation.accept(task, SourceFlow.throwing(failure));
             }
         }
 
