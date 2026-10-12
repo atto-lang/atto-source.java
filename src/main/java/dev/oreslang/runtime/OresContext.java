@@ -33,6 +33,8 @@ public final class OresContext implements AutoCloseable {
     // real VM root turn may dispatch them; the current virtual-thread generator
     // producer is not yet allowed through this admission boundary.
     private final HostGeneratorTurnPump hostGeneratorTurns;
+    private final java.util.function.Consumer<Thread> admitRootCarrier;
+    private final java.util.function.Consumer<Thread> releaseRootCarrier;
     // A scheduler-current ThreadLocal by itself cannot prove a physical
     // Truffle guest entry. Scope this marker inside executeGuestTurn after
     // TruffleContext.enter succeeds and always clear it on leave.
@@ -91,9 +93,19 @@ public final class OresContext implements AutoCloseable {
     }
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
+        this(language, env, ignored -> { }, ignored -> { });
+    }
+
+    public OresContext(OresLanguage language, TruffleLanguage.Env env,
+            java.util.function.Consumer<Thread> admitRootCarrier,
+            java.util.function.Consumer<Thread> releaseRootCarrier) {
         long contextPerf = CorePerf.start();
         this.language = language;
         this.env = env;
+        this.admitRootCarrier = java.util.Objects.requireNonNull(
+                admitRootCarrier, "admitRootCarrier");
+        this.releaseRootCarrier = java.util.Objects.requireNonNull(
+                releaseRootCarrier, "releaseRootCarrier");
         this.input = new BufferedReader(new InputStreamReader(env.in()));
         this.output = new PrintWriter(env.out(), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
@@ -456,18 +468,29 @@ public final class OresContext implements AutoCloseable {
     }
 
     private void executeRootTurn(Runnable turn) {
-        executeGuestTurn(() -> {
-            // Scoped only after a successful physical guest Context.enter.
-            // An actor/async carrier cannot manufacture this root-turn token.
-            Boolean prior = rootGuestEntryScope.get();
-            rootGuestEntryScope.set(Boolean.TRUE);
-            try {
-                turn.run();
-            } finally {
-                if (prior == null) rootGuestEntryScope.remove();
-                else rootGuestEntryScope.set(prior);
-            }
-        }, isolatePolicy.adversarial());
+        // Truffle may validate root-thread access from the embedding thread,
+        // where carrier-local ThreadLocals cannot authenticate the requested
+        // CONTROL thread. Register only this scheduler-issued physical turn;
+        // revoke even after failed entry/leave, retaining quarantine on error.
+        boolean scoped = isolatedRootTurns == null;
+        Thread carrier = Thread.currentThread();
+        if (scoped) admitRootCarrier.accept(carrier);
+        try {
+            executeGuestTurn(() -> {
+                // Scoped only after a successful physical guest Context.enter.
+                // An actor/async carrier cannot manufacture this root-turn token.
+                Boolean prior = rootGuestEntryScope.get();
+                rootGuestEntryScope.set(Boolean.TRUE);
+                try {
+                    turn.run();
+                } finally {
+                    if (prior == null) rootGuestEntryScope.remove();
+                    else rootGuestEntryScope.set(prior);
+                }
+            }, isolatePolicy.adversarial());
+        } finally {
+            if (scoped) releaseRootCarrier.accept(carrier);
+        }
     }
 
     private void executeActorTurn(Runnable turn) {
