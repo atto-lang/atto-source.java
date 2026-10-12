@@ -1400,7 +1400,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorRef<?>[] refs = {source, transform, sink};
         String identity = null;
+        synchronized (runtimeLifecycleLock) {
         synchronized (pipelineBindingLock) {
+            if (closed.get()) {
+                throw new IllegalStateException("pipeline binding requires open runtime");
+            }
             for (ActorRef<?> ref : refs) {
                 ActorCell<?> cell = actors.get(ref.id());
                 if (cell == null || cell.stopped.get() || cell.finalized
@@ -1431,6 +1435,7 @@ public final class ActorRuntime implements AutoCloseable {
                     (ActorRef<Object>) source, (ActorRef<Object>) transform,
                     (ActorRef<Object>) sink, identity, new AtomicInteger(0));
             for (ActorRef<?> ref : refs) linearPipelines.put(ref.id(), route);
+        }
         }
     }
 
@@ -4806,6 +4811,14 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             synchronized (runtimeLifecycleLock) {
                 if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+                // Bind races with pre-encode/reservation, not just with
+                // completed DATA admission. A send that began while this
+                // actor was unbound is never allowed to publish after the
+                // compiler-owned route becomes active.
+                if (linearPipelines.get(ref.id()) != linkedRoute) {
+                    throw new SecurityException(
+                            "actor pipeline binding changed during DATA admission");
+                }
                 if (cell.kind == ActorKind.SHARED && schema == null) {
                     sharedMutexReservations = reserveSharedMutexBindings(prepared);
                 }
