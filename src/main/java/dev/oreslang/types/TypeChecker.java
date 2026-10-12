@@ -352,10 +352,6 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "actor callables cannot be generators because a generator activation would escape a mailbox turn");
         }
-        if (fn.async() && fn.actorKind() != Ast.ActorKind.NONE) {
-            throw new IllegalArgumentException(
-                    "async actor callables require mailbox continuation lowering; use an ordinary async fnc or a mailbox actor");
-        }
         if (fn.async() && !fn.genericParameters().isEmpty()) {
             throw new IllegalArgumentException(
                     "generic async callables require an explicit task-safe/sendable generic bound, which is not available yet");

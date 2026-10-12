@@ -124,6 +124,92 @@ final class AsyncAwaitLanguageTest {
         assertTrue(text.contains("99"));
     }
     @Test
+    void pendingRendezvousChannelReadAndWriteResumeThroughSourceTasks() throws Exception {
+        String program = """
+                define module app
+                  pub let Channel<int> output = Channel.new<int>(0);
+
+                  pub async actor fnc producer(): void {
+                    writech app.output, 42;
+                    return;
+                  }
+
+                  pub fnc main(): void {
+                    val producer_done = producer();
+                    val value = readch app.output;
+                    await producer_done;
+                    stdio.println(value);
+                    return;
+                  }
+                end
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID,
+                        program,
+                        "pending-rendezvous-channel.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("42"));
+    }
+
+    @Test
+    void pendingStaticSelectResumesOnlyAfterWinningChannelRegistration() throws Exception {
+        String program = """
+                define module app
+                  pub let Channel<int> input = Channel.new<int>(0);
+
+                  pub async actor fnc producer(): void {
+                    writech app.input, 73;
+                    return;
+                  }
+
+                  async fnc wait(): int {
+                    select {
+                      case readch app.input: let value
+                        return value;
+                    }
+                    return 0;
+                  }
+
+                  pub fnc main(): void {
+                    val producer_done = producer();
+                    val value = await wait();
+                    await producer_done;
+                    stdio.println(value);
+                    return;
+                  }
+                end
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID,
+                        program,
+                        "pending-static-select.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("73"));
+    }
+
+    @Test
     void awaitRejectsNonFutureExpressions() {
         String program = """
                 define module app
@@ -139,17 +225,72 @@ final class AsyncAwaitLanguageTest {
     }
 
     @Test
-    void asyncActorCallableIsRejectedUntilMailboxContinuationLoweringExists() {
+    void asyncActorCallableUsesMailboxContinuationLowering() throws Exception {
         String program = """
                 define module app
                   pub async actor fnc burn(int n): int {
+                    return await immediate(n);
+                  }
+
+                  async fnc immediate(int n): int {
                     return n;
+                  }
+
+                  pub fnc main(): void {
+                    val value = await burn(17);
+                    stdio.println(value);
+                    return;
                   }
                 end
                 """;
 
-        assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "async-actor-await.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("17"));
+    }
+
+    @Test
+    void pendingAwaitResumesOnFreshSchedulerTurn() throws Exception {
+        String program = """
+                define module app
+                  async fnc later(): int {
+                    return await delayed();
+                  }
+
+                  async fnc delayed(): int {
+                    return 23;
+                  }
+
+                  pub fnc main(): void {
+                    stdio.println(await later());
+                    return;
+                  }
+                end
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pending-await.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("23"));
     }
 
     @Test
