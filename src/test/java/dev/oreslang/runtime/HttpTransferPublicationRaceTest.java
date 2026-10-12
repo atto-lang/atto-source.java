@@ -135,6 +135,29 @@ final class HttpTransferPublicationRaceTest {
         }
     }
 
+    @Test void staleRevocationCannotRemoveReusedTicketOrForeignExchange() {
+        var registry = new NativeHttp.TransferPublicationGate<Object>();
+        Object original = new Object();
+        Object replacement = new Object();
+        Object foreign = new Object();
+
+        registry.publish("ticket", original);
+        assertFalse(registry.remove("ticket", foreign),
+                "foreign exchange identity must not remove the original");
+        assertSame(original, registry.get("ticket"));
+        assertTrue(registry.remove("ticket", original));
+        registry.publish("ticket", replacement);
+
+        assertFalse(registry.remove("ticket", original),
+                "a stale actor-done callback must not revoke a replacement");
+        assertSame(replacement, registry.get("ticket"));
+        assertEquals(1, registry.sealAndSnapshot().size());
+        assertSame(replacement, registry.get("ticket"));
+        assertTrue(registry.remove("ticket", replacement),
+                "authorized cleanup still removes the exact published exchange");
+        assertEquals(0, registry.size());
+    }
+
     @Test void duplicatePublicationCannotOverwriteOriginalTransfer() {
         var registry = new NativeHttp.TransferPublicationGate<String>();
         registry.publish("ticket", "original-actor");
