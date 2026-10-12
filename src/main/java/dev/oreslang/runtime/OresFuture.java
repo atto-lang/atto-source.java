@@ -262,7 +262,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         // An arbitrary CompletionStage with no cancellation claim must not
         // discard a later successful resource-bearing result.
         BooleanSupplier cancelAdmission = stage instanceof Future<?> cancellable
-                ? () -> cancellable.cancel(true)
+                ? () -> {
+                    try {
+                        return cancellable.cancel(true);
+                    } catch (UnsupportedOperationException unsupported) {
+                        // CompletableFuture.minimalCompletionStage() is a
+                        // Future<?> but deliberately refuses cancel(). A
+                        // host stage lacking cancellation authority must
+                        // never drop a later linear-resource result.
+                        return false;
+                    }
+                }
                 : () -> false;
         OresFuture<T> result = new OresFuture<>(cancelAdmission, () -> { });
         stage.whenComplete((value, failure) -> {
