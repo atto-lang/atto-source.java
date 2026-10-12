@@ -246,7 +246,9 @@ public final class SupervisorChildRegistry {
     /** Caller must have admitted the actual replacement before commit. */
     synchronized Snapshot replace(
             RestartReservation permit, ActorRuntime.ActorId replacement) {
-        checkReservation(permit);
+        var admitted = requireReplacement(permit, replacement);
+        if (restartClosed || admitted.phase() != ReplacementPhase.ADMITTED)
+            throw new IllegalStateException("replacement lacks physical admission or supervisor closed");
         requireFreshActor(replacement);
         Snapshot after = new Snapshot(
                 permit.child(), replacement, permit.incarnation() + 1, Phase.ACTIVE);
@@ -261,6 +263,7 @@ public final class SupervisorChildRegistry {
             seenActors.remove(replacement);
             throw failure;
         }
+        replacements.remove(permit.child().logicalId());
         reservations.remove(permit.child().logicalId());
         return after;
     }
@@ -268,9 +271,13 @@ public final class SupervisorChildRegistry {
     /** Trusted owner rolls back a failed spawn/admission; STOP may then win. */
     synchronized Snapshot abortRestart(RestartReservation permit) {
         checkReservation(permit);
+        var candidate = replacements.get(permit.child().logicalId());
+        if (candidate != null && candidate.phase() != ReplacementPhase.CLEANED)
+            throw new IllegalStateException("physical cleanup required before abort");
         Snapshot restored = new Snapshot(
                 permit.child(), permit.failedActor(), permit.incarnation(), Phase.FINALIZED);
         children.put(permit.child().logicalId(), restored);
+        replacements.remove(permit.child().logicalId());
         reservations.remove(permit.child().logicalId());
         return restored;
     }
