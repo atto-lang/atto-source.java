@@ -46,9 +46,11 @@ public final class DeclaredEffectVerifier {
                 using = annotation;
             }
         }
-        if (using == null) return;
+        boolean hasRequirements = annotations.stream()
+                .anyMatch(annotation -> annotation.name().equals("$requires$"));
+        if (using == null && !hasRequirements) return;
 
-        FunctionEffects allowed = FunctionEffects.ofNames(using.arguments().stream()
+        FunctionEffects allowed = using == null ? null : FunctionEffects.ofNames(using.arguments().stream()
                 .map(Ast.TypeRef::name).toList());
         EnumSet<FunctionEffects.Effect> inferred =
                 EnumSet.noneOf(FunctionEffects.Effect.class);
@@ -71,7 +73,7 @@ public final class DeclaredEffectVerifier {
             }
         }
         for (FunctionEffects.Effect effect : inferred) {
-            if (!allowed.contains(effect)) {
+            if (allowed != null && !allowed.contains(effect)) {
                 throw new IllegalArgumentException(name + " uses effect " + effect.sourceName()
                         + " not permitted by its using signature");
             }
@@ -140,12 +142,14 @@ public final class DeclaredEffectVerifier {
             collect(await.expression(), effects, stateAccess, callableName, serial);
             return;
         }
-        if (node instanceof Ast.NewExpr) {
+        if (node instanceof Ast.NewExpr || node instanceof Ast.ListExpr
+                || node instanceof Ast.TupleExpr || node instanceof Ast.ObjectExpr) {
             effects.add(FunctionEffects.Effect.ALLOC);
         }
         if (node instanceof Ast.LambdaExpr) {
-            // Merely creating a callable does not invoke its body. The
-            // handle_state intrinsic above handles synchronous invocation.
+            // Closure construction allocates its environment, but does not
+            // invoke its body. Inline handle_state callbacks are handled above.
+            effects.add(FunctionEffects.Effect.ALLOC);
             return;
         }
         if (node instanceof Ast.RuntimeCallExpr operation) {

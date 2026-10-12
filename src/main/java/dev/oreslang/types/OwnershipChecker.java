@@ -40,6 +40,7 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
+    private int actorStateLoanDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
 
@@ -599,6 +600,9 @@ public final class OwnershipChecker {
     }
 
     private void checkSuspensionBorrows(Scope scope, String operation) {
+        if (actorStateLoanDepth > 0) {
+            throw error("cannot " + operation + " while a critical actor state loan is live; finish handle_state before suspension");
+        }
         if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
             throw error("cannot " + operation + " while holding a MutexGuard; release the guard before suspension");
         }
@@ -1119,7 +1123,12 @@ public final class OwnershipChecker {
             Ast.LambdaExpr checked = new Ast.LambdaExpr(
                     List.of(scoped), lambda.expressionBody(), lambda.blockBody(),
                     false, lambda.critical());
-            checkLambda(checked, scope, null);
+            actorStateLoanDepth++;
+            try {
+                checkLambda(checked, scope, null);
+            } finally {
+                actorStateLoanDepth--;
+            }
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (isBooleanIntrinsicCall(call, scope)) {
