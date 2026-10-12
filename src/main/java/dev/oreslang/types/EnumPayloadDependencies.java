@@ -1,6 +1,7 @@
 package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.runtime.MessagePackCollectionCodec;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -47,7 +48,8 @@ public final class EnumPayloadDependencies {
             for (Ast.EnumCase variant : enumeration.cases()) {
                 if (variant.payload() != null) {
                     collect(variant.payload(), enumeration.name(), variant.name(),
-                            true, declarations.keySet(), references, inlineDependencies);
+                            true, declarations.keySet(), references, inlineDependencies,
+                            0, new int[]{0});
                 }
             }
         }
@@ -65,7 +67,13 @@ public final class EnumPayloadDependencies {
     private static void collect(Ast.TypeRef type, String owner, String caseName,
                                 boolean byValue, Set<String> enums,
                                 List<Reference> references,
-                                Map<String, Set<String>> graph) {
+                                Map<String, Set<String>> graph,
+                                int depth, int[] nodes) {
+        if (depth > MessagePackCollectionCodec.MAX_DEPTH
+                || ++nodes[0] > MessagePackCollectionCodec.MAX_NODES) {
+            throw new IllegalArgumentException(
+                    "enum payload dependency descriptor exceeds depth/node quota");
+        }
         if (enums.contains(type.name())) {
             if (!type.arguments().isEmpty()) {
                 throw new IllegalArgumentException(
@@ -84,7 +92,8 @@ public final class EnumPayloadDependencies {
                 && !type.name().equals("Array")
                 && !type.name().equals("Box");
         for (Ast.TypeRef arg : type.arguments()) {
-            collect(arg, owner, caseName, childByValue, enums, references, graph);
+            collect(arg, owner, caseName, childByValue, enums, references, graph,
+                    depth + 1, nodes);
         }
     }
 
@@ -99,6 +108,10 @@ public final class EnumPayloadDependencies {
             throw new IllegalArgumentException(
                     "unboxed recursive enum payload: " + String.join(" -> ", cycle)
                     + "; use explicit indirection, never implicit enum references");
+        }
+        if (path.size() >= 256) {
+            throw new IllegalArgumentException(
+                    "enum inline dependency chain exceeds maximum depth of 256");
         }
         state.put(name, 1);
         path.add(name);
