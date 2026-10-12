@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Compile-time expansion for language-defined annotations/attributes.
@@ -15,6 +16,10 @@ import java.util.Map;
  */
 public final class AnnotationExpander {
     public static final String FROM_JSON = "FromJson";
+    /** Existing type-only annotations are lowered by Parser.applyTypeMetadataAnnotations. */
+    private static final Set<String> TYPE_ONLY_METADATA = Set.of(
+            "GrowthPolicy", "Allocator", "Align", "InlineCapacity",
+            "MaxCapacity", "Storage", "Rank");
 
     /** Internal-only markers. '$' cannot be written as an Oreslang identifier. */
     public static final String GENERATED_FROM_JSON_GETTER = "$generated.fromJson.getter";
@@ -93,6 +98,15 @@ public final class AnnotationExpander {
         return key;
     }
 
+    private static void rejectTypeOnlyMetadata(List<Ast.Annotation> annotations, String target) {
+        for (Ast.Annotation annotation : annotations) {
+            if (TYPE_ONLY_METADATA.contains(annotation.name())) {
+                throw new IllegalArgumentException("@" + annotation.name()
+                        + " is compile-time type metadata for fields/local bindings, not " + target);
+            }
+        }
+    }
+
     private static Ast.ModuleDecl expandModule(Ast.ModuleDecl module) {
         // Modules retain arbitrary metadata, but @FromJson is not ordinary
         // metadata: it promises generated field accessors. Do not silently
@@ -101,6 +115,7 @@ public final class AnnotationExpander {
             throw new IllegalArgumentException(
                     "@FromJson is only valid on class fields, not module '" + module.name() + "'");
         }
+        rejectTypeOnlyMetadata(module.annotations(), "module '" + module.name() + "'");
         List<Ast.Decl> declarations = new ArrayList<>(module.declarations().size());
         for (Ast.Decl declaration : module.declarations()) {
             if (declaration instanceof Ast.ClassDecl klass) {
@@ -109,8 +124,11 @@ public final class AnnotationExpander {
                 if (declaration instanceof Ast.FieldDecl field && fromJsonKey(field) != null) {
                     throw new IllegalArgumentException("@FromJson is only valid on class fields, not module binding '" + field.name() + "'");
                 }
-                if (declaration instanceof Ast.FunctionDecl function && hasAnnotation(function.annotations(), FROM_JSON)) {
-                    throw new IllegalArgumentException("@FromJson is only valid on class fields, not callable '" + function.name() + "'");
+                if (declaration instanceof Ast.FunctionDecl function) {
+                    if (hasAnnotation(function.annotations(), FROM_JSON)) {
+                        throw new IllegalArgumentException("@FromJson is only valid on class fields, not callable '" + function.name() + "'");
+                    }
+                    rejectTypeOnlyMetadata(function.annotations(), "callable '" + function.name() + "'");
                 }
                 declarations.add(declaration);
             }
@@ -125,6 +143,7 @@ public final class AnnotationExpander {
             if (hasAnnotation(method.annotations(), FROM_JSON)) {
                 throw new IllegalArgumentException("@FromJson is only valid on class fields, not method '" + klass.name() + "." + method.name() + "'");
             }
+            rejectTypeOnlyMetadata(method.annotations(), "method '" + klass.name() + "." + method.name() + "'");
             signatures.put(signature(method.name(), method.arity()), method);
         }
 
