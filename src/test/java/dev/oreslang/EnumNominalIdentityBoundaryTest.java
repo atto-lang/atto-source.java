@@ -104,4 +104,22 @@ final class EnumNominalIdentityBoundaryTest {
                 end
                 """));
     }
+    @Test
+    void codecRejectsForgedDomainsSharingWireTagOrErasingPayloadType() {
+        var stringType = Ast.TypeRef.simple("string");
+        var payloadShape = dev.oreslang.runtime.MessagePackCollectionCodec.string();
+        var a = new TaggedMessageContracts.Case(
+                "Status", "Message2", 2, stringType, payloadShape);
+        var b = new TaggedMessageContracts.Case(
+                "Status", "Message3", 2, stringType, payloadShape);
+        assertThrows(IllegalArgumentException.class, () ->
+                new TaggedMessageCodec(new TaggedMessageContracts.Domain(
+                        "Messages", List.of(a, b))));
+        var erased = new TaggedMessageContracts.Case(
+                "Status", "Message2", 2, stringType, null);
+        assertThrows(IllegalArgumentException.class, () ->
+                new TaggedMessageCodec(new TaggedMessageContracts.Domain(
+                        "Messages", List.of(erased))));
+    }
+
 }
