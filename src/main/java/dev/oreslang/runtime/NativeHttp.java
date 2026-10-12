@@ -162,6 +162,10 @@ public final class NativeHttp implements AutoCloseable {
                     actor = context.actors().spawnCodeActor(kind, code, type);
                 }
                 CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
+                // Reserve the bounded transfer slot *before* observing the
+                // actor's readiness Future. A stalled actor's pending ready
+                // Future otherwise retains one callback per rejected dispatch.
+                String token = exchange.moveTo(actor, !serial);
                 actor.ready().whenCompleteRuntime((ignored, failure) -> {
                     long spawn;
                     long ready;
@@ -172,7 +176,7 @@ public final class NativeHttp implements AutoCloseable {
                     }
                     CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
                 });
-                actor.send(exchange.moveTo(actor, !serial));
+                actor.send(token);
             } catch (RuntimeException failure) {
                 synchronized (exchange.state) {
                     exchange.state.revokeTransferLocked();
