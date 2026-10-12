@@ -41,10 +41,16 @@ final class TargetAbiTest {
             assertEquals(Integer.MAX_VALUE, target.checkedContiguousBytes(Integer.MAX_VALUE));
             assertThrows(ArithmeticException.class, () -> target.checkedContiguousBytes(1L << 31));
             assertThrows(ArithmeticException.class, () -> target.checkedContiguousBytes(-1));
+            assertEquals(Integer.MAX_VALUE, target.checkedJavaByteBufferBytes(Integer.MAX_VALUE));
+            assertThrows(ArithmeticException.class,
+                    () -> target.checkedJavaByteBufferBytes(1L << 31));
         }
         var wide = TargetAbi.parse("aarch64-unknown-linux-gnu");
         assertEquals(1L << 33, wide.checkedContiguousBytes(1L << 33));
+        assertEquals(Long.MAX_VALUE, wide.checkedContiguousBytes(Long.MAX_VALUE));
+        assertThrows(ArithmeticException.class, () -> wide.checkedContiguousBytes(-1));
         assertThrows(ArithmeticException.class, () -> wide.checkedJavaByteBufferBytes(1L << 33));
+        assertThrows(ArithmeticException.class, () -> wide.checkedJavaByteBufferBytes(1L << 31));
         assertEquals(Integer.MAX_VALUE, wide.checkedJavaByteBufferBytes(Integer.MAX_VALUE));
     }
 }
