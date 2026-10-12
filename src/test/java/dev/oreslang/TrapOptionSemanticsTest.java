@@ -536,12 +536,31 @@ final class TrapOptionSemanticsTest {
 
     @Test
     void expressionTrapIsNotSilentlyAcceptedBeforeItsEffectLoweringExists() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+        String[] sources = {
+                """
                 fnc invalid(): void {
                   val maybe = trap Some(3).unwrap();
                   return;
                 }
-                """));
+                """,
+                """
+                fnc invalid(): int {
+                  return trap (40 + 2);
+                }
+                """,
+                """
+                fnc identity(int n): int { return n; }
+                fnc invalid(): int {
+                  return identity(trap (42));
+                }
+                """
+        };
+        for (String source : sources) {
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source));
+            assertTrue(rejected.getMessage().contains("trap expression unsupported"),
+                    rejected.getMessage());
+        }
     }
 
     private static String run(String program) throws Exception {
