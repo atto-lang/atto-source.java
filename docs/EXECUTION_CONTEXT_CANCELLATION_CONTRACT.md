@@ -85,11 +85,13 @@ exceptionally, but only after finalization.
 
 The host observer method is not yet a documented guest-source method or
 compiler ABI. The draft JVM revision needs fresh exact-head CI, and GraalVM
-AOT/hybrid runtime execution remains unverified. Outstanding native FFM
-loans can still physically outlive actor shutdown under the existing
-loan-retaining memory-slice design; extending the actor physical done barrier
-to wait for all such loans requires a separate owner-lifetime callback
-protocol and conformance tests. Do not claim the stronger FFM invariant from
+AOT/hybrid runtime execution remains unverified. Outstanding native FFM loans can physically outlive logical STOP under the
+loan-retaining memory-slice design. The current Java draft adds a callback
+from native reservation retirement to the owning actor, keeping `get_done()`
+pending until the last native loan physically retires and its quota is
+refunded. Arena-close failures are surfaced through `get_shutdown_result()`.
+This new mechanism still requires exact-head executed JVM/native CI,
+failure-injection coverage, and independent race auditing. Do not claim the stronger FFM invariant from
 the current host change alone.
 
 ## Executable gates
