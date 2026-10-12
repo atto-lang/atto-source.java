@@ -271,7 +271,7 @@ final class CoreAssertTest {
         }
     }
 
-    @Test void guestCatchCannotInterceptAuthorizationDenialAcrossSuspension() throws Exception {
+    @Test void explicitGuestCatchCanRecoverDeniedOperationAcrossSuspension() throws Exception {
         Path blocked = Files.createTempFile("ores-assert-catch-denied-", ".txt");
         Path entry = Files.createTempFile("ores-assert-catch-policy-", ".ores");
         try {
@@ -284,44 +284,68 @@ final class CoreAssertTest {
                         try {
                             fs.write_text("%s", "forbidden");
                         } catch (error) {
-                            stdio.stdout.write("caught-terminal");
-                            return false;
+                            stdio.stdout.write("caught-denial");
                         } finally {
-                            Assert.fail("ordinary finally must not mask denial");
+                            stdio.stdout.write("finally");
                         }
                         return true;
                     }
-                    pub %s main(): void { guarded(); return; }
+                    pub %s main(): void {
+                        val Option<bool> handled = guarded();
+                        stdio.stdout.write(handled.is_some());
+                        return;
+                    }
                     """.formatted(
                         resumed ? "rt cooperate;" : "",
                         blocked.toString().replace("\\", "\\\\").replace("\"", "\\\""),
                         resumed ? "async fnc" : "routine"));
                 var out = new ByteArrayOutputStream();
-                RuntimeException failure = assertThrows(RuntimeException.class,
-                        () -> LinkedProgramRunner.run(
-                                entry,
-                                IsolatePolicy.developer().withCapabilities(
-                                        IsolatePolicy.Capability.FILESYSTEM_WRITE),
-                                RuntimePermissions.denyAll(),
-                                PermissionCheckMode.RUNTIME,
-                                ExecutionProfile.serverJit(),
-                                java.util.Set.of(),
-                                System.getenv(),
-                                out,
-                                new ByteArrayOutputStream()));
-                StringBuilder diagnostic = new StringBuilder();
-                for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
-                    diagnostic.append(cursor.getMessage()).append(' ');
-                }
-                assertTrue(diagnostic.toString().contains("permission denied"),
-                        () -> "denial must bypass catch and trap: " + diagnostic);
-                assertFalse(out.toString(StandardCharsets.UTF_8).contains("caught-terminal"),
-                        "guest catch must not intercept terminal authority denial");
-                assertFalse(Files.exists(blocked));
+                LinkedProgramRunner.run(
+                        entry,
+                        IsolatePolicy.developer().withCapabilities(
+                                IsolatePolicy.Capability.FILESYSTEM_WRITE),
+                        RuntimePermissions.denyAll(),
+                        PermissionCheckMode.RUNTIME,
+                        ExecutionProfile.serverJit(),
+                        java.util.Set.of(),
+                        System.getenv(),
+                        out,
+                        new ByteArrayOutputStream());
+                assertEquals("caught-denialfinallytrue",
+                        out.toString(StandardCharsets.UTF_8).trim(),
+                        "explicit guest catch is permitted to recover a denied operation");
+                assertFalse(Files.exists(blocked), "catch must not grant the denied write");
             }
         } finally {
             Files.deleteIfExists(entry);
             Files.deleteIfExists(blocked);
+        }
+    }
+
+    @Test void panicCannotBeCaughtOrMaskedByFinallyAcrossSuspension() {
+        for (boolean resumed : new boolean[]{false, true}) {
+            Exception failure = assertThrows(Exception.class, () -> run("""
+                trap fnc check(): bool {
+                    %s
+                    try {
+                        val Option<bool> absent = None;
+                        return absent.unwrap();
+                    } catch (error) {
+                        stdio.stdout.write("caught-panic");
+                        return true;
+                    } finally {
+                        Assert.fail("ordinary cleanup");
+                    }
+                }
+                pub %s main(): void {
+                    check();
+                    stdio.stdout.write("unreachable");
+                    return;
+                }
+                """.formatted(resumed ? "rt cooperate;" : "",
+                        resumed ? "async fnc" : "routine")));
+            assertTrue(failure.getMessage().contains("Option::unwrap"),
+                    () -> "panic must bypass catch and remain authoritative: " + failure);
         }
     }
 
