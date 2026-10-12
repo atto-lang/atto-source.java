@@ -182,15 +182,19 @@ public final class GeneratorRuntime {
         private final Map<String, Object> cleanupValues = new LinkedHashMap<>();
         private final AtomicInteger cleanupRuns = new AtomicInteger();
         private final AtomicBoolean finalized = new AtomicBoolean();
+        // Only an empty catch wrapping the whole lowered body is admitted.
+        private final boolean catchesAwaitFailure;
         private volatile boolean cancellationRequested;
         private volatile boolean waitingOnFuture;
         private int pc;
 
         private SourceLowering(List<YieldOperation> operations,
-                List<Ast.BindingStmt> finallyBindings, Map<String, Object> arguments) {
+                List<Ast.BindingStmt> finallyBindings, Map<String, Object> arguments,
+                boolean catchesAwaitFailure) {
             this.operations = List.copyOf(operations);
             this.finallyBindings = List.copyOf(finallyBindings);
             this.arguments = Map.copyOf(arguments);
+            this.catchesAwaitFailure = catchesAwaitFailure;
         }
 
         static SourceLowering compile(String source, String function, Map<String, ?> args) {
@@ -248,11 +252,24 @@ public final class GeneratorRuntime {
             List<Ast.Stmt> body = new ArrayList<>();
             List<Ast.BindingStmt> cleanup = new ArrayList<>();
             boolean foundFinally = false;
-            for (Ast.Stmt stmt : target.body()) {
+            for (int index = 0; index < target.body().size(); index++) {
+                Ast.Stmt stmt = target.body().get(index);
                 if (stmt instanceof Ast.TryStmt tried) {
-                    if (foundFinally || !tried.catchBody().isEmpty()) {
+                    // Flattening a try with preceding or following yields
+                    // changes when its lexical cleanup runs. Until nested-PC
+                    // lowering exists, allow only a whole-body try and an
+                    // optional following bare return.
+                    boolean wholeBodyTry = index == 0
+                            && (target.body().size() == 1
+                                    || (target.body().size() == 2
+                                            && target.body().get(1)
+                                                    instanceof Ast.ReturnStmt ret
+                                            && ret.value() == null));
+                    if (foundFinally || !tried.catchBody().isEmpty()
+                            || !wholeBodyTry) {
                         throw new IllegalArgumentException(
-                                "staged generator lowering requires one try/finally without catch");
+                                "staged generator requires a whole-body try with "
+                                + "empty catch and optional bare return");
                     }
                     foundFinally = true;
                     body.addAll(tried.body());
@@ -296,7 +313,7 @@ public final class GeneratorRuntime {
                             "staged generator lowering refuses unsupported source statement");
                 }
             }
-            return new SourceLowering(operations, cleanup, bindings);
+            return new SourceLowering(operations, cleanup, bindings, foundFinally);
         }
 
         @Override
@@ -318,6 +335,11 @@ public final class GeneratorRuntime {
                 waitingOnFuture = false;
                 if (input.failure() != null) {
                     finishFinally();
+                    // The admitted empty catch consumes awaited exceptions.
+                    // Without a try/catch, preserve failure propagation.
+                    if (catchesAwaitFailure) {
+                        return OresScheduler.done(Step.doneStep());
+                    }
                     if (input.failure() instanceof RuntimeException failure) throw failure;
                     throw new IllegalStateException("generator await failed", input.failure());
                 }
