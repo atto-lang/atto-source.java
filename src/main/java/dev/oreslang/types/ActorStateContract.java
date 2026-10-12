@@ -4,7 +4,6 @@ import dev.oreslang.ast.Ast;
 import java.lang.reflect.RecordComponent;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Fail-closed source gate for the actor-state *prototype*. No codegen or
@@ -58,11 +57,11 @@ public final class ActorStateContract {
         if (!schema.isRecordType()) {
             throw new IllegalArgumentException("actor state schema must declare typed keys");
         }
-        Set<String> keys = schema.recordMembers().keySet();
+        Map<String, Ast.TypeRef> keys = schema.recordMembers();
         // No continuation-bound alias may be smuggled into actor-state defaults.
         if (state.initializer() instanceof Ast.ObjectExpr defaults) {
             for (Ast.ObjectField def : defaults.fields()) {
-                if (!keys.contains(def.name())) {
+                if (!keys.containsKey(def.name())) {
                     throw new IllegalArgumentException("unknown actor state default key '" + def.name() + "'");
                 }
             }
@@ -75,7 +74,7 @@ public final class ActorStateContract {
         }
     }
 
-    private static void visit(Object node, String actor, Set<String> keys,
+    private static void visit(Object node, String actor, Map<String, Ast.TypeRef> keys,
                               String activeAccess, boolean nestedClosure) {
         if (node == null) return;
         if (node instanceof Ast.CallExpr call
@@ -149,10 +148,22 @@ public final class ActorStateContract {
                 throw new IllegalArgumentException(
                         "actor state access capability cannot be captured by nested closures");
             }
-            if (!keys.contains(member.member())) {
+            Ast.TypeRef field = keys.get(member.member());
+            if (field == null) {
                 throw new IllegalArgumentException("undeclared actor state key '" + member.member() + "'");
             }
-            return; // scoped direct field operation, subject to normal type checking
+            // A raw Map/List/class projection would create an ordinary guest
+            // object alias, which could be returned or stored after the
+            // StateAccess callback's lexical borrow has been revoked. This
+            // prototype has no typed, non-escaping projection/element proxy.
+            // Fail closed until compiler lowering supplies that capability.
+            if (!scalarCopyField(field)) {
+                throw new IllegalArgumentException(
+                        "non-scalar actor state key '" + member.member()
+                        + "' requires a scoped non-escaping StateAccess projection; "
+                        + "raw Map/List/class aliases are forbidden");
+            }
+            return; // scalar Copy value, subject to normal type checking
         }
         if (node instanceof Ast.NameExpr name && activeAccess != null
                 && name.name().equals(activeAccess)) {
@@ -186,6 +197,21 @@ public final class ActorStateContract {
                 }
             }
         }
+    }
+
+    /**
+     * Temporary fail-closed scalar projection subset. Complex actor-owned
+     * values need compiler-lowered StateAccess views with an unforgeable
+     * continuation/arena lifetime and an explicit non-escaping borrow.
+     */
+    private static boolean scalarCopyField(Ast.TypeRef type) {
+        if (type == null || !type.arguments().isEmpty() || type.isBorrow()
+                || type.isRecordType() || type.isTupleType() || type.isUnion()) return false;
+        return switch (type.name()) {
+            case "int", "long", "short", "byte", "float", "double",
+                    "bool", "boolean", "String", "string", "char" -> true;
+            default -> false;
+        };
     }
 
     private static boolean referencesAccess(Object node, String access) {
