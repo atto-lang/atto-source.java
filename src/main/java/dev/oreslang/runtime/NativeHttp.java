@@ -272,22 +272,26 @@ public final class NativeHttp implements AutoCloseable {
             } finally {
                 if (handoffPending) {
                     Server server = exchange.state.server;
-                    if (server.stopped) {
-                        // A queued token can be retired safely; an already
-                        // delivered token remains a tombstone for actor-side
-                        // stale-mail suppression.
-                        exchange.state.abort(503);
-                        if (mailSent && actor != null
-                                && context.actors().retireQueuedHttpTransfer(actor, deliveryToken)) {
-                            synchronized (exchange.state) {
-                                if (deliveryToken.equals(exchange.state.ticket))
-                                    exchange.state.revokeTransferLocked();
+                    try {
+                        if (server.stopped) {
+                            // A queued token can be retired safely; an already
+                            // delivered token remains a tombstone for actor-side
+                            // stale-mail suppression.
+                            exchange.state.abort(503);
+                            if (mailSent && actor != null
+                                    && context.actors().retireQueuedHttpTransfer(actor, deliveryToken)) {
+                                synchronized (exchange.state) {
+                                    if (deliveryToken.equals(exchange.state.ticket))
+                                        exchange.state.revokeTransferLocked();
+                                }
+                                exchange.state.detachActorDoneObserverIfReleased();
                             }
-                            exchange.state.detachActorDoneObserverIfReleased();
                         }
+                    } finally {
+                        // A failed cleanup callback may not strand drain.
+                        server.pendingDeliveries.decrementAndGet();
+                        server.completeDrain();
                     }
-                    server.pendingDeliveries.decrementAndGet();
-                    server.completeDrain();
                 }
                 CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
             }
