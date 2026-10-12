@@ -470,7 +470,7 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        private final int[] order;
+        private int[] order;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
         private final int defaultIndex;
@@ -481,7 +481,6 @@ public final class ChannelRuntime {
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
             this.policy = policy;
-            this.order = set.initialOrder(policy);
 
             int foundDefault = -1;
             for (int i = 0; i < set.cases.size(); i++) {
@@ -512,6 +511,10 @@ public final class ChannelRuntime {
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
+                // Snapshot reusable FAIR state at the same linearization point
+                // as admission and commitment. Otherwise concurrent callers
+                // can both observe a cursor before either reaches the lock.
+                order = set.initialOrder(policy);
                 registerLocked(this);
                 pumpLocked(completions);
 
