@@ -114,11 +114,17 @@ final class SerialExecutionTicket {
             Object executingActorId,
             Object executingIncarnation,
             SerialActorAdmission.Lease activeReceive) {
-        if (retired.get()) throw new RetiredTaskException();
-        if (!actorAlive.getAsBoolean()
-                || !actorId.equals(executingActorId)
+        // Always validate immutable provenance before classifying a queued
+        // continuation as benignly retired. Otherwise a foreign actor ticket
+        // marked retired can bypass an authorization violation when the
+        // carrier catches RetiredTaskException and silently drops it.
+        // A genuine same-incarnation STOP race is still harmless to discard.
+        if (!actorId.equals(executingActorId)
                 || incarnation != executingIncarnation) {
-            throw new IllegalStateException("stale or foreign actor continuation ticket");
+            throw new IllegalStateException("foreign actor continuation ticket");
+        }
+        if (retired.get() || !actorAlive.getAsBoolean()) {
+            throw new RetiredTaskException();
         }
         // A finished receive can leave an already-queued continuation behind
         // before the scheduler's own terminal callback retires the ticket.

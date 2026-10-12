@@ -16,6 +16,91 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class PatternMatchingHardeningTest {
     @Test
+    void bracedSwitchSupportsGroupedCasesCatchAllFirstAndArmSeparators() {
+        var typed = TypeChecker.check(Parser.parse("""
+                fnc choose(string v): string {
+                  switch (v) {
+                    _ { return "star"; },
+                    case "foo", "car", "mar" { return "bar"; };
+                  }
+                  return "fallback";
+                }
+                fnc chooseBare(string v): string {
+                  switch v {
+                    case "foo" { return "bar"; }
+                    default { return "star"; }
+                  }
+                  return "fallback";
+                }
+                """));
+        assertNotNull(typed);
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc invalid(string v): void {
+                  switch v {
+                    default { return; }
+                    _ { return; }
+                  }
+                }
+                """));
+        IllegalArgumentException duplicated = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc invalid(string v): void {
+                  switch v {
+                    case "foo", "foo" { return; }
+                  }
+                }
+                """)));
+        assertTrue(duplicated.getMessage().contains("duplicate switch case"));
+    }
+
+    @Test
+    void bracedMatchAcceptsNominalIsAsAndTupleBindings() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc consume(int x): void {
+                  match x over {
+                    on is MessagePatterns.Reset as m { return; }
+                    on MessagePatterns.Delta as m { return; }
+                    on MessagePatterns.Tuple as (m1, m2) { return; }
+                    on MessagePatterns.Reset m { return; }
+                    on _ { return; }
+                  }
+                }
+                fnc consumeEnd(int x): void {
+                  match x over
+                    on is MessagePatterns.Reset as m { return; }
+                    on MessagePatterns.Delta m { return; }
+                    on _ { return; }
+                  end
+                }
+                """));
+    }
+
+    @Test
+    void fallbackFirstDoesNotShadowSpecificSwitchCasesAtRuntime() throws Exception {
+        String program = """
+                fnc choose(string v): string {
+                  switch v {
+                    _ { return "star"; },
+                    case "foo", "car", "mar" { return "bar"; };
+                  }
+                  return "unreachable";
+                }
+                pub fnc main(): void {
+                  stdio.println(choose("foo"));
+                  stdio.println(choose("else"));
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "switch-fallback-first.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("bar\nstar", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
+    }
+
+    @Test
     void matchAndSwitchUseContextualArmKeywordsAndSlimArrows() {
         var tokens = new Lexer("is matches match when case default first switch on").scan();
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IS));
@@ -185,10 +270,22 @@ final class PatternMatchingHardeningTest {
                 }
                 """)));
 
+        // 'on _' is a default alias: even if authored first it cannot
+        // shadow an explicit type arm.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc good(int n): int {
+                  match n over
+                    on _ -> { return 1; }
+                    on 7 -> { return 7; }
+                  end
+                }
+                """)));
+
+        // An ordinary named binder remains ordered and can shadow arms.
         IllegalArgumentException dead = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(int n): int {
                   match n over
-                    on _ -> { return 1; }
+                    on anything -> { return 1; }
                     on int x -> { return x; }
                   end
                 }
@@ -364,4 +461,367 @@ final class PatternMatchingHardeningTest {
         });
         assertTrue(error.getMessage().contains("moved value"));
     }
+
+    @Test
+    void defaultIsCanonicalMatchCatchAllWithExplicitBindingAndFallbackPriority() {
+        var typed = TypeChecker.check(Parser.parse("""
+                fnc decide(int n): int {
+                  match n over {
+                    default as remaining { return remaining; }
+                    on 7 { return 42; }
+                  }
+                  return -1;
+                }
+                fnc aliasUnderscore(int n): int {
+                  match n over {
+                    on _ as remaining { return remaining; }
+                    on 7 { return 42; }
+                  }
+                  return -1;
+                }
+                fnc aliasKeyword(int n): int {
+                  match n over {
+                    on default { return 0; }
+                    on 7 { return 42; }
+                  }
+                  return -1;
+                }
+                """));
+        assertNotNull(typed);
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc duplicate(int n): int {
+                  match n over {
+                    default { return 0; }
+                    on _ { return 1; }
+                  }
+                  return 2;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc guardedDefault(int n): int {
+                  match n over {
+                    default when n > 0 { return 1; }
+                  }
+                  return 0;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc unbound(int n): int {
+                  match n over {
+                    default { return m; }
+                  }
+                  return 0;
+                }
+                """)));
+    }
+
+    @Test
+    void wildcardCannotBeDeclaredAsClassTypeOrOrdinaryValueName() {
+        for (String code : new String[] {
+                "define class _ as end",
+                "define class default as end",
+                "type _ = int;",
+                "fnc test(): void { val _ = 5; }",
+                "define module _ as end",
+                "define actor _ as end",
+                "fnc _(): void { return; }"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(code), code);
+        }
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc ok(int n): int {
+                  const [head, _] = [n, 0];
+                  return head;
+                }
+                """));
+    }
+
+    @Test
+    void defaultFirstForMatchIsExecutedOnlyAfterSpecificArms() throws Exception {
+        String program = """
+                fnc decide(int n): int {
+                  match n over {
+                    default as remaining { return remaining; }
+                    on 7 { return 42; }
+                  }
+                  return -1;
+                }
+                pub fnc main(): void {
+                  stdio.println(decide(7));
+                  stdio.println(decide(9));
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "match-default-first.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("42\n9", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
+    }
+
+
+    @Test
+    void switchCaseDuplicatesAreComparedAfterScalarConstantFolding() {
+        for (String caseBody : new String[] {
+                "case 2 { return 2; } case 1 + 1 { return 3; }",
+                "case -1 { return 2; } case 0 - 1 { return 3; }"
+        }) {
+            String source = "fnc f(int v): int { switch v { " + caseBody
+                    + " default { return 0; } } return 0; }";
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+            assertTrue(error.getMessage().contains("duplicate switch case"), error.getMessage());
+        }
+        IllegalArgumentException strings = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                fnc f(string v): int {
+                  switch v {
+                    case "foo" { return 1; }
+                    case "f" + "oo" { return 2; }
+                    default { return 0; }
+                  }
+                  return 0;
+                }
+                """)));
+        assertTrue(strings.getMessage().contains("duplicate switch case"), strings.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc invalid([int, int] v): int {
+                  switch v {
+                    case [1, 2] { return 1; }
+                    default { return 0; }
+                  }
+                  return 0;
+                }
+                """)));
+    }
+
+    @Test
+    void largeNegativeI64SwitchConstantsRemainDistinctAboveDoublePrecision() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc classify(int n): int {
+                  switch n {
+                    case -9007199254740992 { return 1; }
+                    case -9007199254740993 { return 2; }
+                    default { return 0; }
+                  }
+                  return -1;
+                }
+                """)));
+    }
+
+    @Test
+    void asyncAndSyncSwitchAgreeOnFallbackSemantics() throws Exception {
+        String program = """
+                async fnc answer(): string {
+                  return "car";
+                }
+                fnc direct(string value): int {
+                  switch value {
+                    default { return 0; }
+                    case "foo", "car" { return 42; }
+                  }
+                  return -1;
+                }
+                pub async fnc main(): void {
+                  stdio.println(direct("car"));
+                  switch (await answer()) {
+                    default { stdio.println(0); }
+                    case "foo", "car" { stdio.println(42); }
+                  }
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "switch-async-equality.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("42\n42", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
+    }
+
+
+    @Test
+    void typedMatchContractsParseInPositionalAndNamedForms() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc example(int n): bool {
+                  match<bool> n over {
+                    default as m { return false; }
+                    on 7 { return true; }
+                  }
+                  match<ret=bool> n over {
+                    on 7 { return true; }
+                    default { return false; }
+                  }
+                  do match<bool> n over {
+                    on 7 { return true; }
+                    default { return false; }
+                  }
+                  do match<ret=bool> n over {
+                    default { return false; }
+                    on 7 { return true; }
+                  }
+                }
+                """));
+        for (String header : new String[] {
+                "match<foo=bool>", "match<ret=int, extra=bool>",
+                "match<ret=>", "do match<ret=bool"
+        }) {
+            String source = "fnc f(int n): bool { " + header
+                    + " n over { default { return true; } } }";
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+    }
+
+    @Test
+    void typedDoMatchUsesContainingReturnContractAndEnforcesAllBranches() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc f(int n): bool {
+                  do match<ret=bool> n over {
+                    default { return false; }
+                    on 7 { return true; }
+                  }
+                }
+                """)));
+        IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                fnc wrong(int n): bool {
+                  do match<ret=bool> n over {
+                    default { return 42; }
+                    on 7 { return true; }
+                  }
+                }
+                """)));
+        assertTrue(wrong.getMessage().contains("return"));
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                fnc missing(int n): bool {
+                  do match<ret=bool> n over {
+                    default { stdio.println(n); }
+                    on 7 { return true; }
+                  }
+                }
+                """)));
+        assertTrue(missing.getMessage().contains("must return"));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc outer(int n): int {
+                  do match<ret=bool> n over {
+                    default { return false; }
+                  }
+                }
+                """)));
+    }
+
+    @Test
+    void valueMatchContractsFailClosedUntilArmLocalReturnLowering() {
+        IllegalArgumentException unsupported = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                fnc f(int n): bool {
+                  match<bool> n over {
+                    default { return false; }
+                    on 7 { return true; }
+                  }
+                }
+                """)));
+        assertTrue(unsupported.getMessage().contains("arm-local return/result lowering"));
+    }
+
+
+    @Test
+    void doMatchPositionalContractReportsPreferNamedReturnDiagnostic() {
+        var result = TypeChecker.checkTypesWithDiagnostics(Parser.parse("""
+                fnc f(int n): bool {
+                  do match<bool> n over {
+                    on 7 { return true; }
+                    default { return false; }
+                  }
+                }
+                """));
+        assertTrue(result.warnings().stream()
+                        .anyMatch(message -> message.contains("W-MATCH-RET-SHORTHAND")),
+                result.warnings().toString());
+    }
+
+    @Test
+    void typedProceduralMatchReturnsFromContainingCallable() throws Exception {
+        String program = """
+                fnc choose(int n): bool {
+                  do match<ret=bool> n over {
+                    default { return false; }
+                    on 7 { return true; }
+                  }
+                }
+                pub fnc main(): void {
+                  stdio.println(choose(7));
+                  stdio.println(choose(8));
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "typed-do-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("true\nfalse", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
+    }
+
+
+    @Test
+    void typedDoMatchCannotTreatInfiniteLoopAsBooleanReturn() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                fnc noBoolean(int n): bool {
+                  do match<ret=bool> n over {
+                    default { loop { } }
+                    on 7 { return true; }
+                  }
+                }
+                """)));
+        assertTrue(failure.getMessage().contains("must return"), failure.getMessage());
+    }
+
+    @Test
+    void rejectsReturnDirectlyInFinallyButAllowsNestedCallableReturn() {
+        IllegalArgumentException invalid = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                fnc invalid(): bool {
+                  try { return true; }
+                  catch (e) { return false; }
+                  finally { return false; }
+                }
+                """)));
+        assertTrue(invalid.getMessage().contains("return is forbidden directly inside finally"),
+                invalid.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
+                fnc allowed(): bool {
+                  try { return true; }
+                  catch (e) { return false; }
+                  finally { (|| -> { return true; })(); }
+                }
+                """)));
+    }
+
+    @Test
+    void typedDoMatchRejectsReturnInNestedFinally() {
+        IllegalArgumentException invalid = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                fnc invalid(int n): bool {
+                  do match<ret=bool> n over {
+                    on 7 { return true; }
+                    default {
+                      try { return false; }
+                      catch (e) { return false; }
+                      finally { block { return true; } }
+                    }
+                  }
+                }
+                """)));
+        assertTrue(invalid.getMessage().contains("return is forbidden directly inside finally"),
+                invalid.getMessage());
+    }
+
 }

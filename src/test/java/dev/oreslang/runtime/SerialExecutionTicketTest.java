@@ -122,6 +122,61 @@ final class SerialExecutionTicketTest {
         assertFalse(unbound.mayEnqueue());
     }
 
+    @Test void stopRetiresOwnContinuationButDoesNotHideForeignActorAuthority() {
+        Object incarnation = new Object();
+        AtomicBoolean alive = new AtomicBoolean(true);
+        var ticket = new SerialExecutionTicket(
+                "actor", incarnation, 17L, null, null, alive::get);
+        ticket.requireRunnable("actor", incarnation, null);
+        alive.set(false);
+        assertFalse(ticket.mayEnqueue());
+        assertThrows(SerialExecutionTicket.RetiredTaskException.class,
+                () -> ticket.requireAdmissible("actor", incarnation, null),
+                "same-incarnation STOP races are benign retired completions");
+        assertThrows(IllegalStateException.class,
+                () -> ticket.requireAdmissible("foreign-actor", incarnation, null),
+                "retirement must never legitimize foreign actor tickets");
+        assertThrows(IllegalStateException.class,
+                () -> ticket.requireAdmissible("actor", new Object(), null),
+                "retirement must never hide stale-incarnation authority");
+    }
+
+    @Test void provenanceViolationIsNeverSuppressedByRetirementOrStop() {
+        Object incarnation = new Object();
+        for (boolean retired : new boolean[]{false, true}) {
+            for (boolean aliveNow : new boolean[]{false, true}) {
+                AtomicBoolean alive = new AtomicBoolean(aliveNow);
+                var ticket = new SerialExecutionTicket(
+                        "actor", incarnation, 19L, null, null, alive::get);
+                if (retired) ticket.retire();
+
+                if (!retired && aliveNow) {
+                    ticket.requireRunnable("actor", incarnation, null);
+                } else {
+                    assertThrowsExactly(SerialExecutionTicket.RetiredTaskException.class,
+                            () -> ticket.requireAdmissible("actor", incarnation, null),
+                            "same actor/incarnation must discard a revoked callback");
+                }
+
+                // The terminal/retirement check must never hide a forged
+                // destination actor or recycled execution incarnation.
+                for (boolean foreignActor : new boolean[]{false, true}) {
+                    for (boolean foreignIncarnation : new boolean[]{false, true}) {
+                        if (!foreignActor && !foreignIncarnation) continue;
+                        Object actor = foreignActor ? "foreign" : "actor";
+                        Object epoch = foreignIncarnation ? new Object() : incarnation;
+                        assertThrowsExactly(IllegalStateException.class,
+                                () -> ticket.requireAdmissible(actor, epoch, null),
+                                "actor/incarnation provenance must dominate retired status");
+                        assertThrowsExactly(IllegalStateException.class,
+                                () -> ticket.requireRunnable(actor, epoch, null),
+                                "the carrier must reject foreign retired callbacks");
+                    }
+                }
+            }
+        }
+    }
+
     @Test void lateQueuedCompletionAfterReceiveCloseIsBenignAcrossNextTurn() {
         Object incarnation = new Object();
         SerialActorAdmission gate = new SerialActorAdmission(3);

@@ -54,6 +54,16 @@ public final class OresScheduler implements AutoCloseable {
         Step<T> resume(Resume resume) throws Exception;
     }
 
+    /**
+     * Source-task-only, host-readable cleanup obligation snapshot.
+     * Cancellation of an already suspended guest frame cannot be reported
+     * as graceful termination while registered lexical cleanup is pending.
+     * This does NOT authorize a producer thread to run guest cleanup.
+     */
+    public interface GuestCleanupObligation {
+        boolean hasPendingGuestCleanup();
+    }
+
     /** Result of one resumable task turn. */
     public sealed interface Step<T> permits Done, Await, Cooperate { }
 

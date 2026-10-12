@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ores-truffle-oreslang.github.io/contracts/v1/cancellation/cleanup-receipt.schema.json",
+  "title": "Oreslang actor source cleanup receipt (proposed, not emitted)",
+  "description": "Fail-closed cancellation contract. A cleanup-only CONTROL implementation is not yet available.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "actorId",
+    "incarnation",
+    "sourceTaskId",
+    "stopMode",
+    "outcome",
+    "doneSuccess",
+    "cleanupExecuted"
+  ],
+  "properties": {
+    "version": {
+      "const": "1"
+    },
+    "actorId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "incarnation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceTaskId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "stopMode": {
+      "enum": [
+        "graceful",
+        "force"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "none",
+        "settled",
+        "incomplete",
+        "failed"
+      ]
+    },
+    "doneSuccess": {
+      "type": "boolean"
+    },
+    "cleanupExecuted": {
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "incomplete"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "doneSuccess": {
+            "const": false
+          },
+          "cleanupExecuted": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "doneSuccess": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "doneSuccess": {
+            "const": true
+          }
+        },
+        "required": [
+          "doneSuccess"
+        ]
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "none",
+              "settled"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
