@@ -477,19 +477,23 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void enqueueTurn() {
+            // Each scheduled dispatch owns its own carrier-lease bit. A stale
+            // or duplicate dispatch must never clear another running dispatch's
+            // executing flag, watchdog identity or quota-retirement barrier.
+            AtomicBoolean ownsExecution = new AtomicBoolean();
             try {
                 executeTurn(() -> {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
-                        runTurn();
+                        runTurn(ownsExecution);
                     }
-                }, this::afterCarrierTurn, this::failTerminal);
+                }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;
             }
         }
 
-        private void runTurn() {
+        private void runTurn(AtomicBoolean ownsExecution) {
             // Claim the physical guest execution lease BEFORE transitioning to
             // RUNNING. Otherwise cancellation can observe RUNNING with
             // executing=false, announce quiescence and release actor memory
@@ -499,6 +503,7 @@ public final class OresScheduler implements AutoCloseable {
                         "OresScheduler task execution lease violation"));
                 return;
             }
+            ownsExecution.set(true);
             if (!phase.compareAndSet(QUEUED, RUNNING)) return;
 
             ActorTurnWatchdog.Lease lease = ActorTurnWatchdog.enter(
@@ -569,7 +574,13 @@ public final class OresScheduler implements AutoCloseable {
          * task Future earlier can let a host close its Polyglot Context while
          * this carrier is still executing guest continuation code.
          */
-        private void afterCarrierTurn() {
+        private void afterCarrierTurn(boolean ownsExecution) {
+            if (!ownsExecution) {
+                // This carrier never owned the physical lease; another
+                // dispatch may still be inside guest code. Never clear it.
+                retireWhenQuiescent();
+                return;
+            }
             ActorTurnWatchdog.Lease lease = watchdogLease;
             watchdogLease = null;
             if (lease != null) lease.close();
