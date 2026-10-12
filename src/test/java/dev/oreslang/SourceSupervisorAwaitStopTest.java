@@ -359,7 +359,10 @@ final class SourceSupervisorAwaitStopTest {
                     group.stopReceipt(permit.child()).status());
             assertTrue(group.unresolvedSupervisorStops().isEmpty());
             var denied = new CompletableFuture<Boolean>();
-            var watcher = group.spawnWorker(ActorRuntime.ActorKind.PRIVATE,
+            // Trusted embedder supplies an intentionally captured test callback.
+            // Do not weaken the guest BehaviorFactory statelessness fence just
+            // to probe denial of a privileged runtime API from a carrier.
+            var watcher = runtime.spawnPrivateTrusted(
                     IsolatePolicy.developer(), factory -> (message, ctx) -> {
                         try {
                             group.stopReceipt(permit.child());
@@ -368,6 +371,7 @@ final class SourceSupervisorAwaitStopTest {
                             denied.complete(true);
                         }
                     });
+            group.manageWorker(watcher);
             watcher.getReady().get(5, TimeUnit.SECONDS);
             watcher.send("observe");
             assertTrue(denied.get(5, TimeUnit.SECONDS),
