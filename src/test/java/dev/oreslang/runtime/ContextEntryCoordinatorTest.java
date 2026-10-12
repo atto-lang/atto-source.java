@@ -47,6 +47,7 @@ final class ContextEntryCoordinatorTest {
                     hostEntered.countDown();
                     assertTrue(releaseHost.await(5, TimeUnit.SECONDS));
                 }
+                return null;
             });
             assertFalse(hostEntered.await(100, TimeUnit.MILLISECONDS));
             releaseGuest.countDown();
