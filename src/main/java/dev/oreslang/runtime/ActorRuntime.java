@@ -6115,6 +6115,12 @@ public final class ActorRuntime implements AutoCloseable {
         private Runnable finalCleanup;
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
+        /** A single caller claims post-monitor finalization after all turns and children exit. */
+        private boolean finalizationReady;
+        private boolean finalizationPublished;
+        /** Stop cancellation must finish before DONE/READY can be published. */
+        private boolean terminationCleanupPending;
+        private boolean terminationDispatched;
         private boolean finalized;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
@@ -6374,49 +6380,112 @@ public final class ActorRuntime implements AutoCloseable {
                 if (stopped.get()) finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
+            completeFinalizationOutsideLock();
         }
 
+        /**
+         * Claim only state while holding lifecycleLock. Never invoke callbacks,
+         * close scheduler resources, acquire another actor monitor, or publish
+         * runtime Futures here. In particular the TurnExecutor and cancellation
+         * cascade must have physically finished.
+         */
         private void finalizeStopLocked() {
-            // External termination is not observable until the dispatcher has
-            // fully crossed back out of the TurnExecutor boundary. For
-            // Truffle-backed runtimes that boundary owns context enter/leave.
-            if (finalized
-                    || activeTurns != 0
-                    || scheduled.get()
-                    || carrierActive
+            if (finalized || finalizationReady || finalizationPublished
+                    || terminationCleanupPending
+                    || activeTurns != 0 || scheduled.get() || carrierActive
                     || !children.isEmpty()) return;
-            finalized = true;
-            OresScheduler scheduler = sourceScheduler;
-            sourceScheduler = null;
+            finalizationReady = true;
+            lifecycleLock.notifyAll();
+        }
+
+        /**
+         * Run potentially reentrant host cleanup and settle actor receipts only
+         * after the last enclosing actor lifecycle monitor is released.
+         * finalizationPublished fences concurrent callers, including a racing
+         * shutdownNow, child completion and last carrier exit.
+         */
+        private void completeFinalizationOutsideLock() {
+            if (Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "actor finalization must not publish under its lifecycle monitor");
+            }
+            OresScheduler scheduler;
+            synchronized (lifecycleLock) {
+                if (!finalizationReady || finalizationPublished) return;
+                finalizationPublished = true;
+                scheduler = sourceScheduler;
+                sourceScheduler = null;
+            }
+
+            Throwable fatal = null;
             if (scheduler != null) {
                 try {
                     scheduler.close();
-                } catch (RuntimeException ignored) {
-                    // Actor teardown remains authoritative; source scheduler
-                    // cancellation is best-effort after the actor has finalized.
+                } catch (Throwable failure) {
+                    ref.terminationCause.compareAndSet(null, failure);
+                    if (failure instanceof VirtualMachineError
+                            || failure instanceof ThreadDeath
+                            || failure instanceof LinkageError) fatal = failure;
                 }
             }
-            drainMailboxReservations();
-            staticSelectCursors.clear();
-            codeActorState = null;
-            Throwable terminalOutput = ref.terminationCause.get();
-            outputStream.close(terminalOutput);
-            if (memorySlice != null) memorySlice.close();
+            // The pending mailbox and control lanes are closed by stop().
+            // Run resource releases outside lifecycleLock; callbacks may acquire
+            // other actor monitors or complete runtime-owned Futures inline.
+            try {
+                drainMailboxReservations();
+            } catch (Throwable failure) {
+                ref.terminationCause.compareAndSet(null, failure);
+                if (fatal == null && (failure instanceof VirtualMachineError
+                        || failure instanceof ThreadDeath
+                        || failure instanceof LinkageError)) fatal = failure;
+            }
+            synchronized (lifecycleLock) {
+                staticSelectCursors.clear();
+                codeActorState = null;
+            }
+            try {
+                outputStream.close(ref.terminationCause.get());
+            } catch (Throwable failure) {
+                ref.terminationCause.compareAndSet(null, failure);
+                if (fatal == null && (failure instanceof VirtualMachineError
+                        || failure instanceof ThreadDeath
+                        || failure instanceof LinkageError)) fatal = failure;
+            }
+            if (memorySlice != null) {
+                try {
+                    memorySlice.close();
+                } catch (Throwable failure) {
+                    ref.terminationCause.compareAndSet(null, failure);
+                    if (fatal == null && (failure instanceof VirtualMachineError
+                            || failure instanceof ThreadDeath
+                            || failure instanceof LinkageError)) fatal = failure;
+                }
+            }
             try {
                 actorExitHook.accept(executionDomain);
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable ignored) {
-                // Actor termination must still complete. Runtime cleanup hooks
-                // are best-effort and retryable by the process collector.
+            } catch (Throwable failure) {
+                ref.terminationCause.compareAndSet(null, failure);
+                if (fatal == null && (failure instanceof VirtualMachineError
+                        || failure instanceof ThreadDeath
+                        || failure instanceof LinkageError)) fatal = failure;
             }
-            unregisterActor(this);
-            if (parent != null) parent.childFinalized(this);
+            try {
+                unregisterActor(this);
+            } catch (Throwable failure) {
+                ref.terminationCause.compareAndSet(null, failure);
+                if (fatal == null && (failure instanceof VirtualMachineError
+                        || failure instanceof ThreadDeath
+                        || failure instanceof LinkageError)) fatal = failure;
+            }
+
+            // Release the physical-finalization barrier before callbacks, but
+            // only after all retirement work and registry cleanup have returned.
+            synchronized (lifecycleLock) {
+                finalized = true;
+                lifecycleLock.notifyAll();
+            }
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
-                // Preserve the initializer failure as the direct cause of
-                // readiness rejection. Only a graceful stop-before-ready has
-                // no underlying failure and needs a synthesized marker.
                 ref.readyFuture.failFromRuntime(
                         terminal == null
                                 ? new ActorTerminatedException(ref.id(), kind, null)
@@ -6425,7 +6494,13 @@ public final class ActorRuntime implements AutoCloseable {
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
-            lifecycleLock.notifyAll();
+
+            // Child DONE and finalization receipts are visible before a
+            // stopping parent's last-child barrier is released.
+            if (parent != null) parent.childFinalized(this);
+            if (fatal instanceof VirtualMachineError vm) throw vm;
+            if (fatal instanceof ThreadDeath death) throw death;
+            if (fatal instanceof LinkageError linkage) throw linkage;
         }
 
         private void childFinalized(ActorCell<?> child) {
@@ -6434,6 +6509,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
+            completeFinalizationOutsideLock();
         }
 
         private boolean finalized() {
@@ -6462,6 +6538,7 @@ public final class ActorRuntime implements AutoCloseable {
                     lifecycleLock.notifyAll();
                 }
             }
+            completeFinalizationOutsideLock();
         }
 
         private void reserveOutput(long bytes) {
@@ -6632,6 +6709,7 @@ public final class ActorRuntime implements AutoCloseable {
                     // fail closed; neither may strand carrier-local VM identity.
                     ACTOR_CARRIER.remove();
                 }
+                completeFinalizationOutsideLock();
                 if (reschedule) schedule();
             }
         }
@@ -6879,8 +6957,11 @@ public final class ActorRuntime implements AutoCloseable {
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
+                if (terminationDispatched) return;
                 stopped.set(true);
                 sealing = true;
+                terminationDispatched = true;
+                terminationCleanupPending = true;
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
@@ -6893,7 +6974,6 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
-                finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
 
@@ -6908,10 +6988,19 @@ public final class ActorRuntime implements AutoCloseable {
             // any future channel activity can revive work for this dead actor.
             for (OresFuture<?> future : pending) future.cancel(false);
 
-            for (ActorCell<?> child : descendants) {
-                child.cancel(new ActorCancelledException(
-                        child.ref.id(),
-                        "parent actor " + ref.id() + " terminated"));
+            try {
+                for (ActorCell<?> child : descendants) {
+                    child.cancel(new ActorCancelledException(
+                            child.ref.id(),
+                            "parent actor " + ref.id() + " terminated"));
+                }
+            } finally {
+                synchronized (lifecycleLock) {
+                    terminationCleanupPending = false;
+                    finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
+                completeFinalizationOutsideLock();
             }
         }
     }
