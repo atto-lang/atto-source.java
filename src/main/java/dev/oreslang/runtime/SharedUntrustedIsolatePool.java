@@ -149,12 +149,11 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
             // Do not take the group monitor: a currently executing guest call
             // holds it. Context.close(true) must be able to interrupt that call.
             // Keep the group counted until physical context close finishes.
-            try {
-                context.close(true);
-            } finally {
-                synchronized (SharedUntrustedIsolatePool.this) {
-                    groups.remove(this);
-                }
+            context.close(true);
+            // Only a confirmed close can release group capacity. If close
+            // failed, retain the exhausted slot until pool retirement.
+            synchronized (SharedUntrustedIsolatePool.this) {
+                groups.remove(this);
             }
         }
     }
