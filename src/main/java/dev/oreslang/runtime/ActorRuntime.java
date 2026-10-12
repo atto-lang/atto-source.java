@@ -54,6 +54,18 @@ import java.util.function.UnaryOperator;
  * shared actors may coordinate through explicitly synchronized shared cells.
  */
 public final class ActorRuntime implements AutoCloseable {
+    /**
+     * A source frame with registered defer/finally cleanup was abandoned by
+     * cancellation. This receipt is deliberately NOT a claim that guest
+     * cleanup ran; only a future cleanup-only CONTROL protocol may do that.
+     */
+    public static final class IncompleteSourceCleanupException extends IllegalStateException {
+        public IncompleteSourceCleanupException(ActorId actorId) {
+            super("actor " + actorId
+                    + " stopped with unexecuted source defer/finally cleanup");
+        }
+    }
+
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
@@ -1760,7 +1772,13 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        final SerialExecutionTicket ticket = cell.issueSourceTaskTicket();
+        final SerialExecutionTicket ticket;
+        final OresScheduler.GuestCleanupObligation cleanupProbe =
+                task instanceof OresScheduler.GuestCleanupObligation guest ? guest : null;
+        synchronized (cell.lifecycleLock) {
+            ticket = cell.issueSourceTaskTicket();
+            if (cleanupProbe != null) cell.sourceCleanupProbes.add(cleanupProbe);
+        }
         OresFuture<T> completion;
         try {
             completion = cell.sourceScheduler().startActorBound(task, command -> {
@@ -1775,12 +1793,33 @@ public final class ActorRuntime implements AutoCloseable {
             });
         } catch (RuntimeException | Error failure) {
             ticket.retire();
+            if (cleanupProbe != null) {
+                synchronized (cell.lifecycleLock) {
+                    if (cleanupProbe.hasPendingGuestCleanup()) {
+                        cell.sourceCleanupAbandoned = true;
+                    }
+                    cell.sourceCleanupProbes.remove(cleanupProbe);
+                }
+            }
             throw failure;
         }
         // The handler admission can outlive this individual source task.
         // A canceled or completed task must not replay an already-enqueued
         // continuation under the still-live handler's ticket.
-        completion.whenCompleteRuntime((ignored, failure) -> ticket.retire());
+        completion.whenCompleteRuntime((ignored, failure) -> {
+            ticket.retire();
+            if (cleanupProbe != null) {
+                synchronized (cell.lifecycleLock) {
+                    if (cleanupProbe.hasPendingGuestCleanup()) {
+                        cell.sourceCleanupAbandoned = true;
+                    }
+                    // Retain probes after STOP until physical finalization:
+                    // cancellation may win while the last carrier is still
+                    // registering a lexical obligation on its source frame.
+                    if (!cell.stopped.get()) cell.sourceCleanupProbes.remove(cleanupProbe);
+                }
+            }
+        });
         return completion;
     }
 
@@ -6325,6 +6364,11 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** Runtime-only source lexical cleanup probes, bounded by live tasks. */
+        private final Set<OresScheduler.GuestCleanupObligation> sourceCleanupProbes =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+        /** Sticky until finalization; a canceled Future is not a cleanup receipt. */
+        private boolean sourceCleanupAbandoned;
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
@@ -6626,6 +6670,14 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()) return;
+            for (OresScheduler.GuestCleanupObligation probe : sourceCleanupProbes) {
+                if (probe.hasPendingGuestCleanup()) sourceCleanupAbandoned = true;
+            }
+            sourceCleanupProbes.clear();
+            if (sourceCleanupAbandoned) {
+                ref.terminationCause.compareAndSet(
+                        null, new IncompleteSourceCleanupException(ref.id()));
+            }
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
@@ -7245,6 +7297,13 @@ public final class ActorRuntime implements AutoCloseable {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
                 stopped.set(true);
+                // Capture outstanding lexical obligations before cancellation
+                // settles the task Future and discards its await registration.
+                // Without cleanup-only CONTROL authority we must fail closed,
+                // never expose get_done() as successful guest cleanup.
+                for (OresScheduler.GuestCleanupObligation probe : sourceCleanupProbes) {
+                    if (probe.hasPendingGuestCleanup()) sourceCleanupAbandoned = true;
+                }
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
