@@ -42,8 +42,8 @@ Finalize ==
                        IF UnsafeDropIncompleteSuppressedReceipt
                        THEN "none" ELSE "suppressed"
                 ELSE "primary"
-  /\ retainsOriginal' = cause = "cancel" /\ cleanup = "registered"
-                        /\ ~suppressionEnabled
+  /\ retainsOriginal' = (cause = "cancel" /\ cleanup = "registered"
+                         /\ ~suppressionEnabled)
   /\ UNCHANGED <<cleanup, cause, suppressionEnabled>>
 
 Next == RegisterCleanup \/ Cancel \/ Finalize
