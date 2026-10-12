@@ -3825,15 +3825,18 @@ public final class ActorRuntime implements AutoCloseable {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
 
-            ActorId id = ActorId.create();
-            long generation = nextActorGeneration.getAndIncrement();
-            if (generation <= 0) {
-                throw new IllegalStateException("actor generation sequence exhausted");
-            }
-            ActorRef<M> ref = new ActorRef<>(id, kind, generation);
             ActorCell<M> cell = null;
             boolean linkedToParent = false;
             try {
+                // All potentially throwing incarnation construction belongs
+                // inside the same rollback boundary as actor registration.
+                // Otherwise generation exhaustion leaks the reserved actor slot.
+                ActorId id = ActorId.create();
+                long generation = nextActorGeneration.getAndIncrement();
+                if (generation <= 0) {
+                    throw new IllegalStateException("actor generation sequence exhausted");
+                }
+                ActorRef<M> ref = new ActorRef<>(id, kind, generation);
                 cell = new ActorCell<>(
                         ref,
                         kind,
