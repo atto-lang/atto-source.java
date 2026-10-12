@@ -220,6 +220,35 @@ final class OresFutureCallbackTest {
     }
 
     @Test
+    void independentlyCancelledMinimalStagePropagatesWithoutStalling() throws Exception {
+        CompletableFuture<Integer> producer = new CompletableFuture<>();
+        java.util.concurrent.CompletionStage<Integer> minimal =
+                producer.minimalCompletionStage();
+        OresFuture<Integer> awaited = OresFuture.from(minimal);
+
+        assertTrue(producer.cancel(false));
+        assertThrows(java.util.concurrent.CancellationException.class,
+                () -> awaited.get(2, TimeUnit.SECONDS),
+                "minimal CompletionStage throws from isCancelled(); adapter must use the terminal failure");
+        assertTrue(awaited.isCancelled());
+    }
+
+    @Test
+    void exceptionallyCompletedMinimalStageKeepsFailureIdentity() throws Exception {
+        CompletableFuture<Integer> producer = new CompletableFuture<>();
+        java.util.concurrent.CompletionStage<Integer> minimal =
+                producer.minimalCompletionStage();
+        OresFuture<Integer> awaited = OresFuture.from(minimal);
+        IllegalStateException failure = new IllegalStateException("minimal-source-failure");
+
+        assertTrue(producer.completeExceptionally(failure));
+        var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> awaited.get(2, TimeUnit.SECONDS));
+        assertSame(failure, observed.getCause());
+        assertFalse(awaited.isCancelled(), "an ordinary failure must not become cancellation");
+    }
+
+    @Test
     void acceptedHostStageCancellationPropagatesExactlyOnce() {
         CompletableFuture<Integer> producer = new CompletableFuture<>();
         OresFuture<Integer> awaited = OresFuture.from(producer);
