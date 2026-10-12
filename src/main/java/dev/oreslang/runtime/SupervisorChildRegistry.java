@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
@@ -75,6 +77,44 @@ public final class SupervisorChildRegistry {
         }
     }
 
+    /**
+     * Registry-committed transitions only: NOT a full supervisor execution trace.
+     * In particular, scheduler cleanup, CONTROL ownership and host STOP invocation
+     * are not asserted by entries here. Each transition is captured under this
+     * registry's own monitor, without invoking external observer callbacks.
+     */
+    public record Transition(long sequence, String operation, Snapshot state,
+                             UUID restartPermit, long stopTurn,
+                             ActorRuntime.ActorId replacement) {}
+    private static final int MAX_TRANSITIONS = 100_000;
+    private final List<Transition> transitions = new ArrayList<>();
+    private boolean traceComplete = true;
+
+    /** A dropped or failed transition permanently invalidates the audit history. */
+    public synchronized List<Transition> committedTransitions() {
+        if (!traceComplete)
+            throw new IllegalStateException("incomplete supervisor registry audit trace");
+        return List.copyOf(transitions);
+    }
+
+    public synchronized boolean auditTraceComplete() { return traceComplete; }
+
+    private void recordTransition(String operation, Snapshot state, UUID permit,
+                                  long stopTurn, ActorRuntime.ActorId candidate) {
+        if (!traceComplete) return;
+        if (transitions.size() >= MAX_TRANSITIONS) {
+            traceComplete = false;
+            return;
+        }
+        // Auditing must never run user code or disturb an already committed state.
+        try {
+            transitions.add(new Transition(transitions.size() + 1L,
+                    operation, state, permit, stopTurn, candidate));
+        } catch (Throwable failure) {
+            traceComplete = false;
+        }
+    }
+
     private final ActorRuntime.SupervisorId supervisor;
     private final ActorRuntime.ActorGroupId group;
     private final Map<UUID, Snapshot> children = new HashMap<>();
@@ -119,6 +159,7 @@ public final class SupervisorChildRegistry {
             seenActors.remove(actor);
             throw failure;
         }
+        recordTransition("register", first, null, 0L, null);
         return first;
     }
 
@@ -134,6 +175,7 @@ public final class SupervisorChildRegistry {
         Snapshot current = requireExpected(child, actor, incarnation, Phase.ACTIVE);
         activeActors.remove(current.actor());
         children.remove(child.logicalId());
+        recordTransition("detach-active", current, null, 0L, null);
         // Preserve seenActors: a detached actor identity must not be reused
         // as an unrelated incarnation of this supervisor (ABA).
     }
@@ -150,6 +192,7 @@ public final class SupervisorChildRegistry {
         activeActors.remove(before.actor());
         Snapshot after = new Snapshot(child, actor, incarnation, Phase.FINALIZED);
         children.put(child.logicalId(), after);
+        recordTransition("finalize-asserted", after, null, 0L, null);
         return after;
     }
 
@@ -182,6 +225,7 @@ public final class SupervisorChildRegistry {
             children.put(child.logicalId(), finalized);
             throw publicationFailure;
         }
+        recordTransition("restart.reserve", restarting, permit.nonce(), 0L, null);
         return permit;
     }
 
@@ -206,6 +250,8 @@ public final class SupervisorChildRegistry {
         stagedActors.put(candidate, permit.child().logicalId());
         try {
             replacements.put(permit.child().logicalId(), state);
+            recordTransition("restart.spawn-asserted",
+                    requireCurrent(permit.child()), permit.nonce(), 0L, candidate);
         } catch (Throwable failed) {
             stagedActors.remove(candidate);
             throw failed;
@@ -240,6 +286,8 @@ public final class SupervisorChildRegistry {
                 throw new IllegalStateException("admission became stale");
             replacements.put(permit.child().logicalId(), new ReplacementState(
                     actor, permit.incarnation() + 1, ReplacementPhase.ADMITTED));
+            recordTransition("restart.admit-verified",
+                    requireCurrent(permit.child()), permit.nonce(), 0L, actor);
         }
     }
 
@@ -261,12 +309,16 @@ public final class SupervisorChildRegistry {
                 throw new IllegalStateException("cleanup became stale");
             replacements.put(permit.child().logicalId(), new ReplacementState(
                     actor, permit.incarnation() + 1, ReplacementPhase.CLEANED));
+            recordTransition("restart.cleanup-verified",
+                    requireCurrent(permit.child()), permit.nonce(), 0L, actor);
         }
     }
 
     /** A closed supervisor may clean up, but cannot publish a new incarnation. */
     synchronized void closeRestartAdmission() {
+        if (restartClosed) return;
         restartClosed = true;
+        recordTransition("restart.close", null, null, 0L, null);
     }
 
     /** Caller must have admitted the actual replacement before commit. */
@@ -293,6 +345,7 @@ public final class SupervisorChildRegistry {
         stagedActors.remove(replacement);
         replacements.remove(permit.child().logicalId());
         reservations.remove(permit.child().logicalId());
+        recordTransition("restart.commit", after, permit.nonce(), 0L, replacement);
         return after;
     }
 
@@ -308,6 +361,8 @@ public final class SupervisorChildRegistry {
         if (candidate != null) stagedActors.remove(candidate.actor());
         replacements.remove(permit.child().logicalId());
         reservations.remove(permit.child().logicalId());
+        recordTransition("restart.abort", restored, permit.nonce(), 0L,
+                candidate == null ? null : candidate.actor());
         return restored;
     }
 
@@ -363,6 +418,8 @@ public final class SupervisorChildRegistry {
             children.put(child.logicalId(), finalized);
             throw admissionFailure;
         }
+        recordTransition("stop.reserve", stopping, reservation.nonce(),
+                reservation.turnGeneration(), null);
         return reservation;
     }
 
@@ -393,6 +450,8 @@ public final class SupervisorChildRegistry {
             throw new IllegalStateException("STOP host effect already classified");
         StopReceipt updated = new StopReceipt(permit, StopReceiptStatus.APPLIED);
         stopReceipts.put(permit.child().logicalId(), updated);
+        recordTransition("stop.applied", requireCurrent(permit.child()),
+                permit.nonce(), permit.turnGeneration(), null);
         return updated;
     }
 
@@ -409,6 +468,8 @@ public final class SupervisorChildRegistry {
         if (current.status() == StopReceiptStatus.UNCERTAIN) return current;
         StopReceipt updated = new StopReceipt(permit, StopReceiptStatus.UNCERTAIN);
         stopReceipts.put(permit.child().logicalId(), updated);
+        recordTransition("stop.uncertain", requireCurrent(permit.child()),
+                permit.nonce(), permit.turnGeneration(), null);
         return updated;
     }
 
@@ -425,6 +486,8 @@ public final class SupervisorChildRegistry {
         children.put(permit.child().logicalId(), stopped);
         stopReceipts.put(permit.child().logicalId(), acknowledged);
         stopReservations.remove(permit.child().logicalId());
+        recordTransition("stop.ack-applied", stopped, permit.nonce(),
+                permit.turnGeneration(), null);
         return stopped;
     }
 
@@ -457,6 +520,8 @@ public final class SupervisorChildRegistry {
         children.put(permit.child().logicalId(), stopped);
         stopReceipts.put(permit.child().logicalId(), acknowledged);
         stopReservations.remove(permit.child().logicalId());
+        recordTransition("stop.ack-reconciled", stopped, permit.nonce(),
+                permit.turnGeneration(), null);
         return stopped;
     }
 
@@ -501,6 +566,8 @@ public final class SupervisorChildRegistry {
         children.put(permit.child().logicalId(), stopped);
         stopReceipts.put(permit.child().logicalId(), acknowledged);
         stopReservations.remove(permit.child().logicalId());
+        recordTransition("stop.ack-host", stopped, permit.nonce(),
+                permit.turnGeneration(), null);
         return stopped;
     }
 
@@ -510,6 +577,7 @@ public final class SupervisorChildRegistry {
         requireExpected(child, failedActor, incarnation, Phase.FINALIZED);
         Snapshot stopped = new Snapshot(child, failedActor, incarnation, Phase.STOPPED);
         children.put(child.logicalId(), stopped);
+        recordTransition("stop-direct", stopped, null, 0L, null);
         return stopped;
     }
 
@@ -520,6 +588,7 @@ public final class SupervisorChildRegistry {
             throw new IllegalStateException("cannot retire active/restartable child");
         children.remove(child.logicalId());
         stopReceipts.remove(child.logicalId());
+        recordTransition("retire-stopped", state, null, 0L, null);
     }
 
     public synchronized int trackedChildren() { return children.size(); }
