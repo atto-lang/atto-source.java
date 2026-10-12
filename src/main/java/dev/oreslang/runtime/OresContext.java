@@ -46,6 +46,7 @@ public final class OresContext implements AutoCloseable {
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
+    private final HostFutureAdmissionGate hostFutureAdmission = new HostFutureAdmissionGate();
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
     // Exactly one immutable code image per linked source unit for all actor kinds.
     // Per-actor mutable heaps/closures are never published into this store.
@@ -145,6 +146,19 @@ public final class OresContext implements AutoCloseable {
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
+
+    /**
+     * Host-only scoped bridge calls this while the public Truffle root is
+     * already entered. New guest carriers remain outside TruffleContext
+     * until the bridge's Value.execute() returns and releases its scope.
+     */
+    public void beginScopedHostFutureHandoff() {
+        hostFutureAdmission.begin();
+    }
+
+    public void endScopedHostFutureHandoff() {
+        hostFutureAdmission.end();
+    }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
     public RuntimePermissions runtimePermissions() { return runtimePermissions; }
     public PermissionCheckMode permissionCheckMode() { return permissionCheckMode; }
@@ -388,6 +402,9 @@ public final class OresContext implements AutoCloseable {
     }
 
     private void executeGuestTurn(Runnable turn, boolean serialize) {
+        // Wait BEFORE TruffleContext.enter; never hold its guest entry while
+        // blocked by a host Value.execute() that launched a Future.
+        hostFutureAdmission.awaitGuestAdmission();
         if (serialize) adversarialActorTurnLock.lock();
         TruffleContext truffleContext = env.getContext();
         Object previous = null;
@@ -427,6 +444,10 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        // Revoke queued guest turns BEFORE closing dispatchers; wake any
+        // carriers parked behind the host Future handoff so disposal cannot
+        // wait forever for a scope that failed on the host thread.
+        hostFutureAdmission.close();
         nativeIo.close();
         http.close();
         RuntimeException failure = null;
