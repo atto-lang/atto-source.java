@@ -69,12 +69,24 @@ final class SharedUntrustedIsolatePoolTest {
              SharedUntrustedIsolatePool.Group groupA = pool.createGroup();
              SharedUntrustedIsolatePool.Group groupB = pool.createGroup()) {
             assertEquals(2, pool.activeGroups());
+            assertThrows(IllegalStateException.class, () ->
+                    new SharedUntrustedIsolatePool(256L * 1024 * 1024, 2),
+                    "a second pool would allocate a third execution domain");
             assertNotSame(groupA.contextForSupervisor(), groupB.contextForSupervisor());
             assertSame(groupA.contextForSupervisor().getEngine(),
                     groupB.contextForSupervisor().getEngine(),
                     "groups must share one isolate engine and GC/JIT");
             assertThrows(IllegalStateException.class,
                     () -> pool.createGroup());
+            groupA.close();
+            assertEquals(1, pool.activeGroups());
+            assertThrows(IllegalStateException.class, groupA::contextForSupervisor,
+                    "retired groups must never re-enter the guest Context");
+            try (SharedUntrustedIsolatePool.Group replacement = pool.createGroup()) {
+                assertEquals(2, pool.activeGroups());
+                assertSame(groupB.contextForSupervisor().getEngine(),
+                        replacement.contextForSupervisor().getEngine());
+            }
         }
     }
 }
