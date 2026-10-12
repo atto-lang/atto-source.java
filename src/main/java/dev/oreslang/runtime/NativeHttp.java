@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class NativeHttp implements AutoCloseable {
     private final OresContext context;
     private final Set<Server> servers = ConcurrentHashMap.newKeySet();
+    private final Set<Handler> pooledHandlers = ConcurrentHashMap.newKeySet();
     private final Map<String, Exchange> transfers = new ConcurrentHashMap<>();
     private final ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
@@ -66,44 +67,111 @@ public final class NativeHttp implements AutoCloseable {
     public Handler handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP handlers are registered by the supervisor");
         if (kind == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("untrusted HTTP handlers are not supported");
-        return new Handler(code, type, kind);
+        return new Handler(code, type, kind, 0);
+    }
+
+    /** A bounded number of persistent source actors, one FIFO mailbox per actor. */
+    public Handler pooledHandler(ActorRuntime.ActorCodeExecutor code, String type,
+                                 ActorRuntime.ActorKind kind, int size) {
+        if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP handlers are registered by the supervisor");
+        if (kind == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("untrusted HTTP handlers are not supported");
+        if (size < 1 || size > 4096) throw new IllegalArgumentException("pool size must be 1..4096");
+        Handler handler = new Handler(code, type, kind, size);
+        pooledHandlers.add(handler);
+        return handler;
     }
 
     /** Immutable code registration; no captured guest objects enter the actor heap. */
-    public final class Handler {
+    public final class Handler implements AutoCloseable {
         private final ActorRuntime.ActorCodeExecutor code;
         private final String type;
         private final ActorRuntime.ActorKind kind;
-        private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
-            this.code = code; this.type = type; this.kind = kind;
+        private final int poolSize;
+        private final List<Worker> workers = new ArrayList<>();
+        private final AtomicLong created = new AtomicLong(), dispatched = new AtomicLong();
+        private int nextWorker;
+        private boolean closed;
+
+        private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind, int poolSize) {
+            this.code = code; this.type = type; this.kind = kind; this.poolSize = poolSize;
         }
         public boolean isolated() { return kind == ActorRuntime.ActorKind.PRIVATE; }
+        public boolean pooled() { return poolSize > 0; }
+        public long actorsCreated() { return created.get(); }
+        public long dispatches() { return dispatched.get(); }
+
+        private final class Worker {
+            final ActorRuntime.ActorRef<Object> ref;
+            final Set<State> live = ConcurrentHashMap.newKeySet();
+            Worker(ActorRuntime.ActorRef<Object> ref) {
+                this.ref = ref;
+                // ONE termination continuation per worker, never per request.
+                ref.done().whenCompleteRuntime((ignored, failure) -> {
+                    for (State state : List.copyOf(live)) state.abort(500);
+                });
+            }
+        }
+        private synchronized Worker worker() {
+            if (closed) throw new IllegalStateException("HTTP handler pool is closed");
+            int index;
+            if (workers.size() < poolSize) {
+                index = workers.size();
+            } else {
+                index = Math.floorMod(nextWorker++, workers.size());
+            }
+            if (index == workers.size() || !context.actors().isAlive(workers.get(index).ref)) {
+                ActorRuntime.ActorRef<Object> ref = context.actors().spawnCodeActor(kind, code, type);
+                Worker replacement = new Worker(ref);
+                created.incrementAndGet();
+                if (index == workers.size()) workers.add(replacement);
+                else workers.set(index, replacement);
+            }
+            return workers.get(index);
+        }
         public void dispatch(Exchange exchange) {
             long perf = CorePerf.start();
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
             synchronized (exchange.state) { exchange.checkOwner(); exchange.state.spawnNanos = System.nanoTime(); }
-            ActorRuntime.ActorRef<Object> actor = null;
+            ActorRuntime.ActorRef<Object> fresh = null;
             try {
-                long spawnPerf = CorePerf.start();
-                actor = context.actors().spawnCodeActor(kind, code, type);
-                CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
-                actor.ready().whenCompleteRuntime((ignored, failure) -> {
-                    long spawn;
-                    long ready;
-                    synchronized (exchange.state) {
-                        exchange.state.readyNanos = System.nanoTime();
-                        spawn = exchange.state.spawnNanos;
-                        ready = exchange.state.readyNanos;
-                    }
-                    CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
-                });
-                actor.send(exchange.moveTo(actor));
+                if (poolSize > 0) {
+                    Worker selected = worker();
+                    ActorRuntime.ActorRef<Object> actor = selected.ref;
+                    actor.ready().whenCompleteRuntime((ignored, failure) -> {
+                        synchronized (exchange.state) { exchange.state.readyNanos = System.nanoTime(); }
+                    });
+                    actor.send(exchange.moveTo(actor, selected));
+                } else {
+                    long spawnPerf = CorePerf.start();
+                    fresh = context.actors().spawnCodeActor(kind, code, type);
+                    created.incrementAndGet();
+                    CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
+                    ActorRuntime.ActorRef<Object> actor = fresh;
+                    actor.ready().whenCompleteRuntime((ignored, failure) -> {
+                        long spawn, ready;
+                        synchronized (exchange.state) {
+                            exchange.state.readyNanos = System.nanoTime();
+                            spawn = exchange.state.spawnNanos;
+                            ready = exchange.state.readyNanos;
+                        }
+                        CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
+                    });
+                    actor.send(exchange.moveTo(actor));
+                }
+                dispatched.incrementAndGet();
             } catch (RuntimeException failure) {
-                if (actor != null) actor.cancel();
+                if (fresh != null) fresh.cancel();
                 exchange.state.abort(500);
             } finally {
                 CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
             }
+        }
+        @Override public synchronized void close() {
+            if (closed) return;
+            closed = true;
+            for (Worker worker : workers) worker.ref.cancel();
+            workers.clear();
+            pooledHandlers.remove(this);
         }
     }
 
@@ -277,6 +345,7 @@ public final class NativeHttp implements AutoCloseable {
         final Map<String, List<String>> params = new LinkedHashMap<>();
         ScheduledFuture<?> deadline;
         ActorRuntime.ActorRef<?> actor;
+        Handler.Worker pooledWorker;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
         }
@@ -289,7 +358,7 @@ public final class NativeHttp implements AutoCloseable {
                 terminal = true;
             }
             // Never perform socket I/O or actor cancellation while holding the ownership monitor.
-            if (actor != null) actor.cancel();
+            if (actor != null && pooledWorker == null) actor.cancel();
             if (alreadyClosed) { release(); return; }
             try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
             catch (RejectedExecutionException closed) { release(); }
@@ -299,12 +368,13 @@ public final class NativeHttp implements AutoCloseable {
             try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
         }
         void release() {
-            // Admission includes the actor lifetime, even after the response ends.
-            // A handler that forgets self.end cannot accumulate unbounded actors.
+            // Fresh actors retain admission until finalization; pooled actors retain
+            // their own lifetime, but each completed exchange releases its slot.
             synchronized (this) {
-                if (!transportClosed || (actor != null && !actor.done().isDone())) return;
+                if (!transportClosed || (pooledWorker == null && actor != null && !actor.done().isDone())) return;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 if (deadline != null) deadline.cancel(false);
+                if (pooledWorker != null) pooledWorker.live.remove(this);
             }
             if (server.active.remove(this)) {
                 if (CorePerf.enabled()) {
@@ -330,7 +400,8 @@ public final class NativeHttp implements AutoCloseable {
             if (generation != state.generation || !owner.equals(state.owner)) throw new IllegalStateException("HTTP exchange has moved");
             if (!owner.equals(NativeHttp.this.owner())) throw new SecurityException("HTTP exchange belongs to another execution domain");
         }
-        public String moveTo(ActorRuntime.ActorRef<?> destination) {
+        public String moveTo(ActorRuntime.ActorRef<?> destination) { return moveTo(destination, null); }
+        private String moveTo(ActorRuntime.ActorRef<?> destination, Handler.Worker worker) {
             synchronized (state) {
                 checkOwner();
                 if (ActorRuntime.inActorExecution()) throw new SecurityException("only the supervisor may dispatch an HTTP exchange");
@@ -339,10 +410,12 @@ public final class NativeHttp implements AutoCloseable {
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
                 state.movedNanos = System.nanoTime();
                 state.generation++; state.owner = destination.id(); state.actor = destination;
+                state.pooledWorker = worker;
+                if (worker != null) worker.live.add(state);
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
                 transfers.put(token, moved);
-                destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
+                if (worker == null) destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
                 return token;
             }
         }
@@ -576,6 +649,7 @@ public final class NativeHttp implements AutoCloseable {
     @Override public synchronized void close() {
         closed = true;
         for (Server server : List.copyOf(servers)) server.close();
+        for (Handler handler : List.copyOf(pooledHandlers)) handler.close();
         timers.shutdownNow(); io.shutdownNow(); transfers.clear();
     }
 }

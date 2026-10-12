@@ -6219,6 +6219,10 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof NativeHttp.Handler handler) {
                 return switch (name) {
                     case "isolated" -> handler.isolated();
+                    case "pooled" -> handler.pooled();
+                    case "actors_created" -> handler.actorsCreated();
+                    case "dispatches" -> handler.dispatches();
+                    case "close" -> (Invokable) args -> { requireZero(args, "handler.close"); handler.close(); return null; };
                     case "dispatch" -> (Invokable) args -> {
                         if (args.size() != 1 || !(args.get(0) instanceof NativeHttp.Exchange exchange))
                             throw new IllegalArgumentException("dispatch requires HTTP exchange");
@@ -6312,15 +6316,19 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof HttpFacade http) {
                 return switch (name) {
-                    case "handler" -> (Invokable) args -> {
-                        String type = requireStringArg(args, "http.handler");
+                    case "handler", "pooled_handler" -> (Invokable) args -> {
+                        boolean pooled = name.equals("pooled_handler");
+                        if ((pooled && args.size() != 2) || (!pooled && args.size() != 1))
+                            throw new IllegalArgumentException("http.pooled_handler(type, pool_size)");
+                        String type = requireString(args.get(0), "http handler type");
                         Ast.ClassDecl declaration = requireLocalActorClass(type);
                         ActorRuntime.ActorKind kind = switch (declaration.actorKind()) {
                             case SHARED -> ActorRuntime.ActorKind.SHARED;
                             case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
                             default -> throw new IllegalArgumentException("HTTP handler must be shared or isolated actor");
                         };
-                        return context.http().handler(this, type, kind);
+                        return pooled ? context.http().pooledHandler(this, type, kind, ((Number) args.get(1)).intValue())
+                                      : context.http().handler(this, type, kind);
                     };
                     case "listen" -> (Invokable) args -> {
                         if (args.size() != 5) throw new IllegalArgumentException("http.listen(host, port, capacity, body_limit, deadline_ms)");

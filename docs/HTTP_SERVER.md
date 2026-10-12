@@ -128,3 +128,23 @@ The planned native socket and request-scoped endpoint transfer paths, including
 serialized-only untrusted handlers, are described in
 [Actor physical boundaries](runtime/actor-physical-boundaries.md). The standalone
 native transfer tests do not change the JDK transport ownership model above.
+
+## Reusable HTTP actor handlers (opt-in)
+
+`http.pooled_handler("ActorType", pool_size)` registers a bounded pool (1..4096)
+of persistent SHARED or PRIVATE actors; it is not an untrusted/OS-isolate pool.
+It has the same `HttpHandler` type as `http.handler` and can be registered
+with Spin routes. Each actor serializes `receive` turns through its mailbox,
+may process multiple HTTP transfers, and **must not call `self.end()` per request**.
+There is one actor-termination callback per worker, not per exchange. Completed
+pooled requests release the transport admission slot without ending their
+actor; fresh actor routes preserve the original finalization barrier.
+
+A worker that dies aborts its still-active exchanges; the next dispatch
+replaces it. Request timeout/abort only revokes its exchange and does not
+cancel a reusable worker (other requests may be queued). Pooled handler
+`close()` cancels its workers; invoke it after server shutdown/drain, or
+rely on context close. `actors_created` and `dispatches` are supervisor
+telemetry for proving reuse. Mailbox/admission capacity and deadlines remain
+bounded: overloaded requests may still be rejected. A pooled worker must not
+retain a completed exchange token/handle or wait on its own completion future.

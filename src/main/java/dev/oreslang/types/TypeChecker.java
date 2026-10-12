@@ -4231,12 +4231,15 @@ public final class TypeChecker {
         return switch (named.name()) {
             case "http" -> switch (name) {
                 case "handler" -> new Function(List.of(Primitive.STRING), new Named("HttpHandler", List.of()));
+                case "pooled_handler" -> new Function(List.of(Primitive.STRING, Primitive.INT), new Named("HttpHandler", List.of()));
                 case "listen" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.INT, Primitive.INT), server);
                 case "claim" -> new Function(List.of(Primitive.STRING), exchange);
                 default -> null;
             };
             case "HttpHandler" -> switch (name) {
-                case "isolated" -> Primitive.BOOL;
+                case "isolated", "pooled" -> Primitive.BOOL;
+                case "actors_created", "dispatches" -> Primitive.INT;
+                case "close" -> new Function(List.of(), Primitive.VOID);
                 case "dispatch" -> new Function(List.of(new Borrow(exchange, true)), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
             };
