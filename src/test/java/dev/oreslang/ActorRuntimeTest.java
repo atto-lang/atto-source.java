@@ -1114,11 +1114,11 @@ final class ActorRuntimeTest {
             assertTrue(created.await(2, TimeUnit.SECONDS));
 
             var other = runtime.<Object>spawnPrivate(() -> (message, context) -> { });
-            IllegalArgumentException failure = assertThrows(
-                    IllegalArgumentException.class,
+            SecurityException failure = assertThrows(
+                    SecurityException.class,
                     () -> other.send(block.get()));
-            assertTrue(failure.getMessage().contains("not Sendable")
-                    || failure.getMessage().contains("actor boundaries"));
+            assertTrue(failure.getMessage().contains("actor message boundaries")
+                    || failure.getMessage().contains("actor-owned graph/heap"));
 
             owner.stop();
             other.stop();
