@@ -130,6 +130,34 @@ final class OresSchedulerQuiescenceTest {
     }
 
     @Test
+    void repeatedCancelCooperateRacesRetireExactlyOncePerTask() throws Exception {
+        final int iterations = 128;
+        AtomicInteger retirements = new AtomicInteger();
+        try (OresScheduler scheduler = new OresScheduler(3)) {
+            for (int i = 0; i < iterations; i++) {
+                CountDownLatch retired = new CountDownLatch(1);
+                AtomicInteger perTask = new AtomicInteger();
+                OresFuture<Integer> future = scheduler.start(resume -> {
+                    // Legitimate handoffs must unwind rather than recurse;
+                    // concurrent cancellation may settle at any phase.
+                    Thread.onSpinWait();
+                    return OresScheduler.cooperate();
+                }, () -> {
+                    perTask.incrementAndGet();
+                    retirements.incrementAndGet();
+                    retired.countDown();
+                });
+                future.cancel(false);
+                assertTrue(retired.await(3, TimeUnit.SECONDS),
+                        "quiescence callback was stranded in cancellation race " + i);
+                assertEquals(1, perTask.get(),
+                        "each task must retire exactly once");
+            }
+            assertEquals(iterations, retirements.get());
+        }
+    }
+
+    @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
         AtomicInteger count = new AtomicInteger();
