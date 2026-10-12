@@ -100,6 +100,8 @@ public final class NativeHttp implements AutoCloseable {
         V remove(String token) { return entries.remove(token); }
         boolean remove(String token, V value) { return entries.remove(token, value); }
         int size() { return entries.size(); }
+        /** Non-sealing snapshot for listener-scoped retirement. */
+        List<V> snapshot() { return List.copyOf(entries.values()); }
         void clear() { entries.clear(); }
     }
 
@@ -242,7 +244,16 @@ public final class NativeHttp implements AutoCloseable {
                 }
                 // A timer or shutdown may already have settled the exchange.
                 exchange.state.detachReadyObserverIfTerminal();
-                actor.send(token);
+                // Atomically arbitrate delivery against listener retirement
+                // on this exact transfer's State monitor. If shutdown won,
+                // there must be no future queued stale token.
+                synchronized (exchange.state) {
+                    if (exchange.state.server.stopped) {
+                        exchange.state.revokeTransferLocked();
+                        throw new RejectedExecutionException("HTTP listener shut down before actor delivery");
+                    }
+                    context.actors().sendHttpTransfer(actor, token);
+                }
             } catch (RuntimeException failure) {
                 synchronized (exchange.state) {
                     exchange.state.revokeTransferLocked();
@@ -331,7 +342,8 @@ public final class NativeHttp implements AutoCloseable {
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
         private OresFuture<Object> waiter;
-        private boolean stopped, transportStopped;
+        private volatile boolean stopped;
+        private boolean transportStopped, retirementSweepComplete;
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
         private final java.util.concurrent.atomic.AtomicInteger tombstones = new java.util.concurrent.atomic.AtomicInteger();
@@ -446,6 +458,8 @@ public final class NativeHttp implements AutoCloseable {
                 finally {
                     synchronized (this) { transportStopped = true; }
                     for (State state : active) state.abort(503);
+                    retireQueuedSerialTransfers();
+                    synchronized (this) { retirementSweepComplete = true; }
                     servers.remove(this);
                     completeDrain();
                 }
@@ -453,7 +467,36 @@ public final class NativeHttp implements AutoCloseable {
             return result;
         }
         private synchronized void completeDrain() {
-            if (transportStopped && active.isEmpty() && drained != null) drained.completeFromRuntime(null);
+            if (transportStopped && retirementSweepComplete && active.isEmpty()
+                    && drained != null) drained.completeFromRuntime(null);
+        }
+
+        /**
+         * Revoke only HTTP-origin tokens physically removed from this listener's
+         * target actor mailbox. An already-dequeued transfer cannot be safely
+         * revoked here: its actor turn may be preparing to claim it.
+         *
+         * Copy registry entries before inspection. Never hold the server
+         * monitor or State monitor while removing actor mailbox envelopes.
+         */
+        private void retireQueuedSerialTransfers() {
+            for (Exchange exchange : transfers.snapshot()) {
+                State state = exchange.state;
+                ActorRuntime.ActorRef<?> actor;
+                String token;
+                synchronized (state) {
+                    if (state.server != this || !state.persistentActor
+                            || state.ticket == null || state.actor == null) continue;
+                    actor = state.actor;
+                    token = state.ticket;
+                }
+                if (context.actors().retireQueuedHttpTransfer(actor, token)) {
+                    synchronized (state) {
+                        if (token.equals(state.ticket)) state.revokeTransferLocked();
+                    }
+                    state.detachActorDoneObserverIfReleased();
+                }
+            }
         }
         private synchronized void stopAccepting() {
             stopped = true;
@@ -464,6 +507,8 @@ public final class NativeHttp implements AutoCloseable {
             stopAccepting(); transport.stop(0);
             synchronized (this) { transportStopped = true; }
             for (State state : active) state.abort(503);
+            retireQueuedSerialTransfers();
+            synchronized (this) { retirementSweepComplete = true; }
             servers.remove(this); completeDrain();
         }
     }
@@ -634,6 +679,7 @@ public final class NativeHttp implements AutoCloseable {
                 checkOwner();
                 if (ActorRuntime.inActorExecution()) throw new SecurityException("only the supervisor may dispatch an HTTP exchange");
                 if (closed) throw new IllegalStateException("HTTP runtime closed");
+                if (state.server.stopped) throw new RejectedExecutionException("HTTP listener closed");
                 if (state.busy || state.committed) throw new IllegalStateException("cannot move an active HTTP exchange");
                 if (!context.actors().isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
@@ -675,7 +721,7 @@ public final class NativeHttp implements AutoCloseable {
                 // Closing the runtime may race between the initial closed
                 // check and map publication. The shutdown sweep and this
                 // second check cover both possible publication orders.
-                if (closed) {
+                if (closed || state.server.stopped) {
                     state.revokeTransferLocked();
                     var observer = state.actorDoneObserver;
                     state.actorDoneObserver = null;
