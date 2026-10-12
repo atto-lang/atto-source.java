@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -82,8 +83,9 @@ final class GpuAtomicAdmissionTest {
             var begin = new CountDownLatch(1);
             var winners = new AtomicInteger();
             var failed = new AtomicInteger();
-            var first = new Thread(() -> compete(a, b, begin, winners, failed));
-            var second = new Thread(() -> compete(b, a, begin, winners, failed));
+            var winnerTicket = new AtomicReference<GpuBufferFence.PairTickets>();
+            var first = new Thread(() -> compete(a, b, begin, winners, failed, winnerTicket));
+            var second = new Thread(() -> compete(b, a, begin, winners, failed, winnerTicket));
             first.start();
             second.start();
             begin.countDown();
@@ -93,15 +95,26 @@ final class GpuAtomicAdmissionTest {
             assertEquals(1, failed.get());
             assertEquals(GpuBufferFence.Status.IN_FLIGHT, a.status());
             assertEquals(GpuBufferFence.Status.IN_FLIGHT, b.status());
+            var won = winnerTicket.get();
+            assertNotNull(won);
+            if (won.input().allocationGeneration() == 1) {
+                a.complete(won.inputTicket(), true);
+                b.complete(won.outputTicket(), true);
+            } else {
+                b.complete(won.inputTicket(), true);
+                a.complete(won.outputTicket(), true);
+            }
         }
     }
 
     private static void compete(GpuBufferFence a, GpuBufferFence b,
                                 CountDownLatch start, AtomicInteger winners,
-                                AtomicInteger failed) {
+                                AtomicInteger failed,
+                                AtomicReference<GpuBufferFence.PairTickets> winnerTicket) {
         try {
             start.await();
-            GpuBufferFence.claimPair(a, b, 16);
+            var won = GpuBufferFence.claimPair(a, b, 16);
+            winnerTicket.set(won);
             winners.incrementAndGet();
         } catch (IllegalStateException expected) {
             failed.incrementAndGet();
