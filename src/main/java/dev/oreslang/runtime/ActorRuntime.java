@@ -1317,8 +1317,40 @@ public final class ActorRuntime implements AutoCloseable {
     /** An immutable, runtime-bound linear route; never an actor capability
      * that can be serialized into another actor's mailbox. */
     public final class ActorStream {
+        private final LinearPipeline route;
         private final List<ActorRef<?>> stages;
-        private ActorStream(List<ActorRef<?>> stages) { this.stages = List.copyOf(stages); }
+        private final OresFuture<Void> physicalDone =
+                new OresFuture<>(() -> false, () -> { });
+        private final AtomicInteger outstanding;
+
+        private ActorStream(LinearPipeline route) {
+            this.route = Objects.requireNonNull(route, "pipeline route");
+            this.stages = List.copyOf(route.stages());
+            this.outstanding = new AtomicInteger(stages.size());
+            // Every stage must reach its physical DONE barrier. In particular
+            // source.done() alone cannot attest that all downstream actor
+            // generations have finalized. Callbacks only settle host futures;
+            // no guest code runs on the finalizer thread.
+            for (ActorRef<?> stage : stages) {
+                stage.done().whenCompleteRuntime((ignored, failure) -> {
+                    if (failure != null) {
+                        physicalDone.failFromRuntime(OresFuture.unwrap(failure));
+                    } else if (route.phase().get() < 0) {
+                        physicalDone.failFromRuntime(new IllegalStateException(
+                                "actor pipeline aborted before physical DONE"));
+                    }
+                    if (outstanding.decrementAndGet() == 0) {
+                        if (route.phase().get() != 2 * route.count()) {
+                            physicalDone.failFromRuntime(new IllegalStateException(
+                                    "actor pipeline finished without the complete typed round trip"));
+                        } else {
+                            physicalDone.completeFromRuntime(null);
+                        }
+                    }
+                });
+            }
+        }
+
         public int size() { return stages.size(); }
         public ActorRef<?> source() { return stages.getFirst(); }
         public void send(Object value) {
@@ -1326,7 +1358,10 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRef<Object> first = (ActorRef<Object>) stages.getFirst();
             ActorRuntime.this.send(first, value);
         }
-        public OresFuture<Void> getDone() { return stages.getFirst().done(); }
+        /** Successful only after every physical actor STOP and the complete
+         * typed forward/reverse route. Cancellation of this observation never
+         * cancels the owned actor group. */
+        public OresFuture<Void> getDone() { return physicalDone; }
     }
 
     /** The runtime-internal delivery marker never escapes this source
@@ -1423,6 +1458,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         String identity = null;
+        LinearPipeline route;
         synchronized (runtimeLifecycleLock) {
         synchronized (pipelineBindingLock) {
             if (closed.get()) {
@@ -1456,12 +1492,12 @@ public final class ActorRuntime implements AutoCloseable {
             }
             List<ActorRef<Object>> linked = refs.stream()
                     .map(ref -> (ActorRef<Object>) ref).toList();
-            LinearPipeline route = new LinearPipeline(linked, identity,
+            route = new LinearPipeline(linked, identity,
                     new AtomicInteger(0));
             for (ActorRef<?> ref : refs) linearPipelines.put(ref.id(), route);
         }
         }
-        return new ActorStream(refs);
+        return new ActorStream(route);
     }
 
     /** Scheduler-issued actor-turn authority only. No user-selected target,
