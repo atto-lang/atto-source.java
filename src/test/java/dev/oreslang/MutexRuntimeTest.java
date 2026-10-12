@@ -1216,6 +1216,103 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    void cancelledAsyncWaitUnlinksDeadlockGraphBeforeObservation() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var free = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread waiter = Thread.ofPlatform().start(() -> {
+            try {
+                for (int attempt = 0; attempt < 64; attempt++) {
+                    var queued = held.lockAsync();
+                    assertTrue(queued.cancel(false), "queued cancellation should claim the wait");
+                    assertThrows(java.util.concurrent.CancellationException.class, queued::join);
+                    // Same execution domain on the same thread. A stale WAITING_ON
+                    // edge, even briefly visible, rejects this unrelated acquisition.
+                    var next = free.lock();
+                    next.release();
+                }
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+
+        waiter.join(5_000);
+        assertFalse(waiter.isAlive(), "cancelled waiter never settled");
+        assertNull(failure.get());
+        owner.release();
+    }
+
+    @Test
+    void repeatedTimedAsyncFailuresNeverPublishStaleDeadlockEdges() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var free = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread waiter = Thread.ofPlatform().start(() -> {
+            try {
+                for (int attempt = 0; attempt < 64; attempt++) {
+                    var timed = held.lockAsyncFor(Duration.ofMillis(2));
+                    var timedFailure = assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> timed.get(2, TimeUnit.SECONDS));
+                    assertInstanceOf(OresMutex.LockTimeoutException.class, timedFailure.getCause());
+                    var next = free.lock();
+                    next.release();
+                }
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+
+        waiter.join(8_000);
+        assertFalse(waiter.isAlive(), "timeout stress did not settle");
+        assertNull(failure.get());
+        owner.release();
+    }
+
+    @Test
+    void timeoutVersusHandoffDoesNotLosePermitOrPublishStaleEdge() throws Exception {
+        for (int attempt = 0; attempt < 48; attempt++) {
+            var held = OresMutex.shared(new int[]{0});
+            var free = OresMutex.shared(new int[]{0});
+            var owner = held.lock();
+            CountDownLatch pending = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            Thread waiter = Thread.ofPlatform().start(() -> {
+                try {
+                    var timed = held.lockAsyncFor(Duration.ofMillis(20));
+                    pending.countDown();
+                    try {
+                        var acquired = timed.get(2, TimeUnit.SECONDS);
+                        acquired.release();
+                    } catch (java.util.concurrent.ExecutionException expected) {
+                        assertInstanceOf(OresMutex.LockTimeoutException.class, expected.getCause());
+                    }
+                    // A successful handoff owns the guard; a timeout must have
+                    // detached the deadlock edge before get() returns.
+                    var other = free.lock();
+                    other.release();
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                    pending.countDown();
+                }
+            });
+
+            assertTrue(pending.await(2, TimeUnit.SECONDS));
+            owner.release();
+            waiter.join(3_000);
+            assertFalse(waiter.isAlive(), "handoff/timeout raced into a hang");
+            assertNull(failure.get());
+            var after = held.lock();
+            after.release();
+        }
+    }
+
+    @Test
     void zeroDurationLockForRemainsTryOnly() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
         var owner = mutex.lock();
