@@ -199,6 +199,10 @@ public final class SupervisorChildRegistry {
             throw new IllegalStateException("candidate already staged");
         ReplacementState state = new ReplacementState(
                 candidate, permit.incarnation() + 1, ReplacementPhase.SPAWNED);
+        // A spawned physical incarnation is permanently consumed, including
+        // failed stage publication and cleanup-backed RESTART abort. Never
+        // allow stale callbacks to target a recycled ActorId (ABA).
+        seenActors.add(candidate);
         stagedActors.put(candidate, permit.child().logicalId());
         try {
             replacements.put(permit.child().logicalId(), state);
@@ -271,20 +275,19 @@ public final class SupervisorChildRegistry {
         var admitted = requireReplacement(permit, replacement);
         if (restartClosed || admitted.phase() != ReplacementPhase.ADMITTED)
             throw new IllegalStateException("replacement lacks physical admission or supervisor closed");
-        if (seenActors.contains(replacement) || activeActors.containsKey(replacement)
+        if (!seenActors.contains(replacement) || activeActors.containsKey(replacement)
                 || !permit.child().logicalId().equals(stagedActors.get(replacement)))
             throw new IllegalStateException("candidate is not exclusively staged");
         Snapshot after = new Snapshot(
                 permit.child(), replacement, permit.incarnation() + 1, Phase.ACTIVE);
         // Commit both actor indexes or neither; a failed commit keeps the
         // reservation so the trusted owner can clean up and abort.
-        seenActors.add(replacement);
         try {
             activeActors.put(replacement, permit.child().logicalId());
             children.put(permit.child().logicalId(), after);
         } catch (Throwable failure) {
             activeActors.remove(replacement);
-            seenActors.remove(replacement);
+            // Do NOT release seenActors: this ActorId was physically spawned.
             throw failure;
         }
         stagedActors.remove(replacement);
