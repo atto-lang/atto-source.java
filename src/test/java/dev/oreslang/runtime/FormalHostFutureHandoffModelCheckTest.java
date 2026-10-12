@@ -292,4 +292,121 @@ final class FormalHostFutureHandoffModelCheckTest {
         assertThrows(AssertionError.class, () -> physicalInvariant(invalid));
     }
 
+
+    /**
+     * Abstraction of HostHandoffLease.close()/RootHandoffGate.release().
+     * An executor rejection can leave queued guest work after the unique
+     * host scope has been released; a repeated owner close may retry draining,
+     * but must never release the lease or dispatch a guest twice.
+     */
+    private enum LeaseRetryEvent {
+        HOST_BEGIN, QUEUE_ROOT, FOREIGN_CLOSE, OWNER_RELEASE_REJECT,
+        OWNER_RELEASE_ACCEPT, RETRY_REJECT, RETRY_ACCEPT, SEAL
+    }
+    private record LeaseRetryState(
+            boolean host, boolean released, boolean queued,
+            boolean dispatched, boolean sealed, int releases, int guestStarts) {
+        static LeaseRetryState initial() {
+            return new LeaseRetryState(false, false, false, false, false, 0, 0);
+        }
+    }
+    private static LeaseRetryState leaseRetryStep(
+            LeaseRetryState s, LeaseRetryEvent event) {
+        boolean host = s.host, released = s.released, queued = s.queued;
+        boolean dispatched = s.dispatched, sealed = s.sealed;
+        int releases = s.releases, starts = s.guestStarts;
+        switch (event) {
+            case HOST_BEGIN -> {
+                if (!sealed && !host && !released) host = true;
+            }
+            case QUEUE_ROOT -> {
+                if (host && !queued && !dispatched) queued = true;
+            }
+            case OWNER_RELEASE_REJECT -> {
+                if (host && queued) {
+                    host = false;
+                    released = true;
+                    releases++;
+                }
+            }
+            case OWNER_RELEASE_ACCEPT -> {
+                if (host) {
+                    host = false;
+                    released = true;
+                    releases++;
+                    if (queued) {
+                        queued = false;
+                        dispatched = true;
+                        starts++;
+                    }
+                }
+            }
+            case RETRY_REJECT -> {
+                // No release count change, and the queued owner remains held.
+            }
+            case RETRY_ACCEPT -> {
+                if (released && !host && queued) {
+                    queued = false;
+                    dispatched = true;
+                    starts++;
+                }
+            }
+            case SEAL -> sealed = true;
+            case FOREIGN_CLOSE -> {
+                // Foreign threads have no authority to release host entry.
+            }
+        }
+        return new LeaseRetryState(
+                host, released, queued, dispatched, sealed, releases, starts);
+    }
+    private static void leaseRetryInvariant(LeaseRetryState s) {
+        assertTrue(s.releases >= 0 && s.releases <= 1,
+                "host physical entry lease released multiple times");
+        assertTrue(s.guestStarts >= 0 && s.guestStarts <= 1,
+                "retries executed guest code more than once");
+        assertFalse(s.host && s.dispatched,
+                "root guest dispatched under live host entry");
+        assertFalse(s.queued && s.dispatched,
+                "root task simultaneously queued and running");
+        if (s.dispatched) assertTrue(s.released,
+                "root guest dispatched before host physically exited");
+    }
+
+    @Test
+    void boundedHostLeaseRetryNeverDuplicatesReleaseOrGuestExecution() {
+        Set<LeaseRetryState> visited = new HashSet<>();
+        ArrayDeque<LeaseRetryState> work = new ArrayDeque<>();
+        LeaseRetryState initial = LeaseRetryState.initial();
+        visited.add(initial);
+        work.addLast(initial);
+        boolean sawRejected = false, sawRetry = false, sawSeal = false;
+        while (!work.isEmpty()) {
+            LeaseRetryState state = work.removeFirst();
+            leaseRetryInvariant(state);
+            sawRejected |= state.released && state.queued;
+            sawRetry |= state.dispatched && state.guestStarts == 1;
+            sawSeal |= state.sealed;
+            for (LeaseRetryEvent event : LeaseRetryEvent.values()) {
+                LeaseRetryState next = leaseRetryStep(state, event);
+                leaseRetryInvariant(next);
+                if (event == LeaseRetryEvent.FOREIGN_CLOSE) {
+                    assertEquals(state, next,
+                            "foreign host release changed physical admission");
+                }
+                if (state.released && event == LeaseRetryEvent.RETRY_REJECT) {
+                    assertEquals(state, next,
+                            "rejected retry discarded its physical reservation");
+                }
+                if (visited.add(next)) work.addLast(next);
+            }
+        }
+        assertTrue(sawRejected && sawRetry && sawSeal && visited.size() >= 5);
+    }
+
+    @Test
+    void unsafeRetryDispatchWhileHostOwnsEntryViolatesInvariant() {
+        LeaseRetryState unsafe = new LeaseRetryState(
+                true, false, false, true, false, 0, 1);
+        assertThrows(AssertionError.class, () -> leaseRetryInvariant(unsafe));
+    }
 }
