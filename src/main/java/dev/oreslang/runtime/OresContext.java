@@ -112,9 +112,10 @@ public final class OresContext implements AutoCloseable {
     }
 
     public HostEntryLease acquireScopedHostEntry() {
-        if (isolatePolicy.adversarial()) {
-            throw new SecurityException("adversarial context rejects scoped async host entry");
-        }
+        // The host may enter on its owner thread, but the guest root still
+        // rejects async Future bridging for adversarial isolation. Preserve
+        // that rejection inside Polyglot so callers receive PolyglotException
+        // and no source task is scheduled.
         if (hostCreator != Thread.currentThread()) {
             throw new SecurityException(
                     "host entry must use its context's creating physical thread");
