@@ -37,9 +37,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 final class ActorHttpMatrixBenchmarkTest {
     private static final int ACTORS = 5;
     private static final int REQUESTS = 1000;
+    private static final int ROUNDS = 4;
+    private static final int WARMUP_PER_ACTOR = 25;
     private static final int[] CONCURRENCY = {1, 10, 100, 1000};
     private static final int BODY_LIMIT = 200;
     private record Reply(int status, String body, long nanos) { }
+    private record ActorValue(long count, long checksum) { }
     private record Gc(long count, long millis) { }
     private static Gc gc() {
         long count = 0, millis = 0;
@@ -79,13 +82,24 @@ final class ActorHttpMatrixBenchmarkTest {
         if (values.length == 0) throw new IllegalArgumentException("no samples");
         return millis(values[Math.min(values.length - 1, (int) Math.ceil(q * values.length) - 1)]);
     }
-    private static void executeMode(String mode) throws Exception {
+    private static void executeMode(String mode, int round, org.graalvm.polyglot.Source guestSource) throws Exception {
         AtomicReference<Throwable> actorFailure = new AtomicReference<>();
-        ConcurrentHashMap<Long, CompletableFuture<Long>> pending = new ConcurrentHashMap<>();
+        ConcurrentHashMap<Long, CompletableFuture<ActorValue>> pending = new ConcurrentHashMap<>();
         AtomicLong ticket = new AtomicLong();
         List<ActorArena> owned = new java.util.concurrent.CopyOnWriteArrayList<>();
         long started = System.nanoTime();
         long teardownStarted = started;
+        // Only host/supervisor may prepare polyglot Contexts. Each worker owns
+        // one parsed code target and executes it on its own admitted actor turn.
+        org.graalvm.polyglot.Context[] contexts = new org.graalvm.polyglot.Context[ACTORS];
+        org.graalvm.polyglot.Value[] functions = new org.graalvm.polyglot.Value[ACTORS];
+        try {
+            for (int i = 0; i < ACTORS; i++) {
+                contexts[i] = org.graalvm.polyglot.Context.newBuilder(dev.oreslang.OresLanguage.ID)
+                        .allowAllAccess(false).build();
+                functions[i] = contexts[i].parse(guestSource);
+                assertTrue(functions[i].canExecute());
+            }
         try (ActorRuntime runtime = new ActorRuntime();
              ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
              HttpClient client = HttpClient.newBuilder()
@@ -94,6 +108,7 @@ final class ActorHttpMatrixBenchmarkTest {
             ActorRuntime.ActorRef<Long>[] actors = new ActorRuntime.ActorRef[ACTORS];
             CountDownLatch initialized = new CountDownLatch(ACTORS);
             for (int index = 0; index < ACTORS; index++) {
+                final int actorIndex = index;
                 var arena = new AtomicReference<ActorArena>();
                 var slot = new AtomicReference<ExplicitNativeI64Region.Slot>();
                 var factory = (java.util.function.Supplier<ActorRuntime.Behavior<Long>>) () -> (mail, ctx) -> {
@@ -106,7 +121,7 @@ final class ActorHttpMatrixBenchmarkTest {
                             initialized.countDown();
                             return;
                         }
-                        CompletableFuture<Long> promise = pending.remove(mail);
+                        CompletableFuture<ActorValue> promise = pending.remove(mail);
                         if (promise == null) throw new IllegalStateException("missing HTTP completion");
                         ActorArena nativeArena = arena.get();
                         try (var scope = nativeArena.beginTurn()) {
@@ -114,7 +129,10 @@ final class ActorHttpMatrixBenchmarkTest {
                             if (scope.read(ephemeral) != mail) throw new IllegalStateException("scratch corrupted");
                             long next = nativeArena.readPersistent(slot.get()) + 1;
                             nativeArena.writePersistent(slot.get(), next);
-                            promise.complete(next);
+                            long computed = functions[actorIndex].execute(
+                                    dev.oreslang.nodes.OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
+                                    "handle_request", next).asLong();
+                            promise.complete(new ActorValue(next, computed));
                         }
                     } catch (Throwable failure) {
                         actorFailure.compareAndSet(null, failure);
@@ -145,12 +163,12 @@ final class ActorHttpMatrixBenchmarkTest {
                     }
                     int actorIndex = path.charAt(6) - '0';
                     long id = ticket.incrementAndGet();
-                    CompletableFuture<Long> done = new CompletableFuture<>();
+                    CompletableFuture<ActorValue> done = new CompletableFuture<>();
                     pending.put(id, done);
                     try {
                         actors[actorIndex].send(id);
-                        long count = done.get(40, TimeUnit.SECONDS);
-                        response(x, 200, actorIndex + "," + count + "," + (count * 43));
+                        ActorValue value = done.get(40, TimeUnit.SECONDS);
+                        response(x, 200, actorIndex + "," + value.count() + "," + value.checksum());
                     } catch (Exception failure) {
                         pending.remove(id);
                         response(x, 503, "backend unavailable");
@@ -163,6 +181,12 @@ final class ActorHttpMatrixBenchmarkTest {
                 assertEquals(200, client.send(HttpRequest.newBuilder(
                     URI.create("http://127.0.0.1:" + port + "/health")).GET().build(),
                     HttpResponse.BodyHandlers.discarding()).statusCode());
+                // Warm up actual HTTP connections, scheduler and FFM before
+                // starting any timed measurements in this mode.
+                for (int n = 0; n < ACTORS * WARMUP_PER_ACTOR; ++n) {
+                    Reply warm = request(client, port, n % ACTORS);
+                    assertEquals(200, warm.status(), "warmup request failed");
+                }
                 for (int c : CONCURRENCY) {
                     long[] latencies = new long[REQUESTS];
                     long[][] counts = new long[ACTORS][REQUESTS / ACTORS];
@@ -199,7 +223,7 @@ final class ActorHttpMatrixBenchmarkTest {
                     for (int a = 0; a < ACTORS; ++a) {
                         assertEquals(REQUESTS / ACTORS, perActor[a]);
                         Arrays.sort(counts[a]);
-                        long offset = (long) (Arrays.stream(CONCURRENCY)
+                        long offset = WARMUP_PER_ACTOR + (long) (Arrays.stream(CONCURRENCY)
                                 .takeWhile(n -> n != c).count()) * (REQUESTS / ACTORS);
                         for (int j = 0; j < REQUESTS / ACTORS; j++) {
                             assertEquals(offset + j + 1, counts[a][j],
@@ -210,10 +234,10 @@ final class ActorHttpMatrixBenchmarkTest {
                     assertTrue(pending.isEmpty(), "orphan requests");
                     assertNull(actorFailure.get(), () -> "actor failed " + actorFailure.get());
                     System.out.printf(Locale.ROOT,
-                            "MATRIX backend=graal mode=%s isolation=%s actors=5 requests=%d concurrency=%d " +
+                            "MATRIX backend=graal round=%d mode=%s isolation=%s guest_handler=oreslang actors=5 warmup_per_actor=%d requests=%d concurrency=%d " +
                             "p50_ms=%s p99_ms=%s rps=%s gc_count=%d gc_pause_ms=%d rss_delta_kb=%d errors=0%n",
-                            mode, mode.equals("private") ? "actor-private-logical-memory" : "actor-shared-kind",
-                            REQUESTS, c, metric(quantile(latencies, .5)),
+                            round, mode, mode.equals("private") ? "actor-private-logical-memory" : "actor-shared-kind",
+                            WARMUP_PER_ACTOR, REQUESTS, c, metric(quantile(latencies, .5)),
                             metric(quantile(latencies, .99)), metric(REQUESTS / seconds),
                             gcAfter.count - gcBefore.count, gcAfter.millis - gcBefore.millis,
                             (rssBefore < 0 || rssAfter < 0) ? -1 : rssAfter - rssBefore);
@@ -223,18 +247,39 @@ final class ActorHttpMatrixBenchmarkTest {
             }
             assertTrue(pending.isEmpty());
             teardownStarted = System.nanoTime();
-            System.out.printf("MATRIX backend=graal mode=%s shutdown_begin=true%n", mode);
+            System.out.printf("MATRIX backend=graal round=%d mode=%s shutdown_begin=true%n", round, mode);
+        }
+        } finally {
+            for (var context : contexts) if (context != null) context.close();
         }
         for (ActorArena arena : owned) assertTrue(arena.physicallyClosed());
         assertEquals(ACTORS, owned.size());
         long finished = System.nanoTime();
-        System.out.printf(Locale.ROOT, "MATRIX backend=graal mode=%s shutdown_ms=%.3f mode_total_ms=%.3f physical_reclaim=true%n",
-                          mode, millis(finished - teardownStarted), millis(finished - started));
+        System.out.printf(Locale.ROOT, "MATRIX backend=graal round=%d mode=%s shutdown_ms=%.3f mode_total_ms=%.3f physical_reclaim=true%n",
+                          round, mode, millis(finished - teardownStarted), millis(finished - started));
     }
 
     @Test void fourConcurrencyLevelsAcrossFiveSharedAndFivePrivateActors() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable());
-        executeMode("shared");
-        executeMode("private");
+        byte[] sourceBytes;
+        try (var input = getClass().getResourceAsStream("/parity/http-guest-handler.ores")) {
+            assertNotNull(input);
+            sourceBytes = input.readAllBytes();
+        }
+        String text = new String(sourceBytes, java.nio.charset.StandardCharsets.UTF_8);
+        var guestSource = org.graalvm.polyglot.Source.newBuilder(
+                dev.oreslang.OresLanguage.ID, text, "http-guest-handler.ores")
+                .mimeType(dev.oreslang.OresLanguage.MIME_TYPE).build();
+        for (int round = 0; round < ROUNDS; round++) {
+            // Balanced ordering AB/BA/BA/AB; independent fresh actor runtimes,
+            // identical request workload and deterministic five-way routing.
+            if (round == 0 || round == 3) {
+                executeMode("shared", round, guestSource);
+                executeMode("private", round, guestSource);
+            } else {
+                executeMode("private", round, guestSource);
+                executeMode("shared", round, guestSource);
+            }
+        }
     }
 }
