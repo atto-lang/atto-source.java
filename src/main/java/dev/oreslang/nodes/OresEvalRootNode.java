@@ -8120,6 +8120,21 @@ public final class OresEvalRootNode extends RootNode {
                         && a.id().equals(b.id());
             }
 
+            // Nominal enum values have structural payload equality without
+            // erasing their owner, variant, or discriminator. A tagged value
+            // is never equal to a raw int or to the payload it contains.
+            if (left instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue
+                    || right instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue) {
+                if (!(left instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue a)
+                        || !(right instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue b)) {
+                    return false;
+                }
+                if (!a.enumName().equals(b.enumName())
+                        || !a.variant().equals(b.variant()) || a.tag() != b.tag()) return false;
+                if (comparisonPairSeen(left, right, seen)) return true;
+                return valueEquals(a.payload(), b.payload(), seen);
+            }
+
             if (left instanceof OptionValue || right instanceof OptionValue) {
                 if (!(left instanceof OptionValue a) || !(right instanceof OptionValue b)) return false;
                 if (a.present() != b.present()) return false;
