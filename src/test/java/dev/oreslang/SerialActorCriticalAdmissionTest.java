@@ -43,13 +43,16 @@ final class SerialActorCriticalAdmissionTest {
                 "annotation expansion must preserve serial actor metadata");
     }
 
-    @Test void serialActorMustRejectUnmarkedOrBareCriticalStateCallbacks() {
+    @Test void serialActorCannotUpgradeUnmarkedReadButAcceptsBareCriticalWrite() {
+        // Replacing a write callback with an implicit immutable read
+        // cannot be rescued by serial actor admission or a wide with row.
         String unmarked = SERIAL.replace("critical write |s|", "|s|");
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse(unmarked)));
+        // 'critical' means exclusive write capability; reading from that
+        // scope is legal even when the body performs no mutation.
         String bare = SERIAL.replace("critical read |s|", "critical |s|");
-        assertThrows(IllegalArgumentException.class,
-                () -> ActorStateContract.verify(Parser.parse(bare)));
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(bare)));
     }
 
     @Test void nonSerialActorUsesSameExplicitStateModeContract() {
