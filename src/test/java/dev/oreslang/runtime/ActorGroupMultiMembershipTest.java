@@ -297,6 +297,73 @@ final class ActorGroupMultiMembershipTest {
     }
 
     @Test
+    void permitRotationVsJoinHasOneAdmissionOrderingAndNoPostRotationReuse() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup room = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> connection =
+                    runtime.spawnSharedTrusted(factory -> (message, actor) -> { });
+            ActorRuntime.ActorGroupJoinCapability initial = room.joinCapability();
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorGroupJoinCapability> rotated =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread rotator = new Thread(() -> {
+                try {
+                    start.await();
+                    rotated.set(room.rotateJoinCapability());
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            Thread joiner = new Thread(() -> {
+                try {
+                    start.await();
+                    // Either admission wins before rotation, or stale
+                    // capability rejection wins after rotation. Never allow
+                    // a partially updated membership index in either case.
+                    room.join(connection, initial);
+                } catch (SecurityException expectedIfRotationWon) {
+                    // Expected when rotation linearizes first.
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            rotator.start();
+            joiner.start();
+            start.countDown();
+            rotator.join(5_000);
+            joiner.join(5_000);
+            assertFalse(rotator.isAlive(), "rotator deadlocked");
+            assertFalse(joiner.isAlive(), "joiner deadlocked");
+            assertNull(failure.get());
+            assertNotNull(rotated.get());
+            assertThrows(SecurityException.class,
+                    () -> room.join(connection, initial),
+                    "stale permits cannot be accepted even for idempotent joins");
+            room.join(connection, rotated.get());
+            assertEquals(1, room.memberCount());
+            connection.stop();
+            assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, room.memberCount());
+        }
+    }
+
+    @Test
+    void foreignRuntimeCannotAdmitItsActorsWithAnotherRuntimesPermit() throws Exception {
+        try (ActorRuntime one = new ActorRuntime();
+             ActorRuntime two = new ActorRuntime()) {
+            ActorRuntime.ActorGroup room = one.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = room.joinCapability();
+            ActorRuntime.ActorRef<Integer> foreign =
+                    two.spawnSharedTrusted(factory -> (message, actor) -> { });
+            assertThrows(IllegalArgumentException.class, () -> room.join(foreign, join));
+            assertEquals(0, room.memberCount());
+            foreign.stop();
+            assertTrue(foreign.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void concurrentRoomJoinsCannotExceedActorMembershipQuota() throws Exception {
         IsolatePolicy base = IsolatePolicy.developer();
         IsolatePolicy twoRooms = new IsolatePolicy(
