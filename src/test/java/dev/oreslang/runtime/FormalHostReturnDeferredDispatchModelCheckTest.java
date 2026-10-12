@@ -147,4 +147,126 @@ final class FormalHostReturnDeferredDispatchModelCheckTest {
         assertEquals(0, s.physicalDispatches);
         assertFalse(s.guestEntered);
     }
+
+    /** Bounded nested host-scope admission model, independent of implementation. */
+    private enum GateEvent {
+        BEGIN_HOST, QUEUE_ROOT, RETURN_HOST, DISPATCH, ENTER_GUEST,
+        CANCEL, PHYSICAL_EXIT, REQUEST_CLOSE, RETIRE
+    }
+
+    private record GateState(int scopes, boolean opened, boolean queued,
+            boolean dispatched, boolean entered, boolean exited,
+            boolean cancelled, boolean closeRequested, boolean retired,
+            boolean lastHostReturned) {
+        static GateState initial() {
+            return new GateState(0, false, false, false, false, false,
+                    false, false, false, false);
+        }
+    }
+
+    private static GateState gateTransition(GateState s, GateEvent e) {
+        int scopes = s.scopes;
+        boolean opened = s.opened, queued = s.queued;
+        boolean dispatched = s.dispatched, entered = s.entered;
+        boolean exited = s.exited, cancelled = s.cancelled;
+        boolean closing = s.closeRequested, retired = s.retired;
+        boolean returned = s.lastHostReturned;
+        switch (e) {
+            case BEGIN_HOST -> {
+                if (!dispatched && !retired && scopes < 2) {
+                    scopes++;
+                    opened = true;
+                    returned = false;
+                }
+            }
+            case QUEUE_ROOT -> {
+                if (opened && !queued && !dispatched && !retired) queued = true;
+            }
+            case RETURN_HOST -> {
+                if (scopes > 0) {
+                    scopes--;
+                    if (scopes == 0) returned = true;
+                }
+            }
+            case DISPATCH -> {
+                if (queued && scopes == 0 && returned && !dispatched) {
+                    queued = false;
+                    dispatched = true;
+                }
+            }
+            case ENTER_GUEST -> {
+                if (dispatched && !cancelled && !exited) entered = true;
+            }
+            case CANCEL -> {
+                if (queued || dispatched) cancelled = true;
+            }
+            case PHYSICAL_EXIT -> {
+                if (dispatched) {
+                    entered = false;
+                    exited = true;
+                }
+            }
+            case REQUEST_CLOSE -> closing = true;
+            case RETIRE -> {
+                if (closing && scopes == 0 && !queued
+                        && (!dispatched || exited)) retired = true;
+            }
+        }
+        return new GateState(scopes, opened, queued, dispatched,
+                entered, exited, cancelled, closing, retired, returned);
+    }
+
+    private static void gateInvariant(GateState s) {
+        assertTrue(s.scopes >= 0 && s.scopes <= 2);
+        if (s.dispatched) {
+            assertTrue(s.lastHostReturned && s.scopes == 0,
+                    "CONTROL carrier dispatched before all host scopes exited");
+        }
+        if (s.entered) {
+            assertTrue(s.dispatched && !s.exited && !s.cancelled,
+                    "cancelled or unadmitted root task entered guest");
+        }
+        if (s.retired) {
+            assertTrue(s.closeRequested && s.scopes == 0 && !s.queued
+                    && (!s.dispatched || s.exited) && !s.entered,
+                    "context retired while a deferred carrier owned physical entry");
+        }
+    }
+
+    @Test
+    void exhaustiveNestedHostHandoffScopesDoNotAdmitPrematureRootTurns() {
+        var seen = new HashSet<GateState>();
+        var todo = new ArrayDeque<GateState>();
+        GateState initial = GateState.initial();
+        seen.add(initial);
+        todo.add(initial);
+        boolean nested = false, pendingCancellation = false, retired = false;
+        while (!todo.isEmpty()) {
+            GateState state = todo.removeFirst();
+            gateInvariant(state);
+            nested |= state.scopes == 2 && state.queued;
+            pendingCancellation |= state.cancelled && state.queued;
+            retired |= state.retired && state.dispatched && state.exited;
+            for (GateEvent event : GateEvent.values()) {
+                GateState next = gateTransition(state, event);
+                gateInvariant(next);
+                if (event == GateEvent.DISPATCH && state.scopes > 0) {
+                    assertEquals(state, next,
+                            "a nested host Value.execute released CONTROL prematurely");
+                }
+                if (seen.add(next)) todo.addLast(next);
+            }
+        }
+        assertTrue(seen.size() >= 20);
+        assertTrue(nested && pendingCancellation && retired,
+                "bounded host admission model missed required cancellation cases");
+    }
+
+    @Test
+    void deliberatelyUnsafeEarlyControlDispatchViolatesHostBarrierInvariant() {
+        GateState unsafe = new GateState(1, true, false, true, true, false,
+                false, false, false, false);
+        assertThrows(AssertionError.class, () -> gateInvariant(unsafe));
+    }
+
 }
