@@ -1022,7 +1022,10 @@ public final class ActorRuntime implements AutoCloseable {
                     else if (failure != error) failure.addSuppressed(error);
                 }
             }
-            try {
+            // A destructor failure may leave ordinary actor storage live.
+            // Do not refund its aggregate quota until every retirement
+            // attempt has completed successfully; retry via close().
+            if (failure == null) try {
                 synchronized (memoryBudgetLock) {
                     long bytes = usedBytes.get();
                     long pinned = retainedNativeBytes.get();
