@@ -261,9 +261,8 @@ public final class ChannelRuntime {
      * late channel completion.
      */
     public static final class FairCursor {
+        private static final long RETIRED = Long.MIN_VALUE;
         private final AtomicLong index;
-        private final java.util.concurrent.atomic.AtomicBoolean retired =
-                new java.util.concurrent.atomic.AtomicBoolean();
 
         public FairCursor() {
             this(0L);
@@ -274,17 +273,21 @@ public final class ChannelRuntime {
         }
 
         public void retire() {
-            retired.set(true);
+            // Retirement and commitment contend on one atomic word: a
+            // coordinator commit cannot resurrect a retired actor cursor.
+            index.set(RETIRED);
         }
 
         private long current() {
-            return index.get();
+            long snapshot = index.get();
+            // A previously registered cancellation continuation may be
+            // observed after retirement, but must not revive this cursor.
+            return snapshot == RETIRED ? 0L : snapshot;
         }
 
         private void committed(int selectedIndex, int caseCount) {
-            if (!retired.get()) {
-                index.set((selectedIndex + 1L) % caseCount);
-            }
+            index.updateAndGet(current ->
+                    current == RETIRED ? RETIRED : (selectedIndex + 1L) % caseCount);
         }
     }
 
@@ -711,9 +714,12 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        // A suspended selection must use the latest committed FAIR cursor;
-        // its admission-time snapshot may precede many unrelated commits.
-        for (int index : selection.set.initialOrder(selection.policy)) {
+        // Only FAIR tracks subsequent coordinator commits. RANDOM must keep
+        // its one-time randomized admission order throughout this wait.
+        int[] currentOrder = selection.policy == SelectPolicy.FAIR
+                ? selection.set.initialOrder(selection.policy)
+                : selection.order;
+        for (int index : currentOrder) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -750,7 +756,10 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int index : selection.set.initialOrder(selection.policy)) {
+        int[] currentOrder = selection.policy == SelectPolicy.FAIR
+                ? selection.set.initialOrder(selection.policy)
+                : selection.order;
+        for (int index : currentOrder) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
