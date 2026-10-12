@@ -38,6 +38,9 @@ public final class OresScheduler implements AutoCloseable {
     private static final AtomicLong NEXT_ID = new AtomicLong();
     private static final AtomicLong NEXT_DISPATCH_ID = new AtomicLong();
     private static final ThreadLocal<OresScheduler> CURRENT = new ThreadLocal<>();
+    /** The carrier still belongs to this scheduler during terminal callbacks. */
+    private static final ThreadLocal<OresScheduler> CURRENT_CARRIER_SCHEDULER =
+            new ThreadLocal<>();
     private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
     private static final ThreadLocal<Object> CURRENT_TASK_DOMAIN = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> SCHEDULER_CARRIER = new ThreadLocal<>();
@@ -389,7 +392,9 @@ public final class OresScheduler implements AutoCloseable {
         ensureOpen();
         executor.execute(() -> {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
+            OresScheduler previousCarrierScheduler = CURRENT_CARRIER_SCHEDULER.get();
             SCHEDULER_CARRIER.set(Boolean.TRUE);
+            CURRENT_CARRIER_SCHEDULER.set(this);
             try {
                 turnExecutor.execute(() -> runBound(turn));
             } catch (RuntimeException | Error failure) {
@@ -400,12 +405,20 @@ public final class OresScheduler implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
-                if (priorCarrier) {
-                    SCHEDULER_CARRIER.set(Boolean.TRUE);
-                } else {
-                    SCHEDULER_CARRIER.remove();
+                try {
+                    afterTurn.run();
+                } finally {
+                    if (previousCarrierScheduler == null) {
+                        CURRENT_CARRIER_SCHEDULER.remove();
+                    } else {
+                        CURRENT_CARRIER_SCHEDULER.set(previousCarrierScheduler);
+                    }
+                    if (priorCarrier) {
+                        SCHEDULER_CARRIER.set(Boolean.TRUE);
+                    } else {
+                        SCHEDULER_CARRIER.remove();
+                    }
                 }
-                afterTurn.run();
             }
         });
     }
@@ -447,7 +460,10 @@ public final class OresScheduler implements AutoCloseable {
 
         if (ownedExecutor != null) {
             ownedExecutor.shutdownNow();
-            if (CURRENT.get() != this) {
+            // A terminal Future listener runs after CURRENT has been cleared
+            // but may still be executing on this executor's physical carrier.
+            // Waiting for our own thread to terminate would deadlock/time out.
+            if (CURRENT_CARRIER_SCHEDULER.get() != this) {
                 try {
                     if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
                         throw new IllegalStateException(
