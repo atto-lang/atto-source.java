@@ -67,7 +67,8 @@ export function validateTensor(t,{acrossActor=true,allowGpu=false}={}){
  return {requiredBytes:Number(required),elements:Number(elements)};
 }
 export function requireVerifiedBackend(profile,feature){
- if(typeof feature!=="string"||!/^[_a-z][_a-z0-9]{0,63}$/.test(feature))
+ if(typeof feature!=="string"||!/^[_a-z][_a-z0-9]{0,63}$/.test(feature)||
+    Object.hasOwn(Object.prototype,feature)||feature==="prototype")
    throw new Error("UNSUPPORTED_BACKEND invalid feature");
  if(!profile||typeof profile!=="object"||Array.isArray(profile))
    throw new Error("UNSUPPORTED_BACKEND "+feature);
