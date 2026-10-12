@@ -148,3 +148,15 @@ rely on context close. `actors_created` and `dispatches` are supervisor
 telemetry for proving reuse. Mailbox/admission capacity and deadlines remain
 bounded: overloaded requests may still be rejected. A pooled worker must not
 retain a completed exchange token/handle or wait on its own completion future.
+
+## Independent backlog and HTTP admission
+
+`http.listen_with_limits(host, port, backlog, admission_capacity, body_limit, deadline_ms)`
+sets the requested operating-system TCP accept backlog independently from the
+number of active HTTP exchange leases. Both must be within 1..65536. The OS
+may clamp backlog; it does not limit established keep-alive connections.
+`http.listen` remains compatible: its capacity parameter supplies both limits.
+Supervisor-only `server.requested_backlog` and `server.admission_capacity`
+report these configured values. Exceeding admission capacity still returns 503;
+the API does not provide an unbounded waiting queue. Backend connection limits,
+file descriptors, scheduler fairness, and deadlines remain independent concerns.
