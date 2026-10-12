@@ -45,6 +45,53 @@ final class ActorContinuationTeardownTest {
     }
 
     @Test
+    void stoppedSuspendedTaskWithUnexecutedGuestCleanupFailsRatherThanClaimingGracefulStop()
+            throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        for (boolean pendingCleanup : new boolean[] {false, true}) {
+            try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+                var stage = new CompletableFuture<Integer>();
+                var producer = OresFuture.from(stage);
+                var reachedAwait = new CountDownLatch(1);
+                var resumes = new AtomicInteger();
+
+                final class CleanupBearingTask implements OresScheduler.Task<Void>,
+                        OresScheduler.GuestCleanupObligation {
+                    @Override public boolean hasPendingGuestCleanup() {
+                        return pendingCleanup;
+                    }
+                    @Override public OresScheduler.Step<Void> resume(OresScheduler.Resume resume) {
+                        if (resumes.getAndIncrement() != 0)
+                            throw new AssertionError("revoked guest source task resumed");
+                        reachedAwait.countDown();
+                        return OresScheduler.await(producer);
+                    }
+                }
+
+                var ref = runtime.<Integer>spawnShared(() -> (mail, context) ->
+                        context.runtime().startActorTask(new CleanupBearingTask()));
+                ref.send(1);
+                assertTrue(reachedAwait.await(5, TimeUnit.SECONDS));
+                ref.stop();
+                assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS),
+                        "STOP must physically settle even with suspended source cleanup");
+                var failure = ref.failure();
+                if (pendingCleanup) {
+                    assertTrue(failure.isPresent(), "unexecuted lexical cleanup must not be reported as success");
+                    assertInstanceOf(ActorRuntime.IncompleteSourceCleanupException.class,
+                            failure.orElseThrow());
+                } else {
+                    assertTrue(failure.isEmpty(),
+                            "a canceled source task without cleanup obligations may stop normally");
+                }
+                stage.complete(7);
+                assertEquals(1, resumes.get(),
+                        "late producer may not resume a stopped actor");
+            }
+        }
+    }
+
+    @Test
     void sourceAwaitProducerCompletingAfterStopCannotReenterOldActor() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
