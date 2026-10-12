@@ -36,6 +36,9 @@ public final class MessagePackCollectionCodec {
     public static final int MAX_DEPTH = 64;
     public static final int MAX_ELEMENTS = 100_000;
     public static final int MAX_SCHEMA_ID_BYTES = 256;
+    // Bound the canonical descriptor independently of the encoded payload.
+    // Nested enums may list thousands of declared cases with long names.
+    public static final int MAX_DESCRIPTOR_BYTES = 1_048_576;
 
     private MessagePackCollectionCodec() { }
 
@@ -253,6 +256,9 @@ public final class MessagePackCollectionCodec {
         Objects.requireNonNull(shape, "shape");
         StringBuilder descriptor = new StringBuilder("oreslang.actor.shape.v2/");
         appendShape(descriptor, shape, 0, new int[]{0});
+        if (descriptor.length() > MAX_DESCRIPTOR_BYTES) {
+            throw new IllegalArgumentException("codec shape descriptor exceeds byte quota");
+        }
         try {
             return MessageDigest.getInstance("SHA-256")
                     .digest(descriptor.toString().getBytes(StandardCharsets.US_ASCII));
@@ -264,6 +270,9 @@ public final class MessagePackCollectionCodec {
     private static void appendShape(StringBuilder out, Shape shape, int depth, int[] nodes) {
         if (depth > MAX_DEPTH || ++nodes[0] > MAX_NODES) {
             throw new IllegalArgumentException("codec shape exceeds maximum depth/node budget");
+        }
+        if (out.length() > MAX_DESCRIPTOR_BYTES) {
+            throw new IllegalArgumentException("codec shape descriptor exceeds byte quota");
         }
         if (shape instanceof Scalar scalar) {
             out.append(switch (scalar.kind()) {
@@ -286,6 +295,9 @@ public final class MessagePackCollectionCodec {
                 if (item.payload() == null) out.append('N');
                 else appendShape(out, item.payload(), depth + 1, nodes);
                 out.append(';');
+                if (out.length() > MAX_DESCRIPTOR_BYTES) {
+                    throw new IllegalArgumentException("codec shape descriptor exceeds byte quota");
+                }
             }
             out.append(']');
             return;
