@@ -276,10 +276,26 @@ public final class HotReloadManager implements AutoCloseable {
         public boolean started() { return started.get(); }
         public boolean closed() { return closed.get(); }
 
-        /** Starts the staged generation exactly once. */
+        /** Starts the staged generation exactly once.
+         * An untrusted guest may return only a void main result here: never
+         * export a guest Value or exception object to the trusted JVM.
+         */
         public Value start() {
             if (closed.get()) throw new IllegalStateException("generation is closed");
             if (!started.compareAndSet(false, true)) throw new IllegalStateException("generation already started");
+            if (group != null) {
+                try {
+                    context.eval(source);
+                    return null;
+                } catch (RuntimeException guestFailure) {
+                    try { close(); } catch (RuntimeException ignored) {
+                        // Keep the original guest error and its host-reachable
+                        // cause chain out of the supervisor API entirely.
+                    }
+                    throw new IllegalStateException(
+                            "untrusted generation failed or isolated Context was revoked");
+                }
+            }
             try {
                 return context.eval(source);
             } catch (RuntimeException failure) {
