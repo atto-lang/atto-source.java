@@ -161,7 +161,7 @@ final class ArgumentsTupleSpreadTest {
                         }
                         """)));
 
-        assertTrue(error.getMessage().contains("borrowed tuple elements"), error.getMessage());
+        assertTrue(error.getMessage().contains("borrowed parameter") && error.getMessage().contains("arguments"), error.getMessage());
     }
 
     @Test
