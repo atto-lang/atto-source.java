@@ -6714,6 +6714,15 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void runBatchEntered() {
+            // A nested physical dispatch on this thread (including into a
+            // different ActorRuntime) must not replace an executing actor's
+            // ThreadLocal identity, context, watchdog or authority.
+            // Synchronous actor-to-actor calls are mailbox sends, not a
+            // second nested actor scheduler turn.
+            if (CURRENT_ACTOR_EXECUTION.get() != null || currentActor.get() != null) {
+                throw new IllegalStateException(
+                        "nested actor carrier admission would overwrite the current actor context");
+            }
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain));
