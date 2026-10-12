@@ -23,6 +23,7 @@ final class ContextEntryCoordinatorTest {
         var hostEntered = new CountDownLatch(1);
         var releaseHost = new CountDownLatch(1);
         var guestDone = new CountDownLatch(1);
+        var guestBodyExited = new AtomicBoolean();
         var pool = Executors.newFixedThreadPool(2);
         try {
             var guest = pool.submit(() -> {
@@ -34,14 +35,15 @@ final class ContextEntryCoordinatorTest {
                         Thread.currentThread().interrupt();
                         throw new AssertionError(interruption);
                     }
+                    guestBodyExited.set(true);
                 });
                 guestDone.countDown();
             });
             assertTrue(guestInside.await(5, TimeUnit.SECONDS));
             var host = pool.submit(() -> {
                 try (var lease = gate.enterHost()) {
-                    assertEquals(0, guestDone.getCount(),
-                            "host must not acquire entry before physical guest exit");
+                    assertTrue(guestBodyExited.get(),
+                            "host must not acquire entry before the guest turn exits");
                     hostEntered.countDown();
                     assertTrue(releaseHost.await(5, TimeUnit.SECONDS));
                 }
