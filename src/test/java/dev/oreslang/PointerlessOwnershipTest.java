@@ -62,7 +62,7 @@ final class PointerlessOwnershipTest {
                           pub let int value = 0;
                         end
 
-                        fnc mixed(mut Box write, Box read) => void {
+                        fnc mixed(Box mut write, Box read) => void {
                           write.value = read.value;
                           return;
                         }
@@ -86,12 +86,12 @@ final class PointerlessOwnershipTest {
                           pub let int value = 0;
                         end
 
-                        fnc inner(mut Box left, Box right) => void {
+                        fnc inner(Box mut left, Box right) => void {
                           left.value = right.value;
                           return;
                         }
 
-                        fnc outer(mut Box box) => void {
+                        fnc outer(Box mut box) => void {
                           inner(box, box);
                           return;
                         }
@@ -182,13 +182,40 @@ final class PointerlessOwnershipTest {
 
                         fnc bad() => void {
                           let Box box = new Box();
-                          consume(borrow(box));
+                          consume(rt borrow box);
                           return;
                         }
                         """)));
 
-        assertTrue(error.getMessage().contains("requires ownership")
-                || error.getMessage().contains("cannot take ownership"));
+        String message = error.getMessage().toLowerCase();
+        assertTrue(message.contains("ownership") && message.contains("borrow"),
+                error.getMessage());
+    }
+
+    @Test
+    void movedLetMayBeReinitializedWithFreshOwnership() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 0;
+                end
+
+                fnc consume(take Box box) => void {
+                  return;
+                }
+
+                fnc mutate(Box mut box) => void {
+                  box.value = box.value + 1;
+                  return;
+                }
+
+                fnc ok() => void {
+                  let Box box = new Box(1);
+                  consume(rt take box);
+                  box = new Box(2);
+                  mutate(box);
+                  return;
+                }
+                """)));
     }
 
     @Test
@@ -213,6 +240,33 @@ final class PointerlessOwnershipTest {
 
         assertTrue(error.getMessage().contains("takes self ownership")
                 || error.getMessage().contains("receiver is borrowed"));
+    }
+
+    @Test
+    void consumingReceiverRejectsSharedOwner() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub val int value = 7;
+
+                          pub identity(take self)() => self {
+                            return self;
+                          }
+                        end
+
+                        fnc bad() => void {
+                          let Box box = new Box();
+                          val shared = rt share box;
+                          val Box moved = box.identity();
+                          stdio.println(shared.value);
+                          stdio.println(moved.value);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("takes self ownership")
+                && error.getMessage().contains("shared"));
     }
 
     @Test
@@ -325,7 +379,7 @@ final class PointerlessOwnershipTest {
                           pub val Inner inner = new Inner();
                         end
 
-                        fnc mutate(mut Outer outer) => void {
+                        fnc mutate(Outer mut outer) => void {
                           return;
                         }
 
@@ -349,7 +403,7 @@ final class PointerlessOwnershipTest {
                         define class Box as
                           pub let int value = 0;
 
-                          pub observe(self)(mut Box other) => void {
+                          pub observe(self)(Box mut other) => void {
                             other.value = 1;
                             return;
                           }
@@ -513,11 +567,11 @@ final class PointerlessOwnershipTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define interface Touch as
-                          fnc touch(mut Touch other) => void;
+                          fnc touch(Touch mut other) => void;
                         end
 
                         define class Impl is Touch as
-                          pub touch(mut Touch other) => void {
+                          pub touch(Touch mut other) => void {
                             return;
                           }
                         end
@@ -610,7 +664,7 @@ final class PointerlessOwnershipTest {
                 define module state as
                   let Box box = new Box();
 
-                  fnc bump(mut Box value) => void {
+                  fnc bump(Box mut value) => void {
                     value.value = value.value + 1;
                     return;
                   }
@@ -698,7 +752,7 @@ final class PointerlessOwnershipTest {
                         fnc bad() => void {
                           let record = obj{child: new Box()};
                           val child = record.child;
-                          val moved = take(record);
+                          val moved = rt take(record);
                           stdio.println(child.value);
                           return;
                         }
@@ -757,7 +811,7 @@ final class PointerlessOwnershipTest {
 
                 fnc extract() => Box {
                   let boxes = arr[new Box()];
-                  [val first] = take(boxes);
+                  [val first] = rt take(boxes);
                   return first;
                 }
                 """)));
@@ -772,7 +826,7 @@ final class PointerlessOwnershipTest {
                           pub let int value = 0;
                         end
 
-                        fnc bad(mut Array<Box> boxes) => void {
+                        fnc bad(Array<Box> mut boxes) => void {
                           [let first] = boxes;
                           first.value = 1;
                           return;
@@ -1031,7 +1085,7 @@ final class PointerlessOwnershipTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc ok() => void {
                   val int x = 7;
-                  val int y = copy(x);
+                  val int y = rt copy x;
                   stdio.println(x);
                   stdio.println(y);
                   return;
@@ -1047,27 +1101,25 @@ final class PointerlessOwnershipTest {
 
                         fnc bad() => void {
                           let Box box = new Box();
-                          val copyOfBox = copy(box);
+                          val copyOfBox = rt copy box;
                           return;
                         }
                         """)));
 
-        assertTrue(error.getMessage().contains("not implicitly copyable")
+        assertTrue(error.getMessage().contains("copy contract")
+                || error.getMessage().contains("not copyable")
                 || error.getMessage().contains("proven Copy"));
     }
 
     @Test
-    void shareDoesNotCreateAmbientSharedMutableState() {
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc bad() => void {
-                          let int value = 1;
-                          val shared = share(value);
-                          return;
-                        }
-                        """)));
-
-        assertTrue(error.getMessage().contains("reserved for explicit shared capabilities"));
+    void sharingCopyScalarRemainsAValueOperation() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok() => void {
+                  let int value = 1;
+                  val shared = rt share value;
+                  stdio.println(shared);
+                  return;
+                }
+                """)));
     }
 }

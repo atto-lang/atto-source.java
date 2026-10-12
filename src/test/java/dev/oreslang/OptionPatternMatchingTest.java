@@ -125,7 +125,7 @@ final class OptionPatternMatchingTest {
                     None => { }
                   }
 
-                  match take(maybe) {
+                  match rt take(maybe) {
                     Some(value) => { return value.value; }
                     None => { return 0; }
                   }
@@ -142,7 +142,7 @@ final class OptionPatternMatchingTest {
                         fnc bad() => void {
                           let Box box = new Box();
                           let Option<Box> maybe = Some(box);
-                          match take(maybe) {
+                          match rt take(maybe) {
                             Some(value) => { stdio.println(value.value); }
                             None => { }
                           }
@@ -157,7 +157,7 @@ final class OptionPatternMatchingTest {
     void optionCopyIsConditionalOnPayloadCopy() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc copied(Option<int> maybe) => int {
-                  match copy(maybe) {
+                  match rt copy(maybe) {
                     Some(value) => { return value; }
                     None => { return 0; }
                   }
@@ -174,14 +174,16 @@ final class OptionPatternMatchingTest {
                         fnc bad() => void {
                           let Box box = new Box();
                           let Option<Box> maybe = Some(box);
-                          match copy(maybe) {
+                          match rt copy(maybe) {
                             Some(value) => { stdio.println(value.value); }
                             None => { }
                           }
                           return;
                         }
                         """)));
-        assertTrue(error.getMessage().contains("proven Copy"));
+        assertTrue(error.getMessage().contains("copy contract")
+                || error.getMessage().contains("not copyable")
+                || error.getMessage().contains("proven Copy"));
     }
 
     @Test
@@ -211,11 +213,14 @@ final class OptionPatternMatchingTest {
 
                         fnc bad() => void {
                           let Box box = new Box();
-                          val maybe = Some(borrow(box));
+                          val maybe = Some(rt borrow(box));
                           return;
                         }
                         """)));
-        assertTrue(hiddenBorrow.getMessage().contains("cannot store a borrow"));
+        String hiddenBorrowMessage = hiddenBorrow.getMessage().toLowerCase();
+        assertTrue(hiddenBorrowMessage.contains("cannot store")
+                && hiddenBorrowMessage.contains("borrow"),
+                hiddenBorrow.getMessage());
     }
 
     @Test
@@ -227,12 +232,12 @@ final class OptionPatternMatchingTest {
                           pub let int value = 0;
                         end
 
-                        fnc mixed(mut Box write, Box read) => void {
+                        fnc mixed(Box mut write, Box read) => void {
                           write.value = read.value;
                           return;
                         }
 
-                        fnc nested(mut Box box) => void {
+                        fnc nested(Box mut box) => void {
                           mixed(box, box);
                           return;
                         }

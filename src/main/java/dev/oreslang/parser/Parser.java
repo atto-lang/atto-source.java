@@ -483,7 +483,9 @@ public final class Parser {
             boolean structural = false;
             Ast.ParamMode mode = Ast.ParamMode.BORROW;
 
-            // Pointerless ownership markers are contextual to parameter position.
+            // Ownership transfer stays contextual before the type. Mutable
+            // access is canonical in type-first form: Type mut name. Keep the
+            // older mut Type name spelling accepted during migration.
             if (match(MUT)) mode = Ast.ParamMode.MUT;
             else if (check(IDENT) && peek().lexeme().equals("take")) {
                 advance();
@@ -523,7 +525,13 @@ public final class Parser {
 
             Ast.TypeRef type = parseTypeRef();
             if (match(MUT)) {
-                throw error(previous(), "put mut before the parameter type: 'mut Type name'");
+                if (mode == Ast.ParamMode.TAKE) {
+                    throw error(previous(), "a take parameter owns its value and cannot also be a temporary mut reference");
+                }
+                if (structural) {
+                    throw error(previous(), "structural parameters are read-only views and cannot use mut or take");
+                }
+                mode = Ast.ParamMode.MUT;
             }
             String name = consume(IDENT, "expected parameter name").lexeme();
             params.add(new Ast.Param(type, name, structural, mode));
@@ -568,7 +576,7 @@ public final class Parser {
 
     private Ast.TypeRef parseTypeRef() {
         if (check(AMP)) {
-            throw error(peek(), "pointer-style '&' borrow types are not part of Oreslang; use ordinary parameters, 'mut Type name', or contextual 'take Type name'");
+            throw error(peek(), "pointer-style '&' borrow types are not part of Oreslang; use ordinary parameters, canonical 'Type mut name', or contextual 'take Type name'");
         }
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
 
@@ -669,18 +677,37 @@ public final class Parser {
     }
 
     private Ast.Stmt parseFor() {
-        consume(LPAREN, "expected '(' after for");
+        if (match(LPAREN)) return parseParenthesizedFor();
+
+        // Canonical iterator forms:
+        //   for item of values do ... done
+        //   for [key, value] of entries do ... done
+        //   for [val key, let value] of entries { ... }
+        ForOfBindings parsed = parseForOfBindings();
+        consume(OF, "expected 'of' in iterator loop");
+        Ast.Expr iterable = parseExpression();
+        return new Ast.ForOfStmt(
+                parsed.bindings(),
+                parsed.destructuringPattern(),
+                iterable,
+                parseLoopBody());
+    }
+
+    private Ast.Stmt parseParenthesizedFor() {
+        if (looksLikeForOfHeader()) {
+            ForOfBindings parsed = parseForOfBindings();
+            consume(OF, "expected 'of' in for-of loop");
+            Ast.Expr iterable = parseExpression();
+            consume(RPAREN, "expected ')' after for-of header");
+            return new Ast.ForOfStmt(
+                    parsed.bindings(),
+                    parsed.destructuringPattern(),
+                    iterable,
+                    parseLoopBody());
+        }
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
-            if (check(IDENT) && checkNext(OF)) {
-                String name = advance().lexeme();
-                consume(OF, "expected 'of' in for-of loop");
-                Ast.Expr iterable = parseExpression();
-                consume(RPAREN, "expected ')' after for-of header");
-                return new Ast.ForOfStmt(kind, name, iterable, parseBlock());
-            }
-
             Ast.TypeRef type = null;
             String name;
             if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
@@ -696,15 +723,7 @@ public final class Parser {
             consume(SEMICOLON, "expected ';' after for condition");
             Ast.Expr update = check(RPAREN) ? null : parseExpression();
             consume(RPAREN, "expected ')' after for header");
-            return new Ast.ForStmt(init, condition, update, parseBlock());
-        }
-
-        if (check(IDENT) && checkNext(OF)) {
-            String name = advance().lexeme();
-            consume(OF, "expected 'of' in for-of loop");
-            Ast.Expr iterable = parseExpression();
-            consume(RPAREN, "expected ')' after for-of header");
-            return new Ast.ForOfStmt(Ast.BindingKind.VAL, name, iterable, parseBlock());
+            return new Ast.ForStmt(init, condition, update, parseLoopBody());
         }
 
         Ast.Stmt initializer = null;
@@ -714,7 +733,96 @@ public final class Parser {
         consume(SEMICOLON, "expected ';' after for condition");
         Ast.Expr update = check(RPAREN) ? null : parseExpression();
         consume(RPAREN, "expected ')' after for header");
-        return new Ast.ForStmt(initializer, condition, update, parseBlock());
+        return new Ast.ForStmt(initializer, condition, update, parseLoopBody());
+    }
+
+    private boolean looksLikeForOfHeader() {
+        if (check(IDENT)) return checkNext(OF);
+        if (isBindingKind(peek().type())) {
+            return current + 2 < tokens.size()
+                    && tokens.get(current + 1).type() == IDENT
+                    && tokens.get(current + 2).type() == OF;
+        }
+        if (!check(LBRACKET)) return false;
+
+        int i = current + 1;
+        boolean expectBinding = true;
+        while (i < tokens.size()) {
+            Token.Type type = tokens.get(i).type();
+            if (type == RBRACKET) {
+                return !expectBinding
+                        && i + 1 < tokens.size()
+                        && tokens.get(i + 1).type() == OF;
+            }
+            if (expectBinding) {
+                if (isBindingKind(type)) {
+                    i++;
+                    if (i >= tokens.size() || tokens.get(i).type() != IDENT) return false;
+                } else if (type != IDENT) {
+                    return false;
+                }
+                expectBinding = false;
+                i++;
+                continue;
+            }
+            if (type == COMMA) {
+                expectBinding = true;
+                i++;
+                continue;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    private ForOfBindings parseForOfBindings() {
+        if (!match(LBRACKET)) {
+            Ast.BindingKind kind = isBindingKind(peek().type())
+                    ? parseBindingKind()
+                    : Ast.BindingKind.VAL;
+            String name = consume(IDENT,
+                    "expected iterator binding name or '[a, b]' destructuring pattern").lexeme();
+            return new ForOfBindings(
+                    List.of(new Ast.DestructureBinding(kind, name)),
+                    false);
+        }
+
+        List<Ast.DestructureBinding> bindings = new ArrayList<>();
+        if (check(RBRACKET)) throw error(peek(), "for-of destructuring pattern cannot be empty");
+        do {
+            Ast.BindingKind kind = isBindingKind(peek().type())
+                    ? parseBindingKind()
+                    : Ast.BindingKind.VAL;
+            Token nameToken = consume(
+                    IDENT,
+                    "expected binding name in for-of destructuring pattern");
+            String name = nameToken.lexeme();
+            for (Ast.DestructureBinding existing : bindings) {
+                if (existing.name().equals(name)) {
+                    throw error(nameToken,
+                            "duplicate binding '" + name + "' in for-of destructuring pattern");
+                }
+            }
+            bindings.add(new Ast.DestructureBinding(kind, name));
+        } while (match(COMMA));
+        consume(RBRACKET, "expected ']' after for-of destructuring pattern");
+        return new ForOfBindings(bindings, true);
+    }
+
+    private record ForOfBindings(
+            List<Ast.DestructureBinding> bindings,
+            boolean destructuringPattern) {
+        private ForOfBindings {
+            bindings = List.copyOf(bindings);
+        }
+    }
+
+    private List<Ast.Stmt> parseLoopBody() {
+        if (check(LBRACE)) return parseBlock();
+        consume(DO, "expected '{' or 'do' after for loop header");
+        List<Ast.Stmt> body = parseUntil(DONE);
+        consume(DONE, "expected 'done' to close for loop");
+        return body;
     }
 
     private Ast.BindingStmt parseBindingStatement() {
@@ -908,10 +1016,34 @@ public final class Parser {
     private Ast.Expr parseUnary() {
         if (match(BANG, MINUS, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (check(AMP)) {
-            throw error(peek(), "pointer-style '&' borrow expressions are not part of Oreslang; calls borrow automatically, use borrow(x) for a stored read view");
+            throw error(peek(), "pointer-style '&' borrow expressions are not part of Oreslang; calls pass references automatically, use rt borrow for an explicit stored read view");
         }
+        if (match(RT)) return parseRuntimeExpression();
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
         return parsePostfix();
+    }
+
+    private Ast.Expr parseRuntimeExpression() {
+        Token operation = consume(IDENT, "expected runtime operation after 'rt'");
+        String name = operation.lexeme();
+        if (!name.equals("copy") && !name.equals("take")
+                && !name.equals("borrow") && !name.equals("share")
+                && !name.equals("ptr") && !name.equals("deref")) {
+            throw error(operation, "unknown rt operation '" + name + "'");
+        }
+
+        Ast.Expr argument;
+        if (match(LPAREN)) {
+            argument = parseExpression();
+            consume(RPAREN, "expected ')' after rt " + name + " argument");
+        } else {
+            // Command form has unary precedence. Parentheses widen the operand.
+            argument = parseUnary();
+        }
+
+        // This compiler-only spelling cannot be produced by the guest lexer.
+        String intrinsic = "$" + "rt" + "$" + name;
+        return new Ast.CallExpr(new Ast.NameExpr(intrinsic), List.of(argument));
     }
 
     private Ast.Expr parsePostfix() {
@@ -1023,7 +1155,15 @@ public final class Parser {
                         mode = Ast.ParamMode.TAKE;
                     }
                     Ast.TypeRef type = parseTypeRef();
-                    if (match(MUT)) throw error(previous(), "put mut before the lambda parameter type: 'mut Type name'");
+                    if (match(MUT)) {
+                        if (mode == Ast.ParamMode.TAKE) {
+                            throw error(previous(), "a take lambda parameter owns its value and cannot also be a temporary mut reference");
+                        }
+                        if (mode == Ast.ParamMode.MUT) {
+                            throw error(previous(), "duplicate mut on lambda parameter; canonical spelling is 'Type mut name'");
+                        }
+                        mode = Ast.ParamMode.MUT;
+                    }
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
                     params.add(new Ast.Param(type, name, false, mode));
                 }
@@ -1066,7 +1206,8 @@ public final class Parser {
     }
 
     private boolean isSafeStatementBoundary() {
-        return check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
+        return check(RBRACE) || check(FI) || check(END) || check(DONE)
+                || check(ELSE) || check(ELSEIF)
                 || check(CATCH) || check(FINALLY) || check(EOF);
     }
 

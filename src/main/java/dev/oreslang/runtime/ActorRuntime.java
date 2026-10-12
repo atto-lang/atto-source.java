@@ -215,10 +215,6 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Creates an explicitly read-only shared value. The returned graph is a
-     * frozen representation; no mutable source object itself is exposed.
-     */
-    /**
      * Cooperative scheduler hook used by compiler-injected loop safepoints.
      * It observes runtime shutdown/interruption and yields the carrier so
      * supervisor/control-plane work can run. This is intentionally a runtime
@@ -264,6 +260,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Creates an actor-transport read-only wrapper by deep-freezing the graph.
+     * This is intentionally distinct from source-level rt share, which is a
+     * same-reference ownership transition inside one ownership domain.
+     */
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
         return new Shared<>((T) freezeForThisRuntime(value, true));
@@ -301,18 +302,20 @@ public final class ActorRuntime implements AutoCloseable {
             budget.addBytes(16L + 2L * text.length());
             return value;
         }
-        if (value instanceof BigInteger integer) {
+        if (value.getClass() == BigInteger.class) {
+            BigInteger integer = (BigInteger) value;
             budget.addBytes(32L + Math.max(1L, (integer.bitLength() + 7L) / 8L));
             return value;
         }
-        if (value instanceof BigDecimal decimal) {
+        if (value.getClass() == BigDecimal.class) {
+            BigDecimal decimal = (BigDecimal) value;
             budget.addBytes(40L + Math.max(1L, (decimal.unscaledValue().bitLength() + 7L) / 8L));
             return value;
         }
         if (value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double
-                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId) {
+                || value instanceof UUID || value instanceof ActorId) {
             budget.addBytes(32);
             return value;
         }

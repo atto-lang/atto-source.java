@@ -388,23 +388,150 @@ Option matching participates in pointerless ownership:
 - `match maybe { ... }` reads/borrows a non-`Copy` option; the option remains
   usable after the match and a non-`Copy` payload is a read borrow inside
   `Some(...)`.
-- `match borrow(maybe) { ... }` makes that read borrow explicit.
-- `match take(maybe) { ... }` consumes a non-`Copy` option and gives the
+- `match rt borrow(maybe) { ... }` makes that read borrow explicit.
+- `match rt take(maybe) { ... }` consumes a non-`Copy` option and gives the
   `Some` arm ownership of a non-`Copy` payload.
-- `match copy(maybe) { ... }` is legal only when `Option<T>` is proven
+- `match rt copy(maybe) { ... }` is legal only when `Option<T>` is proven
   `Copy`. `Option<T>` is `Copy` exactly when `T` is `Copy`.
 - `Some(value)` owns its payload. Constructing `Some(x)` therefore moves a
-  non-`Copy` `x`; use `Some(copy(x))` only when the payload type satisfies
+  non-`Copy` `x`; use `Some(rt copy(x))` only when the payload type satisfies
   the copy contract.
 - Storing a borrow inside `Some(...)` is currently rejected until container
   borrow provenance is represented explicitly; this prevents a borrow from
   escaping its checked lifetime through an option.
 
 `copy`, `take`, and `borrow` never erase the requirement to prove `Some`.
-`share` remains fail-closed for ordinary values, including options, until an
-explicit shared-capability type is provided.
+`rt share` creates shared ownership of the **same** runtime value; it does not copy the value. A borrow cannot be upgraded into shared ownership. Shared ownership is currently kept out of `Option`/aggregate storage until those containers carry an explicit shared-ownership qualifier.
 
 `Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. `Option<void>` is invalid; use `void` when a function returns no value.
+
+## Runtime ownership operations and value categories
+
+The reserved `rt copy`, `rt take`, `rt borrow`, and `rt share` operations
+apply only to runtime values. A class name or module name by itself is a
+namespace/meta-value, not an instance:
+
+```ores
+define class Box as
+end
+
+define module math as
+  pub val int answer = 42;
+end
+
+// compile-time errors:
+val a = rt copy Box;
+val b = rt copy math;
+```
+
+The same namespace rule applies to `rt take`, `rt borrow`, and `rt share`.
+Use an instance, field value, function result, or other runtime value instead.
+
+Copy-semantic scalars are special. They have no mutable heap identity that must
+be duplicated. Therefore `rt copy` is legal and is semantically copy-elided:
+
+```ores
+let int n = 42;
+val m = rt copy n;
+
+// n remains usable; m == n; no actor/local/shared heap allocation is required.
+```
+
+The compiler/runtime classifies ownership operations independently from physical
+allocation:
+
+| Operand category | `rt copy` | Allocation effect |
+| --- | --- | --- |
+| primitive/value scalar | valid, value-semantic | none / copy-elided |
+| class instance | requires the class copy contract | fresh storage in the current semantic allocation domain |
+| struct/record/list/map/array | built-in structural copy when the element graph is copyable | fresh backing storage in the current semantic allocation domain |
+| class/module namespace | compile-time error | none |
+| pointer/capability/opaque host value without an explicit copy contract | compile-time or fail-closed runtime error | none |
+
+For Copy scalars, `rt take` does not make the source unusable: consuming a
+Copy value is itself copy semantics. `rt share` of a Copy scalar is likewise a
+value-semantic no-op and does not manufacture a `Shared<T>` owner or move the
+value into runtime-shared memory. Explicit `rt borrow` may still create a
+lexical checker borrow of a named scalar binding; it does not allocate storage
+or grant pointer/address semantics.
+
+For identity classes, the copy contract is a well-known symbol method, not an
+ordinary method name:
+
+```ores
+define class Box as
+  pub [Symbol.rtCopy]() => self {
+    return new Box();
+  }
+
+  // This is an unrelated application method and has no rt-copy meaning.
+  pub copy() => self {
+    return self;
+  }
+end
+```
+
+Only `[Symbol.rtCopy]()` is consulted by `rt copy`. The hook must be a
+concrete, synchronous, non-generic, public instance method declared directly on
+the concrete class, use a read-only receiver, and return a fresh instance of
+that same concrete class. The runtime verifies that the hook did not mutate the
+source and did not retain mutable aliases into the source graph. Ordinary
+`copy()` remains available to application code with any semantics its API
+chooses.
+
+For identity-bearing values, ownership and allocation are separate:
+`rt borrow`, `rt take`, and same-domain `rt share` do not relocate storage.
+`rt copy` creates independent storage in the current semantic allocation
+domain. Cross-actor/isolate movement remains an explicit mailbox/channel/freeze
+or transfer boundary.
+
+## Explicit pointer capabilities
+
+Ordinary Oreslang calls do not require pointers. Class/object arguments use the
+same managed reference/handle semantics described by the ownership rules above;
+passing an object to a function, routine, or method does not implicitly copy it
+and does not require `Ptr<T>`.
+
+When trusted low-level code genuinely needs pointer-shaped access, Oreslang
+provides the compiler-owned intrinsic type `Ptr<T>` and the reserved runtime
+operations:
+
+```ores
+let Person person = new Person();
+val Ptr<Person> pointer = rt ptr person;
+val view = rt deref pointer;
+```
+
+Both runtime operations also accept parenthesized call form:
+`rt ptr(person)` and `rt deref(pointer)`. Bare `ptr(...)` and
+`deref(...)` are ordinary names and are never compiler intrinsics.
+
+`Ptr<T>` is an opaque, lifetime-bound capability rather than an ordinary
+user-defined class or an integer address. In the current model:
+
+- `rt ptr` requires a named, concrete, reference-backed non-`Copy` owner and
+  creates a read borrow tied to that owner's lifetime;
+- storing the resulting pointer binding keeps that read borrow active, so the
+  pointee cannot be moved or exclusively mutated while the pointer is live;
+- `rt deref` accepts only `Ptr<T>` and yields read-only borrowed access to
+  `T`; it does not restore ownership or mutable authority;
+- a pointer/derived dereference cannot escape the pointee lifetime through a
+  return, aggregate, field, closure, or other storage boundary whose provenance
+  is not explicitly represented;
+- `rt copy` and `rt share` reject `Ptr<T>`;
+- `Ptr<T>` is not actor/isolate message transport authority and is not
+  statically Sendable.
+
+The JVM/JIT backend intentionally does **not** fabricate a stable numeric memory
+address for a managed object because garbage collection may relocate it. It
+carries `Ptr<T>` as an opaque runtime handle. A native/AOT backend may lower
+the same language capability to a pinned or native address when it can preserve
+the same lifetime, ownership, isolation, and capability checks.
+
+Oreslang still has no C/Rust pointer operators: `&T`, `&mut T`, `T*`,
+unary `&value`, and unary `*pointer` are not source forms. Explicit
+address-level work is spelled through `rt ptr` / `rt deref`, while ordinary
+program code remains managed-reference based.
 
 ## Numbers
 
@@ -456,13 +583,15 @@ try {
 
 `defer` executes in LIFO order when its lexical scope unwinds, including returns and exceptional exits.
 
+Ownership analysis is exception-aware and fail-closed. A `catch` is checked against the worst ownership state that may be visible after any throwing prefix of the `try` body, not merely the successful end of the block. In particular, a possible `rt take` or `rt share` remains visible to `catch`/`finally` even if the successful path later reinitializes that `let` binding. Branch-local borrow releases are merged path-wise; ownership is considered unique again only when every continuing path proves the aliases ended.
+
 ## Async / await
 
 `async` and `await` are reserved and parsed. `await` unwraps future-like runtime values. The scheduler is intentionally separate from the language surface so actor isolation does not depend on a specific OS-thread implementation.
 
 ## Actors
 
-Actors own their mutable heaps. Cross-actor communication occurs through mailboxes, and message values are frozen/copied/serialized at the runtime boundary. Arbitrary mutable host objects are rejected as messages. Deeply immutable values may use read-only sharing.
+Actors own their mutable heaps. Cross-actor communication occurs through mailboxes, and message values are frozen/copied/serialized at the runtime boundary. Arbitrary mutable host objects are rejected as messages. The runtime may expose an explicit deeply frozen read-only transport wrapper to shared actors when policy allows it; that transport capability is **not** source-level `rt share`. Local `rt share` preserves the same reference only inside one ownership domain and never grants permission to cross private/untrusted actor or isolate boundaries.
 
 A `singleton module` is a language-level process service built on the same ownership rule: one actor owns the module bindings for the entire OS process, while all other actors/isolates communicate with it through generated/runtime proxies. It is not one singleton per isolate or per Graal context.
 
@@ -609,13 +738,32 @@ for (let i = 0; i < 10; i = i + 1) {
 }
 ```
 
-and iterator-style loops:
+and iterator-style loops. Parentheses are optional, and loop bodies may use braces or `do ... done`:
 
 ```ores
+for item of values do
+  work(item)
+done
+
 for (val item of values) {
   work(item);
 }
 ```
+
+Iterator elements may be destructured directly. `[k, v]` defaults both bindings to `val`; binding kinds may be written per element when local rebinding is needed:
+
+```ores
+for [k, v] of entries do
+  consume(k, v)
+done
+
+for [val key, let value] of entries {
+  value = normalize(value);
+  consume(key, value);
+}
+```
+
+Destructuring preserves ownership. A non-consuming loop yields read borrows for non-`Copy` components; it never manufactures owners from projections. To transfer non-`Copy` element/component ownership into loop bindings, explicitly consume the iterable with `rt take`. Bracket form is semantically significant even with one binding: `for [x] of rows` destructures a one-element row, while `for x of rows` binds the row itself. Ordinary statement terminator rules still apply inside `do ... done`; newlines alone are not statement terminators.
 
 Classes can expose a JavaScript-like iterator symbol:
 
@@ -912,11 +1060,11 @@ Capture rules are ownership-aware:
 
 This makes returned closures safe without retaining raw stack references.
 
-## Parameter ownership: borrow, `mut`, and `take`
+## Parameter ownership: references, `mut`, and `take`
 
-Oreslang deliberately does **not** expose pointer/reference syntax such as `&T`, `&mut T`, or unary `&value`. JVM references remain an implementation detail. The compiler tracks ownership, aliasing, and lifetimes semantically.
+Oreslang deliberately does **not** expose pointer syntax such as `&T`, `&mut T`, `T*`, unary `&value`, or unary dereference. Runtime references are an implementation detail. Source code gets Java-like reference passing plus compiler-enforced ownership, aliasing, and lifetime rules.
 
-An ordinary parameter is a read-only temporary borrow:
+An ordinary object parameter receives the **same runtime object/reference identity** as its argument. There is no Go-style implicit value copy at a call boundary. The ownership checker grants the callee temporary read access to that same reference; passing the argument neither copies it nor transfers ownership:
 
 ```ores
 fnc inspect(Bar value) => void {
@@ -927,15 +1075,16 @@ fnc inspect(Bar value) => void {
 fnc example() => void {
   let Bar b = new Bar();
   inspect(b);
-  stdio.println(b.foo); // b was borrowed, not moved
+  inspect(b);
+  stdio.println(b.foo); // same object; b was borrowed, not copied or moved
   return;
 }
 ```
 
-A `mut` parameter is an exclusive temporary mutable borrow:
+A mutable parameter uses canonical type-first syntax `Type mut name`. It is an exclusive temporary mutable reference whose exclusivity ends at the call boundary:
 
 ```ores
-fnc change(mut Bar value) => void {
+fnc change(Bar mut value) => void {
   value.foo = "changed";
   return;
 }
@@ -943,10 +1092,12 @@ fnc change(mut Bar value) => void {
 fnc example() => void {
   let Bar b = new Bar();
   change(b);
-  stdio.println(b.foo); // exclusive borrow ended at call boundary
+  stdio.println(b.foo);
   return;
 }
 ```
+
+The older `mut Type name` spelling remains accepted temporarily while existing source is migrated; new source should use `Type mut name`.
 
 A contextual `take` parameter transfers ownership:
 
@@ -958,14 +1109,14 @@ fnc save(take Bar value) => void {
 fnc example() => void {
   let Bar b = new Bar();
   save(b);
-  // b.foo; // compile-time error: b was moved
+  // b.foo; // compile-time error: ownership moved
   return;
 }
 ```
 
-`take` is contextual in parameter position rather than a globally reserved identifier. The compiler ABI nevertheless records whether each parameter is `borrow`, `mut`, or `take`, so changing ownership policy is an API/ABI change.
+`take` is contextual in parameter position rather than a globally reserved identifier. The compiler ABI records whether each parameter is read-reference, mutable-reference, or ownership-taking, so changing that policy is an API/ABI change.
 
-Parameter bindings themselves are immutable. `mut Bar value` grants exclusive mutation *through* `value`; it does not permit rebinding the parameter. If a function takes ownership and wants a mutable local owner, move it into a `let` binding:
+Parameter bindings themselves are immutable. `Bar mut value` grants exclusive mutation *through* `value`; it does not permit rebinding the parameter. If a function takes ownership and wants a mutable local owner, move it into a `let` binding:
 
 ```ores
 fnc normalize(take Bar value) => Bar {
@@ -977,41 +1128,38 @@ fnc normalize(take Bar value) => Bar {
 
 Local mutation continues to use `let`. `val` and `const` remain immutable. Class fields declared `val`/`const` cannot be assigned after construction; mutable object state must use a `let` field and mutable owner access.
 
-## Ownership, moves, and borrows
+## Ownership operations
 
-Oreslang uses affine ownership and borrow checking while keeping source syntax Java-like.
+Oreslang combines Java-like reference ergonomics with affine ownership/lifetime checking. Reference passing is the default; copying and ownership transitions are explicit through the reserved `rt` namespace:
 
-The initial implicit `Copy` family is:
+- `rt borrow x` / `rt borrow(x)` creates a stored immutable view tied to `x`'s lifetime;
+- `rt take x` / `rt take(x)` explicitly transfers ownership;
+- `rt copy x` / `rt copy(x)` creates an independent value when the type satisfies the copy contract;
+- `rt share x` / `rt share(x)` converts unique ownership into read-only **shared ownership of the same runtime object/reference**. It does not invoke `[Symbol.rtCopy]()` and does not create a detached snapshot.
 
-- integer types;
-- floating/decimal/complex scalar types;
-- booleans;
-- immutable strings.
+The command and call spellings are semantically identical. The command form has unary precedence, so `rt copy x.field + y` means `(rt copy x.field) + y`. Parentheses may be used whenever a wider operand or explicit grouping is desired.
 
-Class instances, arrays/lists, object records, and closures are move-only by default.
+`rt borrow` and `rt share` are deliberately different. A borrow is non-owning and cannot outlive its owner. A shared owner participates in the object's lifetime and may be duplicated, but neither the new alias nor the original binding retains unique mutation/take authority after the transition. Until callable/container types can encode that qualifier end-to-end, shared values may be held directly, read, passed to read-only parameters, copied explicitly, or captured read-only; returning them through an ordinary `T` return type or hiding them inside an unqualified aggregate fails closed.
+First-class `Fnc`/closure values are not currently shareable: invocation can hide mutations of captured state, and `Fnc` does not yet encode effect/share-safety metadata. `rt share` therefore fails closed for callables (including callables nested in arrays/tuples/records or class fields) until an explicit safe callable/capability contract exists.
+Likewise, unresolved/imported user types are not assumed share-safe. Cross-unit linking must provide an explicit share/capability contract before `rt share` may create shared ownership of a foreign value; unknown nominal types fail closed rather than being treated as opaque-safe.
 
-The compiler intrinsics are function-like syntax, not pointer operators:
+Reference passing is a **same-ownership-domain** rule, not an isolation escape hatch. Direct calls within the same actor/context pass the same object handle. Actor, isolate, and process-singleton mailbox boundaries remain transport boundaries: raw mutable object references never cross them, and values must satisfy the existing sendable/frozen/capability contract.
 
-- `borrow(x)` stores an immutable view tied to `x`'s lexical lifetime;
-- `take(x)` explicitly moves an owned value;
-- `copy(x)` creates another owned value only when the type is proven `Copy`;
-- `share(x)` is reserved for explicit shared-capability types and cannot turn ordinary mutable state into shared state.
+The initial scalar value family is integers, floating/decimal/complex scalars, booleans, and immutable strings. Identity-bearing classes use reference semantics by default: `f(x)` passes the same object handle, while `f(rt copy x)` requests an independent copy. Class/aggregate copying requires a concrete copy contract rather than treating a shallow JVM-reference copy as an independent value.
 
-These four names are unshadowable in the value/callable namespace. They are not lexer keywords—so the parser can issue precise diagnostics and future syntax can evolve—but user bindings, parameters, imports, and top-level/module callables cannot redefine their meaning.
+The `rt` namespace is compiler-reserved and cannot be shadowed. Legacy bare `borrow(...)`, `take(...)`, `copy(...)`, and `share(...)` spellings remain accepted on this migration stack only; canonical source uses `rt`.
 
-Borrowed values cannot currently be returned as owned values. A return of `self`, an ordinary non-`Copy` parameter, a `mut` parameter, or `borrow(x)` is rejected unless ownership is actually transferred. The planned provenance form is `T from owner`; until that contract exists, borrowed returns fail closed rather than manufacturing a second owner.
+Borrowed values cannot currently be returned as owned values. A return of `self`, an ordinary non-`Copy` parameter, a mutable-reference parameter, or `rt borrow x` is rejected unless ownership is actually transferred. The planned provenance form is `T from owner`; until that contract exists, borrowed returns fail closed rather than manufacturing a second owner.
 
-First-class `Fnc` values currently encode parameter types but not ownership modes. Therefore a callable or lambda containing a `mut` or `take` parameter—and a method with a `mut self` receiver—is direct-call-only in v0. Extraction is rejected until `Fnc` carries those modes explicitly.
+First-class `Fnc` values currently encode parameter types but not ownership modes. Therefore a callable or lambda containing a mutable-reference or `take` parameter—and a method with a `mut self` receiver—is direct-call-only in v0. Extraction is rejected until `Fnc` carries those modes explicitly.
 
-For now, classes are **not** implicitly copyable. `copy(classValue)` is rejected until the class-copy contract proves how to create independent owned storage. This prevents a shallow JVM reference copy from pretending to satisfy language-level copy semantics.
-
-Stored immutable views use `borrow(x)`:
+Stored immutable views use `rt borrow`:
 
 ```ores
 fnc example() => void {
   let Bar b = new Bar();
-  val first = borrow(b);
-  val second = borrow(b);
+  val first = rt borrow b;
+  val second = rt borrow(b);
   stdio.println(first.foo);
   stdio.println(second.foo);
   return;
@@ -1028,7 +1176,7 @@ Borrow rules are compiler guarantees:
 - a borrow of a local value may not escape the owner's lifetime;
 - temporary parameter borrows end at the call boundary;
 - multiple arguments in one call are checked as overlapping for the entire call, so `f(mut x, mut x)` and `f(mut x, x)` are rejected;
-- stored `borrow(x)` bindings remain active until their lexical scope ends;
+- stored `rt borrow x` / `rt borrow(x)` bindings remain active until their lexical scope ends;
 - structural parameters are read-only views and never consume the supplied value.
 
 The checker is deliberately conservative around uncertain branch/loop lifetimes. Future non-lexical-lifetime analysis may accept more programs, but it must not weaken these invariants.
@@ -1040,7 +1188,7 @@ Actors/isolate message passing remains the primary concurrency model, but the ow
 The same compiled program can target a secondary multi-threaded runtime because:
 
 - mutable state has one owner unless temporarily accessed through an exclusive `mut` parameter/receiver;
-- shared aliases are immutable;
+- shared owners alias the same runtime object/reference and are immutable through every shared alias;
 - move-only values cannot remain accessible from both sides of an ownership transfer;
 - closures cannot smuggle an outstanding stack borrow into a longer-lived task;
 - actor messages continue to cross actor boundaries only through the existing frozen/sendable contract.
@@ -1068,8 +1216,12 @@ actor.gc();   // current actor only
 These calls cannot make an unsafe program safe and never bypass ownership,
 borrow, sendability, or actor-isolation checks.
 
-A private/isolate actor cannot receive `Shared<T>`; an ordinary message is
-copied/frozen at its mailbox boundary. A shared actor may receive explicitly
-deeply immutable shared values, but ordinary mutable actor state still has one
-actor owner. "Shared actor" therefore means shared address-space/runtime
-placement, not shared mutable object graphs.
+Source-level `rt share` is **not** an actor-transport primitive. It creates
+same-reference shared ownership only inside the current ownership/address-space
+domain and does not grant `Send`/`Sync` or mailbox capability. A private/isolate
+actor cannot receive a raw shared owner; an ordinary message is copied/frozen at
+its mailbox boundary. Explicit actor-runtime read-only sharing is a separate,
+capability-gated transport contract. A shared actor may receive explicitly deeply
+immutable transport-shared values, but ordinary mutable actor state still has one
+actor owner. "Shared actor" therefore means shared address-space/runtime placement,
+not ambient shared mutable object graphs.

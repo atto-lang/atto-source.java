@@ -14,6 +14,8 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.ProcessSingletonRegistry;
 import dev.oreslang.types.TypeChecker;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayDeque;
@@ -34,6 +36,15 @@ public final class OresEvalRootNode extends RootNode {
     private final Ast.Program program;
     private final String codeUnitId;
     private final String codeUnitDigest;
+
+    /**
+     * JVM/JIT carrier for the language-level Ptr<T> capability.
+     *
+     * This deliberately does not expose or fabricate a numeric JVM address:
+     * managed objects may move under GC. Native/AOT backends may lower Ptr<T>
+     * to a pinned/native address while preserving the same source semantics.
+     */
+    private record OresPtr(Object target) { }
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
         this(language, program, "<anonymous>", digestText(program.toString()));
@@ -60,6 +71,93 @@ public final class OresEvalRootNode extends RootNode {
         this.codeUnitDigest = codeUnitDigest == null || codeUnitDigest.isBlank()
                 ? digestText(program.toString())
                 : codeUnitDigest;
+    }
+
+    /**
+     * Copy contracts are only verifiable for guest values whose mutable graph
+     * the runtime can traverse, plus explicitly recognized immutable
+     * capabilities. Opaque host/FFI references fail closed: otherwise a class
+     * [Symbol.rtCopy]() could mutate or retain foreign storage without the verifier being
+     * able to observe the alias.
+     */
+    static void requireInspectableCopyGraph(Object value) {
+        requireInspectableCopyGraph(value, new IdentityHashMap<>());
+    }
+
+    private static void requireInspectableCopyGraph(
+            Object value,
+            IdentityHashMap<Object, Boolean> seen) {
+        if (value == null
+                || isKnownImmutableCopyScalar(value)
+                || value instanceof ActorRuntime.ActorId
+                || value instanceof ActorRuntime.ActorRef<?>) {
+            return;
+        }
+        if (value instanceof ActorRuntime.Shared<?>) {
+            throw new IllegalArgumentException(
+                    "rt copy cannot trust ActorRuntime.Shared as an immutable copy capability: "
+                            + "the public host wrapper can be constructed around mutable storage; "
+                            + "keep actor-transport sharing outside copyable class graphs");
+        }
+        if (seen.put(value, Boolean.TRUE) != null) return;
+
+        if (value instanceof OptionValue option) {
+            if (option.present()) requireInspectableCopyGraph(option.value(), seen);
+            return;
+        }
+        if (value instanceof OresObject object) {
+            for (Object field : object.fields.values()) {
+                requireInspectableCopyGraph(field, seen);
+            }
+            return;
+        }
+        if (value instanceof List<?> list) {
+            for (Object item : list) requireInspectableCopyGraph(item, seen);
+            return;
+        }
+        if (value instanceof Set<?> set) {
+            for (Object item : set) requireInspectableCopyGraph(item, seen);
+            return;
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                requireInspectableCopyGraph(entry.getKey(), seen);
+                requireInspectableCopyGraph(entry.getValue(), seen);
+            }
+            return;
+        }
+        if (value instanceof Object[] array) {
+            for (Object item : array) requireInspectableCopyGraph(item, seen);
+            return;
+        }
+
+        throw new IllegalArgumentException(
+                "rt copy cannot verify opaque foreign/host reference of type "
+                        + value.getClass().getName()
+                        + "; provide an explicit immutable/copy adapter instead");
+    }
+
+    static boolean isKnownRuntimeNumber(Object value) {
+        if (value == null) return false;
+        Class<?> type = value.getClass();
+        return type == Byte.class
+                || type == Short.class
+                || type == Integer.class
+                || type == Long.class
+                || type == Float.class
+                || type == Double.class
+                || type == BigInteger.class
+                || type == BigDecimal.class;
+    }
+
+    private static boolean isKnownImmutableCopyScalar(Object value) {
+        if (value == null) return false;
+        Class<?> type = value.getClass();
+        return type == String.class
+                || isKnownRuntimeNumber(value)
+                || type == Boolean.class
+                || type == Character.class
+                || type == Complex.class;
     }
 
     private static String digestText(String text) {
@@ -99,6 +197,7 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+        private static final Object COPY_IN_PROGRESS = new Object();
 
         private Evaluator(
                 Ast.Program program,
@@ -252,7 +351,11 @@ public final class OresEvalRootNode extends RootNode {
             }
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                // Parameter bindings are immutable. MUT grants exclusive
+
+                // mutation through the referenced value; it never permits rebinding.
+
+                env.define(param.name(), args.get(i), Ast.BindingKind.VAL);
             }
             try {
                 executeBlock(fn.body(), env);
@@ -406,7 +509,11 @@ public final class OresEvalRootNode extends RootNode {
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             for (int i = 0; i < method.parameters().size(); i++) {
                 Ast.Param param = method.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                // Parameter bindings are immutable. MUT grants exclusive
+
+                // mutation through the referenced value; it never permits rebinding.
+
+                env.define(param.name(), args.get(i), Ast.BindingKind.VAL);
             }
             try {
                 executeBlock(method.body(), env);
@@ -488,7 +595,23 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object item : iterableValues(iterable, env.singletonState)) {
                     context.schedulerSafepoint();
                     Env iteration = new Env(env);
-                    iteration.define(loop.bindingName(), item, loop.bindingKind());
+                    if (!loop.destructuringPattern()) {
+                        Ast.DestructureBinding binding = loop.bindings().getFirst();
+                        iteration.define(binding.name(), item, binding.kind());
+                    } else {
+                        List<?> parts = asSequence(item);
+                        if (parts.size() != loop.bindings().size()) {
+                            throw new IllegalArgumentException(
+                                    "for-of destructuring arity mismatch: pattern has "
+                                            + loop.bindings().size()
+                                            + " binding(s) but iterated value has "
+                                            + parts.size());
+                        }
+                        for (int i = 0; i < loop.bindings().size(); i++) {
+                            Ast.DestructureBinding binding = loop.bindings().get(i);
+                            iteration.define(binding.name(), parts.get(i), binding.kind());
+                        }
+                    }
                     executeBlock(loop.body(), iteration);
                 }
                 return;
@@ -593,7 +716,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
-                    if (!(index instanceof Number number)) throw new IllegalArgumentException("index must be an integer");
+                    if (!isKnownRuntimeNumber(index)) throw new IllegalArgumentException("index must be an integer");
+                    Number number = (Number) index;
                     int i = Math.toIntExact(number.longValue());
                     if (receiver instanceof List<?> raw) {
                         @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
@@ -628,22 +752,37 @@ public final class OresEvalRootNode extends RootNode {
                 return binary(binary.operator(), eval(binary.left(), env), eval(binary.right(), env));
             }
             if (expr instanceof Ast.CallExpr call) {
-                if (call.callee() instanceof Ast.NameExpr intrinsic
-                        && (intrinsic.name().equals("borrow")
-                        || intrinsic.name().equals("take")
-                        || intrinsic.name().equals("copy")
-                        || intrinsic.name().equals("share"))) {
-                    if (call.arguments().size() != 1) {
-                        throw new IllegalArgumentException(intrinsic.name() + "(...) expects exactly one argument");
+                if (call.callee() instanceof Ast.NameExpr intrinsic) {
+                    boolean namespacedRuntimeIntrinsic = intrinsic.name().startsWith("$rt$");
+                    String operation = namespacedRuntimeIntrinsic
+                            ? intrinsic.name().substring("$rt$".length())
+                            : intrinsic.name();
+                    if (operation.equals("borrow") || operation.equals("take")
+                            || operation.equals("copy") || operation.equals("share")
+                            || (namespacedRuntimeIntrinsic
+                                && (operation.equals("ptr") || operation.equals("deref")))) {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("rt " + operation + " expects exactly one argument");
+                        }
+                        Object value = eval(call.arguments().getFirst(), env);
+                        return switch (operation) {
+                            // References are already the default runtime representation.
+                            // borrow/take change compiler ownership state, not JVM identity.
+                            // borrow/take/share are ownership-state
+                            // operations. Runtime object identity is unchanged;
+                            // only rt copy constructs independent storage.
+                            case "borrow", "take", "share" -> value;
+                            case "copy" -> copyValue(value, env.singletonState, new IdentityHashMap<>());
+                            case "ptr" -> new OresPtr(value);
+                            case "deref" -> {
+                                if (!(value instanceof OresPtr pointer)) {
+                                    throw new IllegalArgumentException("rt deref requires Ptr<T>");
+                                }
+                                yield pointer.target();
+                            }
+                            default -> throw new IllegalStateException("unknown rt operation " + operation);
+                        };
                     }
-                    if (intrinsic.name().equals("share")) {
-                        throw new IllegalArgumentException(
-                                "share(...) requires an explicit shared-capability runtime and cannot alias ordinary owned state");
-                    }
-                    // borrow/take are compile-time ownership operations and
-                    // erase to the same JVM reference. copy is currently
-                    // accepted only for statically Copy immutable values.
-                    return eval(call.arguments().getFirst(), env);
                 }
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
                     Object receiver = eval(methodCall.receiver(), env);
@@ -683,7 +822,8 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
-                if (!(index instanceof Number number)) throw new IllegalArgumentException("index must be an integer");
+                if (!isKnownRuntimeNumber(index)) throw new IllegalArgumentException("index must be an integer");
+                    Number number = (Number) index;
                 int i = Math.toIntExact(number.longValue());
                 if (receiver instanceof List<?> list) return list.get(i);
                 if (receiver instanceof Object[] array) return array[i];
@@ -739,7 +879,11 @@ public final class OresEvalRootNode extends RootNode {
                     Env local = new Env(captured);
                     for (int i = 0; i < lambda.parameters().size(); i++) {
                         Ast.Param param = lambda.parameters().get(i);
-                        local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                        // Parameter bindings are immutable. MUT grants exclusive
+
+                        // mutation through the referenced value; it never permits rebinding.
+
+                        local.define(param.name(), args.get(i), Ast.BindingKind.VAL);
                     }
                     if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
                     try { executeBlock(lambda.blockBody(), local); return null; }
@@ -887,7 +1031,11 @@ public final class OresEvalRootNode extends RootNode {
             Env env = new Env(lexical, singletonState);
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                // Parameter bindings are immutable. MUT grants exclusive
+
+                // mutation through the referenced value; it never permits rebinding.
+
+                env.define(param.name(), args.get(i), Ast.BindingKind.VAL);
             }
             try {
                 executeBlock(fn.body(), env);
@@ -1078,6 +1226,263 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
+        private Object copyValue(
+                Object value,
+                SingletonState singletonState,
+                IdentityHashMap<Object, Object> copies) {
+            if (value == null || isKnownImmutableCopyScalar(value)) {
+                return value;
+            }
+
+            Object existing = copies.get(value);
+            if (existing != null) {
+                if (existing == COPY_IN_PROGRESS) {
+                    throw new IllegalArgumentException(
+                            "class copy graph recursed into an in-progress class instance; "
+                                    + "break the cycle explicitly in [Symbol.rtCopy]()");
+                }
+                return existing;
+            }
+
+            if (value instanceof OptionValue option) {
+                if (!option.present()) return option;
+                Object nested = copyValue(option.value(), singletonState, copies);
+                OptionValue copied = new OptionValue(true, nested);
+                copies.put(value, copied);
+                return copied;
+            }
+
+            if (value instanceof OresObject object) {
+                Ast.ClassDecl dispatchClass = runtimeDispatchClass(object, singletonState);
+                Ast.MethodDecl copyMethod = findMethod(dispatchClass, "Symbol.rtCopy", 0, new LinkedHashSet<>());
+                boolean immutableReceiver = copyMethod != null
+                        && (copyMethod.explicitReceiverType() == null
+                        || (copyMethod.explicitReceiverType().isBorrow()
+                        && !copyMethod.explicitReceiverType().mutableBorrow()));
+                if (copyMethod == null
+                        || copyMethod.isStatic()
+                        || copyMethod.visibility() != Ast.Visibility.PUBLIC
+                        || copyMethod.isAbstract()
+                        || copyMethod.async()
+                        || copyMethod.composed()
+                        || !dispatchClass.methods().contains(copyMethod)
+                        || !copyMethod.genericParameters().isEmpty()
+                        || !immutableReceiver) {
+                    throw new IllegalArgumentException("class '" + dispatchClass.name()
+                            + "' is not copyable: [Symbol.rtCopy]() must be concrete, synchronous, non-generic, "
+                            + "public, instance-bound, declared directly on the class, and read-only");
+                }
+
+                // Fail closed before running user copy code if the source
+                // contains host/FFI storage whose mutation/alias graph cannot
+                // be inspected by OresVM.
+                requireInspectableCopyGraph(object);
+                Object sourceSnapshot = copySingletonValue(object, new IdentityHashMap<>());
+                copies.put(value, COPY_IN_PROGRESS);
+                Object copied;
+                try {
+                    copied = callMethod(object, dispatchClass, copyMethod, List.of(), singletonState);
+                } catch (RuntimeException | Error failure) {
+                    copies.remove(value);
+                    throw failure;
+                }
+
+                if (!sameValueGraph(object, sourceSnapshot, new IdentityHashMap<>())) {
+                    copies.remove(value);
+                    throw new IllegalArgumentException("class '" + dispatchClass.name()
+                            + "' [Symbol.rtCopy]() mutated its source; the rt-copy hook must observe self read-only");
+                }
+                if (!(copied instanceof OresObject result)
+                        || runtimeDispatchClass(result, singletonState) != dispatchClass
+                        || result == object) {
+                    copies.remove(value);
+                    throw new IllegalArgumentException("class '" + dispatchClass.name()
+                            + "' [Symbol.rtCopy]() must return a fresh instance of the same concrete class");
+                }
+                // Fresh foreign/host references are also rejected until an
+                // explicit adapter defines their copy/immutability contract.
+                requireInspectableCopyGraph(result);
+                assertNoMutableAliases(object, result);
+                copies.put(value, result);
+                return result;
+            }
+
+            if (value instanceof List<?> list) {
+                ArrayList<Object> copied = new ArrayList<>(list.size());
+                copies.put(value, copied);
+                for (Object item : list) copied.add(copyValue(item, singletonState, copies));
+                return copied;
+            }
+            if (value instanceof Set<?> set) {
+                LinkedHashSet<Object> copied = new LinkedHashSet<>();
+                copies.put(value, copied);
+                for (Object item : set) copied.add(copyValue(item, singletonState, copies));
+                return copied;
+            }
+            if (value instanceof Map<?, ?> map) {
+                LinkedHashMap<Object, Object> copied = new LinkedHashMap<>();
+                copies.put(value, copied);
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    Object key = copyValue(entry.getKey(), singletonState, copies);
+                    Object item = copyValue(entry.getValue(), singletonState, copies);
+                    if (copied.putIfAbsent(key, item) != null) {
+                        throw new IllegalArgumentException("rt copy produced colliding map keys");
+                    }
+                }
+                return copied;
+            }
+            if (value instanceof Object[] array) {
+                Object[] copied = new Object[array.length];
+                copies.put(value, copied);
+                for (int i = 0; i < array.length; i++) {
+                    copied[i] = copyValue(array[i], singletonState, copies);
+                }
+                return copied;
+            }
+
+            throw new IllegalArgumentException(
+                    "value has no runtime copy semantics: " + value.getClass().getName());
+        }
+
+        private void assertNoMutableAliases(Object original, Object copied) {
+            IdentityHashMap<Object, Boolean> sourceGraph = new IdentityHashMap<>();
+            collectMutableGraph(original, sourceGraph, new IdentityHashMap<>());
+            rejectMutableAliases(copied, sourceGraph, new IdentityHashMap<>());
+        }
+
+        private void collectMutableGraph(
+                Object value,
+                IdentityHashMap<Object, Boolean> graph,
+                IdentityHashMap<Object, Boolean> seen) {
+            if (value instanceof OptionValue option) {
+                if (seen.put(value, Boolean.TRUE) != null) return;
+                if (option.present()) collectMutableGraph(option.value(), graph, seen);
+                return;
+            }
+            if (!isMutableComposite(value) || seen.put(value, Boolean.TRUE) != null) return;
+            graph.put(value, Boolean.TRUE);
+            if (value instanceof OresObject object) {
+                for (Object field : object.fields.values()) collectMutableGraph(field, graph, seen);
+            } else if (value instanceof List<?> list) {
+                for (Object item : list) collectMutableGraph(item, graph, seen);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) collectMutableGraph(item, graph, seen);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    collectMutableGraph(entry.getKey(), graph, seen);
+                    collectMutableGraph(entry.getValue(), graph, seen);
+                }
+            } else if (value instanceof Object[] array) {
+                for (Object item : array) collectMutableGraph(item, graph, seen);
+            }
+        }
+
+        private void rejectMutableAliases(
+                Object value,
+                IdentityHashMap<Object, Boolean> sourceGraph,
+                IdentityHashMap<Object, Boolean> seen) {
+            if (value instanceof OptionValue option) {
+                if (seen.put(value, Boolean.TRUE) != null) return;
+                if (option.present()) rejectMutableAliases(option.value(), sourceGraph, seen);
+                return;
+            }
+            if (!isMutableComposite(value) || seen.put(value, Boolean.TRUE) != null) return;
+            if (sourceGraph.containsKey(value)) {
+                throw new IllegalArgumentException(
+                        "[Symbol.rtCopy]() violated the rt-copy contract by retaining mutable storage from the source");
+            }
+            if (value instanceof OresObject object) {
+                for (Object field : object.fields.values()) rejectMutableAliases(field, sourceGraph, seen);
+            } else if (value instanceof List<?> list) {
+                for (Object item : list) rejectMutableAliases(item, sourceGraph, seen);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) rejectMutableAliases(item, sourceGraph, seen);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    rejectMutableAliases(entry.getKey(), sourceGraph, seen);
+                    rejectMutableAliases(entry.getValue(), sourceGraph, seen);
+                }
+            } else if (value instanceof Object[] array) {
+                for (Object item : array) rejectMutableAliases(item, sourceGraph, seen);
+            }
+        }
+
+        private boolean isMutableComposite(Object value) {
+            return value != null
+                    && !isKnownImmutableCopyScalar(value)
+                    && !(value instanceof ActorRuntime.ActorId)
+                    && !(value instanceof ActorRuntime.ActorRef<?>);
+        }
+
+        private boolean sameValueGraph(
+                Object current,
+                Object snapshot,
+                IdentityHashMap<Object, Object> seen) {
+            if (current == snapshot) return true;
+            if (current == null || snapshot == null) return false;
+            if (!isMutableComposite(current)
+                    && !(current instanceof OptionValue)
+                    && !(snapshot instanceof OptionValue)) {
+                return Objects.equals(current, snapshot);
+            }
+
+            Object existing = seen.get(current);
+            if (existing != null) return existing == snapshot;
+            seen.put(current, snapshot);
+
+            if (current instanceof OptionValue left && snapshot instanceof OptionValue right) {
+                return left.present() == right.present()
+                        && (!left.present() || sameValueGraph(left.value(), right.value(), seen));
+            }
+            if (current instanceof OresObject left && snapshot instanceof OresObject right) {
+                if (left.klass != right.klass || !left.fields.keySet().equals(right.fields.keySet())) {
+                    return false;
+                }
+                for (String name : left.fields.keySet()) {
+                    if (!sameValueGraph(left.fields.get(name), right.fields.get(name), seen)) return false;
+                }
+                return true;
+            }
+            if (current instanceof List<?> left && snapshot instanceof List<?> right) {
+                if (left.size() != right.size()) return false;
+                for (int i = 0; i < left.size(); i++) {
+                    if (!sameValueGraph(left.get(i), right.get(i), seen)) return false;
+                }
+                return true;
+            }
+            if (current instanceof Set<?> left && snapshot instanceof Set<?> right) {
+                if (left.size() != right.size()) return false;
+                java.util.Iterator<?> a = left.iterator();
+                java.util.Iterator<?> b = right.iterator();
+                while (a.hasNext() && b.hasNext()) {
+                    if (!sameValueGraph(a.next(), b.next(), seen)) return false;
+                }
+                return !a.hasNext() && !b.hasNext();
+            }
+            if (current instanceof Map<?, ?> left && snapshot instanceof Map<?, ?> right) {
+                if (left.size() != right.size()) return false;
+                java.util.Iterator<? extends Map.Entry<?, ?>> a = left.entrySet().iterator();
+                java.util.Iterator<? extends Map.Entry<?, ?>> b = right.entrySet().iterator();
+                while (a.hasNext() && b.hasNext()) {
+                    Map.Entry<?, ?> ae = a.next();
+                    Map.Entry<?, ?> be = b.next();
+                    if (!sameValueGraph(ae.getKey(), be.getKey(), seen)
+                            || !sameValueGraph(ae.getValue(), be.getValue(), seen)) {
+                        return false;
+                    }
+                }
+                return !a.hasNext() && !b.hasNext();
+            }
+            if (current instanceof Object[] left && snapshot instanceof Object[] right) {
+                if (left.length != right.length) return false;
+                for (int i = 0; i < left.length; i++) {
+                    if (!sameValueGraph(left[i], right[i], seen)) return false;
+                }
+                return true;
+            }
+            return Objects.equals(current, snapshot);
+        }
+
         private Object add(Object left, Object right) {
             if (left instanceof String && right instanceof String) return ((String) left) + right;
             return numeric(left, right, '+');
@@ -1091,7 +1496,11 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("operator " + op + " is not supported for complex numbers");
                 };
             }
-            if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
+            if (!isKnownRuntimeNumber(left) || !isKnownRuntimeNumber(right)) {
+                throw new IllegalArgumentException("numeric operator requires Oreslang numeric values");
+            }
+            Number a = (Number) left;
+            Number b = (Number) right;
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
@@ -1104,19 +1513,21 @@ public final class OresEvalRootNode extends RootNode {
         private Object negate(Object value) {
             if (value instanceof Complex c) return c.negate();
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
-            if (value instanceof Number number) return -number.doubleValue();
+            if (isKnownRuntimeNumber(value)) return -((Number) value).doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
         }
 
         private int compare(Object left, Object right) {
-            if (left instanceof Number a && right instanceof Number b) return Double.compare(a.doubleValue(), b.doubleValue());
+            if (isKnownRuntimeNumber(left) && isKnownRuntimeNumber(right)) {
+                return Double.compare(((Number) left).doubleValue(), ((Number) right).doubleValue());
+            }
             if (left instanceof String a && right instanceof String b) return a.compareTo(b);
             throw new IllegalArgumentException("values are not comparable");
         }
 
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
-        private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
+        private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (isKnownRuntimeNumber(value)) return new Complex(((Number) value).doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
         private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not destructurable"); }
         private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
     }
@@ -1179,12 +1590,7 @@ public final class OresEvalRootNode extends RootNode {
     private static Object copySingletonValue(
             Object value,
             IdentityHashMap<Object, Object> copies) {
-        if (value == null
-                || value instanceof String
-                || value instanceof Number
-                || value instanceof Boolean
-                || value instanceof Character
-                || value instanceof Complex) {
+        if (value == null || isKnownImmutableCopyScalar(value)) {
             return value;
         }
         Object existing = copies.get(value);

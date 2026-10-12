@@ -93,8 +93,8 @@ annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
 return_spec     = [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
-param           = type_ref IDENT
-                | "mut" type_ref IDENT
+param           = type_ref [ "mut" ] IDENT
+                | "mut" type_ref IDENT        (* migration spelling *)
                 | CONTEXTUAL_TAKE type_ref IDENT
                 | "@Structural" type_ref IDENT
                 | IDENT "structural" type_ref ;
@@ -133,10 +133,15 @@ option_match_arm= "Some" "(" IDENT ")" "=>" block
 
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
-for_stmt        = "for" "(" for_of_head ")" block
-                | "for" "(" [ for_init ] ";" [ expression ] ";" [ expression ] ")" block ;
+for_stmt        = "for" for_of_head loop_body
+                | "for" "(" for_of_head ")" loop_body
+                | "for" "(" [ for_init ] ";" [ expression ] ";" [ expression ] ")" loop_body ;
 
-for_of_head     = [ binding_kind ] IDENT "of" expression ;
+for_of_head     = for_of_binding "of" expression
+                | "[" for_of_binding { "," for_of_binding } "]" "of" expression ;
+for_of_binding  = [ binding_kind ] IDENT ;
+loop_body       = block
+                | "do" { statement } "done" ;
 for_init        = binding_kind [ type_ref ] IDENT "=" expression
                 | expression ;
 
@@ -148,7 +153,12 @@ equality        = comparison { ( "==" | "!=" ) comparison } ;
 comparison      = additive { ( "<" | "<=" | ">" | ">=" ) additive } ;
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
-unary           = [ "!" | "-" | "+" | "await" ] postfix ;
+unary           = ( "!" | "-" | "+" | "await" ) unary
+                | rt_intrinsic
+                | postfix ;
+rt_intrinsic    = "rt" ( "copy" | "take" | "borrow" | "share"
+                       | "ptr" | "deref" )
+                  ( "(" expression ")" | unary ) ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ argument_list ] ")" ;
 member_suffix   = "." IDENT ;
@@ -275,23 +285,41 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Option payload access requires an exhaustive match with exactly one
      Some(binding) arm and one None arm. There is no unchecked unwrap form.
    - Option<T> is Copy iff T is Copy. Some(value) owns its payload; a non-Copy
-     payload is moved into the option. match borrows by default, match take(...)
-     consumes, and match copy(...) requires a proven Copy option.
+     payload is moved into the option. match borrows by default, match rt take(...)
+     consumes, and match rt copy(...) requires a proven Copy option.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
    - "structural" and "take" are contextual in parameter position, not globally reserved.
    - self is an immutable receiver borrow by default and cannot be rebound.
      "mut self" is the exclusive mutable receiver form.
      contextual "take self" transfers receiver ownership into the method.
-   - Parameters are immutable bindings. Type name is a temporary read borrow;
-     "mut Type name" is an exclusive temporary mutable borrow; contextual
-     "take Type name" transfers ownership to the callee.
-   - Oreslang exposes no pointer/reference borrow syntax: "&T", "&mut T",
-     unary "&value", and dereference "*value" are not language forms. STAR is
+   - Parameters are immutable bindings. Type name is a temporary read reference;
+     "Type mut name" is an exclusive temporary mutable reference; contextual
+     "take Type name" transfers ownership to the callee. "mut Type name" is a
+     migration spelling only.
+   - Ordinary object calls use managed references/handles and need no pointer
+     syntax. Oreslang exposes no C/Rust pointer operators: "&T", "&mut T",
+     "T*", unary "&value", and unary "*pointer" are not language forms. STAR is
      multiplication only.
-   - borrow(value), take(value), copy(value), and share(value) are compiler
-     intrinsics expressed as ordinary call syntax rather than pointer operators.
-   - Those intrinsic names are unshadowable in the value/callable namespace even
-     though they are not lexer keywords.
+   - Compiler/runtime operations live under the reserved rt namespace. Both
+     command and call forms are valid and equivalent: "rt borrow value"/
+     "rt borrow(value)", "rt take value"/"rt take(value)", "rt copy value"/
+     "rt copy(value)", "rt share value"/"rt share(value)", "rt ptr value"/
+     "rt ptr(value)", and "rt deref pointer"/"rt deref(pointer)".
+   - The non-parenthesized rt form has unary precedence; parentheses widen/group
+     the operand when needed. rt is unshadowable compiler syntax.
+   - rt borrow is non-owning and lifetime-bound; rt take transfers unique
+     ownership; rt copy creates independent storage; rt share preserves object
+     identity while converting unique ownership into read-only shared ownership.
+     Shared ownership never implies actor/isolate transport permission.
+   - Ptr<T> is a compiler-owned opaque, lifetime-bound low-level capability.
+     rt ptr requires a concrete reference-backed owner and holds a read borrow;
+     rt deref yields read-only borrowed T access. Ptr<T> cannot be copied,
+     shared, or used as actor/isolate transport authority. The JVM backend does
+     not promise a numeric/stable address for managed objects; native/AOT
+     backends may use pinned/native addresses while preserving these rules.
+   - First-class Fnc/callable values and unresolved/imported nominal types are
+     not shareable until callable effects/share-safety or linked foreign share
+     contracts are represented explicitly.
    - Borrowed values cannot be returned as owned values until an explicit
      provenance contract (planned: T from owner) is implemented.
    - Fnc does not yet encode ownership modes, so callables with mut/take

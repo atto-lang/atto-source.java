@@ -11,6 +11,7 @@ import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
 import dev.oreslang.types.Types.SingletonProxy;
+import dev.oreslang.types.Types.Shared;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
 import dev.oreslang.types.Types.Type;
@@ -586,7 +587,7 @@ public final class TypeChecker {
             } else if (stmt instanceof Ast.ForOfStmt loop) {
                 validateProcessOwnedExpr(processOwner, processClass, loop.iterable(), locals, where);
                 Set<String> loopLocals = new LinkedHashSet<>(locals);
-                loopLocals.add(loop.bindingName());
+                for (Ast.DestructureBinding binding : loop.bindings()) loopLocals.add(binding.name());
                 validateProcessOwnedStatements(processOwner, processClass, loop.body(), loopLocals, where);
             } else if (stmt instanceof Ast.ForStmt loop) {
                 Set<String> loopLocals = new LinkedHashSet<>(locals);
@@ -774,7 +775,7 @@ public final class TypeChecker {
             } else if (stmt instanceof Ast.ForOfStmt loop) {
                 if (referencesActorModuleBinding(loop.iterable(), actorBindings, shadowed)) return true;
                 Set<String> loopShadowed = new LinkedHashSet<>(shadowed);
-                loopShadowed.add(loop.bindingName());
+                for (Ast.DestructureBinding binding : loop.bindings()) loopShadowed.add(binding.name());
                 if (referencesActorModuleBinding(loop.body(), actorBindings, loopShadowed)) return true;
             } else if (stmt instanceof Ast.ForStmt loop) {
                 Set<String> loopShadowed = new LinkedHashSet<>(shadowed);
@@ -1288,7 +1289,7 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.MatchStmt matched) {
             Type matchedType = typeOf(matched.value(), env, generics, self);
-            Type optionType = matchedType instanceof Borrow borrow ? borrow.target() : matchedType;
+            Type optionType = deref(matchedType);
             if (!(optionType instanceof Named option)
                     || !option.name().equals("Option")
                     || option.arguments().size() != 1) {
@@ -1329,8 +1330,15 @@ public final class TypeChecker {
         if (stmt instanceof Ast.ForOfStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
             Type element = iterableElementType(iterable);
+            List<Type> bindingTypes = !loop.destructuringPattern()
+                    ? List.of(element)
+                    : destructuredLoopElementTypes(element, loop.bindings().size());
             Env loopEnv = new Env(env);
-            loopEnv.define(loop.bindingName(), element, loop.bindingKind());
+            for (int i = 0; i < loop.bindings().size(); i++) {
+                Ast.DestructureBinding binding = loop.bindings().get(i);
+                requireNotOwnershipIntrinsicBinding(binding.name(), "for-of binding");
+                loopEnv.define(binding.name(), bindingTypes.get(i), binding.kind());
+            }
             checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
             return;
         }
@@ -1462,19 +1470,81 @@ public final class TypeChecker {
                 return gcReportType();
             }
             if (call.callee() instanceof Ast.NameExpr intrinsic
-                    && (intrinsic.name().equals("borrow")
-                    || intrinsic.name().equals("copy")
-                    || intrinsic.name().equals("take")
-                    || intrinsic.name().equals("share"))) {
-                if (intrinsic.name().equals("share")) {
-                    throw new IllegalArgumentException(
-                            "share(...) is reserved for explicit shared capabilities; ordinary ownership cannot be converted implicitly");
-                }
+                    && isOwnershipIntrinsicName(intrinsic.name())) {
+                String operation = ownershipIntrinsicOperation(intrinsic.name());
                 if (call.arguments().size() != 1) {
-                    throw new IllegalArgumentException(intrinsic.name() + "(...) expects exactly one argument");
+                    throw new IllegalArgumentException("rt " + operation + " expects exactly one argument");
                 }
-                Type value = typeOf(call.arguments().getFirst(), env, generics, self);
-                return intrinsic.name().equals("borrow") ? new Borrow(value, false) : value;
+                Ast.Expr operandExpr = call.arguments().getFirst();
+                requireOwnershipRuntimeValueOperand(operation, operandExpr, env);
+                Type operand = typeOf(operandExpr, env, generics, self);
+                return switch (operation) {
+                    case "copy" -> {
+                        Type source = deref(operand);
+                        if (source instanceof ClassNamespace namespace) {
+                            throw new IllegalArgumentException(
+                                    "rt copy requires a runtime value; class namespace '"
+                                            + namespace.className() + "' is not an instance");
+                        }
+                        requireCopyable(source, new LinkedHashSet<>());
+                        yield source;
+                    }
+                    case "take" -> {
+                        if (operand instanceof Borrow) {
+                            throw new IllegalArgumentException("rt take requires ownership, not a borrow");
+                        }
+                        if (operand instanceof Shared) {
+                            throw new IllegalArgumentException(
+                                    "rt take requires unique ownership, not a shared owner");
+                        }
+                        yield operand;
+                    }
+                    case "borrow" -> {
+                        Type source = deref(operand);
+                        yield new Borrow(source, false);
+                    }
+                    case "ptr" -> {
+                        Type source = deref(operand);
+                        if (source instanceof Primitive
+                                || source instanceof StringLiteral
+                                || source instanceof Generic
+                                || source instanceof Function
+                                || source instanceof ClassNamespace
+                                || source instanceof SingletonProxy
+                                || source == Unknown.INSTANCE) {
+                            throw new IllegalArgumentException(
+                                    "rt ptr requires a concrete reference-backed value, got " + source);
+                        }
+                        yield new Named("Ptr", List.of(source));
+                    }
+                    case "deref" -> {
+                        Type source = deref(operand);
+                        if (!(source instanceof Named pointer)
+                                || !pointer.name().equals("Ptr")
+                                || pointer.arguments().size() != 1) {
+                            throw new IllegalArgumentException("rt deref requires Ptr<T>, got " + source);
+                        }
+                        yield new Borrow(pointer.arguments().getFirst(), false);
+                    }
+                    case "share" -> {
+                        if (operand instanceof Borrow) {
+                            throw new IllegalArgumentException(
+                                    "rt share requires ownership; a borrow cannot be upgraded into a shared owner");
+                        }
+                        Type source = operand instanceof Shared shared ? shared.target() : operand;
+                        requireShareable(source, new LinkedHashSet<>());
+                        if (operand instanceof Shared shared) yield shared;
+                        if (operand instanceof Primitive || operand instanceof StringLiteral) {
+                            // Value-semantic scalars are already independent.
+                            yield operand;
+                        }
+                        // Same-reference shared ownership. OwnershipChecker
+                        // removes unique mutation/take authority from the
+                        // original named owner.
+                        yield new Shared(operand);
+                    }
+                    default -> throw new IllegalStateException("unknown rt operation " + operation);
+                };
             }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
@@ -1927,7 +1997,17 @@ public final class TypeChecker {
     }
 
     private Type deref(Type type) {
-        return type instanceof Borrow borrow ? borrow.target() : type;
+        while (true) {
+            if (type instanceof Borrow borrow) {
+                type = borrow.target();
+                continue;
+            }
+            if (type instanceof Shared shared) {
+                type = shared.target();
+                continue;
+            }
+            return type;
+        }
     }
 
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
@@ -1958,7 +2038,33 @@ public final class TypeChecker {
         return new Record(members);
     }
 
+    private List<Type> destructuredLoopElementTypes(Type element, int arity) {
+        element = deref(element);
+        if (element instanceof Tuple tuple) {
+            if (tuple.elements().size() != arity) {
+                throw new IllegalArgumentException(
+                        "for-of destructuring arity mismatch: pattern has " + arity
+                                + " binding(s) but tuple element has " + tuple.elements().size());
+            }
+            return tuple.elements();
+        }
+        if (element instanceof ListType list) {
+            List<Type> result = new ArrayList<>(arity);
+            for (int i = 0; i < arity; i++) result.add(list.element());
+            return result;
+        }
+        if (element == Unknown.INSTANCE) {
+            List<Type> result = new ArrayList<>(arity);
+            for (int i = 0; i < arity; i++) result.add(Unknown.INSTANCE);
+            return result;
+        }
+        throw new IllegalArgumentException(
+                "for-of destructuring requires each iterated element to be a tuple or array/list, got "
+                        + element);
+    }
+
     private Type iterableElementType(Type iterable) {
+        iterable = deref(iterable);
         if (iterable instanceof ListType list) return list.element();
         if (iterable instanceof Tuple tuple) {
             Type result = Unknown.INSTANCE;
@@ -1984,6 +2090,20 @@ public final class TypeChecker {
         if (assignable(b, a) && assignable(a, b)) return a;
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
+
+        if (a instanceof Tuple left && b instanceof Tuple right
+                && left.elements().size() == right.elements().size()) {
+            List<Type> joined = new ArrayList<>(left.elements().size());
+            for (int i = 0; i < left.elements().size(); i++) {
+                joined.add(commonType(left.elements().get(i), right.elements().get(i)));
+            }
+            return new Tuple(joined);
+        }
+
+        if (a instanceof ListType left && b instanceof ListType right) {
+            return new ListType(commonType(left.element(), right.element()));
+        }
+
         return Unknown.INSTANCE;
     }
 
@@ -2277,11 +2397,311 @@ public final class TypeChecker {
         seen.remove(klass);
     }
 
+    /**
+     * rt ownership operators apply to runtime values, never language namespaces.
+     *
+     * Module names currently expose a structural Record shape for member typing,
+     * so relying only on requireCopyable(Type) would accidentally make a module
+     * namespace look copyable when all of its public members are Copy. Reject
+     * namespace operands before structural typing erases that distinction.
+     */
+    private void requireOwnershipRuntimeValueOperand(
+            String operation,
+            Ast.Expr operand,
+            Env env) {
+        if (!(operand instanceof Ast.NameExpr name) || env.lookup(name.name()) != null) {
+            return;
+        }
+
+        Ast.ModuleDecl module = modules.get(name.name());
+        if (module != null) {
+            throw new IllegalArgumentException(
+                    "rt " + operation + " requires a runtime value; module namespace '"
+                            + name.name() + "' is not a value");
+        }
+
+        Ast.ClassDecl klass = findClass(name.name());
+        if (klass != null) {
+            throw new IllegalArgumentException(
+                    "rt " + operation + " requires a runtime value; class namespace '"
+                            + name.name() + "' is not an instance");
+        }
+    }
+
     private boolean isOwnershipIntrinsicName(String name) {
-        return name.equals("borrow")
-                || name.equals("take")
-                || name.equals("copy")
-                || name.equals("share");
+        String operation = ownershipIntrinsicOperation(name);
+        if (name.startsWith("$rt$")
+                && (operation.equals("ptr") || operation.equals("deref"))) {
+            return true;
+        }
+        return operation.equals("borrow")
+                || operation.equals("take")
+                || operation.equals("copy")
+                || operation.equals("share");
+    }
+
+    private String ownershipIntrinsicOperation(String name) {
+        return name.startsWith("$rt$") ? name.substring("$rt$".length()) : name;
+    }
+
+    private void requireCopyable(Type type, Set<String> visiting) {
+        if (type instanceof Named pointer && pointer.name().equals("Ptr")) {
+            throw new IllegalArgumentException("rt copy cannot copy Ptr<T>; pointer capabilities are lifetime-bound");
+        }
+        if (type instanceof StringLiteral) return;
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.VOID || primitive == Primitive.NULL) {
+                throw new IllegalArgumentException("rt copy requires a concrete value, got " + primitive);
+            }
+            return;
+        }
+        if (type instanceof Borrow borrowed) {
+            requireCopyable(borrowed.target(), visiting);
+            return;
+        }
+        if (type instanceof Shared shared) {
+            requireCopyable(shared.target(), visiting);
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) requireCopyable(element, visiting);
+            return;
+        }
+        if (type instanceof ListType list) {
+            requireCopyable(list.element(), visiting);
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) requireCopyable(member, visiting);
+            return;
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("Option") && named.arguments().size() == 1) {
+                requireCopyable(named.arguments().getFirst(), visiting);
+                return;
+            }
+
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass == null) {
+                throw new IllegalArgumentException("type '" + named.name()
+                        + "' has no provable copy semantics");
+            }
+            if (!klass.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException("generic class '" + klass.name()
+                        + "' copy contracts are not enabled yet; specialize or wrap the value explicitly");
+            }
+
+            String identity = qualifiedClassName(klass);
+            if (!visiting.add(identity)) {
+                throw new IllegalArgumentException("class copy contract cycle involving '" + identity + "'");
+            }
+            try {
+                Ast.MethodDecl copyMethod = findMethod(klass, "Symbol.rtCopy", 0, new LinkedHashSet<>());
+                boolean immutableReceiver = copyMethod != null
+                        && (copyMethod.explicitReceiverType() == null
+                        || (copyMethod.explicitReceiverType().isBorrow()
+                        && !copyMethod.explicitReceiverType().mutableBorrow()));
+                if (copyMethod == null
+                        || copyMethod.isStatic()
+                        || copyMethod.visibility() != Ast.Visibility.PUBLIC
+                        || copyMethod.isAbstract()
+                        || copyMethod.async()
+                        || copyMethod.composed()
+                        || !klass.methods().contains(copyMethod)
+                        || !copyMethod.genericParameters().isEmpty()
+                        || !immutableReceiver) {
+                    throw new IllegalArgumentException("class '" + klass.name()
+                            + "' is not copyable: define a concrete synchronous non-generic public "
+                            + "[Symbol.rtCopy]() => self method directly on the class with an immutable receiver");
+                }
+
+                Type selfType = nominalClassType(klass);
+                Type result = resolve(copyMethod.returnType(), Set.of(), selfType);
+                if (!assignable(result, selfType) || !assignable(selfType, result)) {
+                    throw new IllegalArgumentException("class '" + klass.name()
+                            + "' [Symbol.rtCopy]() must return self/the same concrete class type");
+                }
+                requireInspectableCopyStorage(
+                        klass,
+                        new LinkedHashSet<>());
+            } finally {
+                visiting.remove(identity);
+            }
+            return;
+        }
+
+        throw new IllegalArgumentException("type " + type + " has no provable copy semantics");
+    }
+
+    private void requireInspectableCopyStorage(
+            Ast.ClassDecl klass,
+            Set<String> visiting) {
+        String identity = qualifiedClassName(klass);
+        if (!visiting.add(identity)) return;
+        try {
+            if (!klass.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "class '" + klass.name()
+                                + "' copy graph cannot be verified while generic storage is unresolved");
+            }
+            Type selfType = nominalClassType(klass);
+            Set<String> generics = Set.copyOf(klass.genericParameters());
+            for (Ast.FieldDecl field : effectiveFields(klass, new LinkedHashSet<>())) {
+                requireInspectableCopyStorageType(
+                        resolve(field.type(), generics, selfType),
+                        visiting,
+                        klass.name() + "." + field.name());
+            }
+        } finally {
+            visiting.remove(identity);
+        }
+    }
+
+    private void requireInspectableCopyStorageType(
+            Type type,
+            Set<String> visiting,
+            String where) {
+        if (type instanceof StringLiteral) return;
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.VOID || primitive == Primitive.NULL) {
+                throw new IllegalArgumentException(
+                        "copy graph field '" + where + "' has non-storable type " + primitive);
+            }
+            return;
+        }
+        if (type instanceof Function) {
+            throw new IllegalArgumentException(
+                    "class copy graph field '" + where
+                            + "' contains a first-class Fnc/callable whose hidden captured state "
+                            + "cannot be verified for independent-copy semantics");
+        }
+        if (type instanceof Borrow) {
+            throw new IllegalArgumentException(
+                    "class copy graph field '" + where
+                            + "' stores a borrow; copy verification requires owned storage");
+        }
+        if (type instanceof Shared) {
+            throw new IllegalArgumentException(
+                    "class copy graph field '" + where
+                            + "' stores shared ownership; independent-copy semantics require an explicit adapter");
+        }
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) {
+                requireInspectableCopyStorageType(element, visiting, where + "[]");
+            }
+            return;
+        }
+        if (type instanceof ListType list) {
+            requireInspectableCopyStorageType(list.element(), visiting, where + "[]");
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Map.Entry<String, Type> entry : record.members().entrySet()) {
+                requireInspectableCopyStorageType(
+                        entry.getValue(), visiting, where + "." + entry.getKey());
+            }
+            return;
+        }
+        if (type instanceof Generic generic) {
+            throw new IllegalArgumentException(
+                    "class copy graph field '" + where + "' has unresolved generic type '"
+                            + generic.name() + "'");
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("Option") && named.arguments().size() == 1) {
+                requireInspectableCopyStorageType(
+                        named.arguments().getFirst(), visiting, where + "?");
+                return;
+            }
+            Ast.ClassDecl nested = findClass(named.name());
+            if (nested == null) {
+                throw new IllegalArgumentException(
+                        "class copy graph field '" + where + "' has opaque/unlinked type '"
+                                + named.name() + "' that the runtime copy verifier cannot inspect");
+            }
+            requireInspectableCopyStorage(nested, visiting);
+            return;
+        }
+        throw new IllegalArgumentException(
+                "class copy graph field '" + where + "' has uninspectable type " + type);
+    }
+
+    private void requireShareable(Type type, Set<String> visiting) {
+        if (type instanceof Named pointer && pointer.name().equals("Ptr")) {
+            throw new IllegalArgumentException("rt share cannot share Ptr<T>; pointer capabilities are lifetime-bound");
+        }
+        if (type instanceof StringLiteral) return;
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.VOID || primitive == Primitive.NULL) {
+                throw new IllegalArgumentException("rt share requires a concrete value, got " + primitive);
+            }
+            return;
+        }
+        if (type instanceof Borrow) {
+            throw new IllegalArgumentException(
+                    "rt share requires ownership; a borrow cannot be upgraded into a shared owner");
+        }
+        if (type instanceof Shared shared) {
+            requireShareable(shared.target(), visiting);
+            return;
+        }
+        if (type instanceof Function) {
+            throw new IllegalArgumentException(
+                    "rt share cannot share first-class Fnc/callable values until callable types encode "
+                            + "effects and share-safety; copy/move the callable or wrap it in an explicit safe capability");
+        }
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) requireShareable(element, visiting);
+            return;
+        }
+        if (type instanceof ListType list) {
+            requireShareable(list.element(), visiting);
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) requireShareable(member, visiting);
+            return;
+        }
+        if (type instanceof Generic generic) {
+            throw new IllegalArgumentException(
+                    "rt share cannot prove generic type '" + generic.name()
+                            + "' share-safe until generic Share/Sync-style constraints are modeled");
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("Option") && named.arguments().size() == 1) {
+                requireShareable(named.arguments().getFirst(), visiting);
+                return;
+            }
+
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass == null) {
+                throw new IllegalArgumentException(
+                        "rt share cannot prove type '" + named.name()
+                                + "' share-safe without a linked class/capability share contract");
+            }
+
+            String identity = qualifiedClassName(klass);
+            if (!visiting.add(identity)) return;
+            try {
+                Set<String> generics = Set.copyOf(klass.genericParameters());
+                if (!generics.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "rt share cannot prove generic class '" + klass.name()
+                                    + "' share-safe until generic Share/Sync-style constraints are modeled");
+                }
+                Type selfType = nominalClassType(klass);
+                for (Ast.FieldDecl field : effectiveFields(klass, new LinkedHashSet<>())) {
+                    requireShareable(resolve(field.type(), generics, selfType), visiting);
+                }
+            } finally {
+                visiting.remove(identity);
+            }
+            return;
+        }
+        if (type instanceof SingletonProxy) return;
+
+        throw new IllegalArgumentException(
+                "rt share cannot prove type " + type + " share-safe");
     }
 
     private void requireNotOwnershipIntrinsicBinding(String name, String where) {
@@ -2296,8 +2716,8 @@ public final class TypeChecker {
     }
 
     private void requireNotBuiltinTypeName(String name, String kind) {
-        if (name.equals("Option")) {
-            throw new IllegalArgumentException(kind + " cannot redefine built-in type 'Option'");
+        if (name.equals("Option") || name.equals("Ptr")) {
+            throw new IllegalArgumentException(kind + " cannot redefine built-in type '" + name + "'");
         }
     }
 
@@ -2383,6 +2803,23 @@ public final class TypeChecker {
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
                 if (element == Primitive.VOID) throw new IllegalArgumentException("Option<void> is invalid; use void for no return value");
                 yield new Named("Option", List.of(element));
+            }
+            case "Ptr" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException("Ptr requires exactly one explicit type argument");
+                }
+                Type target = resolve(ref.arguments().getFirst(), generics, self);
+                if (target instanceof Primitive
+                        || target instanceof StringLiteral
+                        || target instanceof Generic
+                        || target instanceof Function
+                        || target instanceof ClassNamespace
+                        || target instanceof SingletonProxy
+                        || target == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "Ptr<T> requires a concrete reference-backed target type, got " + target);
+                }
+                yield new Named("Ptr", List.of(target));
             }
             case "Fnc" -> {
                 List<Type> args = ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList();
