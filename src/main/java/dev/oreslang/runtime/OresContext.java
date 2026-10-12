@@ -33,6 +33,9 @@ public final class OresContext implements AutoCloseable {
     // real VM root turn may dispatch them; the current virtual-thread generator
     // producer is not yet allowed through this admission boundary.
     private final HostGeneratorTurnPump hostGeneratorTurns;
+    // Coalesce admitted host pulls; leave room for one queued CONTROL wake.
+    private final java.util.concurrent.atomic.AtomicBoolean hostGeneratorWakeScheduled =
+            new java.util.concurrent.atomic.AtomicBoolean();
     // A scheduler-current ThreadLocal by itself cannot prove a physical
     // Truffle guest entry. Scope this marker inside executeGuestTurn after
     // TruffleContext.enter succeeds and always clear it on leave.
@@ -146,7 +149,8 @@ public final class OresContext implements AutoCloseable {
                     contextId, () -> generatorRootTurnAuthorized(
                             vm.isRootSchedulerCurrent(),
                             Boolean.TRUE.equals(rootGuestEntryScope.get())),
-                    vm.rootScheduler());
+                    this::signalHostGeneratorOwner,
+                    256, vm.rootScheduler());
         } catch (RuntimeException | Error failure) {
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
@@ -422,6 +426,57 @@ public final class OresContext implements AutoCloseable {
      */
     HostGeneratorTurnPump hostGeneratorTurns() {
         return hostGeneratorTurns;
+    }
+
+    private void signalHostGeneratorOwner() {
+        // Called only after constructor publication by a staged host pull.
+        // Do not flood the root CONTROL queue with one wake per host caller.
+        if (!hostGeneratorWakeScheduled.compareAndSet(false, true)) return;
+        try {
+            OresFuture<Void> wake = vm.executeControl(() -> {
+                // Reset before dispatch so a pull racing with an empty queue
+                // cannot be stranded after this wake returns.
+                hostGeneratorWakeScheduled.set(false);
+                hostGeneratorTurns.dispatchOne();
+            });
+            wake.whenCompleteRuntime((ignored, failure) -> {
+                if (failure != null) {
+                    hostGeneratorWakeScheduled.set(false);
+                    // Failed asynchronous CONTROL admission must never leave
+                    // a live host Future without an owning guest turn.
+                    hostGeneratorTurns.seal();
+                }
+            });
+        } catch (RuntimeException | Error admissionFailure) {
+            hostGeneratorWakeScheduled.set(false);
+            // requestCertified() will seal admission on this synchronous
+            // signal failure; do not swallow the actual rejection.
+            throw admissionFailure;
+        }
+    }
+
+    /**
+     * Internal host-pull bridge for typechecked, restricted source generators.
+     * This is intentionally NOT a public Polyglot API. A pull merely queues
+     * work; an admitted root CONTROL turn performs dispatch under physical
+     * Truffle entry. No host thread executes a guest continuation directly.
+     *
+     * Strict isolates need caller-thread/JNI admission orchestration before
+     * this bridge can be enabled there; fail closed instead of inventing a
+     * second guest carrier.
+     */
+    GeneratorRuntime.HostPullSession openStagedSourceGenerator(
+            String source, String function, java.util.Map<String, ?> arguments) {
+        if (isolatedRootTurns != null) {
+            throw new UnsupportedOperationException(
+                    "strict isolation requires caller-thread host-turn admission");
+        }
+        GeneratorRuntime.SourceLowering frame =
+                GeneratorRuntime.SourceLowering.compile(source, function, arguments);
+        return new GeneratorRuntime.HostPullSession(
+                hostGeneratorTurns,
+                GeneratorRuntime.schedulerBacked(
+                        vm.rootScheduler(), hostGeneratorTurns.token(), frame));
     }
 
     /** Neither a scheduler binding nor a guest-entry lease alone suffices. */

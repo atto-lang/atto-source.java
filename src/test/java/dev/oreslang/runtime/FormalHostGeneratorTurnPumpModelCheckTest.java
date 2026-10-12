@@ -631,4 +631,79 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         PrestartState forged = new PrestartState(false, true, false, 1);
         assertThrows(AssertionError.class, () -> prestartInvariant(forged));
     }
+    /**
+     * Bounded session lifecycle abstraction: host submission may be stalled
+     * between its admission check and returning the pump Future. A close
+     * during that gap cannot leave a published, live pull uncancelled.
+     * Public cancellation is deliberately not modelled as physical DONE.
+     */
+    private enum SessionEvent {
+        BEGIN, ENQUEUE, PUBLISH, COMPLETE, CLOSE
+    }
+
+    private record SessionState(boolean begun, boolean queued, boolean published,
+                                boolean completed, boolean closed, boolean cancelled) {
+        static SessionState initial() {
+            return new SessionState(false, false, false, false, false, false);
+        }
+    }
+
+    private static SessionState sessionStep(SessionState s, SessionEvent e) {
+        return switch (e) {
+            case BEGIN -> !s.closed && !s.begun
+                    ? new SessionState(true, false, false, false, false, false) : s;
+            case ENQUEUE -> s.begun && !s.queued
+                    ? new SessionState(true, true, false, false, s.closed, false) : s;
+            case PUBLISH -> s.queued && !s.published
+                    ? new SessionState(true, true, true, false, s.closed, s.closed) : s;
+            case COMPLETE -> s.published && !s.cancelled && !s.completed
+                    ? new SessionState(true, true, true, true, s.closed, false) : s;
+            case CLOSE -> !s.closed
+                    ? new SessionState(s.begun, s.queued, s.published,
+                            s.completed, true,
+                            s.cancelled || s.published && !s.completed)
+                    : s;
+        };
+    }
+
+    private static void sessionInvariant(SessionState s) {
+        assertFalse(s.completed && s.cancelled,
+                "a cancelled host pull was also published as successful");
+        assertFalse(s.closed && s.published && !s.completed && !s.cancelled,
+                "close lost a pull returned by a concurrent host submission");
+        if (s.published) assertTrue(s.queued && s.begun);
+        if (s.queued) assertTrue(s.begun);
+    }
+
+    @Test
+    void boundedSessionCloseAndLatePublishInterleavingsCancelEveryOutstandingPull() {
+        Set<SessionState> visited = new HashSet<>();
+        ArrayDeque<SessionState> queue = new ArrayDeque<>();
+        SessionState initial = SessionState.initial();
+        visited.add(initial);
+        queue.addLast(initial);
+        boolean sawCloseBeforePublish = false, sawPublishedCompletion = false;
+        while (!queue.isEmpty()) {
+            SessionState state = queue.removeFirst();
+            sessionInvariant(state);
+            sawCloseBeforePublish |= state.closed && state.begun && !state.published;
+            sawPublishedCompletion |= state.completed;
+            for (SessionEvent event : SessionEvent.values()) {
+                SessionState next = sessionStep(state, event);
+                sessionInvariant(next);
+                if (visited.add(next)) queue.addLast(next);
+            }
+        }
+        assertTrue(sawCloseBeforePublish && sawPublishedCompletion
+                        && visited.size() >= 6,
+                "close-versus-return and successful paths must both be explored");
+    }
+
+    @Test
+    void unsafeLateHostPublicationMutantFailsSessionInvariant() {
+        SessionState escaped = new SessionState(true, true, true, false, true, false);
+        assertThrows(AssertionError.class, () -> sessionInvariant(escaped));
+    }
+
+
 }
