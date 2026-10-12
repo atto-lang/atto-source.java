@@ -178,6 +178,7 @@ public final class GeneratorRuntime {
 
         private final List<YieldOperation> operations;
         private final List<Ast.BindingStmt> finallyBindings;
+        private final boolean hasLexicalFinally;
         private final Map<String, Object> arguments;
         // Null means cleanup has not completed. Publish the entire immutable
         // lexical-cleanup snapshot through one atomic release operation: the
@@ -189,12 +190,18 @@ public final class GeneratorRuntime {
         private final AtomicBoolean finalized = new AtomicBoolean();
         private volatile boolean cancellationRequested;
         private volatile boolean waitingOnFuture;
+        // Set only after first guest admission. Cancellation of a queued,
+        // never-started generator must not execute a try/finally that was
+        // never entered.
+        private boolean enteredSourceBody;
         private int pc;
 
         private SourceLowering(List<YieldOperation> operations,
-                List<Ast.BindingStmt> finallyBindings, Map<String, Object> arguments) {
+                List<Ast.BindingStmt> finallyBindings, boolean hasLexicalFinally,
+                Map<String, Object> arguments) {
             this.operations = List.copyOf(operations);
             this.finallyBindings = List.copyOf(finallyBindings);
+            this.hasLexicalFinally = hasLexicalFinally;
             this.arguments = Map.copyOf(arguments);
         }
 
@@ -319,7 +326,7 @@ public final class GeneratorRuntime {
                             "staged generator lowering refuses unsupported source statement");
                 }
             }
-            return new SourceLowering(operations, cleanup, bindings);
+            return new SourceLowering(operations, cleanup, foundFinally, bindings);
         }
 
         @Override
@@ -332,9 +339,16 @@ public final class GeneratorRuntime {
             if (finalized.get()) return OresScheduler.done(Step.doneStep());
             if (cancellationRequested
                     || input.failure() instanceof OresScheduler.TaskCancelledException) {
-                finishFinally();
+                if (enteredSourceBody) {
+                    finishFinally();
+                } else {
+                    // The queued frame never entered its lexical try scope.
+                    // Mark terminal, but do not invent a finally side effect.
+                    finalized.set(true);
+                }
                 return OresScheduler.done(Step.doneStep());
             }
+            if (input.initial()) enteredSourceBody = true;
             if (waitingOnFuture) {
                 if (input.initial()) throw new IllegalStateException(
                         "awaiting generator turn incorrectly restarted");
@@ -363,6 +377,10 @@ public final class GeneratorRuntime {
 
         private void finishFinally() {
             if (finalized.get()) return;
+            if (!hasLexicalFinally) {
+                finalized.set(true);
+                return;
+            }
             // Build off to the side. Finalization becomes visible only after
             // the entire snapshot is immutable, never during map mutation.
             Map<String, Object> values = new LinkedHashMap<>();

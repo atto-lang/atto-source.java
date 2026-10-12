@@ -466,6 +466,96 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
                 "frame model did not cover cancellation, unknown exit and reuse");
     }
 
+    /**
+     * Bounded lexical generator lifecycle: a pending request can be cancelled
+     * before entry (no finally), or after entry (one finalization). Publication
+     * must expose all cleanup bindings as a unit. This is a deliberately small
+     * contract model, NOT a proof of Truffle/Java implementation refinement.
+     */
+    private enum LexicalEvent {
+        ENTER, YIELD, CANCEL, COMPLETE_CLEANUP, OBSERVE
+    }
+
+    private record LexicalState(
+            boolean entered, boolean cancelled, int yields,
+            boolean cleanupPublished, int visibleBindings, boolean observed) {
+        static LexicalState initial() {
+            return new LexicalState(false, false, 0, false, 0, false);
+        }
+    }
+
+    private static LexicalState lexicalStep(LexicalState s, LexicalEvent event) {
+        boolean entered = s.entered, cancelled = s.cancelled;
+        int yields = s.yields, visible = s.visibleBindings;
+        boolean published = s.cleanupPublished, observed = s.observed;
+        switch (event) {
+            case ENTER -> {
+                if (!cancelled && !published) entered = true;
+            }
+            case YIELD -> {
+                if (entered && !cancelled && !published && yields < 3) yields++;
+            }
+            case CANCEL -> cancelled = true;
+            case COMPLETE_CLEANUP -> {
+                if (entered && !published && (cancelled || yields == 3)) {
+                    // Construct both lexical bindings before one atomic
+                    // publication. No host-visible intermediate state.
+                    visible = 2;
+                    published = true;
+                }
+            }
+            case OBSERVE -> {
+                if (published) observed = true;
+            }
+        }
+        return new LexicalState(entered, cancelled, yields, published,
+                visible, observed);
+    }
+
+    private static void invariantLexical(LexicalState s) {
+        assertTrue(s.yields >= 0 && s.yields <= 3);
+        assertTrue(!s.cleanupPublished || s.entered,
+                "never-entered lexical cleanup was published");
+        if (s.cleanupPublished || s.observed) {
+            assertEquals(2, s.visibleBindings,
+                    "finally snapshot became observable only partially");
+        } else {
+            assertEquals(0, s.visibleBindings,
+                    "partial cleanup was visible before publication");
+        }
+        assertTrue(!s.observed || s.cleanupPublished);
+    }
+
+    @Test
+    void allBoundedLexicalYieldCancelAndPublicationEventsPreserveCleanup() {
+        Set<LexicalState> visited = new HashSet<>();
+        ArrayDeque<LexicalState> frontier = new ArrayDeque<>();
+        LexicalState initial = LexicalState.initial();
+        visited.add(initial);
+        frontier.add(initial);
+        boolean sawPreEntryCancel = false, sawPostEntryCleanup = false, sawObservation = false;
+        while (!frontier.isEmpty()) {
+            LexicalState current = frontier.removeFirst();
+            invariantLexical(current);
+            sawPreEntryCancel |= current.cancelled && !current.entered;
+            sawPostEntryCleanup |= current.cancelled && current.cleanupPublished;
+            sawObservation |= current.observed;
+            for (LexicalEvent event : LexicalEvent.values()) {
+                LexicalState next = lexicalStep(current, event);
+                invariantLexical(next);
+                if (visited.add(next)) frontier.addLast(next);
+            }
+        }
+        assertTrue(visited.size() >= 8);
+        assertTrue(sawPreEntryCancel && sawPostEntryCleanup && sawObservation);
+    }
+
+    @Test
+    void unsafePartiallyPublishedFinallySnapshotViolatesModelInvariant() {
+        LexicalState unsafe = new LexicalState(true, true, 2, true, 1, false);
+        assertThrows(AssertionError.class, () -> invariantLexical(unsafe));
+    }
+
     @Test
     void deliberatelyUnsafeFrameReentryViolatesPhysicalOwnerInvariant() {
         FrameState overlapping = new FrameState(2, 2, true, true, false);

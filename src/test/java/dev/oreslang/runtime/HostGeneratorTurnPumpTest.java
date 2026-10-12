@@ -530,6 +530,39 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void stagedSourceCancellationBeforeFirstEntryDoesNotRunFinally() {
+        String source = """
+                async generator fnc values(): int {
+                  try { yield 1; } catch (err) { }
+                  finally { val int touched = 1; }
+                  return;
+                }
+                """;
+        GeneratorRuntime.SourceLowering neverEntered =
+                GeneratorRuntime.SourceLowering.compile(
+                        source, "values", java.util.Map.of());
+        neverEntered.cancellationRequested(new OresScheduler.TaskCancelledException());
+        var cancelled = neverEntered.resume(new OresScheduler.Resume(true, null, null));
+        assertInstanceOf(OresScheduler.Done.class, cancelled);
+        assertEquals(0, neverEntered.cleanupRuns(),
+                "never-entered lexical finally must not execute");
+
+        GeneratorRuntime.SourceLowering entered =
+                GeneratorRuntime.SourceLowering.compile(
+                        source, "values", java.util.Map.of());
+        var first = entered.resume(new OresScheduler.Resume(true, null, null));
+        assertInstanceOf(OresScheduler.Done.class, first);
+        entered.cancellationRequested(new OresScheduler.TaskCancelledException());
+        entered.resume(new OresScheduler.Resume(true, null, null));
+        assertEquals(1, entered.cleanupRuns(),
+                "cancellation after entering try must execute its finally once");
+        assertEquals(1, ((Number) entered.cleanupBinding("touched")).intValue());
+        entered.resume(new OresScheduler.Resume(true, null, null));
+        assertEquals(1, entered.cleanupRuns(),
+                "a late duplicate pull must not repeat cleanup");
+    }
+
+    @Test
     void stagedSourceRejectsTryFinallyScopeReorderingBeforeDispatch() {
         // Flattening these statements would incorrectly delay lexical finally
         // until AFTER yield 3, or execute it when a preceding yield cancels.
