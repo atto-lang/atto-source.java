@@ -84,6 +84,81 @@ public final class NativeActorShutdownSelfTest {
                 throw new AssertionError("source task did not settle after cleanup");
             }
         }
-        System.out.println("ORES_NATIVE_SHUTDOWN|PASS|cleanup=1|physical_done=1");
+        checkFailedDrainRetainsPhysicalOwnership();
+        System.out.println("ORES_NATIVE_SHUTDOWN|PASS|cleanup=1|physical_done=1|failed_drain_fenced=1");
+    }
+
+    private static void checkFailedDrainRetainsPhysicalOwnership() throws Exception {
+        CountDownLatch armed = new CountDownLatch(1);
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+        OresFuture<Integer> upstream = new OresFuture<>();
+        OresFuture<Integer> neverCompletes = new OresFuture<>();
+        AtomicBoolean cleaning = new AtomicBoolean();
+        AtomicInteger cleanupRuns = new AtomicInteger();
+        ActorRuntime runtime = new ActorRuntime();
+        try {
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnPrivate(
+                    () -> (message, ctx) -> ctx.runtime().startActorTask(
+                            new OresScheduler.CancellationAwareTask<Integer>() {
+                                @Override public boolean cleanupInProgress() {
+                                    return cleaning.get();
+                                }
+                                @Override public void cancellationRequested(
+                                        OresScheduler.TaskCancelledException reason) { }
+                                @Override public OresScheduler.Step<Integer> resume(
+                                        OresScheduler.Resume resumed) {
+                                    if (resumed.initial()) {
+                                        armed.countDown();
+                                        return OresScheduler.await(upstream);
+                                    }
+                                    if (cleaning.compareAndSet(false, true)) {
+                                        cleanupRuns.incrementAndGet();
+                                        cleanupEntered.countDown();
+                                        return OresScheduler.await(neverCompletes);
+                                    }
+                                    throw new AssertionError(
+                                            "stale cancellation replayed unfinished cleanup");
+                                }
+                            }));
+            actor.ready().get(10, TimeUnit.SECONDS);
+            actor.send(1);
+            if (!armed.await(10, TimeUnit.SECONDS)) {
+                throw new AssertionError("failed-drain actor did not suspend");
+            }
+            CompletableFuture<Void> stopped = CompletableFuture.runAsync(actor::stop);
+            if (!cleanupEntered.await(10, TimeUnit.SECONDS)) {
+                throw new AssertionError("failed-drain actor did not enter cleanup");
+            }
+            if (actor.get_done().isDone()) {
+                throw new AssertionError("pending cleanup published physical termination");
+            }
+            try {
+                actor.get_shutdown_result().get(9, TimeUnit.SECONDS);
+                throw new AssertionError("failed cleanup unexpectedly reported success");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                if (!String.valueOf(expected.getCause())
+                        .contains("unfinished cancellation cleanup")) {
+                    throw expected;
+                }
+            }
+            if (actor.get_done().isDone() || cleanupRuns.get() != 1) {
+                throw new AssertionError(
+                        "failed drain released physical barrier or replayed cleanup");
+            }
+            try {
+                stopped.get(5, TimeUnit.SECONDS);
+                throw new AssertionError("stop unexpectedly reported successful teardown");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                if (!(expected.getCause() instanceof IllegalStateException)) {
+                    throw expected;
+                }
+            }
+        } finally {
+            try {
+                runtime.close();
+            } catch (IllegalStateException expected) {
+                // Intentionally unresolved cleanup retains physical resources.
+            }
+        }
     }
 }
