@@ -545,6 +545,31 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void losingGuestEntryAuthorizationDuringStarterPoisonsCertifiedPull()
+            throws Exception {
+        try (OresScheduler root = new OresScheduler(1)) {
+            java.util.concurrent.atomic.AtomicBoolean authorized =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), authorized::get, root);
+            OresFuture<Integer> host = pump.requestCertified(pump.token(), () -> {
+                var started = root.startCertifiedGeneratorTurn(
+                        pump.token(), input -> OresScheduler.done(31));
+                // This models losing the real root entered guest-turn scope
+                // while startup is still trying to hand back its receipt.
+                authorized.set(false);
+                return started;
+            });
+            assertTrue(pump.dispatchOne());
+            assertInstanceOf(SecurityException.class,
+                    assertThrows(java.util.concurrent.ExecutionException.class,
+                            () -> host.get(5, TimeUnit.SECONDS)).getCause());
+            assertFalse(pump.isQuiescent());
+            assertThrows(IllegalStateException.class, pump::close);
+        }
+    }
+
+    @Test
     void preIssuedDoneReceiptCannotBeLaunderedIntoLaterRequest() throws Exception {
         try (OresScheduler root = new OresScheduler(1)) {
             HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
@@ -605,7 +630,13 @@ final class HostGeneratorTurnPumpTest {
                         backgroundFailure.set(failure);
                     }
                 });
-                worker.join(5000);
+                try {
+                    worker.join(5000);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "starter interrupted waiting for unauthorized worker", interrupted);
+                }
                 assertFalse(worker.isAlive());
                 assertNull(backgroundFailure.get(), String.valueOf(backgroundFailure.get()));
                 return leaked.get();

@@ -272,6 +272,13 @@ final class HostGeneratorTurnPump implements AutoCloseable {
                 throw new IllegalStateException(
                         "generator turn starter returned no physical-exit barrier");
             }
+            // Startup must not silently retain authorization after the guest
+            // root turn has ended, even if a valid receipt was minted earlier.
+            // Failure is an unknown physical state, requiring quarantine.
+            if (selected.certified && !ownerTurnAuthorized.getAsBoolean()) {
+                throw new SecurityException(
+                        "generator starter lost physical guest-entry authority");
+            }
             if (selected.certified) {
                 OresScheduler.PhysicalDoneReceipt proof = started.certificate();
                 if (proof == null || !proof.claimFor(owner, owningScheduler,
