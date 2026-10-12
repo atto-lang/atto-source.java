@@ -511,6 +511,14 @@ public final class OwnershipChecker {
                     continue;
                 }
                 ValueInfo channel = checkExpr(arm.channel(), scope, false);
+                if (isBorrowValue(channel) || containsBorrowedType(channel.type)) {
+                    throw error("select cannot retain a borrowed channel operand");
+                }
+                if (selected.mode() == Ast.WaitMode.BLOCKING
+                        && selected.arms().stream().noneMatch(a ->
+                                a.operation() == Ast.ChannelOperation.DEFAULT)) {
+                    checkSuspensionBorrows(scope, "select");
+                }
                 Ast.TypeRef element = channelElementType(channel.type);
                 elementTypes.add(element);
                 if (arm.operation() == Ast.ChannelOperation.WRITE) {
@@ -1096,6 +1104,15 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
             ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
+            // The operand is evaluated before the await actually suspends.
+            // A fresh temporary rt borrow in that operand was not present in
+            // the pre-evaluation live-local scan and must not escape into the
+            // pending continuation.
+            if (isBorrowValue(awaitedValue) || containsBorrowedType(awaitedValue.type)) {
+                throw error("cannot await a borrowed operand or Future containing borrowed data; "
+                        + "suspended continuations require owned values");
+            }
+            checkSuspensionBorrows(scope, "await");
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
@@ -1110,6 +1127,16 @@ public final class OwnershipChecker {
                 throw error("cannot register a channel waiter while holding a MutexGuard");
             }
             ValueInfo channel = checkExpr(channelOp.channel(), scope, false);
+            // Both blocking use and deferred registration must retain a
+            // channel capability, not a temporary borrow whose owner can
+            // become invalid while a waiter remains registered.
+            if (isBorrowValue(channel) || containsBorrowedType(channel.type)) {
+                throw error("readch/writech cannot use a borrowed channel operand; "
+                        + "pass an owned channel capability");
+            }
+            if (channelOp.mode() == Ast.WaitMode.BLOCKING) {
+                checkSuspensionBorrows(scope, "readch/writech");
+            }
             Ast.TypeRef element = channelElementType(channel.type);
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
@@ -1166,7 +1193,13 @@ public final class OwnershipChecker {
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
                 throw error("cannot register dynamic select while holding a MutexGuard");
             }
-            checkExpr(selected.cases(), scope, false);
+            ValueInfo cases = checkExpr(selected.cases(), scope, false);
+            if (isBorrowValue(cases) || containsBorrowedType(cases.type)) {
+                throw error("select from cases cannot retain a borrowed case-set operand");
+            }
+            if (selected.mode() == Ast.WaitMode.BLOCKING) {
+                checkSuspensionBorrows(scope, "select from cases");
+            }
             Ast.TypeRef selectedResult = Ast.TypeRef.simple("SelectResult");
             Ast.TypeRef result = switch (selected.mode()) {
                 case BLOCKING -> selectedResult;
