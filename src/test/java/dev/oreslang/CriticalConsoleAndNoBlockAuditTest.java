@@ -42,7 +42,7 @@ final class CriticalConsoleAndNoBlockAuditTest {
                     define actor Counter as
                       state { count: int = 0; }
                       pub probe(): void {
-                        self.handle_state(critical |s| -> {
+                        self.handle_state(critical write |s| -> {
                     """ + statement + """
                     
                           s.count = 1;
@@ -63,7 +63,7 @@ final class CriticalConsoleAndNoBlockAuditTest {
                 define actor Counter as
                   state { count: int = 0; }
                   pub probe(): void {
-                    self.handle_state(critical |s| -> { s.count = 1; });
+                    self.handle_state(critical write |s| -> { s.count = 1; });
                     stdio.println(1);
                     return;
                   }
