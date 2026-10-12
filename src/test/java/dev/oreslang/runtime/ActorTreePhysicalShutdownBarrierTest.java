@@ -37,6 +37,64 @@ final class ActorTreePhysicalShutdownBarrierTest {
         final AtomicReference<ActorRuntime.ActorRef<Integer>> cleanupChild = new AtomicReference<>();
     }
 
+    /** The factory has zero instance fields and no captured host references. */
+    private static final class NativeChildFactory
+            implements ActorRuntime.BehaviorFactory<Integer> {
+        @Override public ActorRuntime.Behavior<Integer> create(
+                ActorRuntime.ActorContext<Integer> ignored) {
+            return (mail, ctx) -> {
+                TreeState state = ACTIVE.get();
+                try {
+                    var heap = ctx.actorOwnedMemory().orElseThrow();
+                    var nativeRegion = heap.newExplicitNativeI64Region(1);
+                    state.loan.set(nativeRegion.borrow(nativeRegion.allocate(55)));
+                    state.region.set(nativeRegion);
+                } catch (Throwable error) {
+                    state.failure.compareAndSet(null, error);
+                } finally {
+                    state.loanAllocated.countDown();
+                }
+            };
+        }
+    }
+
+    /** The factory also has zero captured state across the guest boundary. */
+    private static final class CleanupChildFactory
+            implements ActorRuntime.BehaviorFactory<Integer> {
+        @Override public ActorRuntime.Behavior<Integer> create(
+                ActorRuntime.ActorContext<Integer> ignored) {
+            return (mail, ctx) -> {
+                TreeState state = ACTIVE.get();
+                ctx.runtime().startActorTask(
+                    new OresScheduler.CancellationAwareTask<Integer>() {
+                        @Override public boolean cleanupInProgress() {
+                            return state.cleaning.get();
+                        }
+
+                        @Override public void cancellationRequested(
+                                OresScheduler.TaskCancelledException reason) { }
+
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume resumed) {
+                            if (resumed.initial()) {
+                                state.sourceArmed.countDown();
+                                return OresScheduler.await(state.upstream);
+                            }
+                            if (state.cleaning.compareAndSet(false, true)) {
+                                assertInstanceOf(OresScheduler.TaskCancelledException.class,
+                                        resumed.failure());
+                                state.cleanupRuns.incrementAndGet();
+                                state.cleanupEntered.countDown();
+                                return OresScheduler.await(state.cleanup);
+                            }
+                            assertNull(resumed.failure());
+                            return OresScheduler.done(73);
+                        }
+                    });
+            };
+        }
+    }
+
     @Test
     void parentDoneWaitsForSiblingCleanupAndNativeLoanInEitherReleaseOrder() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
@@ -47,50 +105,9 @@ final class ActorTreePhysicalShutdownBarrierTest {
                 var parent = runtime.<Integer>spawnShared(() -> (mail, context) -> {
                     try {
                         var nativeRef = context.runtime().<Integer>spawnChildPrivate(
-                                ignored -> (childMail, childContext) -> {
-                                    TreeState s = ACTIVE.get();
-                                    try {
-                                        var heap = childContext.actorOwnedMemory().orElseThrow();
-                                        var region = heap.newExplicitNativeI64Region(1);
-                                        s.loan.set(region.borrow(region.allocate(55)));
-                                        s.region.set(region);
-                                    } catch (Throwable error) {
-                                        s.failure.compareAndSet(null, error);
-                                    } finally {
-                                        s.loanAllocated.countDown();
-                                    }
-                                });
+                                new NativeChildFactory());
                         var sourceRef = context.runtime().<Integer>spawnChildPrivate(
-                                ignored -> (childMail, childContext) -> {
-                                    TreeState s = ACTIVE.get();
-                                    childContext.runtime().startActorTask(
-                                        new OresScheduler.CancellationAwareTask<Integer>() {
-                                            @Override public boolean cleanupInProgress() {
-                                                return s.cleaning.get();
-                                            }
-
-                                            @Override public void cancellationRequested(
-                                                    OresScheduler.TaskCancelledException reason) { }
-
-                                            @Override public OresScheduler.Step<Integer> resume(
-                                                    OresScheduler.Resume resumed) {
-                                                if (resumed.initial()) {
-                                                    s.sourceArmed.countDown();
-                                                    return OresScheduler.await(s.upstream);
-                                                }
-                                                if (s.cleaning.compareAndSet(false, true)) {
-                                                    assertInstanceOf(
-                                                        OresScheduler.TaskCancelledException.class,
-                                                        resumed.failure());
-                                                    s.cleanupRuns.incrementAndGet();
-                                                    s.cleanupEntered.countDown();
-                                                    return OresScheduler.await(s.cleanup);
-                                                }
-                                                assertNull(resumed.failure());
-                                                return OresScheduler.done(73);
-                                            }
-                                        });
-                                });
+                                new CleanupChildFactory());
                         state.nativeChild.set(nativeRef.ref());
                         state.cleanupChild.set(sourceRef.ref());
                         nativeRef.send(1);
