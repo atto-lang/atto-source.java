@@ -111,6 +111,7 @@ final class AutomaticLoopBorrowAdmissionTest {
                             + entry.getValue() + " return;\n}";
                     var parsed = assertDoesNotThrow(() -> Parser.parse(source), entry.getKey());
                     assertDoesNotThrow(() -> OwnershipChecker.check(parsed), entry.getKey());
+                    assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source), entry.getKey());
                 }));
     }
 
