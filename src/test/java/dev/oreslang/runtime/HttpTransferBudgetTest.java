@@ -9,56 +9,59 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Budget counts unclaimed transfer tickets, NOT active HTTP connections:
- * deadlines can release a connection while leaving mailbox tombstones.
+ * Transfer-budget ownership, separate from HTTP connection admission.
+ * A lease is one-use and must never release capacity owned by another transfer.
  */
 final class HttpTransferBudgetTest {
     @Test void exhaustedTicketsFailClosedUntilClaimOrTombstoneConsumption() {
         var budget = new NativeHttp.TransferBudget(3);
         assertEquals(3, budget.limit());
         assertEquals(0, budget.outstanding());
-        for (int i = 0; i < 3; i++) assertTrue(budget.tryReserve());
+        var reservations = new ArrayList<NativeHttp.TransferBudget.Reservation>();
+        for (int i = 0; i < 3; i++)
+            reservations.add(assertLease(budget.tryReserve()));
         assertEquals(3, budget.outstanding());
         for (int i = 0; i < 50_000; i++) {
-            assertFalse(budget.tryReserve(),
-                    "expired HTTP responses must not recycle pending actor-mail tickets");
+            assertNull(budget.tryReserve(),
+                    "expired responses cannot recycle queued actor-mail tickets");
             assertEquals(3, budget.outstanding());
         }
         assertEquals(50_000, budget.rejected());
-        budget.release(); // precisely one transfer consumed or revoked
+        reservations.getFirst().release();
         assertEquals(2, budget.outstanding());
-        assertTrue(budget.tryReserve());
+        var replacement = assertLease(budget.tryReserve());
         assertEquals(3, budget.outstanding());
-        for (int i = 0; i < 3; i++) budget.release();
+        for (int i = 1; i < reservations.size(); i++)
+            reservations.get(i).release();
+        replacement.release();
         assertEquals(0, budget.outstanding());
         assertEquals(1_024, new NativeHttp.TransferBudget(65_536).limit());
         assertThrows(IllegalArgumentException.class, () -> new NativeHttp.TransferBudget(0));
     }
 
-    @Test void duplicateReleaseNeverInflatesBudgetCapacity() {
+    @Test void staleLeaseCannotReleaseAnotherLiveTransfer() {
         var budget = new NativeHttp.TransferBudget(2);
-        assertThrows(IllegalStateException.class, budget::release,
-                "a foreign or replayed release must not create permits");
-        assertEquals(0, budget.outstanding());
-        assertTrue(budget.tryReserve());
-        assertTrue(budget.tryReserve());
-        assertFalse(budget.tryReserve());
-        budget.release();
-        budget.release();
-        for (int replay = 0; replay < 2_000; replay++) {
-            assertThrows(IllegalStateException.class, budget::release);
-            assertEquals(0, budget.outstanding());
+        var old = assertLease(budget.tryReserve());
+        var survivor = assertLease(budget.tryReserve());
+        old.release();
+        var replacement = assertLease(budget.tryReserve());
+        assertEquals(2, budget.outstanding());
+        for (int attempt = 0; attempt < 2_000; attempt++) {
+            assertThrows(IllegalStateException.class, old::release,
+                    "stale one-use release must not free a different transfer");
+            assertEquals(2, budget.outstanding());
+            assertNull(budget.tryReserve(), "stale release must not admit new work");
         }
-        assertTrue(budget.tryReserve());
-        assertTrue(budget.tryReserve());
-        assertFalse(budget.tryReserve(), "stale release must not inflate capacity");
-        budget.release();
-        budget.release();
+        survivor.release();
+        assertEquals(1, budget.outstanding());
+        replacement.release();
+        assertEquals(0, budget.outstanding());
     }
 
-    @Test void racingDoubleReleasesCannotOverAdmit() throws Exception {
-        var budget = new NativeHttp.TransferBudget(1);
-        assertTrue(budget.tryReserve());
+    @Test void racingDoubleReleasesCannotFreeOtherActiveLease() throws Exception {
+        var budget = new NativeHttp.TransferBudget(2);
+        var old = assertLease(budget.tryReserve());
+        var survivor = assertLease(budget.tryReserve());
         try (var tasks = Executors.newVirtualThreadPerTaskExecutor()) {
             var start = new CountDownLatch(1);
             var attempts = new ArrayList<java.util.concurrent.Future<Boolean>>();
@@ -66,22 +69,26 @@ final class HttpTransferBudgetTest {
                 attempts.add(tasks.submit(() -> {
                     start.await();
                     try {
-                        budget.release();
+                        old.release();
                         return true;
-                    } catch (IllegalStateException invalid) {
+                    } catch (IllegalStateException replay) {
                         return false;
                     }
                 }));
             }
             start.countDown();
             int succeeded = 0;
-            for (var attempt : attempts) if (attempt.get(10, TimeUnit.SECONDS)) succeeded++;
-            assertEquals(1, succeeded, "one reservation authorizes one release");
+            for (var attempt : attempts)
+                if (attempt.get(10, TimeUnit.SECONDS)) succeeded++;
+            assertEquals(1, succeeded, "a lease authorizes exactly one release");
         }
+        assertEquals(1, budget.outstanding());
+        var replacement = assertLease(budget.tryReserve());
+        assertNull(budget.tryReserve());
+        survivor.release();
+        assertEquals(1, budget.outstanding());
+        replacement.release();
         assertEquals(0, budget.outstanding());
-        assertTrue(budget.tryReserve());
-        assertFalse(budget.tryReserve());
-        budget.release();
     }
 
     @Test void concurrentReservationsNeverExceedLimitAndCanBeReused() throws Exception {
@@ -101,13 +108,13 @@ final class HttpTransferBudgetTest {
                         try {
                             if (!start.await(10, TimeUnit.SECONDS))
                                 throw new AssertionError("test start timed out");
-                            boolean reserved = budget.tryReserve();
-                            if (reserved) won.incrementAndGet();
+                            var reservation = budget.tryReserve();
+                            if (reservation != null) won.incrementAndGet();
                             settled.countDown();
-                            if (reserved) {
+                            if (reservation != null) {
                                 if (!release.await(10, TimeUnit.SECONDS))
                                     throw new AssertionError("test release timed out");
-                                budget.release();
+                                reservation.release();
                             }
                         } catch (Throwable problem) {
                             errors.add(problem);
@@ -120,10 +127,17 @@ final class HttpTransferBudgetTest {
                 assertEquals(limit, won.get(), "exactly the budget limit wins");
                 assertEquals(limit, budget.outstanding());
                 release.countDown();
-                for (var submittedTask : submitted) submittedTask.get(15, TimeUnit.SECONDS);
+                for (var submittedTask : submitted)
+                    submittedTask.get(15, TimeUnit.SECONDS);
                 assertTrue(errors.isEmpty(), () -> errors.toString());
             }
             assertEquals(0, budget.outstanding(), "all reservations reclaimed after round");
         }
     }
+
+    private static NativeHttp.TransferBudget.Reservation assertLease(
+            NativeHttp.TransferBudget.Reservation lease) {
+        return assertNotNull(lease);
+    }
+
 }
