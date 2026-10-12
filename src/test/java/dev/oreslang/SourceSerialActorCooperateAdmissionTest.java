@@ -39,11 +39,11 @@ final class SourceSerialActorCooperateAdmissionTest {
 
             pub async routine main(): void {
                 val worker = spawn Counter();
-                await worker.ready;
+                await worker.get_ready();
                 worker.send("first");
                 worker.send("second");
                 worker.send("third");
-                await worker.done;
+                await worker.get_done();
                 return;
             }
             """;
