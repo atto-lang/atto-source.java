@@ -63,7 +63,7 @@ public final class Lexer {
                     add(ELLIPSIS);
                 } else add(DOT);
             }
-            case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(PLUS);
+            case '$' -> add(DOLLAR); case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE);
             case '-' -> add(match('>') ? ARROW : MINUS);
