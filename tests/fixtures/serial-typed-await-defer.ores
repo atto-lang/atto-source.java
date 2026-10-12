@@ -1,0 +1,40 @@
+async fnc ready(): int {
+    rt cooperate;
+    return 7;
+}
+
+define serial actor Counter as
+    state { count: int = 0; }
+
+    pub increment(): int using state.read, state.write {
+        return self.handle_state(|s| -> {
+            s.count = s.count + 1;
+            return s.count;
+        });
+    }
+
+    receive(ActorMail<String> mail): void {
+        val ordinal = self.increment();
+        const answer: int = match<ret=int> await ready() over {
+            on 7 {
+                defer stdio.println("defer-before-result");
+                return ordinal + 7;
+            }
+            default { return 0; }
+        };
+        stdio.println(answer);
+        if (ordinal == 2) {
+            self.end();
+        } fi
+        return;
+    }
+end
+
+pub async routine main(): void {
+    val actor = spawn Counter();
+    await actor.ready;
+    actor.send("first");
+    actor.send("second");
+    await actor.done;
+    return;
+}
