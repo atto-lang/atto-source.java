@@ -780,6 +780,12 @@ public final class OwnershipChecker {
         if (readonlyRecord && storedType.isRecordType() && !storedType.isReadonlyRecordType()) {
             storedType = Ast.TypeRef.readonlyRecordType(storedType.recordMembers());
         }
+        // An explicit owner annotation (or a cast resulting in an apparent
+        // owner type) must not erase a borrowed view's provenance. Otherwise
+        // a stored Box binding could be rt take'n from a lexical &Box.
+        if (isBorrowValue(value) && !storedType.isBorrow()) {
+            throw error("borrowed value cannot be bound as an owned type; preserve the borrowed type and lifetime");
+        }
         if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");
         }
@@ -944,6 +950,11 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.CastExpr cast) {
             ValueInfo source = checkExpr(cast.value(), scope, consuming);
+            // An as? cast builds an Option<T>. It must never turn a lexical
+            // borrow into an owned Option<T> with the same mutable referent.
+            if (cast.mode() == Ast.CastMode.OPTIONAL && isBorrowValue(source)) {
+                throw error("optional cast of borrowed value cannot acquire ownership or escape its lifetime");
+            }
             Ast.TypeRef result = cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Ast.TypeRef("Option", List.of(cast.targetType()), false)
                     : cast.targetType();
@@ -975,6 +986,13 @@ public final class OwnershipChecker {
             Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
 
             mergeBranchState(base, List.of(leftExit, rightExit));
+            // ValueInfo does not yet have path-dependent borrow provenance:
+            // joining an owned branch with a borrowed branch would lose the
+            // loan and manufacture an apparent move-only owner. Fail closed
+            // until branch-joined lifetime analysis tracks both alternatives.
+            if (isBorrowValue(left) || isBorrowValue(right)) {
+                throw error("conditional cannot merge borrowed values without path-dependent loan provenance");
+            }
             Ast.TypeRef joinedType = joinConditionalType(left.type, right.type);
             return new ValueInfo(
                     joinedType,
