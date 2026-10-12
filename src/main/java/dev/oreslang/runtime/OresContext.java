@@ -54,6 +54,11 @@ public final class OresContext implements AutoCloseable {
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
+    // An exception from TruffleContext.leave means the context's physical
+    // entry state is unknown. Releasing the JVM lock must not permit another
+    // carrier to enter this incarnation. Never reset this negative evidence.
+    private final java.util.concurrent.atomic.AtomicBoolean guestExitUnproven =
+            new java.util.concurrent.atomic.AtomicBoolean();
     // Separate from the context monitor used by code/image registration: an
     // unwinding guest continuation may still need that monitor while close()
     // waits for its carrier to finish.
@@ -433,22 +438,40 @@ public final class OresContext implements AutoCloseable {
     }
 
     private void executeGuestTurn(Runnable turn, boolean serialize) {
+        if (guestExitUnproven.get()) {
+            throw new SecurityException(
+                    "Truffle guest exit is unproven; context incarnation is quarantined");
+        }
         if (serialize) adversarialActorTurnLock.lock();
         TruffleContext truffleContext = env.getContext();
         Object previous = null;
         boolean entered = false;
         try {
+            // Recheck after acquiring strict/adversarial serialization:
+            // a concurrent carrier can poison the context while this thread
+            // waits on the admission lock.
+            if (guestExitUnproven.get()) {
+                throw new SecurityException(
+                        "Truffle guest exit is unproven; context incarnation is quarantined");
+            }
             previous = truffleContext.enter(null);
             entered = true;
             turn.run();
         } finally {
             try {
-                if (entered) truffleContext.leave(null, previous);
+                if (entered) {
+                    try {
+                        truffleContext.leave(null, previous);
+                    } catch (RuntimeException | Error failure) {
+                        // Set quarantine BEFORE waking any waiter on the
+                        // admission lock. A failed leave is not physical DONE.
+                        guestExitUnproven.set(true);
+                        throw failure;
+                    }
+                }
             } finally {
-                // A failed TruffleContext.leave is negative physical-exit
-                // evidence, not permission to strand the isolate's admission
-                // lock forever. The scheduler will quarantine the failed
-                // carrier receipt; release only this JVM serialization lock.
+                // Release JVM coordination even on a failed guest leave, but
+                // never allow it to reopen quarantined Truffle admission.
                 if (serialize) adversarialActorTurnLock.unlock();
             }
         }
