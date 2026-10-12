@@ -85,11 +85,18 @@ final class SerialExecutionTicket {
             Object executingActorId,
             Object executingIncarnation,
             SerialActorAdmission.Lease activeReceive) {
-        if (retired.get()) throw new RetiredTaskException();
-        if (!actorAlive.getAsBoolean()
-                || !actorId.equals(executingActorId)
+        // Provenance is independent of liveness. A foreign actor/incarnation
+        // is always an authority violation, even when the origin was stopped.
+        if (!actorId.equals(executingActorId)
                 || incarnation != executingIncarnation) {
             throw new IllegalStateException("stale or foreign actor continuation ticket");
+        }
+        // stop() seals mailboxes before canceling pending Futures outside the
+        // lifecycle lock. A ticket may therefore still be unretired when the
+        // actor is already stopped. This is a benign revoked continuation, not
+        // a foreign actor failure; the carrier must discard it without panic.
+        if (retired.get() || !actorAlive.getAsBoolean()) {
+            throw new RetiredTaskException();
         }
         // A finished receive can leave an already-queued continuation behind
         // before the scheduler's own terminal callback retires the ticket.
