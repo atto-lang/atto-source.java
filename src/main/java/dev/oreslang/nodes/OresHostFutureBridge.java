@@ -1,6 +1,7 @@
 package dev.oreslang.nodes;
 
 import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.OresScheduler;
 import org.graalvm.polyglot.Value;
 
@@ -48,12 +49,21 @@ public final class OresHostFutureBridge {
         private State state = State.OPEN;
         private Object ownerContext;
         private Object ownerRoot;
+        // Only production scoped invocations set the expected context.
+        // A Value from another context cannot borrow the host admission
+        // obtained before its Truffle Value.execute boundary.
+        private final Object expectedContext;
         private OresFuture<?> future;
         private final ArrayList<OresScheduler.DeferredStart<?>> deferredStarts =
                 new ArrayList<>();
 
         Slot(String function) {
+            this(function, null);
+        }
+
+        Slot(String function, Object expectedContext) {
             this.function = Objects.requireNonNull(function, "function");
+            this.expectedContext = expectedContext;
         }
 
         private void requireOwnerThread() {
@@ -80,6 +90,10 @@ public final class OresHostFutureBridge {
             // a rejected claim must not retain a partially staged context.
             Object validatedContext = Objects.requireNonNull(context, "context");
             Object validatedRoot = Objects.requireNonNull(root, "root");
+            if (expectedContext != null && expectedContext != validatedContext) {
+                throw new SecurityException(
+                        "claimed host Future context differs from exclusive host entry");
+            }
             ownerContext = validatedContext;
             ownerRoot = validatedRoot;
             state = State.CLAIMED;
@@ -239,7 +253,11 @@ public final class OresHostFutureBridge {
         if (slots.size() >= 32) {
             throw new IllegalStateException("nested host Future handoff limit reached");
         }
-        Slot slot = new Slot(function);
+        // Resolve only an unambiguous context created by this physical host
+        // thread. Neither guessing from a Value nor acquiring inside the guest
+        // root would protect the Truffle enter that Value.execute performs.
+        OresContext expected = OresContext.singleHostOwnedContext();
+        Slot slot = new Slot(function, expected);
         slots.push(slot);
         try {
             Object[] command = new Object[arguments.length + 3];
@@ -250,7 +268,11 @@ public final class OresHostFutureBridge {
             // Do not inspect the returned Value. Its primitive acknowledgment
             // is intentionally unused; doing asHostObject() here would enter
             // the guest context again after the scheduler has started.
-            parsedSource.execute(command);
+            try (OresContext.HostEntryLease ignored =
+                    expected.acquireScopedHostEntry()) {
+                parsedSource.execute(command);
+            }
+            // Exclusive ownership must end before staged CONTROL dispatch.
             afterHostExit.run();
             return (OresFuture<T>) slot.result();
         } catch (RuntimeException | Error hostFailure) {
