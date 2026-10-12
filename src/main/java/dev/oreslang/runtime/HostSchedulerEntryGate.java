@@ -137,8 +137,14 @@ final class HostSchedulerEntryGate {
     }
 
     private void dispatchOne(GuestTurn guest) {
+        // Some Executors legally execute inline. If guest code throws from
+        // an inline executor, its finally already released the permit; that
+        // is NOT an admission rejection and must never release it twice.
+        java.util.concurrent.atomic.AtomicBoolean started =
+                new java.util.concurrent.atomic.AtomicBoolean();
         try {
             guest.executor().execute(() -> {
+                started.set(true);
                 try {
                     guest.body().run();
                 } finally {
@@ -146,8 +152,8 @@ final class HostSchedulerEntryGate {
                 }
             });
         } catch (RuntimeException | Error rejected) {
-            // execute() failed before a worker took ownership. A failure
-            // callback cannot leak the reservation or strand future closes.
+            if (started.get()) throw rejected;
+            // execute() rejected before any worker took ownership.
             physicallyExitedGuest();
             guest.onAdmissionFailure().accept(rejected);
         }
