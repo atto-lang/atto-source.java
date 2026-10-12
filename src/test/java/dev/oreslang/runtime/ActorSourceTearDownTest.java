@@ -230,6 +230,28 @@ final class ActorSourceTearDownTest {
     }
 
     @Test
+    void failedTrustedExitHookMustMakeDoneExceptional() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(image(store), false);
+            runtime.setActorExitHook(domain -> {
+                throw new IllegalStateException("native isolate exit cleanup failed");
+            });
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            ref.ready().get(2, TimeUnit.SECONDS);
+            ref.stop();
+            CompletionException rejected = assertThrows(
+                    CompletionException.class, () -> ref.done().join());
+            assertEquals("native isolate exit cleanup failed",
+                    rejected.getCause().getMessage());
+            assertEquals(1, executor.teardowns.get(),
+                    "guest teardown remains exactly once even when trusted close fails");
+            assertFalse(ref.isAlive());
+        }
+    }
+
+    @Test
     void unhandledFailureDoesNotRunGuestTeardown() {
         try (SharedCodeImageStore store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
