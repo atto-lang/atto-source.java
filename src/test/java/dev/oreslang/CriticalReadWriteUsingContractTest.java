@@ -66,13 +66,19 @@ final class CriticalReadWriteUsingContractTest {
                         program("critical write", "with state.read", increment))));
     }
 
-    @Test void oldBareCriticalAndImplicitCallbacksCannotAccessState() {
+    @Test void bareCriticalRequestsWriteAndImplicitCallbackIsReadonly() {
+        // 'critical' is an exclusive write-capable loan, although the
+        // callback may legitimately perform only a read.
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(
+                program("critical", "with state.read", "return s.v;"))));
+        // An unmarked callback is a permitted immutable read scope.
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(
+                program("", "with state.read", "return s.v;"))));
+        // Neither form permits mutation without appropriate scoped authority.
         assertThrows(IllegalArgumentException.class,
-                () -> ActorStateContract.verify(Parser.parse(
-                        program("critical", "with state.read", "return s.v;"))));
-        assertThrows(IllegalArgumentException.class,
-                () -> ActorStateContract.verify(Parser.parse(
-                        program("", "with state.read", "return s.v;"))));
+                () -> TypeChecker.checkTypes(Parser.parse(
+                        program("", "with state.read, state.write",
+                                "s.v = 2; return s.v;"))));
     }
 
     @Test void stateNamespaceRemainsCompletelySealed() {
