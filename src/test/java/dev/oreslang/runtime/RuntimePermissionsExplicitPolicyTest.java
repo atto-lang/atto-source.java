@@ -121,6 +121,33 @@ class RuntimePermissionsExplicitPolicyTest {
                 root.resolveSibling("sibling").resolve("sensitive.txt").toString()));
     }
 
+    @Test void explicitScopedPolicyCannotCreateMissingIsolateCapabilities() {
+        IsolatePolicy narrow = IsolatePolicy.developer();
+        for (String grant : new String[] {
+                "--ores-permission-read-allow=" + root,
+                "--ores-permission-write-allow=" + root,
+                "--ores-permission-net-allow=127.0.0.1:443",
+                "--ores-permission-ffi-allow=" + root
+        }) {
+            assertThrows(SecurityException.class,
+                    () -> RuntimePermissions.fromApplicationArguments(
+                            new String[]{"--ores-permission-explicit=true", grant}, narrow),
+                    grant);
+        }
+    }
+
+    @Test void denyOnlyPolicyRequiresNoCoarseGrant() {
+        RuntimePermissions denied = RuntimePermissions.fromApplicationArguments(
+                new String[]{
+                        "--ores-permission-explicit=true",
+                        "--ores-permission-read-deny=*",
+                        "--ores-permission-net-deny=127.0.0.1:443"
+                }, IsolatePolicy.developer());
+        assertFalse(denied.grantsAnything(RuntimePermissions.Permission.READ));
+        assertFalse(denied.grantsAnything(RuntimePermissions.Permission.NET));
+        assertFalse(denied.allows(RuntimePermissions.Permission.READ, root.toString()));
+    }
+
     @Test void malformedExplicitMarkerFailsClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> RuntimePermissions.fromApplicationArguments(
