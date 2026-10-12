@@ -968,9 +968,13 @@ final class HostGeneratorTurnPumpTest {
                         () -> root.startCertifiedGeneratorTurn(
                                 pump.token(), input -> OresScheduler.done(23)));
                 assertTrue(pump.dispatchOne());
-                assertInstanceOf(IllegalStateException.class,
-                        assertThrows(java.util.concurrent.ExecutionException.class,
-                                () -> host.get(5, TimeUnit.SECONDS)).getCause());
+                var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> host.get(5, TimeUnit.SECONDS)).getCause();
+                assertInstanceOf(IllegalStateException.class, observed);
+                assertNotNull(observed.getCause(),
+                        "physical DONE rejection must preserve original Truffle leave failure");
+                assertTrue(observed.getCause().getMessage().contains("simulated failure"),
+                        "physical exit evidence lost the original leave failure");
                 assertFalse(pump.isQuiescent(),
                         "even completed scheduler work cannot certify a failed guest leave");
                 assertThrows(IllegalStateException.class, pump::close);
