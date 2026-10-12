@@ -42,9 +42,30 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
      */
     private volatile Thread initialContextHostThread;
 
+    // Explicit, context-owned scheduler admission for a root CONTROL carrier.
+    // Truffle can query one thread's access while running on another thread;
+    // a carrier-local ThreadLocal alone is not sufficient in that situation.
+    private final java.util.concurrent.ConcurrentHashMap<Thread, Integer>
+            admittedRootCarriers = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private void admitRootCarrier(Thread carrier) {
+        admittedRootCarriers.merge(
+                java.util.Objects.requireNonNull(carrier, "carrier"), 1, Integer::sum);
+    }
+
+    private void releaseRootCarrier(Thread carrier) {
+        admittedRootCarriers.compute(carrier, (thread, count) -> {
+            if (count == null || count < 1) {
+                throw new IllegalStateException("unbalanced root CONTROL admission");
+            }
+            return count == 1 ? null : count - 1;
+        });
+    }
+
     @Override
     protected OresContext createContext(Env env) {
-        OresContext context = new OresContext(this, env);
+        OresContext context = new OresContext(
+                this, env, this::admitRootCarrier, this::releaseRootCarrier);
         // Publish the embedding-thread privilege only after we know this
         // context's isolation policy. An adversarial guest must never retain
         // this trusted-host concurrent admission exception.
@@ -70,7 +91,8 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                 singleThreaded,
                 ActorRuntime.isActorCarrierThread(),
                 AsyncRuntime.isAsyncCarrierThread(),
-                OresScheduler.isSchedulerCarrierThread());
+                OresScheduler.isSchedulerCarrierThread(),
+                admittedRootCarriers.containsKey(thread));
     }
 
     /**
@@ -86,9 +108,24 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             boolean actorCarrier,
             boolean asyncCarrier,
             boolean schedulerCarrier) {
+        return threadAccessDecision(requested, caller, trustedHost,
+                singleThreaded, actorCarrier, asyncCarrier, schedulerCarrier, false);
+    }
+
+    /**
+     * Physical root CONTROL admission is an explicit lease, not a blanket
+     * language-wide multithreading grant. Revoked/stale carrier identities
+     * must not pass admission merely because they once ran scheduler work.
+     */
+    static boolean threadAccessDecision(
+            Thread requested, Thread caller, Thread trustedHost,
+            boolean singleThreaded, boolean actorCarrier,
+            boolean asyncCarrier, boolean schedulerCarrier,
+            boolean registeredRootCarrier) {
         return requested != null
                 && (singleThreaded
                     || requested == trustedHost
+                    || registeredRootCarrier
                     || (requested == caller
                         && (actorCarrier || asyncCarrier || schedulerCarrier)));
     }
@@ -106,6 +143,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         // because pending finally/defer cleanup can still own live carriers.
         context.close();
         initialContextHostThread = null;
+        admittedRootCarriers.clear();
     }
 
     @Override
