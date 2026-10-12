@@ -35,9 +35,11 @@ public final class OresContext implements AutoCloseable {
         synchronized (HOST_CONTEXTS) {
             Set<OresContext> candidates = HOST_CONTEXTS.get(Thread.currentThread());
             if (candidates == null || candidates.size() != 1) {
+                int count = candidates == null ? 0 : candidates.size();
                 throw new SecurityException(
                         "scoped host Future entry requires exactly one context "
-                        + "created by the invoking host thread");
+                        + "created by the invoking host thread (registered="
+                        + count + ")");
             }
             return candidates.iterator().next();
         }
