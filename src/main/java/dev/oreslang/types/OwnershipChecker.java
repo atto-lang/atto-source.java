@@ -221,27 +221,6 @@ public final class OwnershipChecker {
         scope.close();
     }
 
-    /** A source-loop backedge is an implicit continuation handoff. */
-    private void checkAutomaticLoopBackedgeLoans(Scope scope) {
-        if (actorStateLoanDepth > 0 || mutexCriticalSectionDepth > 0
-                || scope.hasLiveMutexGuard()) return;
-        boolean liveLoan = scope.visibleStates().stream().anyMatch(state ->
-                !state.moved
-                && !("self".equals(state.debugName)
-                    && isActorConfinedBorrow(state)
-                    && state.immutableBorrows == 0
-                    && !state.mutableBorrowed)
-                && (state.kind == ValueKind.IMM_BORROW
-                    || state.kind == ValueKind.MUT_BORROW
-                    || containsBorrowedType(state.type)
-                    || state.immutableBorrows > 0
-                    || state.mutableBorrowed));
-        if (liveLoan) {
-            throw error("automatic loop cooperation cannot retain a live ordinary borrow across a backedge; "
-                    + "end the lexical loan before entering the loop or create it inside each iteration");
-        }
-    }
-
     private void checkLoopBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
         loopDepth++;
         try {
@@ -558,15 +537,11 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.ForOfDestructureStmt loop) {
-            checkAutomaticLoopBackedgeLoans(scope);
             if (loop.asyncIteration()
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard() || scope.hasLiveBorrow())) {
                 throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
             }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
-            if (isBorrowValue(iterable) || containsBorrowedType(iterable.type)) {
-                throw error("automatic loop cooperation cannot retain a borrowed iterable operand");
-            }
             Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
@@ -581,23 +556,17 @@ public final class OwnershipChecker {
                         kindOfType(bindingType),
                         Origin.LOCAL));
             }
-            checkAutomaticLoopBackedgeLoans(loopScope);
             checkLoopBlock(loop.body(), loopScope, returnType);
-            checkAutomaticLoopBackedgeLoans(loopScope);
             loopScope.close();
             rejectLoopMoves(before, scope);
             return;
         }
         if (stmt instanceof Ast.ForOfStmt loop) {
-            checkAutomaticLoopBackedgeLoans(scope);
             if (loop.asyncIteration()
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard() || scope.hasLiveBorrow())) {
                 throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
             }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
-            if (isBorrowValue(iterable) || containsBorrowedType(iterable.type)) {
-                throw error("automatic loop cooperation cannot retain a borrowed iterable operand");
-            }
             Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
@@ -608,7 +577,6 @@ public final class OwnershipChecker {
                     kindOfType(elementType),
                     Origin.LOCAL));
             checkLoopBlock(loop.body(), loopScope, returnType);
-            checkAutomaticLoopBackedgeLoans(loopScope);
             loopScope.close();
             rejectLoopMoves(before, scope);
             return;
@@ -617,20 +585,16 @@ public final class OwnershipChecker {
             Scope loopScope = new Scope(scope);
             if (loop.initializer() != null) checkStatement(loop.initializer(), loopScope, returnType);
             if (loop.condition() != null) checkExpr(loop.condition(), loopScope, false);
-            checkAutomaticLoopBackedgeLoans(loopScope);
             Map<VarState,Boolean> before = movedSnapshot(scope);
             checkLoopBlock(loop.body(), loopScope, returnType);
             if (loop.update() != null) checkExpr(loop.update(), loopScope, false);
-            checkAutomaticLoopBackedgeLoans(loopScope);
             rejectLoopMoves(before, scope);
             loopScope.close();
             return;
         }
         if (stmt instanceof Ast.LoopStmt loop) {
-            checkAutomaticLoopBackedgeLoans(scope);
             Map<VarState,Boolean> before = movedSnapshot(scope);
             checkLoopBlock(loop.body(), scope, returnType);
-            checkAutomaticLoopBackedgeLoans(scope);
             rejectLoopMoves(before, scope);
         }
     }
@@ -1796,15 +1760,6 @@ public final class OwnershipChecker {
         VarState root = ownershipRoot(owner);
         if (mutable) root.mutableBorrowed = true;
         else root.immutableBorrows++;
-    }
-
-    private boolean containsBorrowedType(Ast.TypeRef type) {
-        if (type == null) return false;
-        if (type.isBorrow()) return true;
-        for (Ast.TypeRef argument : type.arguments()) {
-            if (containsBorrowedType(argument)) return true;
-        }
-        return false;
     }
 
     private boolean isBorrowValue(ValueInfo value) {
