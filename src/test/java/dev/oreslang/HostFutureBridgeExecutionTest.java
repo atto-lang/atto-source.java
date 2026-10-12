@@ -130,8 +130,8 @@ final class HostFutureBridgeExecutionTest {
                     () -> parsed.execute(
                             OresEvalRootNode.INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND, "work"));
             assertTrue(rejection.getMessage().contains(
-                    "host Future handoff requires a matching scoped invocation"),
-                    "forged control command must fail at admission, not during guest task");
+                    "invalid scoped host Future handoff command"),
+                    "missing nonce must fail at admission, before dispatching any guest task");
             assertEquals("", output.toString(),
                     "unauthenticated control command must be rejected before scheduling");
         }
