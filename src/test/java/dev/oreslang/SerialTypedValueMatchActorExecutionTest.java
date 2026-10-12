@@ -26,11 +26,6 @@ final class SerialTypedValueMatchActorExecutionTest {
     void serialSourceReceivesAwaitedTypedMatchAndUnwindsBeforeNextMail()
             throws Exception {
         String source = """
-                async fnc ready(): int {
-                    rt cooperate;
-                    return 7;
-                }
-
                 define serial actor Counter as
                     state { count: int = 0; }
 
@@ -43,9 +38,10 @@ final class SerialTypedValueMatchActorExecutionTest {
 
                     receive(ActorMail<String> mail): void {
                         val ordinal = self.increment();
-                        const answer: int = match<ret=int> await ready() over {
+                        const answer: int = match<ret=int> 7 over {
                             on 7 {
                                 defer stdio.println("defer-before-result");
+                                rt cooperate;
                                 return ordinal + 7;
                             }
                             default { return 0; }

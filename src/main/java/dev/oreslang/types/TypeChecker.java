@@ -1922,10 +1922,23 @@ public final class TypeChecker {
                             "typed value match arm result requires a pure scalar expression or admitted await");
                 requireValueMatchOwnedScalarNames(returned.value(), local);
             } else if (stmt instanceof Ast.ExprStmt statement) {
-                if (!safeValueMatchScalarExpr(statement.expression())
+                // A cooperative yield is a scheduler-owned continuation, not
+                // an external call or guest capability. Admit exactly the
+                // argument-free primitive in a proven suspendable context,
+                // including the synchronous actor receive SourceTask. The
+                // lexical match frame and its defers survive this handoff.
+                boolean cooperativeYield = currentMaySuspend
+                        && statement.expression() instanceof Ast.RuntimeCallExpr runtime
+                        && runtime.operation().equals("cooperate")
+                        && runtime.arguments().isEmpty();
+                if (!cooperativeYield
+                        && !safeValueMatchScalarExpr(statement.expression())
                         && !isSafeTypedValuePrint(statement.expression(), local))
                     throw new IllegalArgumentException(
                             "typed value match expression statement has unverified effects");
+                if (cooperativeYield) {
+                    continue;
+                }
                 if (isSafeTypedValuePrint(statement.expression(), local)) {
                     Ast.CallExpr call = (Ast.CallExpr) statement.expression();
                     for (Ast.Expr arg : call.arguments())
