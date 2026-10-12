@@ -102,8 +102,9 @@ public final class NativeHttp implements AutoCloseable {
                "sun.net.httpserver.nodelay", "true").forEach((key, value) -> System.getProperties().putIfAbsent(key, value));
     }
 
-    public Handler handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
+    public synchronized Handler handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP handlers are registered by the supervisor");
+        if (closed) throw new IllegalStateException("HTTP runtime closed");
         if (kind == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("untrusted HTTP handlers are not supported");
         Handler handler = new Handler(code, type, kind);
         if (handler.serial) handlers.add(handler);
@@ -845,10 +846,20 @@ public final class NativeHttp implements AutoCloseable {
             cleanup.run();
         }
     }
-    @Override public synchronized void close() {
-        closed = true;
-        for (Server server : List.copyOf(servers)) server.close();
-        for (Handler handler : List.copyOf(handlers)) {
+    @Override public void close() {
+        // Transport.stop can wait for live HTTP handlers. Never hold the
+        // NativeHttp monitor while waiting: handlers may call synchronized
+        // listener/registration methods on the way out.
+        final List<Server> snapshot;
+        final List<Handler> handlerSnapshot;
+        synchronized (this) {
+            if (closed) return;
+            closed = true;
+            snapshot = List.copyOf(servers);
+            handlerSnapshot = List.copyOf(handlers);
+        }
+        for (Server server : snapshot) server.close();
+        for (Handler handler : handlerSnapshot) {
             synchronized (handler) {
                 if (handler.persistentActor != null) handler.persistentActor.cancel();
             }
