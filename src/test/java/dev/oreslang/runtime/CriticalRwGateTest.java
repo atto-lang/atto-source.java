@@ -61,6 +61,27 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void cancellingHeadWriterUnblocksReadersBehindItWithoutWaitingForActiveReader() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var firstRead = gate.newTicket(CriticalRwGate.Mode.READ);
+        var cancelledWriter = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        var waitingRead = gate.newTicket(CriticalRwGate.Mode.READ);
+        firstRead.enterAsync();
+        OresFuture<Void> pendingWriter = cancelledWriter.enterAsync();
+        OresFuture<Void> pendingRead = waitingRead.enterAsync();
+        assertEquals(2, gate.queuedCount());
+        assertFalse(pendingRead.isDone());
+        assertTrue(pendingWriter.cancel(false));
+        assertFalse(cancelledWriter.isHeld());
+        assertTrue(waitingRead.isHeld(),
+                "reader behind removed writer must join active readers immediately");
+        assertEquals(2, gate.activeReaderCount());
+        firstRead.close();
+        waitingRead.close();
+        assertEquals(0, gate.queuedCount());
+    }
+
+    @Test
     void cancellingWaiterRetractsItsSlotAndCannotResurrectAfterHandoff() {
         CriticalRwGate gate = new CriticalRwGate();
         var current = gate.newTicket(CriticalRwGate.Mode.WRITE);
