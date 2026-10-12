@@ -93,7 +93,7 @@ public final class OresEvalRootNode extends RootNode {
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
             return context.runRootMain(() -> {
-                try { return current.executeMain(new Object[0]); }
+                try { return current.executeMain(new Object[0], true); }
                 catch (ProcessExitSignal exit) { return exit.exitStatus(); }
             });
         }
@@ -108,7 +108,7 @@ public final class OresEvalRootNode extends RootNode {
         // link/init/main commands to install a full import graph before init.
         current.link();
         current.initialize();
-        return context.runRootMain(() -> current.executeMain(arguments));
+        return context.runRootMain(() -> current.executeMain(arguments, false));
     }
 
     private Evaluator evaluator(OresContext context) {
@@ -635,7 +635,7 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        private Object executeMain(Object[] arguments) {
+        private Object executeMain(Object[] arguments, boolean requireMain) {
             if (startupPhase != StartupPhase.READY) {
                 throw new IllegalStateException(
                         "main cannot run before successful initialization of code unit "
@@ -643,7 +643,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.FunctionDecl main = findQualifiedFunction(Parser.ROOT_MODULE + ".main", 0);
             if (main == null) main = findFunction("main", 0);
-            if (main == null) return null;
+            if (main == null) {
+                if (requireMain) {
+                    throw new IllegalArgumentException(
+                            "executable source requires a zero-argument main() entrypoint: " + codeUnitId);
+                }
+                return null; // Legacy Context.eval permits definition-only code units.
+            }
             // MAIN_ONLY is already executing inside OresVM's ROOT_TASK.
             // Never park the CONTROL carrier on an async result here; the
             // enclosing root Task owns the wait and fresh-resume transition.
