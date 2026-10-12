@@ -54,7 +54,7 @@ final class HyphenatedCompoundKeywordTest {
                 }
                 """);
         Ast.FunctionDecl fn = (Ast.FunctionDecl) ast.modules().getFirst().declarations().getFirst();
-        Ast.VarDeclStmt local = assertInstanceOf(Ast.VarDeclStmt.class, fn.body().get(0));
+        Ast.BindingStmt local = assertInstanceOf(Ast.BindingStmt.class, fn.body().get(0));
         Ast.DynamicSelectExpr select =
                 assertInstanceOf(Ast.DynamicSelectExpr.class, local.initializer());
         assertEquals(Ast.WaitMode.NONBLOCKING, select.mode());
@@ -97,7 +97,7 @@ final class HyphenatedCompoundKeywordTest {
     void compoundKeywordsRequireExactAsciiHyphenAndWordBoundary() {
         List<Token> tokens = new Lexer(
                 "critical-readonly critical-write2 transform-pipex nb-selectMore " +
-                "critical - read 7-3 nb\\u2013select").scan();
+                "critical - read 7-3").scan();
         // A non-ASCII en dash is deliberately an unsupported lexical character.
         // The preceding fragments must never turn into compound tokens.
         assertEquals(Token.Type.IDENT, tokens.get(0).type());
@@ -107,7 +107,7 @@ final class HyphenatedCompoundKeywordTest {
         assertEquals(Token.Type.MINUS, tokens.get(4).type());
         assertEquals(Token.Type.IDENT, tokens.get(5).type());
         assertThrows(IllegalArgumentException.class,
-                () -> new Lexer("nb\\u2013select").scan());
+                () -> new Lexer("nb" + (char) 0x2013 + "select").scan());
     }
 
     @Test
