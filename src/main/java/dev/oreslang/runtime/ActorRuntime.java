@@ -6934,14 +6934,27 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
             }
 
-            if (ownsRetirement) {
-                try {
+            try {
+                // Notify source select waiters only after lifecycleLock has
+                // been released. The same physical-DONE barrier must also
+                // cover ordinary actor-owned pending Future cancellation,
+                // otherwise DONE could precede its runtime waiters.
+                if (ownsRetirement) {
                     for (Runnable notification : retiredSelectNotifications) {
                         notification.run();
                     }
-                } finally {
-                    // Keep DONE hidden until every cursor-owned pending select
-                    // has published terminal cancellation to its waiters.
+                }
+
+                // Cancellation must be admitted before waking queued source
+                // commands: otherwise a never-entered guest task could run
+                // after stop() but before its Future is cancelled.
+                for (OresFuture<?> future : pending) future.cancel(false);
+            } finally {
+                if (ownsRetirement) {
+                    // All first-stop notifications are now outside the actor
+                    // lifecycle monitor. Other stop callers cannot clear this
+                    // barrier, and completion callbacks may safely reenter
+                    // lifecycle accounting before the physical DONE receipt.
                     synchronized (lifecycleLock) {
                         cursorRetirementPending = false;
                         if (stopped.get()) finalizeStopLocked();
@@ -6949,12 +6962,6 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
             }
-
-            // Cancellation must be admitted before waking queued source
-            // commands: otherwise a never-entered guest task could run after
-            // stop() but before its Future receives the cancellation signal.
-            // This also detaches obsolete await registrations before dispatch.
-            for (OresFuture<?> future : pending) future.cancel(false);
 
             // A source resume queued after closed=true but before stop()
             // could not schedule its own carrier. Wake it only after the
