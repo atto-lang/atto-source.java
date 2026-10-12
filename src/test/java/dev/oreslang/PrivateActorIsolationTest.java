@@ -248,7 +248,7 @@ final class PrivateActorIsolationTest {
             assertTrue(created.await(2, TimeUnit.SECONDS));
 
             var other = runtime.<Object>spawnPrivate(() -> (message, context) -> { });
-            assertThrows(IllegalArgumentException.class, () -> other.send(leaked.get()));
+            assertThrows(SecurityException.class, () -> other.send(leaked.get()));
 
             owner.stop();
             other.stop();
