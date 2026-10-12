@@ -139,7 +139,7 @@ final class SerialActorCriticalAdmissionTest {
                 () -> DeclaredEffectVerifier.verify(Parser.parse(underdeclared)));
         String wrongType = SERIAL.replace(
                 "return self.handle_state(critical read |s| -> s.count);",
-                "return self.handle_state(|s| -> true);");
+                "return self.handle_state(critical read |s| -> true);");
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse(wrongType)));
     }
