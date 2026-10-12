@@ -150,6 +150,12 @@ final class HostGeneratorTurnPump implements AutoCloseable {
     }
 
     HostGeneratorTurnPump(UUID contextId, BooleanSupplier ownerTurnAuthorized,
+                          Runnable signalOwner, OresScheduler owningScheduler) {
+        this(contextId, ownerTurnAuthorized, signalOwner, DEFAULT_CAPACITY,
+                Objects.requireNonNull(owningScheduler, "owningScheduler"));
+    }
+
+    HostGeneratorTurnPump(UUID contextId, BooleanSupplier ownerTurnAuthorized,
                           Runnable signalOwner, int capacity,
                           OresScheduler owningScheduler) {
         this.owningScheduler = owningScheduler;
