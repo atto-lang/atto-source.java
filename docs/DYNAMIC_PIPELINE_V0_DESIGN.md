@@ -137,3 +137,47 @@ generation, with exact registration and whole-route DONE validation.
    old/new generation crossover; hostile concurrency and rollback testing.
 5. Byte-identical source fixtures in Java/LLVM and authenticated FD3 traces
    before moving stacked PRs out of draft.
+
+## Host integration audit and implementation (2026-10-12)
+
+`ActorRuntimePipelineEngine` is now an additive production-`ActorRuntime`
+host adapter. Its trusted provider registry checks the *exact constructor
+capability identity* before invoking any provider. It requires returned
+`ActorRef` objects, relies on `ActorRuntime.bindLinearPipeline` for
+same-runtime, duplicate, compiler-owned closed nominal domain and
+pre-DATA-admission checks, and separately requires that the bound compiler
+domain identity matches the plan. It returns an immutable
+`DeliveryReceipt(planRevision, stageCount)` only after the existing
+ActorStream's successful full round trip **and all physical DONE receipts**.
+It does **not** yet extract the source actor's typed reply value.
+
+The engine accepts an explicit trusted CONTROL executor. Its STOP call
+uses that executor and waits for every actor's *individual* physical DONE
+settlement (including failed actors), without assuming route success for a
+never-used pipeline. Provider invocation and restart reopening must never
+run on an actor DATA carrier.
+
+### Additional hardening
+
+- A controller closing during an in-flight failed send must still drain the
+  actor generations and must not publish CLOSED before physical cleanup.
+- Restart schedules actor provider invocation through `Engine.scheduleControl`,
+  not inline on arbitrary asynchronous completion/cancellation/finalizer
+  threads.
+- A manual `install` requires a strictly newer plan revision and the same
+  exact closed nominal mailbox domain.
+- A partially failing provider activation currently issues best-effort STOP
+  to every known acquired ref, but **does not prove that every orphaned actor
+  reached physical DONE before surfacing the error**. An authoritative
+  asynchronous startup/rollback receipt is required before production release.
+- The trusted executor is an injected **host responsibility**; supplying an
+  inline/direct executor on a completion carrier must not be treated as
+  proof of scheduler-lane isolation.
+- Provider credentials are registered precompiled constructor capabilities.
+  Signed dynamic plugin ingestion and typed state migration remain
+  unsupported and require separate ABI and security designs.
+
+The adapter still has no Oreslang AST/parser/typechecker intrinsics, no
+end-to-end dynamically restarted guest pipeline source fixture, and no LLVM
+runtime or native-image AOT evidence. Do not mistake the pre-existing 15-actor
+guest regression for proof of live hot replacement.

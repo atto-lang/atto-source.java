@@ -1352,6 +1352,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public int size() { return stages.size(); }
+        /** Immutable compiler-derived closed nominal mailbox identity. */
+        public String nominalDomainIdentity() { return route.nominalIdentity(); }
         public ActorRef<?> source() { return stages.getFirst(); }
         public void send(Object value) {
             @SuppressWarnings("unchecked")

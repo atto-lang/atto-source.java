@@ -81,6 +81,10 @@ public final class PipelineControlPlaneContractTest {
             return result;
         }
         Session latest() { return opened.getLast(); }
+        @Override public void scheduleControl(Runnable task) {
+            // This deterministic fake runs on the host test thread.
+            task.run();
+        }
     }
 
     private static PipelinePlan.Stage stage(String name, String providerId, String domain,
@@ -175,6 +179,50 @@ public final class PipelineControlPlaneContractTest {
         check(controller.state() == PipelineController.State.CLOSED, "failed controller cleanup");
     }
 
+    private static void closeWhileDeliveryFailsStillDrainsEveryActor() {
+        FakeEngine engine = new FakeEngine();
+        PipelineController controller = new PipelineController(new PipelinePlanner()
+                .add("a", "A", "M", Object::new)
+                .add("b", "B", "M", Object::new).build(), engine);
+        PipelineRunner runner = controller.start();
+        CompletionStage<Object> delivery = runner.send(99);
+        CompletionStage<Void> closed = controller.close();
+        check(!closed.toCompletableFuture().isDone(),
+                "close bypassed in-flight DATA");
+        engine.latest().failSend(new IllegalStateException("failed after root DATA admission"));
+        failed(delivery);
+        check(!closed.toCompletableFuture().isDone(),
+                "close falsely succeeded before failed-flow physical retirement");
+        check(engine.latest().stopping,
+                "failed send did not propagate shutdown to owned actors");
+        engine.latest().finalizeActors();
+        settled(closed);
+        check(controller.state() == PipelineController.State.CLOSED,
+                "failed delivery leaked controller after confirmed physical cleanup");
+        failed(runner.send(101));
+    }
+
+    private static void rejectStalePlanInstall() {
+        FakeEngine engine = new FakeEngine();
+        PipelinePlan initial = new PipelinePlanner()
+                .add("a", "A", "M", Object::new)
+                .add("b", "B", "M", Object::new).build();
+        PipelineController controller = new PipelineController(initial, engine);
+        controller.start();
+        CompletionStage<Void> paused = controller.pause();
+        engine.latest().finalizeActors();
+        settled(paused);
+        rejected(() -> controller.install(initial));
+        rejected(() -> controller.install(initial.replace("a",
+            stage("a", "A2", "different-domain", Object::new))));
+        PipelinePlan next = initial.replace("a", stage("a", "A2", "M", Object::new));
+        controller.install(next);
+        check(controller.plan().revision() == 2,
+                "valid revised plan not installed");
+        CompletionStage<Void> closed = controller.close();
+        settled(closed);
+    }
+
     private static void planValidationBeforeActorCreation() {
         FakeEngine engine = new FakeEngine();
         rejected(() -> new PipelinePlanner()
@@ -199,6 +247,8 @@ public final class PipelineControlPlaneContractTest {
         happyPathAndReplacement();
         restartRequiresRealStopAndNewActors();
         failureDoesNotRestartAmbiguousPublication();
+        closeWhileDeliveryFailsStillDrainsEveryActor();
+        rejectStalePlanInstall();
         planValidationBeforeActorCreation();
         System.out.println("DYNAMIC_PIPELINE_CONTROL_CONTRACT_PASS assertions=" + checks);
     }

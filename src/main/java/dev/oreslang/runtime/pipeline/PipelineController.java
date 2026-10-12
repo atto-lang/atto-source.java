@@ -25,6 +25,12 @@ public final class PipelineController {
     @FunctionalInterface
     public interface Engine {
         Session open(PipelinePlan plan);
+
+        /** Schedule reopening on the trusted root/CONTROL lane, NEVER a guest
+         * actor finalizer or arbitrary CompletionStage callback carrier. */
+        default void scheduleControl(Runnable task) {
+            throw new IllegalStateException("pipeline engine has no trusted control scheduler");
+        }
     }
 
     public interface Session {
@@ -85,13 +91,18 @@ public final class PipelineController {
             state = State.OPENING;
             snapshot = plan;
         }
-        Session opened;
+        Session opened = null;
         CompletionStage<Void> wholeDone;
         try {
             opened = Objects.requireNonNull(engine.open(snapshot), "engine session");
             wholeDone = Objects.requireNonNull(opened.getDone(), "engine physical DONE observer");
         } catch (Throwable failure) {
-            synchronized (gate) { state = State.FAILED; }
+            // A session might have spawned several actors before its DONE
+            // observer failed. Retain it for verified close() cleanup.
+            synchronized (gate) {
+                active = opened;
+                state = State.FAILED;
+            }
             throw asRuntime(failure);
         }
         synchronized (gate) {
@@ -180,7 +191,14 @@ public final class PipelineController {
                 inFlight = false;
                 if (failure != null) {
                     state = State.FAILED;
-                    if (pauseFuture != null && !pauseFuture.isDone()) {
+                    if (closeRequested && pauseFuture != null
+                            && !quiesceStarted) {
+                        // close() was already waiting on pause; it MUST
+                        // drain physical actors even when DATA fails.
+                        quiesceStarted = true;
+                        toQuiesce = active;
+                        observer = pauseFuture;
+                    } else if (pauseFuture != null && !pauseFuture.isDone()) {
                         failedPause = pauseFuture;
                     }
                 } else if (state == State.PAUSING && !quiesceStarted) {
@@ -204,6 +222,12 @@ public final class PipelineController {
             if (closeRequested || state != State.PAUSED || active != null || inFlight) {
                 throw new IllegalStateException(
                         "pipeline topology updates require a fully quiescent PAUSED generation");
+            }
+            if (replacement.revision() <= plan.revision()) {
+                throw new IllegalArgumentException("plan installation requires a newer revision");
+            }
+            if (!replacement.nominalDomain().equals(plan.nominalDomain())) {
+                throw new IllegalArgumentException("pipeline plan cannot change its closed nominal domain");
             }
             plan = replacement;
         }
@@ -247,14 +271,35 @@ public final class PipelineController {
     public CompletionStage<PipelineRunner> restart() {
         State observed = state();
         if (observed == State.PAUSED) {
-            try { return CompletableFuture.completedFuture(start()); }
-            catch (Throwable error) { return CompletableFuture.failedFuture(error); }
+            CompletableFuture<PipelineRunner> restarted = new CompletableFuture<>();
+            try {
+                engine.scheduleControl(() -> {
+                    try { restarted.complete(start()); }
+                    catch (Throwable error) { restarted.completeExceptionally(error); }
+                });
+            } catch (Throwable error) { restarted.completeExceptionally(error); }
+            return restarted;
         }
         if (observed != State.RUNNING && observed != State.PAUSING) {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "pipeline restart requires RUNNING or PAUSED"));
         }
-        return pause().thenApply(ignored -> start());
+        CompletableFuture<PipelineRunner> restarted = new CompletableFuture<>();
+        pause().whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                restarted.completeExceptionally(failure);
+                return;
+            }
+            try {
+                engine.scheduleControl(() -> {
+                    try { restarted.complete(start()); }
+                    catch (Throwable problem) { restarted.completeExceptionally(problem); }
+                });
+            } catch (Throwable problem) {
+                restarted.completeExceptionally(problem);
+            }
+        });
+        return restarted;
     }
 
     /** Close fences admission immediately, then waits for physical DONE. */
