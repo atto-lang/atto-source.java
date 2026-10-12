@@ -517,6 +517,7 @@ final class ActorGroupMultiMembershipTest {
             ActorRuntime.ActorGroupJoinCapability joinB = roomB.joinCapability();
 
             CountDownLatch firstTurnEntered = new CountDownLatch(1);
+            CountDownLatch secondTurnEntered = new CountDownLatch(1);
             CountDownLatch releaseFirstTurn = new CountDownLatch(1);
             CountDownLatch bothTurnsFinished = new CountDownLatch(2);
             java.util.concurrent.atomic.AtomicInteger activeTurns =
@@ -540,6 +541,7 @@ final class ActorGroupMultiMembershipTest {
                                     throw new AssertionError("first actor turn was not released");
                                 }
                             } else {
+                                secondTurnEntered.countDown();
                                 assertEquals(2, message.intValue());
                                 assertTrue(roomA.contains(context.self()));
                                 assertTrue(roomB.contains(context.self()));
@@ -558,8 +560,10 @@ final class ActorGroupMultiMembershipTest {
                         "first turn never acquired the actor execution lane");
                 // The actor participates in two cooperation groups, but neither
                 // group owns another execution lane. The second message must
-                // not run concurrently while the first turn remains suspended.
+                // not run concurrently while the first turn remains active.
                 connection.send(2);
+                assertFalse(secondTurnEntered.await(100, TimeUnit.MILLISECONDS),
+                        "second turn started before the first turn released its execution lane");
             } finally {
                 releaseFirstTurn.countDown();
             }
