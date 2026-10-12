@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          timeout 90s mvn -B -ntp -DskipTests exec:java \
+          timeout 90s mvn -B -ntp -DskipTests compile exec:java \
             -Dexec.args="--mode=jit --platform=linux examples/native-await-finally.ores" \
             | tee /tmp/ores-jvm-native-fixture.log
           grep -x '42' /tmp/ores-jvm-native-fixture.log
