@@ -6936,19 +6936,44 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         "actor mailbox cleanup must release lifecycleLock before envelope callbacks");
             }
+            // One malformed cleanup hook must not strand other mailbox
+            // envelopes or leak their quota reservations. Preserve the first
+            // failure and still attempt every envelope and accounting release.
+            List<Throwable> cleanupFailures = new ArrayList<>();
             for (MessageEnvelope continuation : continuations) {
                 try {
                     continuation.close();
-                } finally {
+                } catch (Throwable failure) {
+                    cleanupFailures.add(failure);
+                }
+                try {
                     releaseMailboxSlot(true);
+                } catch (Throwable failure) {
+                    cleanupFailures.add(failure);
                 }
             }
             for (MessageEnvelope envelope : userMail) {
                 try {
                     envelope.close();
-                } finally {
-                    releaseMailboxSlot(false);
+                } catch (Throwable failure) {
+                    cleanupFailures.add(failure);
                 }
+                try {
+                    releaseMailboxSlot(false);
+                } catch (Throwable failure) {
+                    cleanupFailures.add(failure);
+                }
+            }
+            if (!cleanupFailures.isEmpty()) {
+                Throwable first = cleanupFailures.get(0);
+                for (int i = 1; i < cleanupFailures.size(); i++) {
+                    if (cleanupFailures.get(i) != first)
+                        first.addSuppressed(cleanupFailures.get(i));
+                }
+                if (first instanceof Error fatal) throw fatal;
+                if (first instanceof RuntimeException runtime) throw runtime;
+                throw new IllegalStateException(
+                        "actor mailbox resource cleanup failed for " + ref.id(), first);
             }
         }
 
