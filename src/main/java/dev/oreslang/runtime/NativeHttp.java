@@ -19,6 +19,34 @@ public final class NativeHttp implements AutoCloseable {
     /** Persistent serial handler processes; lifetime is owned by this HTTP runtime. */
     private final Set<Handler> handlers = ConcurrentHashMap.newKeySet();
     private final Map<String, Exchange> transfers = new ConcurrentHashMap<>();
+    /** Every outstanding unclaimed transfer consumes a bounded reservation. */
+    static final int MAX_UNCLAIMED_TRANSFERS_PER_SERVER = 1_024;
+
+    /** One permit per unclaimed transfer, including expired mailbox tombstones. */
+    static final class TransferBudget {
+        private final int limit;
+        private final Semaphore permits;
+        private final AtomicLong rejected = new AtomicLong();
+
+        TransferBudget(int capacity) {
+            if (capacity < 1) throw new IllegalArgumentException("invalid transfer capacity");
+            limit = Math.min(capacity, MAX_UNCLAIMED_TRANSFERS_PER_SERVER);
+            permits = new Semaphore(limit);
+        }
+        boolean tryReserve() {
+            if (permits.tryAcquire()) return true;
+            rejected.incrementAndGet();
+            return false;
+        }
+        void release() {
+            permits.release();
+            if (permits.availablePermits() > limit)
+                throw new IllegalStateException("HTTP transfer reservation released more than once");
+        }
+        int outstanding() { return limit - permits.availablePermits(); }
+        int limit() { return limit; }
+        long rejected() { return rejected.get(); }
+    }
     private final ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
@@ -147,13 +175,10 @@ public final class NativeHttp implements AutoCloseable {
                 actor.send(exchange.moveTo(actor, !serial));
             } catch (RuntimeException failure) {
                 synchronized (exchange.state) {
-                    if (exchange.state.ticket != null) {
-                        transfers.remove(exchange.state.ticket);
-                        exchange.state.ticket = null;
-                    }
+                    exchange.state.revokeTransferLocked();
                 }
                 if (actor != null && !serial) actor.cancel();
-                exchange.state.abort(500);
+                exchange.state.abort(failure instanceof RejectedExecutionException ? 503 : 500);
             } finally {
                 CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
             }
@@ -180,8 +205,7 @@ public final class NativeHttp implements AutoCloseable {
             // A deadline may expire before the queued mail is processed.
             // Consume its tombstone instead of killing the persistent actor
             // with an invalid http.claim(token) call.
-            transfers.remove(token, exchange);
-            state.ticket = null;
+            state.revokeTransferLocked();
         }
         // A timed-out transfer can survive after the HTTP admission was
         // released. Retire its actor-done waiter once the mailbox tombstone
@@ -213,7 +237,7 @@ public final class NativeHttp implements AutoCloseable {
         synchronized (exchange.state) {
             exchange.checkOwner();
             if (!transfers.remove(token, exchange)) throw new IllegalStateException("HTTP transfer already claimed");
-            exchange.state.ticket = null;
+            exchange.state.releaseTransferReservationLocked();
             exchange.state.claimedNanos = System.nanoTime();
             CorePerf.elapsed(CorePerf.HTTP_CLAIM, exchange.state.spawnNanos, exchange.state.claimedNanos);
             return exchange;
@@ -231,6 +255,7 @@ public final class NativeHttp implements AutoCloseable {
     public final class Server implements AutoCloseable {
         private final HttpServer transport;
         private final Semaphore admission;
+        private final TransferBudget transferBudget;
         private final int bodyLimit, deadlineMillis;
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
@@ -238,9 +263,11 @@ public final class NativeHttp implements AutoCloseable {
         private boolean stopped, transportStopped;
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
+        private final java.util.concurrent.atomic.AtomicInteger tombstones = new java.util.concurrent.atomic.AtomicInteger();
 
         private Server(HttpServer transport, int capacity, int bodyLimit, int deadlineMillis) {
             this.transport = transport; this.admission = new Semaphore(capacity);
+            this.transferBudget = new TransferBudget(capacity);
             this.bodyLimit = bodyLimit; this.deadlineMillis = deadlineMillis;
             // Preserve the original executor when diagnostics are off. In
             // diagnostic mode, measure the JDK-to-virtual-thread handoff.
@@ -268,6 +295,11 @@ public final class NativeHttp implements AutoCloseable {
         public long rejected() { supervisor(); return rejected.get(); }
         public long completed() { supervisor(); return completed.get(); }
         public int active() { supervisor(); return active.size(); }
+        /** Includes unclaimed live transfers and expired queued tombstones. */
+        public int transferBacklog() { supervisor(); return transferBudget.outstanding(); }
+        public int transferBacklogLimit() { supervisor(); return transferBudget.limit(); }
+        public long transferRejected() { supervisor(); return transferBudget.rejected(); }
+        public int tombstones() { supervisor(); return tombstones.get(); }
 
         public synchronized OresFuture<Object> accept() {
             supervisor();
@@ -377,6 +409,8 @@ public final class NativeHttp implements AutoCloseable {
         volatile boolean terminal;
         boolean transportClosed;
         String ticket;
+        /** Counted only when a terminal persistent transfer remains unclaimed. */
+        boolean tombstoneCounted;
         final String requestId = UUID.randomUUID().toString();
         final long admittedNanos = System.nanoTime();
         final OresFuture<Object> completion = new OresFuture<>(() -> false, () -> { });
@@ -393,6 +427,22 @@ public final class NativeHttp implements AutoCloseable {
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
         }
+        /** Called only while holding this State's monitor. */
+        void releaseTransferReservationLocked() {
+            if (ticket == null) throw new IllegalStateException("HTTP transfer reservation already released");
+            ticket = null;
+            if (tombstoneCounted) {
+                tombstoneCounted = false;
+                server.tombstones.decrementAndGet();
+            }
+            server.transferBudget.release();
+        }
+        /** Called only while holding this State's monitor. */
+        void revokeTransferLocked() {
+            if (ticket == null) return;
+            transfers.remove(ticket);
+            releaseTransferReservationLocked();
+        }
         void abort(int status) {
             boolean send, alreadyClosed;
             ActorRuntime.ActorRef<?> cancelActor;
@@ -401,6 +451,10 @@ public final class NativeHttp implements AutoCloseable {
                 send = !terminal && !committed && !busy;
                 if (!terminal) responseStatus = send ? status : 0;
                 terminal = true;
+                if (!alreadyClosed && persistentActor && ticket != null && !tombstoneCounted) {
+                    tombstoneCounted = true;
+                    server.tombstones.incrementAndGet();
+                }
                 cancelActor = !alreadyClosed && !persistentActor ? actor : null;
             }
             // An HTTP deadline cancels a per-request actor, never a persistent
@@ -432,10 +486,7 @@ public final class NativeHttp implements AutoCloseable {
                 // Preserve an aborted, unclaimed serial transfer until its
                 // queued actor message is consumed. This prevents a timeout
                 // from crashing the actor with a stale http.claim token.
-                if (ticket != null && !persistentActor) {
-                    transfers.remove(ticket);
-                    ticket = null;
-                }
+                if (ticket != null && !persistentActor) revokeTransferLocked();
                 if (deadline != null) deadline.cancel(false);
             }
             if (server.active.remove(this)) {
@@ -493,6 +544,8 @@ public final class NativeHttp implements AutoCloseable {
                 if (state.busy || state.committed) throw new IllegalStateException("cannot move an active HTTP exchange");
                 if (!context.actors().isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
+                if (!state.server.transferBudget.tryReserve())
+                    throw new RejectedExecutionException("HTTP unclaimed transfer backlog exhausted");
                 state.movedNanos = System.nanoTime();
                 state.generation++; state.owner = destination.id();
                 state.actor = destination;
@@ -505,10 +558,7 @@ public final class NativeHttp implements AutoCloseable {
                             synchronized (state) {
                                 // Actor teardown drains queued mail; an unclaimed
                                 // serial tombstone cannot be consumed afterward.
-                                if (state.ticket != null) {
-                                    transfers.remove(state.ticket);
-                                    state.ticket = null;
-                                }
+                                state.revokeTransferLocked();
                             }
                             state.abort(500);
                         });
@@ -769,6 +819,11 @@ public final class NativeHttp implements AutoCloseable {
         }
         handlers.clear();
         timers.shutdownNow();
+        // Revoke all outstanding tokens while synchronized with each claim
+        // and callback. This releases budgets even if actor termination is late.
+        for (Exchange exchange : List.copyOf(transfers.values())) {
+            synchronized (exchange.state) { exchange.state.revokeTransferLocked(); }
+        }
         // Shutdown without discarding accepted abort tasks: they own transport
         // closure, semaphore release and exchange completion notifications.
         // Late aborts after shutdown use executeAbortCleanup's inline fallback.
