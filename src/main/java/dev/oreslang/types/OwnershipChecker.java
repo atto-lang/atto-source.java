@@ -1700,19 +1700,28 @@ public final class OwnershipChecker {
     }
 
     private VarState invocationLoanRoot(Ast.Expr expression, Scope scope) {
+        Ast.Expr place = null;
         if (expression instanceof Ast.UnaryExpr unary
                 && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
-            return ownershipRoot(borrowPlace(unary.operand(), scope).owner());
-        }
-        if (expression instanceof Ast.RuntimeCallExpr runtime
+            place = unary.operand();
+        } else if (expression instanceof Ast.RuntimeCallExpr runtime
                 && runtime.operation().equals("borrow") && runtime.arguments().size() == 1) {
-            return ownershipRoot(borrowPlace(runtime.arguments().getFirst(), scope).owner());
-        }
-        if (expression instanceof Ast.NameExpr name) {
+            place = runtime.arguments().getFirst();
+        } else if (expression instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             return state == null ? null : ownershipRoot(state);
         }
-        return null;
+
+        // Resolve a simple syntactic owner without reading it first. A loan
+        // from an earlier argument may already prohibit such a read; the
+        // invocation alias map must issue the stable duplicate-loan error
+        // before ordinary usability checks. checkArgument validates this
+        // operand after the overlap test, including its visibility/mutability.
+        if (place instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            return state == null ? null : ownershipRoot(state);
+        }
+        return place == null ? null : ownershipRoot(borrowPlace(place, scope).owner());
     }
 
     private void checkArgument(
