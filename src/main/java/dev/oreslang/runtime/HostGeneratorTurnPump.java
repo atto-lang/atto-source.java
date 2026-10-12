@@ -68,6 +68,8 @@ final class HostGeneratorTurnPump implements AutoCloseable {
 
     private final Object gate = new Object();
     private final OwnerToken owner;
+    // Same-instance runtime authority, not merely caller-supplied matching IDs.
+    private final PhysicalGuestExitLedger physicalGuestExits;
     private final BooleanSupplier ownerTurnAuthorized;
     private final Runnable signalOwner;
     private final int capacity;
@@ -91,12 +93,27 @@ final class HostGeneratorTurnPump implements AutoCloseable {
     }
 
     HostGeneratorTurnPump(OwnerToken owner, BooleanSupplier ownerTurnAuthorized) {
-        this(owner, ownerTurnAuthorized, () -> { }, DEFAULT_CAPACITY);
+        this(owner, ownerTurnAuthorized, () -> { }, DEFAULT_CAPACITY, null);
+    }
+
+    HostGeneratorTurnPump(OwnerToken owner, BooleanSupplier ownerTurnAuthorized,
+                          PhysicalGuestExitLedger ledger) {
+        this(owner, ownerTurnAuthorized, () -> { }, DEFAULT_CAPACITY, ledger);
     }
 
     private HostGeneratorTurnPump(OwnerToken owner, BooleanSupplier ownerTurnAuthorized,
                           Runnable signalOwner, int capacity) {
+        this(owner, ownerTurnAuthorized, signalOwner, capacity, null);
+    }
+
+    private HostGeneratorTurnPump(OwnerToken owner, BooleanSupplier ownerTurnAuthorized,
+                          Runnable signalOwner, int capacity,
+                          PhysicalGuestExitLedger ledger) {
         this.owner = Objects.requireNonNull(owner, "owner");
+        this.physicalGuestExits = ledger == null ? new PhysicalGuestExitLedger(owner) : ledger;
+        if (!this.physicalGuestExits.owner().equals(owner)) {
+            throw new SecurityException("physical exit ledger belongs to a foreign incarnation");
+        }
         this.ownerTurnAuthorized = Objects.requireNonNull(
                 ownerTurnAuthorized, "ownerTurnAuthorized");
         this.signalOwner = Objects.requireNonNull(signalOwner, "signalOwner");
@@ -107,6 +124,9 @@ final class HostGeneratorTurnPump implements AutoCloseable {
     OwnerToken token() {
         return owner;
     }
+
+    // Package-private for deterministic physical entry/leave fixture tests.
+    PhysicalGuestExitLedger physicalExitLedger() { return physicalGuestExits; }
 
     <T> OresFuture<T> request(OwnerToken token, Start<T> start) {
         Objects.requireNonNull(start, "start");
@@ -122,6 +142,9 @@ final class HostGeneratorTurnPump implements AutoCloseable {
             if (pending.size() >= capacity) {
                 throw new RejectedExecutionException("generator host pull queue is full");
             }
+            // Publish tracking before waking an owner guest turn. Ordinary
+            // actor/async guest entry pays no receipt allocation until then.
+            physicalGuestExits.enableTracking();
             pending.addLast(request);
             wake = active == null;
         }
@@ -190,7 +213,7 @@ final class HostGeneratorTurnPump implements AutoCloseable {
                 throw new IllegalStateException(
                         "generator turn starter returned no physical-exit barrier");
             }
-            if (!started.physicalExit().claim(owner)) {
+            if (!started.physicalExit().claim(owner, physicalGuestExits)) {
                 throw new SecurityException(
                         "physical DONE receipt is foreign, replayed or incorrectly bound");
             }
