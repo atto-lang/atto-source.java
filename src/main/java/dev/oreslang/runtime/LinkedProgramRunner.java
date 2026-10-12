@@ -289,21 +289,42 @@ public final class LinkedProgramRunner {
      * Keep this consistent with the Truffle root's own async/Future preflight;
      * a pull-driven generator does not return an OresFuture.
      */
-    private static boolean publicFunctionReturnsFuture(
+    static boolean publicFunctionReturnsFuture(
             Ast.Program program, String name, int arity) {
-        if (program == null) return false;
+        if (program == null || name == null || name.isBlank()) return false;
+        // The evaluator indexes name + arity inside its owning module and
+        // rejects unqualified names when multiple modules define that name.
+        // Host preflight must resolve the *same* callable before choosing
+        // between the scalar Polyglot path and a scoped Future handoff.
+        int dot = name.lastIndexOf('.');
+        String owner = dot >= 0 ? name.substring(0, dot) : null;
+        String simpleName = dot >= 0 ? name.substring(dot + 1) : name;
+        String unqualifiedOwner = null;
+        Ast.FunctionDecl selected = null;
         for (Ast.ModuleDecl module : program.modules()) {
+            if (owner != null && !owner.equals(module.name())) continue;
             for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.FunctionDecl fn
-                        && fn.name().equals(name)
-                        && fn.parameters().size() == arity
-                        && fn.visibility() == Ast.Visibility.PUBLIC) {
-                    return !fn.generator() && (fn.async()
-                            || (fn.returnType() != null && "Future".equals(fn.returnType().name())));
+                if (!(declaration instanceof Ast.FunctionDecl fn)
+                        || !fn.name().equals(simpleName)) continue;
+                if (owner == null) {
+                    // Ambiguity is per function name, not per arity. Even a
+                    // non-public overload in another module makes a bare
+                    // lookup ambiguous at the guest evaluator boundary.
+                    if (unqualifiedOwner != null
+                            && !unqualifiedOwner.equals(module.name())) {
+                        throw new IllegalArgumentException("ambiguous function "
+                                + simpleName + "; qualify it with its module");
+                    }
+                    unqualifiedOwner = module.name();
                 }
+                if (fn.parameters().size() == arity) selected = fn;
             }
         }
-        return false;
+        return selected != null
+                && selected.visibility() == Ast.Visibility.PUBLIC
+                && !selected.generator()
+                && (selected.async() || (selected.returnType() != null
+                    && "Future".equals(selected.returnType().name())));
     }
 
     private static int requireExitStatus(Value value) {

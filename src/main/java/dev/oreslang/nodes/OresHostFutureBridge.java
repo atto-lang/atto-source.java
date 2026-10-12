@@ -85,6 +85,25 @@ public final class OresHostFutureBridge {
             return future;
         }
 
+        /**
+         * The guest may have already published a producer when the outer
+         * Polyglot Value.execute() subsequently fails. If the host did not
+         * receive that Future, request source-task cancellation instead of
+         * silently discarding its only receiver. Cancellation is a request,
+         * not proof of physical cleanup completion.
+         */
+        void cancelUnreturnedOnHostFailure(Throwable hostFailure) {
+            Objects.requireNonNull(hostFailure, "hostFailure");
+            if (state != State.PUBLISHED || future == null) return;
+            try {
+                future.cancel(false);
+            } catch (RuntimeException | Error cancellationFailure) {
+                if (cancellationFailure != hostFailure) {
+                    hostFailure.addSuppressed(cancellationFailure);
+                }
+            }
+        }
+
         void close() {
             state = State.CLOSED;
             ownerContext = null;
@@ -125,6 +144,11 @@ public final class OresHostFutureBridge {
             // the guest context again after the scheduler has started.
             parsedSource.execute(command);
             return (OresFuture<T>) slot.result();
+        } catch (RuntimeException | Error hostFailure) {
+            // Even after successful ticket publication, Polyglot may reject
+            // the outer host return. Never abandon that published producer.
+            slot.cancelUnreturnedOnHostFailure(hostFailure);
+            throw hostFailure;
         } finally {
             Slot popped = slots.pop();
             slot.close();

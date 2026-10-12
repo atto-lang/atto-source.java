@@ -80,6 +80,35 @@ final class OresHostFutureBridgeTicketTest {
     }
 
     @Test
+    void failedOuterHostReturnCancelsPublishedProducer() {
+        var slot = new OresHostFutureBridge.Slot("work");
+        Object context = new Object();
+        Object root = new Object();
+        OresFuture<Integer> pending = new OresFuture<>();
+        slot.claim("work", slot.nonce(), context, root);
+        slot.publish("work", slot.nonce(), context, root, pending);
+        RuntimeException hostFailure = new IllegalStateException("outer Polyglot return failed");
+        slot.cancelUnreturnedOnHostFailure(hostFailure);
+        assertTrue(pending.isCancelled(),
+                "a published producer without a host receiver must be cancelled");
+        assertEquals(0, hostFailure.getSuppressed().length);
+        slot.close();
+        assertThrows(IllegalStateException.class, slot::result);
+    }
+
+    @Test
+    void hostReturnFailureBeforePublicationDoesNotMutateOtherFutures() {
+        var slot = new OresHostFutureBridge.Slot("work");
+        Object context = new Object();
+        Object root = new Object();
+        slot.claim("work", slot.nonce(), context, root);
+        slot.cancelUnreturnedOnHostFailure(new IllegalStateException("unpublished"));
+        OresFuture<Integer> independent = new OresFuture<>();
+        assertFalse(independent.isDone());
+        slot.close();
+    }
+
+    @Test
     void absentContextIdentityFailsBeforeClaim() {
         var slot = new OresHostFutureBridge.Slot("work");
         Object root = new Object();
