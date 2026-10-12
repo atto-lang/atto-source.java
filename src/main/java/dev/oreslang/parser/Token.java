@@ -3,6 +3,7 @@ package dev.oreslang.parser;
 public record Token(Type type, String lexeme, int line, int column) {
     public enum Type {
         IDENT,
+        CRITICAL, CRITICAL_READ, CRITICAL_WRITE, TRANSFORM_PIPE, NB_SELECT,
         INT,
         FLOAT,
         IMAG,
