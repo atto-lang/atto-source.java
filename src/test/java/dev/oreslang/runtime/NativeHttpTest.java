@@ -303,6 +303,78 @@ class NativeHttpTest {
         }
     }
 
+    @Test
+    void rejectedAbortAfterPartialStreamReclaimsSocketOnlyAfterCarrierExit()
+            throws Exception {
+        CompletableFuture<Integer> port = new CompletableFuture<>();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public synchronized void write(byte[] bytes, int off, int len) {
+                super.write(bytes, off, len);
+                String printed = toString(StandardCharsets.UTF_8);
+                int newline = printed.indexOf('\n');
+                if (newline >= 0 && !port.isDone())
+                    port.complete(Integer.parseInt(printed.substring(0, newline).trim()));
+            }
+        };
+        NativeHttp.REJECT_NEXT_ABORT_FOR_TEST.set(false);
+        try (Context context = IsolatePolicy.developer()
+                    .withCapabilities(IsolatePolicy.Capability.NETWORK)
+                    .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of())
+                    .out(output).build();
+             ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> client = workers.submit(() -> {
+                try {
+                    var response = request(port.get(5, TimeUnit.SECONDS), "GET", "/", "");
+                    assertEquals(200, response.statusCode());
+                    assertFalse(response.body().contains("INVALID-late-write"));
+                } catch (java.io.IOException expectedDisconnect) {
+                    // Closing the partially streamed socket can abort its body.
+                } catch (Exception failure) {
+                    throw new CompletionException(failure);
+                }
+            });
+            context.eval(Source.newBuilder(OresLanguage.ID, """
+                    define actor PausedStream as
+                      receive(ActorMail<String> mail): void {
+                        val exchange = http.claim(mail.value);
+                        defer stdio.println("stream-finalized");
+                        await exchange.start(200, "text/plain");
+                        await exchange.write("first-chunk");
+                        self.send("stream-ready");
+                        val Channel<int> gate = Channel.new<int>(0);
+                        const ignored = await (nb readch gate);
+                        await exchange.write("INVALID-late-write");
+                        self.end();
+                        return;
+                      }
+                    end
+                    pub async routine main(): void {
+                      val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+                      stdio.println(server.port);
+                      val exchange = await server.accept();
+                      val streamer = spawn PausedStream();
+                      await streamer.ready;
+                      streamer.send(exchange.move_to(streamer));
+                      await streamer.outputs.next();
+                      stdio.println("partial-stream-ready");
+                      return;
+                    }
+                    """, "rejected-stream-abort.ores").build());
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("partial-stream-ready"));
+            // Precisely one actor-completion abort dispatch is rejected.
+            // The host close must drain all former I/O carriers before its
+            // synchronous socket-close fallback and exchange release.
+            NativeHttp.REJECT_NEXT_ABORT_FOR_TEST.set(true);
+            assertDoesNotThrow(() -> { context.close(); });
+            assertFalse(NativeHttp.REJECT_NEXT_ABORT_FOR_TEST.get(),
+                    "the fault must have reached a real abort dispatch");
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("stream-finalized"));
+            client.get(8, TimeUnit.SECONDS);
+        } finally {
+            NativeHttp.REJECT_NEXT_ABORT_FOR_TEST.set(false);
+        }
+    }
+
     @FunctionalInterface interface Client { void run(int port) throws Exception; }
     private static HttpResponse<String> request(int port, String method, String path, String body) throws Exception {
         try (HttpClient client = HttpClient.newHttpClient()) {
