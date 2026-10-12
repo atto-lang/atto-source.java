@@ -32,7 +32,7 @@ Init ==
     /\ startCursor = 0
     /\ ready = {}
     /\ registered = {}
-    /\ winner = -1
+    /\ winner = "None"
     /\ consumed = {}
     /\ cancelled = FALSE
 
@@ -44,7 +44,7 @@ Start ==
     /\ startCursor' = cursor
     /\ ready' = {}
     /\ registered' = Arms
-    /\ winner' = -1
+    /\ winner' = "None"
     /\ consumed' = {}
     /\ cancelled' = FALSE
     /\ UNCHANGED <<cursor>>
@@ -106,7 +106,7 @@ TypeOK ==
     /\ startCursor \in Arms
     /\ ready \subseteq Arms
     /\ registered \subseteq Arms
-    /\ winner \in Arms \cup {-1}
+    /\ winner \in Arms \cup {"None"}
     /\ consumed \subseteq Arms
     /\ cancelled \in BOOLEAN
 
@@ -115,9 +115,9 @@ DetachedAfterSettlement == phase # "Waiting" => registered = {}
 ExactlyOneWinner ==
     phase = "Committed" => consumed = {winner}
 CancelledCannotConsume ==
-    cancelled => /\ consumed = {} /\ winner = -1
+    cancelled => /\ consumed = {} /\ winner = "None"
 NoEarlyWinner ==
-    phase = "Waiting" => /\ winner = -1 /\ consumed = {}
+    phase = "Waiting" => /\ winner = "None" /\ consumed = {}
 FairCursorRotatesOnWin ==
     phase = "Committed" => cursor = NextArm(winner)
 CancellationPreservesCursor ==
