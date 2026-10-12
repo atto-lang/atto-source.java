@@ -553,6 +553,31 @@ final class ParserTest {
     }
 
     @Test
+    void elseBodyMayBeginWithNestedIfOnFollowingLine() {
+        Ast.Program program = Parser.parse("""
+                define module app as
+                  fnc choose(bool a, bool b): int {
+                    if a; then
+                      return 1;
+                    else
+                      if b; then
+                        return 2;
+                      fi
+                      return 3;
+                    fi
+                  }
+                end
+                """);
+
+        Ast.FunctionDecl function =
+                (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        Ast.IfStmt outer = (Ast.IfStmt) function.body().getFirst();
+        assertEquals(1, outer.branches().size());
+        assertEquals(2, outer.elseBody().size());
+        assertInstanceOf(Ast.IfStmt.class, outer.elseBody().getFirst());
+    }
+
+    @Test
     void legacyIfDoAndElseifRemainAcceptedForMigration() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define module app as
@@ -1192,5 +1217,40 @@ final class ParserTest {
             permute(nextRemaining, nextPrefix, out);
         }
     }
+
+    @Test
+    void routeGuardConditionalsAcceptDoElifElseifAndElseIfAliases() {
+        String source = """
+                define module routes as
+                  fnc validate(int handler_id, bool pattern_valid, int segment_count): int {
+                    if handler_id < 0; do
+                      return -1;
+                    elif !pattern_valid; then
+                      return -2;
+                    elseif segment_count > 10; do
+                      return -3;
+                    else if handler_id == 0; then
+                      return 0;
+                    else
+                      return 1;
+                    fi
+                  }
+                end
+                """;
+
+        Parser.ParseResult parsed = Parser.parseWithWarnings(source);
+        assertDoesNotThrow(() -> TypeChecker.check(parsed.program()));
+
+        Ast.FunctionDecl function =
+                (Ast.FunctionDecl) parsed.program().modules().getFirst().declarations().getFirst();
+        Ast.IfStmt statement = (Ast.IfStmt) function.body().getFirst();
+
+        assertEquals(4, statement.branches().size());
+        assertFalse(statement.elseBody().isEmpty());
+        assertEquals(2, parsed.warnings().size());
+        assertTrue(parsed.warnings().stream()
+                .allMatch(warning -> warning.message().contains("use 'then'")));
+    }
+
 
 }

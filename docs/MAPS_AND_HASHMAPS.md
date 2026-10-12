@@ -21,7 +21,7 @@ References:
 
 ## Names and types
 
-- `Map<K, V>`: read-only map interface/protocol (no mutating methods). Not equivalent to a structural `obj{...}` record; map keys are dynamic values, object field names are not map type parameters.
+- `Map<K, V>`: read-only map interface/protocol (no mutating methods). Not equivalent to a closed `infer struct{...}` record; map keys are dynamic values, object field names are not map type parameters.
 - `MutableMap<K, V>`: extended capability to mutate a map.
 - `HashMap<K, V>`: hash-backed, actor-owned mutable map; implements the above interfaces.
 - Future: `ImmutableMap<K,V>` (persistent functional updates) and `OrderedMap<K,V>` (explicit iteration order). Do not promise stable insertion order from `HashMap`.
@@ -350,3 +350,12 @@ atomicity. Run against an **exact recorded source tree**; if source Actions
 cannot allocate a runner, a cross-organization carrier must contain identical
 Git blob contents and must not assume a private cross-org `GITHUB_TOKEN`
 checkout will work. A design-only or blocked workflow is not a passing test.
+
+## Current syntax boundary
+
+Examples in this RFC are proposals for the map API. Implemented canonical match
+uses `match value over on Pattern -> { ... } end`, ordered arms, and `on _`
+for fallback. `default` and `Symbol.default` are not current canonical match
+markers. Inferred struct values use read-only `const` bindings. The nested
+Option coverage tests in this PR preserve the present/missing distinctions
+without bringing back the older match-default or mutable-record assumptions.

@@ -32,68 +32,6 @@ Every `if` closes with `fi`, including brace-bodied forms. Executable arms
 use the slim arrow `->`. The fat arrow `=>` remains type-level syntax for
 function types and interface callable signatures.
 
-## Match delimiters, default arms and nested variants
-
-Both delimited forms are supported:
-
-```ores
-match item over
-  Some(value) -> { use(value); }
-  None -> { handleMissing(); }
-end
-
-match item {
-  Some(value) -> { use(value); }
-  None -> { handleMissing(); }
-}
-```
-
-The older `match item ... end` spelling remains accepted. `over` is
-contextual to a match separator. `Symbol.default`, `default`, `else`,
-and `_` denote the same unguarded complement/fallback pattern **only in
-match arms**. They are **not** constructor values, first-class functions, or
-ordinary qualified lookups:
-
-```ores
-match item over
-  Some(value) -> { use(value); }
-  Symbol.default -> { handleOther(); }
-end
-```
-
-A zero-parameter lambda token sequence `||` is **never** a match fallback,
-so `|| -> { ... }` is a syntax error. Value-pattern matching stays distinct
-from matching **function signatures or callable cases**; those must receive
-their own separate explicit grammar and should not reinterpret lambda pipes
-as wildcards. The `for` keyword remains reserved for its existing iteration
-role until a separate function-clause syntax is specified.
-
-Nested `Option` or `Result` constructors must be proved recursively, not
-by treating any `Some(...)` or `Ok(...)` as a catch-all:
-
-```ores
-match entry over
-  Some(Some(value)) -> { use(value); }
-  Some(None) -> { handleEmptyValue(); }
-  None -> { handleMissingKey(); }
-end
-```
-
-This is exhaustive for `Option<Option<T>>`; by contrast, only
-`Some(Some(value))` plus `None` is incomplete. `Some(inner)` binds
-`inner: Option<T>` and already covers both inner `Some` and inner `None`.
-A later wildcard/`Symbol.default` after full coverage is unreachable and
-rejected in exclusive matches. The fallback is an unguarded **complement**,
-not an additional overlapping arm.
-
-### Map lookup is separate from map value optionality
-
-`Map<K,V>.get(key)` yields `Option<V>`, while
-`Map<K,Option<V>>.get(key)` yields `Option<Option<V>>`. The same applies to
-`take(key)`. An absent map key is outer `None`; a present key storing
-`None` is `Some(None)`. The parser cannot infer a third state when the
-value type itself is not optional.
-
 ## Semantic separation
 
 - `x is y` is reference/handle identity.
@@ -185,3 +123,10 @@ reflection, or arbitrary host `instanceof` relationships are not Oreslang
 type semantics.
 
 See `NATIVE_RUNTIME_ABI.md` for the native/JNI boundary.
+
+## Nested constructor coverage
+
+Coverage of `match value ... end` checks the payloads of `Some`, `Ok`,
+and `Err` recursively: `Some(Some(x))` plus `None` leaves `Some(None)` uncovered.
+Use `match value over on ... end` for ordered matching; its `on` arm syntax and
+ordered overlap policy are unchanged. Fall back with `_` in canonical arms.

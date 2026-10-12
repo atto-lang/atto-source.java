@@ -6,6 +6,9 @@ import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.NativeBuildMode;
+import dev.oreslang.runtime.CorePerf;
+import dev.oreslang.runtime.CoreDebug;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.runtime.PermissionCheckMode;
@@ -30,12 +33,23 @@ public final class OresMain {
     private OresMain() { }
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 1 && args[0].equals("--build-info")) {
+            System.out.println("{\"build_mode\":\"" + NativeBuildMode.kind().name().toLowerCase(Locale.ROOT)
+                    + "\",\"default_execution_mode\":\"" + NativeBuildMode.defaultExecutionMode()
+                    + "\",\"guest_execution\":\"" + (NativeBuildMode.kind() == NativeBuildMode.Kind.AOT
+                        ? "interpreter-no-jit" : "runtime-selected") + "\"}");
+            return;
+        }
+        String perfEnv = System.getenv("ORES_CORE_PERF");
+        boolean corePerf = "true".equalsIgnoreCase(perfEnv) || "1".equals(perfEnv);
+        String debugEnv = System.getenv("ORES_CORE_DEBUG");
+        boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
         boolean strict = false;
         boolean checkOnly = false;
         boolean buildAnalysis = false;
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
-        String mode = "jit";
+        String mode = NativeBuildMode.defaultExecutionMode();
         String platform = "server";
         PermissionCheckMode permissionCheckMode = PermissionCheckMode.RUNTIME;
         RuntimePermissions.Builder permissionBuilder = new RuntimePermissions.Builder();
@@ -48,6 +62,10 @@ public final class OresMain {
         for (String arg : args) {
             if (arg.equals("--strict-isolate")) strict = true;
             else if (arg.equals("--check")) checkOnly = true;
+            else if (arg.equals("--core-perf")) corePerf = true;
+            else if (arg.equals("--no-core-perf")) corePerf = false;
+            else if (arg.equals("--core-debug")) coreDebug = true;
+            else if (arg.equals("--no-core-debug")) coreDebug = false;
             else if (arg.equals("--build-analysis")) buildAnalysis = true;
             else if (arg.equals("--no-prompt")) {
                 // Oreslang permissions never prompt. This Deno-compatible
@@ -92,6 +110,9 @@ public final class OresMain {
             else throw new IllegalArgumentException("only one .ores or .java source file may be supplied");
         }
 
+        CorePerf.configure(corePerf);
+        CoreDebug.configure(coreDebug);
+        NativeBuildMode.requireCompatible(ExecutionProfile.parse(mode, platform));
         Path path;
         if (filename == null) {
             OresProjectConfig project = OresProjectConfig.discover(
@@ -117,6 +138,7 @@ public final class OresMain {
         String directOresSource = filename.endsWith(".ores") ? Files.readString(path) : null;
         if (directOresSource != null) {
             formatSyntaxWarnings(path, directOresSource).forEach(System.err::println);
+            formatSelectReturnWarnings(path, directOresSource).forEach(System.err::println);
         }
 
         IsolatePolicy policy = strict ? IsolatePolicy.strictFaas() : IsolatePolicy.developer();
@@ -183,7 +205,7 @@ public final class OresMain {
         }
 
         ExecutionProfile profile = ExecutionProfile.parse(mode, platform);
-        LinkedProgramRunner.run(
+        int exitStatus = LinkedProgramRunner.runWithExitStatus(
                 path,
                 policy,
                 permissions,
@@ -192,7 +214,8 @@ public final class OresMain {
                 allowedHostClasses,
                 System.getenv(),
                 System.out,
-                System.err);
+                System.err).exitStatus();
+        if (exitStatus != 0) System.exit(exitStatus);
     }
 
     private static boolean parsePermissionFlag(
@@ -251,7 +274,7 @@ public final class OresMain {
                         + "[--allow-ffi[=PATH,...]] [--deny-ffi[=PATH,...]] "
                         + "[--allow-import[=PATH,...]] [--deny-import[=PATH,...]] "
                         + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] "
-                        + "[--strict-isolate] [--mode=aot|jit|hybrid] "
+                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
                         + "[file.ores|file.java]");
@@ -269,6 +292,25 @@ public final class OresMain {
         } catch (IllegalArgumentException ignored) {
             // The normal compile/check path will report the authoritative parse
             // error. Do not replace it with a secondary warning-scan failure.
+            return List.of();
+        }
+    }
+
+    /**
+     * Report no-result select arm returns on the normal CLI path, not only
+     * through the programmatic diagnostics API. The linked program compiler
+     * remains the authoritative checker; a failed preliminary analysis must
+     * not mask imports, source errors, or the normal diagnostic location.
+     */
+    static List<String> formatSelectReturnWarnings(Path path, String source) {
+        try {
+            Path normalized = path.toAbsolutePath().normalize();
+            return OresCompiler.parseAndTypeCheckWithDiagnostics(source).warnings().stream()
+                    .map(warning -> normalized + ": warning: " + warning)
+                    .toList();
+        } catch (IllegalArgumentException ignored) {
+            // Linked modules may need the import graph before full typechecking;
+            // always let the authoritative compiler report the actual error.
             return List.of();
         }
     }

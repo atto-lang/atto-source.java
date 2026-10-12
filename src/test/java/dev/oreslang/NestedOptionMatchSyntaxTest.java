@@ -23,10 +23,10 @@ final class NestedOptionMatchSyntaxTest {
     }
 
     @Test
-    void threeStatesAreExhaustivelyMatchedInOverEndForm() {
+    void threeStatesHaveCompleteNestedCoverage() {
         accepts("""
                 fnc classify(Option<Option<int>> entry): int {
-                  match entry over
+                  match entry
                     Some(Some(value)) -> { return value; }
                     Some(None) -> { return -1; }
                     None -> { return -2; }
@@ -36,29 +36,31 @@ final class NestedOptionMatchSyntaxTest {
     }
 
     @Test
-    void bracedFormAndExplicitSymbolDefaultAreSupported() {
+    void fallbackUsesWildcardOrElse() {
         accepts("""
                 fnc classify(Option<Option<int>> entry): int {
-                  match entry {
+                  match entry
+
                     Some(Some(value)) -> { return value; }
-                    Symbol.default -> { return -1; }
-                  }
-                }
-                """);
-        accepts("""
-                fnc classify(Option<int> entry): int {
-                  match entry over
-                    Some(value) -> { return value; }
-                    default -> { return 0; }
+                    _ -> { return -1; }
                   end
                 }
                 """);
         accepts("""
                 fnc classify(Option<int> entry): int {
-                  match entry {
+                  match entry
                     Some(value) -> { return value; }
                     _ -> { return 0; }
-                  }
+                  end
+                }
+                """);
+        accepts("""
+                fnc classify(Option<int> entry): int {
+                  match entry
+
+                    Some(value) -> { return value; }
+                    _ -> { return 0; }
+                  end
                 }
                 """);
     }
@@ -67,7 +69,7 @@ final class NestedOptionMatchSyntaxTest {
     void deeplyNestedConstructorCoverageIsNotInferredFromOuterSome() {
         IllegalArgumentException err = rejects("""
                 fnc incomplete(Option<Option<int>> entry): int {
-                  match entry over
+                  match entry
                     Some(Some(value)) -> { return value; }
                     None -> { return 0; }
                   end
@@ -80,7 +82,7 @@ final class NestedOptionMatchSyntaxTest {
     void overlappingNestedConstructorsAreRejected() {
         IllegalArgumentException err = rejects("""
                 fnc overlap(Option<Option<int>> entry): int {
-                  match entry over
+                  match entry
                     Some(value) -> { return 1; }
                     Some(None) -> { return 2; }
                     None -> { return 3; }
@@ -95,7 +97,7 @@ final class NestedOptionMatchSyntaxTest {
     void unmatchedWildcardFunctionLiteralIsNotAPattern() {
         IllegalArgumentException err = rejects("""
                 fnc invalid(Option<int> entry): int {
-                  match entry over
+                  match entry
                     Some(value) -> { return value; }
                     None -> { return 0; }
                     || -> { return 1; }
@@ -107,10 +109,10 @@ final class NestedOptionMatchSyntaxTest {
 
     @Test
     void fallbacksAfterCompleteSomeNoneCoverageAreUnreachable() {
-        for (String fallback : new String[]{"_", "Symbol.default", "default", "else"}) {
+        for (String fallback : new String[]{"_", "else"}) {
             IllegalArgumentException err = rejects("""
                     fnc invalid(Option<int> entry): int {
-                      match entry over
+                      match entry
                         Some(value) -> { return value; }
                         None -> { return 0; }
                     """ + "    " + fallback + " -> { return 1; }\n" + """
@@ -125,7 +127,7 @@ final class NestedOptionMatchSyntaxTest {
     void nestedResultAlsoRequiresEveryVariant() {
         accepts("""
                 fnc classify(Result<Option<int>, bool> entry): int {
-                  match entry over
+                  match entry
                     Ok(Some(value)) -> { return value; }
                     Ok(None) -> { return 0; }
                     Err(flag) -> { return -1; }
@@ -134,7 +136,7 @@ final class NestedOptionMatchSyntaxTest {
                 """);
         assertTrue(rejects("""
                 fnc incomplete(Result<Option<int>, bool> entry): int {
-                  match entry over
+                  match entry
                     Ok(Some(value)) -> { return value; }
                     Err(flag) -> { return 0; }
                   end
@@ -146,7 +148,7 @@ final class NestedOptionMatchSyntaxTest {
     void runtimeDispatchesAllThreeStates() throws Exception {
         String code = """
                 fnc classify(Option<Option<int>> entry): int {
-                  match entry over
+                  match entry
                     Some(Some(value)) -> { return value; }
                     Some(None) -> { return -1; }
                     None -> { return -2; }
@@ -178,7 +180,7 @@ final class NestedOptionMatchSyntaxTest {
     void missingOuterNoneIsStillNonExhaustiveWithBothPresentShapesHandled() {
         IllegalArgumentException err = rejects("""
                 fnc incomplete(Option<Option<int>> entry): int {
-                  match entry over
+                  match entry
                     Some(Some(value)) -> { return value; }
                     Some(None) -> { return -1; }
                   end
@@ -191,7 +193,7 @@ final class NestedOptionMatchSyntaxTest {
     void someInnerIsAnOptionNotImplicitlyUnwrapped() {
         rejects("""
                 fnc invalid(Option<Option<int>> entry): int {
-                  match entry over
+                  match entry
                     Some(inner) -> { return inner; }
                     None -> { return -1; }
                   end
@@ -199,9 +201,9 @@ final class NestedOptionMatchSyntaxTest {
                 """);
         accepts("""
                 fnc valid(Option<Option<int>> entry): int {
-                  match entry over
+                  match entry
                     Some(inner) -> {
-                      match inner over
+                      match inner
                         Some(value) -> { return value; }
                         None -> { return -1; }
                       end
@@ -236,7 +238,7 @@ final class NestedOptionMatchSyntaxTest {
     void patternsCannotPretendOptionIntContainsStoredNone() {
         rejects("""
                 fnc invalid(Option<int> entry): int {
-                  match entry over
+                  match entry
                     Some(None) -> { return 1; }
                     None -> { return 0; }
                   end
@@ -248,7 +250,7 @@ final class NestedOptionMatchSyntaxTest {
     void guardedArmDoesNotMakePartialSomeCoverageExhaustive() {
         IllegalArgumentException err = rejects("""
                 fnc invalid(Option<int> entry): int {
-                  match entry over
+                  match entry
                     Some(value) when value > 0 -> { return value; }
                     None -> { return 0; }
                   end
@@ -261,7 +263,7 @@ final class NestedOptionMatchSyntaxTest {
     void constructorBindingsDoNotEscapeTheirLexicalArm() {
         rejects("""
                 fnc invalid(Option<int> entry): int {
-                  match entry over
+                  match entry
                     Some(value) -> {}
                     None -> {}
                   end
@@ -274,7 +276,7 @@ final class NestedOptionMatchSyntaxTest {
     void nestedBoolOptionRetainsFalsePresentNoneAndMissing() throws Exception {
         String code = """
                 fnc classify(Option<Option<bool>> entry): int {
-                  match entry over
+                  match entry
                     Some(Some(false)) -> { return 10; }
                     Some(Some(true)) -> { return 20; }
                     Some(None) -> { return 30; }
@@ -311,7 +313,7 @@ final class NestedOptionMatchSyntaxTest {
                 }
 
                 pub fnc main(): void {
-                  match lookup() over
+                  match lookup()
                     Some(Some(value)) -> { stdio.println("stored"); }
                     Some(None) -> { stdio.println("empty"); }
                     None -> { stdio.println("missing"); }
