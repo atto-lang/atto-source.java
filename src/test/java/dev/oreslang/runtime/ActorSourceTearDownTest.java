@@ -39,6 +39,8 @@ final class ActorSourceTearDownTest {
         private boolean teardownEmitsOutput;
         private volatile CountDownLatch teardownEntered;
         private volatile CountDownLatch releaseTeardown;
+        private volatile CountDownLatch receiveEntered;
+        private volatile CountDownLatch releaseReceive;
 
         Executor(SharedCodeImageStore.CodeImage image, boolean teardownFails) {
             this.image = image;
@@ -62,9 +64,15 @@ final class ActorSourceTearDownTest {
                 String actorName,
                 ActorRuntime.ActorOwnedGuestState state,
                 ActorRuntime.ActorInboxMail<Object> mail,
-                ActorRuntime.ActorContext<Object> context) {
+                ActorRuntime.ActorContext<Object> context) throws Exception {
             assertEquals(context.self().id(), state.ownerActorId());
             receives.incrementAndGet();
+            if (receiveEntered != null) {
+                receiveEntered.countDown();
+                if (!releaseReceive.await(3, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test did not release active receive");
+                }
+            }
             if ("self".equals(mail.value())) {
                 // Queue a second envelope deterministically before fencing
                 // mailbox admission. It must be discarded without dispatch.
@@ -233,6 +241,48 @@ final class ActorSourceTearDownTest {
             assertThrows(CompletionException.class, () -> ref.done().join());
             assertEquals(0, executor.teardowns.get());
             assertEquals("receive failure", ref.failure().orElseThrow().getMessage());
+        }
+    }
+
+    @Test
+    void externalStopCannotRunTeardownConcurrentlyWithAnActiveReceive()
+            throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(image(store), false);
+            executor.receiveEntered = new CountDownLatch(1);
+            executor.releaseReceive = new CountDownLatch(1);
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            ref.ready().get(2, TimeUnit.SECONDS);
+            ref.send("active");
+            assertTrue(executor.receiveEntered.await(2, TimeUnit.SECONDS));
+            AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+            Thread stopper = new Thread(() -> {
+                try {
+                    ref.stop();
+                } catch (Throwable problem) {
+                    stopFailure.set(problem);
+                }
+            }, "actor-stop-during-admitted-receive");
+            stopper.start();
+            try {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (ref.isAlive() && System.nanoTime() < deadline) {
+                    Thread.yield();
+                }
+                assertFalse(ref.isAlive(), "external stop seals the inbox");
+                assertEquals(0, executor.teardowns.get(),
+                        "teardown must wait for the active exclusive guest turn");
+            } finally {
+                executor.releaseReceive.countDown();
+            }
+            ref.done().get(3, TimeUnit.SECONDS);
+            stopper.join(TimeUnit.SECONDS.toMillis(3));
+            assertFalse(stopper.isAlive());
+            assertNull(stopFailure.get());
+            assertEquals(1, executor.receives.get());
+            assertEquals(1, executor.teardowns.get());
         }
     }
 
