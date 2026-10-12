@@ -42,6 +42,12 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
+    /**
+     * Host lifecycle entry while the outer Polyglot Context remains entered.
+     * Refuse to dispose until source cleanup and its owner have drained.
+     */
+    public static final String PREPARE_CONTEXT_DISPOSAL_COMMAND =
+            "__ores_internal_prepare_context_disposal__";
     public static final String LINK_ONLY_COMMAND = "__ores_internal_link_only__";
     public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
@@ -75,6 +81,10 @@ public final class OresEvalRootNode extends RootNode {
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
         CapabilityChecker.check(program, context.isolatePolicy(), context.permissionCheckMode());
+        if (isControl(arguments, PREPARE_CONTEXT_DISPOSAL_COMMAND)) {
+            context.close();
+            return null;
+        }
         if (arguments.length == 3
                 && REGISTER_IMPORT_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String importPath
