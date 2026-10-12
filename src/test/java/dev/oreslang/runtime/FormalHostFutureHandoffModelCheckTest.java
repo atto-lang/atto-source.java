@@ -508,68 +508,68 @@ final class FormalHostFutureHandoffModelCheckTest {
     }
 
     /** An executor may throw before, during or after physical guest execution. */
-    private enum ExecutorEvent {
+    private enum ExitEvent {
         START, EXIT_NORMAL, EXECUTOR_THROWS, RETRY, RETIRE
     }
 
-    private enum ExecutorPhase { QUEUED, RUNNING, EXITED, REVOKED, UNCERTAIN }
+    private enum ExitPhase { QUEUED, RUNNING, EXITED, REVOKED, UNCERTAIN }
 
-    private record ExecutorState(ExecutorPhase phase, boolean failed,
+    private record ExitState(ExitPhase phase, boolean failed,
             boolean poisoned, boolean retired, int starts, int retries) {
-        static ExecutorState initial() {
-            return new ExecutorState(ExecutorPhase.QUEUED, false, false, false, 0, 0);
+        static ExitState initial() {
+            return new ExitState(ExitPhase.QUEUED, false, false, false, 0, 0);
         }
     }
 
-    private static ExecutorState executorStep(ExecutorState s, ExecutorEvent e) {
-        ExecutorPhase phase = s.phase;
+    private static ExitState exitStep(ExitState s, ExitEvent e) {
+        ExitPhase phase = s.phase;
         boolean failed = s.failed, poisoned = s.poisoned, retired = s.retired;
         int starts = s.starts, retries = s.retries;
         switch (e) {
             case START -> {
-                if (phase == ExecutorPhase.QUEUED && !poisoned && !retired) {
-                    phase = ExecutorPhase.RUNNING;
+                if (phase == ExitPhase.QUEUED && !poisoned && !retired) {
+                    phase = ExitPhase.RUNNING;
                     starts++;
                 }
             }
             case EXIT_NORMAL -> {
-                if (phase == ExecutorPhase.RUNNING) phase = ExecutorPhase.EXITED;
+                if (phase == ExitPhase.RUNNING) phase = ExitPhase.EXITED;
             }
             case EXECUTOR_THROWS -> {
-                if (phase == ExecutorPhase.QUEUED) {
+                if (phase == ExitPhase.QUEUED) {
                     // Atomic CAS revokes execution before its first entry.
-                    phase = ExecutorPhase.REVOKED;
+                    phase = ExitPhase.REVOKED;
                     failed = true;
-                } else if (phase == ExecutorPhase.RUNNING) {
+                } else if (phase == ExitPhase.RUNNING) {
                     // The executor reported failure while guest entry was
                     // physically active; a later result is not a DONE proof.
-                    phase = ExecutorPhase.UNCERTAIN;
+                    phase = ExitPhase.UNCERTAIN;
                     failed = true;
                     poisoned = true;
-                } else if (phase == ExecutorPhase.EXITED) {
+                } else if (phase == ExitPhase.EXITED) {
                     // The guarded runnable returned normally before executor
                     // failure. No replay, but its physical exit is proven.
                     failed = true;
                 }
             }
             case RETRY -> {
-                if (phase == ExecutorPhase.REVOKED && retries == 0) {
-                    phase = ExecutorPhase.QUEUED;
+                if (phase == ExitPhase.REVOKED && retries == 0) {
+                    phase = ExitPhase.QUEUED;
                     retries++;
                 }
             }
             case RETIRE -> {
-                if (phase == ExecutorPhase.EXITED && !poisoned) retired = true;
+                if (phase == ExitPhase.EXITED && !poisoned) retired = true;
             }
         }
-        return new ExecutorState(phase, failed, poisoned, retired, starts, retries);
+        return new ExitState(phase, failed, poisoned, retired, starts, retries);
     }
 
-    private static void executorInvariant(ExecutorState s) {
+    private static void exitInvariant(ExitState s) {
         assertTrue(s.starts >= 0 && s.starts <= 1,
                 "replayed a physically entered guest turn");
         assertTrue(s.retries >= 0 && s.retries <= 1);
-        if (s.phase == ExecutorPhase.UNCERTAIN) {
+        if (s.phase == ExitPhase.UNCERTAIN) {
             assertTrue(s.poisoned, "in-flight failure omitted physical-exit quarantine");
         }
         if (s.poisoned) {
@@ -577,28 +577,28 @@ final class FormalHostFutureHandoffModelCheckTest {
                     "unproven physical exit was treated as retirement authority");
         }
         if (s.retired) {
-            assertEquals(ExecutorPhase.EXITED, s.phase,
+            assertEquals(ExitPhase.EXITED, s.phase,
                     "a result or executor rejection is not a physical exit");
         }
     }
 
     @Test
     void boundedExecutorRejectionPreservesSingleEntryAndUnknownExitQuarantine() {
-        var seen = new HashSet<ExecutorState>();
-        var work = new ArrayDeque<ExecutorState>();
-        ExecutorState initial = ExecutorState.initial();
+        var seen = new HashSet<ExitState>();
+        var work = new ArrayDeque<ExitState>();
+        ExitState initial = ExitState.initial();
         work.add(initial);
         seen.add(initial);
         boolean sawRevoked = false, sawUncertain = false, sawAfterExit = false;
         while (!work.isEmpty()) {
-            ExecutorState s = work.removeFirst();
-            executorInvariant(s);
-            sawRevoked |= s.phase == ExecutorPhase.REVOKED;
-            sawUncertain |= s.phase == ExecutorPhase.UNCERTAIN && s.poisoned;
-            sawAfterExit |= s.phase == ExecutorPhase.EXITED && s.failed;
-            for (ExecutorEvent event : ExecutorEvent.values()) {
-                ExecutorState next = executorStep(s, event);
-                executorInvariant(next);
+            ExitState s = work.removeFirst();
+            exitInvariant(s);
+            sawRevoked |= s.phase == ExitPhase.REVOKED;
+            sawUncertain |= s.phase == ExitPhase.UNCERTAIN && s.poisoned;
+            sawAfterExit |= s.phase == ExitPhase.EXITED && s.failed;
+            for (ExitEvent event : ExitEvent.values()) {
+                ExitState next = exitStep(s, event);
+                exitInvariant(next);
                 if (seen.add(next)) work.addLast(next);
             }
         }
@@ -607,9 +607,9 @@ final class FormalHostFutureHandoffModelCheckTest {
 
     @Test
     void unsafeRetirementOfUncertainRootExitViolatesExecutorInvariant() {
-        ExecutorState unsafe = new ExecutorState(
-                ExecutorPhase.UNCERTAIN, true, false, true, 1, 0);
-        assertThrows(AssertionError.class, () -> executorInvariant(unsafe));
+        ExitState unsafe = new ExitState(
+                ExitPhase.UNCERTAIN, true, false, true, 1, 0);
+        assertThrows(AssertionError.class, () -> exitInvariant(unsafe));
     }
 
 }
