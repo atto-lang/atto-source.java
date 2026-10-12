@@ -595,6 +595,13 @@ public final class OwnershipChecker {
                 throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
             }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
+            // A fresh rt borrow used directly as the iterable is not stored
+            // in a named binding, but iteration retains it across backedges.
+            // The ordinary live-scope scan alone cannot detect that operand.
+            if (isBorrowValue(iterable) || containsBorrowedType(iterable.type)) {
+                throw error("automatic loop cooperation cannot retain a borrowed iterable operand; "
+                        + "iterate an owned collection or end the loan before the loop");
+            }
             Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
@@ -623,6 +630,13 @@ public final class OwnershipChecker {
                 throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
             }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
+            // A fresh rt borrow used directly as the iterable is not stored
+            // in a named binding, but iteration retains it across backedges.
+            // The ordinary live-scope scan alone cannot detect that operand.
+            if (isBorrowValue(iterable) || containsBorrowedType(iterable.type)) {
+                throw error("automatic loop cooperation cannot retain a borrowed iterable operand; "
+                        + "iterate an owned collection or end the loan before the loop");
+            }
             Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
