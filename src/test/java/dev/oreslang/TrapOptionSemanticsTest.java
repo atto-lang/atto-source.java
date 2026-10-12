@@ -593,6 +593,74 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
+    void suspendedNestedBlockRunsDeferAndFinallyExactlyOnce() throws Exception {
+        String source = """
+                async fnc answer(): int {
+                  rt cooperate;
+                  return 11;
+                }
+                async fnc compute(): int {
+                  let mut int status = 0;
+                  try {
+                    defer stdio.stdout.write("D");
+                    val int number = await answer();
+                    status = number;
+                  } catch (err) {
+                    status = 99;
+                  } finally {
+                    stdio.stdout.write("F");
+                  }
+                  return status;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(await compute());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("DF11", run(source));
+    }
+
+    @Test
+    void suspendedNestedPanicRunsDeferAndFinallyOnceWithoutCatch() throws Exception {
+        String source = """
+                async fnc answer(): int {
+                  rt cooperate;
+                  return 11;
+                }
+                async fnc compute(): int {
+                  val int seed = await answer();
+                  try {
+                    defer stdio.stdout.write("D");
+                    val Option<int> absent = None;
+                    return absent.unwrap();
+                  } catch (err) {
+                    stdio.stdout.write("C");
+                    return seed;
+                  } finally {
+                    stdio.stdout.write("F");
+                  }
+                }
+                pub fnc main(): void {
+                  val int unused = await compute();
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = Source.newBuilder(OresLanguage.ID, source, "nested-once.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            PolyglotException panic = assertThrows(
+                    PolyglotException.class, () -> context.eval(program));
+            assertTrue(panic.getMessage().contains("Option::unwrap"));
+        }
+        assertEquals("DF", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void expressionTrapIsNotSilentlyAcceptedBeforeItsEffectLoweringExists() {
         String[] sources = {
                 """
