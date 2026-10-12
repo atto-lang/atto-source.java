@@ -66,8 +66,13 @@ UnsafeDrain ==
     /\ slot' = 0
     /\ UNCHANGED <<writer, queued, closed, completionPending>>
 
-Next == Enqueue \/ Drain \/ AckCompletion \/ Cancel \/ Close
-UnsafeNext == Enqueue \/ UnsafeDrain \/ AckCompletion \/ Cancel \/ Close
+TerminalStutter ==
+    /\ slot = 0
+    /\ writer # "Pending"
+    /\ UNCHANGED vars
+
+Next == Enqueue \/ Drain \/ AckCompletion \/ Cancel \/ Close \/ TerminalStutter
+UnsafeNext == Enqueue \/ UnsafeDrain \/ AckCompletion \/ Cancel \/ Close \/ TerminalStutter
 
 TypeOK ==
     /\ slot \in {0, 1, 2}
