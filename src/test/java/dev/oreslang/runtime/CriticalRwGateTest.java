@@ -156,6 +156,38 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void cancellingSchedulerTaskRevokesContendedRwAdmission() throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        var writer = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        writer.enterAsync();
+        var queued = new AtomicReference<CriticalRwGate.Ticket>();
+        var enqueued = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                if (!resume.initial()) {
+                    fail("cancelled continuation must never enter guest code");
+                }
+                var ticket = gate.newTicket(CriticalRwGate.Mode.READ);
+                queued.set(ticket);
+                var admission = ticket.enterAsync();
+                enqueued.countDown();
+                return OresScheduler.await(admission);
+            });
+            assertTrue(enqueued.await(5, TimeUnit.SECONDS));
+            var ticket = queued.get();
+            ticket.releaseOnCompletion(task);
+            assertEquals(1, gate.queuedCount());
+            assertTrue(task.cancel(false));
+            assertEquals(0, gate.queuedCount(),
+                    "cancelling the scheduler owner must retract pending admission");
+            assertFalse(ticket.isHeld());
+        } finally {
+            writer.close();
+        }
+        assertFalse(gate.hasWriter());
+    }
+
+    @Test
     void sameLogicalContinuationCannotUpgradeOrNestWhileUnverified() {
         CriticalRwGate gate = new CriticalRwGate();
         try (OresScheduler scheduler = new OresScheduler(1)) {
