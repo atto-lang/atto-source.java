@@ -391,6 +391,48 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     /**
+     * Prepare a terminal state without invoking pending runtime callbacks.
+     *
+     * <p>Only host-owned multi-Future shutdown barriers may use this protocol.
+     * Their complete family of outcomes must become terminal before running
+     * ANY returned notification action: a callback on one outcome is otherwise
+     * allowed to block waiting for another outcome on the same publisher.
+     * New subscribers racing with a prepared state can observe that terminal
+     * state immediately, so all related outcomes must be prepared promptly,
+     * without invoking host code between preparations.</p>
+     *
+     * <p>The returned notification is idempotent. The caller MUST invoke it
+     * outside every actor lifecycle lock, even when later preparation fails.
+     * This method is deliberately package-private; guest code cannot issue
+     * or publish a runtime terminal completion.</p>
+     */
+    Runnable prepareCompleteFromRuntime(T value) {
+        return prepareTerminalFromRuntime(new Success<>(value));
+    }
+
+    Runnable prepareFailureFromRuntime(Throwable failure) {
+        return prepareTerminalFromRuntime(
+                new Failure(Objects.requireNonNull(failure, "failure")));
+    }
+
+    private Runnable prepareTerminalFromRuntime(Object terminal) {
+        if (!state.compareAndSet(PENDING, terminal)) return () -> { };
+        cancelHook.set(null);
+        AtomicBoolean published = new AtomicBoolean();
+        return () -> {
+            if (!published.compareAndSet(false, true)) return;
+            notifyPendingRuntimeWaiters(terminal);
+        };
+    }
+
+    private void notifyPendingRuntimeWaiters(Object terminal) {
+        RuntimeWaiterRegistration<T> waiter;
+        while ((waiter = waiters.poll()) != null) {
+            notifyWaiter(waiter, terminal);
+        }
+    }
+
+    /**
      * Runtime-only completion subscription.
      *
      * <p>Callbacks registered here must be scheduler plumbing only: transition a
@@ -559,11 +601,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     private boolean settle(Object terminal) {
         if (!state.compareAndSet(PENDING, terminal)) return false;
-
-        RuntimeWaiterRegistration<T> waiter;
-        while ((waiter = waiters.poll()) != null) {
-            notifyWaiter(waiter, terminal);
-        }
+        notifyPendingRuntimeWaiters(terminal);
         return true;
     }
 
