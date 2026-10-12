@@ -38,6 +38,14 @@ final class MainExitStatusTest {
         assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--invalid-option"}));
         assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--define="}));
         assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--allow-host-class="}));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--allow="}));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--allow=PROCESS_EXIT,"}));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--allow=,PROCESS_EXIT"}));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {
+                "--check", "--build-analysis", temp.resolve("missing.ores").toString()
+        }), "mutually exclusive options are usage errors even if the input file is missing");
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {"\u0000invalid.ores"}),
+                "an invalid path is a malformed invocation, not a compilation failure");
         Path path = temp.resolve("bad.ores");
         Files.writeString(path, "pub routine main(): int { return missing_variable; }");
         assertEquals(1, OresMain.exitStatusForArgs(new String[] {path.toString()}));
