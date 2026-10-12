@@ -158,4 +158,28 @@ final class ActorFinalizationNotificationLockOrderTest {
             parent.done().get(5, TimeUnit.SECONDS);
         }
     }
+
+    @Test
+    void failedExitHookPublishesFailedDoneWithoutStrandingActorRegistry()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicInteger called = new AtomicInteger();
+            runtime.setActorExitHook(domain -> {
+                called.incrementAndGet();
+                throw new IllegalStateException("host-exit-hook-failed");
+            });
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(() ->
+                    (message, context) -> { });
+            actor.stop();
+            java.util.concurrent.ExecutionException failed = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> actor.done().get(5, TimeUnit.SECONDS));
+            assertEquals("host-exit-hook-failed", failed.getCause().getMessage());
+            assertEquals(1, called.get(), "host exit hook must not replay");
+            Field actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            assertFalse(((Map<?, ?>) actorsField.get(runtime)).containsKey(actor.id()),
+                    "failed external hook must not leak the actor registry entry");
+        }
+    }
 }
