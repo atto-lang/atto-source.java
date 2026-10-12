@@ -157,6 +157,9 @@ public final class NativeHttp implements AutoCloseable {
             long perf = CorePerf.start();
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
             synchronized (exchange.state) { exchange.checkOwner(); exchange.state.spawnNanos = System.nanoTime(); }
+            // Includes nonserial handlers: no actor may be spawned or handed a
+            // transfer after this HTTP runtime has been closed.
+            if (closed) { exchange.state.abort(503); return; }
             ActorRuntime.ActorRef<Object> actor = null;
             try {
                 long spawnPerf = CorePerf.start();
@@ -578,6 +581,7 @@ public final class NativeHttp implements AutoCloseable {
             synchronized (state) {
                 checkOwner();
                 if (ActorRuntime.inActorExecution()) throw new SecurityException("only the supervisor may dispatch an HTTP exchange");
+                if (closed) throw new IllegalStateException("HTTP runtime closed");
                 if (state.busy || state.committed) throw new IllegalStateException("cannot move an active HTTP exchange");
                 if (!context.actors().isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
@@ -603,6 +607,14 @@ public final class NativeHttp implements AutoCloseable {
                 // before registration returns. Recheck after installing the
                 // handle so that this race cannot retain a dead observer.
                 state.detachActorDoneObserverIfReleased();
+                // Closing the runtime may race between the initial closed
+                // check and map publication. The shutdown sweep and this
+                // second check cover both possible publication orders.
+                if (closed) {
+                    state.revokeTransferLocked();
+                    state.detachActorDoneObserverIfReleased();
+                    throw new IllegalStateException("HTTP runtime closed");
+                }
                 return token;
             }
         }
@@ -711,6 +723,7 @@ public final class NativeHttp implements AutoCloseable {
             if (bytes.length > state.server.bodyLimit) throw new IllegalArgumentException("response too large");
             return operation(() -> {
                 synchronized (state) {
+                    if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
                     if (state.committed) throw new IllegalStateException("response already started");
                     state.committed = true;
                     state.responseStatus = status;
@@ -727,6 +740,7 @@ public final class NativeHttp implements AutoCloseable {
             validateStatus(status); setHeader("Content-Type", contentType);
             return operation(() -> {
                 synchronized (state) {
+                    if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
                     if (state.committed) throw new IllegalStateException("response already started");
                     state.committed = true;
                     state.responseStatus = status;
@@ -741,7 +755,10 @@ public final class NativeHttp implements AutoCloseable {
         private OresFuture<Object> writeBuffer(byte[] bytes) {
             if (bytes.length > state.server.bodyLimit) throw new IllegalArgumentException("response chunk too large");
             return operation(() -> {
-                if (!state.committed) throw new IllegalStateException("response not started");
+                synchronized (state) {
+                    if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
+                    if (!state.committed) throw new IllegalStateException("response not started");
+                }
                 if (!state.suppressBody) { state.raw.getResponseBody().write(bytes); state.raw.getResponseBody().flush(); }
                 return null;
             });
@@ -762,6 +779,13 @@ public final class NativeHttp implements AutoCloseable {
                     CorePerf.end(CorePerf.HTTP_IO_QUEUE, queued);
                     long workPerf = CorePerf.start();
                     try {
+                        synchronized (state) {
+                            // A deadline, disconnect, or context teardown may
+                            // have retired the exchange while the operation
+                            // was waiting in the I/O executor.
+                            if (state.terminal)
+                                throw new IllegalStateException("HTTP exchange is closed");
+                        }
                         Object value = operation.call();
                         synchronized (state) { state.busy = false; }
                         result.completeFromRuntime(value);
