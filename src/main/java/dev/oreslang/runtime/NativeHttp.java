@@ -18,7 +18,8 @@ public final class NativeHttp implements AutoCloseable {
     private final Set<Server> servers = ConcurrentHashMap.newKeySet();
     /** Persistent serial handler processes; lifetime is owned by this HTTP runtime. */
     private final Set<Handler> handlers = ConcurrentHashMap.newKeySet();
-    private final Map<String, Exchange> transfers = new ConcurrentHashMap<>();
+    /** Publication and shutdown sealing share one linearization gate. */
+    private final TransferPublicationGate<Exchange> transfers = new TransferPublicationGate<>();
     /** Every outstanding unclaimed transfer consumes a bounded reservation. */
     static final int MAX_UNCLAIMED_TRANSFERS_PER_SERVER = 1_024;
 
@@ -56,6 +57,34 @@ public final class NativeHttp implements AutoCloseable {
         int limit() { return limit; }
         long rejected() { return rejected.get(); }
     }
+    /**
+     * A transfer registration must be either visible to the shutdown sweep or
+     * rejected. The gate monitor is never held while locking an exchange State.
+     * Lookup/claim/removal remain lock-free via the concurrent backing map.
+     */
+    static final class TransferPublicationGate<V> {
+        private final ConcurrentHashMap<String, V> entries = new ConcurrentHashMap<>();
+        private boolean sealed;
+
+        synchronized void publish(String token, V value) {
+            if (sealed) throw new IllegalStateException("HTTP transfer registry closed");
+            if (entries.putIfAbsent(Objects.requireNonNull(token),
+                    Objects.requireNonNull(value)) != null)
+                throw new IllegalStateException("duplicate HTTP transfer ticket");
+        }
+
+        synchronized List<V> sealAndSnapshot() {
+            sealed = true;
+            return List.copyOf(entries.values());
+        }
+
+        V get(String token) { return entries.get(token); }
+        V remove(String token) { return entries.remove(token); }
+        boolean remove(String token, V value) { return entries.remove(token, value); }
+        int size() { return entries.size(); }
+        void clear() { entries.clear(); }
+    }
+
     private final ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
@@ -593,7 +622,18 @@ public final class NativeHttp implements AutoCloseable {
                 state.persistentActor = !cancelActorOnAbort;
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
-                transfers.put(token, moved);
+                // If sealing wins after the first closed check, publication
+                // fails without consuming a reservation or moving ownership.
+                try {
+                    transfers.publish(token, moved);
+                } catch (RuntimeException rejected) {
+                    state.releaseTransferReservationLocked();
+                    state.generation--;
+                    state.owner = context;
+                    state.actor = null;
+                    state.persistentActor = false;
+                    throw rejected;
+                }
                 state.actorDoneObserver = destination.done().whenCompleteRuntimeCancellable(
                         (ignored, failure) -> {
                             synchronized (state) {
@@ -612,7 +652,9 @@ public final class NativeHttp implements AutoCloseable {
                 // second check cover both possible publication orders.
                 if (closed) {
                     state.revokeTransferLocked();
-                    state.detachActorDoneObserverIfReleased();
+                    var observer = state.actorDoneObserver;
+                    state.actorDoneObserver = null;
+                    if (observer != null) observer.detach();
                     throw new IllegalStateException("HTTP runtime closed");
                 }
                 return token;
@@ -882,6 +924,9 @@ public final class NativeHttp implements AutoCloseable {
             snapshot = List.copyOf(servers);
             handlerSnapshot = List.copyOf(handlers);
         }
+        // Freeze publication before stopping potentially blocking listeners:
+        // no in-flight transfer may appear after this snapshot.
+        final List<Exchange> outstanding = transfers.sealAndSnapshot();
         for (Server server : snapshot) server.close();
         for (Handler handler : handlerSnapshot) {
             synchronized (handler) {
@@ -892,7 +937,7 @@ public final class NativeHttp implements AutoCloseable {
         timers.shutdownNow();
         // Revoke all outstanding tokens while synchronized with each claim
         // and callback. This releases budgets even if actor termination is late.
-        for (Exchange exchange : List.copyOf(transfers.values())) {
+        for (Exchange exchange : outstanding) {
             synchronized (exchange.state) { exchange.state.revokeTransferLocked(); }
         }
         // Shutdown without discarding accepted abort tasks: they own transport
