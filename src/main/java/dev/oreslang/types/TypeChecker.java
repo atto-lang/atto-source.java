@@ -94,6 +94,8 @@ public final class TypeChecker {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+        ActorStateContract.verify(program);
+        DeclaredEffectVerifier.verify(program);
         checker.validate(program);
         return new TypeCheckResult(program, checker.warnings);
     }
@@ -897,6 +899,20 @@ public final class TypeChecker {
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
         for (Ast.FieldDecl field : klass.fields()) {
+            if (ActorStateContract.isStateField(field)) {
+                Ast.TypeRef keys = ActorStateContract.keySchema(field);
+                if (field.initializer() instanceof Ast.ObjectExpr defaults) {
+                    for (Ast.ObjectField entry : defaults.fields()) {
+                        Ast.TypeRef keyType = keys.recordMembers().get(entry.name());
+                        if (keyType == null) throw new IllegalArgumentException("unknown actor state key '" + entry.name() + "'");
+                        Type expected = resolve(keyType, classGenerics, null);
+                        Type actual = typeOf(entry.value(), new Env(null), classGenerics, null);
+                        requireAssignable(actual, expected,
+                                "actor state default '" + klass.name() + "." + entry.name() + "'");
+                    }
+                }
+                continue;
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
@@ -967,6 +983,13 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && !method.isStatic() && method.name().equals("handle_state")) {
+                throw new IllegalArgumentException("handle_state is a sealed actor intrinsic");
+            }
+            if (method.annotations().stream().anyMatch(a -> a.name().equals("$critical$"))) {
+                throw new IllegalArgumentException("source critical method requires scheduler ticket and continuation lowering");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && (method.name().equals("send")
@@ -1757,6 +1780,13 @@ public final class TypeChecker {
                 targetType = binding.type();
                 where = name.name();
             } else if (assignment.target() instanceof Ast.MemberExpr member) {
+                if (currentClassOwner != null
+                        && ActorStateContract.stateField(currentClassOwner) != null
+                        && member.member().equals("state")
+                        && member.receiver() instanceof Ast.NameExpr stateSelf
+                        && stateSelf.name().equals("self")) {
+                    throw new IllegalArgumentException("actor self.state is sealed and not assignable");
+                }
                 targetType = memberType(member, env, generics, self, true);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
@@ -1941,6 +1971,23 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr intrinsic
+                    && intrinsic.member().equals("handle_state")
+                    && intrinsic.receiver() instanceof Ast.NameExpr receiverName
+                    && receiverName.name().equals("self")
+                    && currentClassOwner != null
+                    && currentActorKind != Ast.ActorKind.NONE) {
+                Ast.FieldDecl state = ActorStateContract.stateField(currentClassOwner);
+                if (state == null) throw new IllegalArgumentException("self.handle_state requires actor state schema");
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1
+                        || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda))
+                    throw new IllegalArgumentException("self.handle_state requires one callback lambda");
+                Type schemaType = resolve(ActorStateContract.keySchema(state), generics, self);
+                validateLambdaAgainstExpected(lambda,
+                        new Function(List.of(schemaType), Unknown.INSTANCE), env, generics, self);
+                // Source runtime must still lower the sealed capability.
+                return Unknown.INSTANCE;
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -2716,6 +2763,14 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (currentClassOwner != null
+                    && ActorStateContract.stateField(currentClassOwner) != null
+                    && member.member().equals("state")
+                    && member.receiver() instanceof Ast.NameExpr stateSelf
+                    && stateSelf.name().equals("self")) {
+                throw new IllegalArgumentException(
+                        "self.state is sealed; use self.handle_state callback");
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")

@@ -695,6 +695,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Set<ActorOwnedGraphArena<?>> ownedGraphs = ConcurrentHashMap.newKeySet();
         private final Set<ActorOwnedI64Region> ownedI64Regions = ConcurrentHashMap.newKeySet();
         private final Set<ExplicitNativeI64Region> explicitNativeI64Regions = ConcurrentHashMap.newKeySet();
+        private final Set<ActorArena> actorArenas = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -816,6 +817,42 @@ public final class ActorRuntime implements AutoCloseable {
                 String typeName, List<ActorNativeI64Record.Field> fields) {
             requireCurrentOwner();
             return ActorNativeI64Record.allocate(this, typeName, fields);
+        }
+
+        /**
+         * Host-level ActorArena for explicitly bounded persistent i64 state
+         * and reusable turn-local scratch. Uses real FFM memory and keeps
+         * actor quota charged until any outstanding native loan releases.
+         * ScratchTurn must close before an await/cooperate suspension.
+         */
+        public ActorArena newActorArena(int persistentSlots, int scratchSlots) {
+            requireCurrentOwner();
+            ActorArena arena = ActorArena.open(this, persistentSlots, scratchSlots);
+            actorArenas.add(arena);
+            return arena;
+        }
+
+        /** Zero-allocation admission for hot native arena reads and writes. */
+        void requireOwnerActive() {
+            ActorCell<?> cell = requireCurrentOwner();
+            if (sliceClosed.get() || cell.stopped.get()) {
+                throw new IllegalStateException("actor native arena owner has retired");
+            }
+        }
+
+        void unregisterArena(ActorArena arena) {
+            actorArenas.remove(arena);
+        }
+
+        /** Reject a scratch scope escaping a synchronous message or yield. */
+        private void assertScratchTurnsClosed() {
+            for (ActorArena arena : actorArenas) {
+                if (arena.hasActiveScratchTurn()) {
+                    throw new IllegalStateException(
+                            "actor scratch arena scope escaped a mailbox/continuation boundary; "
+                            + "close ScratchTurn before returning or awaiting");
+                }
+            }
         }
 
         public ExplicitNativeI64Region newExplicitNativeI64Region(int slots) {
@@ -6576,6 +6613,9 @@ public final class ActorRuntime implements AutoCloseable {
                                 if (!sourceReceiveSuspended) activeMail = null;
                             }
                         }
+                        // Both synchronous messages and cooperative continuation
+                        // segments must leave ephemeral native memory before yield.
+                        memorySlice.assertScratchTurnsClosed();
                         if (codeExecutor == null
                                 && isPrivateKind(kind)
                                 && !trustedFactory) {
