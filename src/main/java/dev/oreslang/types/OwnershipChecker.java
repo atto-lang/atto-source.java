@@ -357,6 +357,10 @@ public final class OwnershipChecker {
                 throw error("cannot yield while a borrow is live; suspended generator frames currently require owned locals");
             }
             ValueInfo value = checkExpr(yielded.value(), scope, true);
+            if (isBorrowValue(value)) {
+                throw error("cannot yield a borrowed reference; generator results must own/copy/share their data");
+            }
+            checkSuspensionBorrows(scope, "yield");
             Ast.TypeRef exposed = yielded.delegated()
                     ? iterableElementType(value.type, currentAsyncGenerator)
                     : value.type;
@@ -660,6 +664,25 @@ public final class OwnershipChecker {
         }
     }
 
+    private boolean isCollectionRead(Ast.Expr expression, Scope scope) {
+        if (expression instanceof Ast.CastExpr cast) return isCollectionRead(cast.value(), scope);
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return isCollectionRead(conditional.whenTrue(), scope) || isCollectionRead(conditional.whenFalse(), scope);
+        }
+        return expression instanceof Ast.CallExpr call && call.callee() instanceof Ast.MemberExpr member
+                && member.member().equals("get")
+                && !collectionElementType(syntacticType(member.receiver(), scope)).name().equals("$infer$");
+    }
+
+    private boolean containsTakeProjection(Ast.Expr expression) {
+        if (expression instanceof Ast.MemberExpr || expression instanceof Ast.IndexExpr) return true;
+        if (expression instanceof Ast.CastExpr cast) return containsTakeProjection(cast.value());
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return containsTakeProjection(conditional.whenTrue()) || containsTakeProjection(conditional.whenFalse());
+        }
+        return false;
+    }
+
     private void checkSuspensionBorrows(Scope scope, String operation) {
         if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
             throw error("cannot " + operation + " while holding a MutexGuard; release the guard before suspension");
@@ -852,6 +875,10 @@ public final class OwnershipChecker {
                     if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
                             || (taken.type != null && taken.type.isBorrow())) {
                         throw error("rt take requires owned data; a borrow cannot regain ownership");
+                    }
+                    if (taken.kind != ValueKind.COPY
+                            && (containsTakeProjection(argument) || isCollectionRead(argument, scope))) {
+                        throw error("rt take of projected move-only data requires partial-move/drop tracking; borrow the projection or take its named owner");
                     }
                     // Explicit take is a transfer, including for otherwise
                     // copyable handles such as Channel<T>. Ordinary calls and
@@ -1242,7 +1269,8 @@ public final class OwnershipChecker {
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
                 if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
-                checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
+                checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name(),
+                        fn.suspends() ? "suspends call " + fn.name() : null);
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -1260,7 +1288,8 @@ public final class OwnershipChecker {
                         call.arguments(),
                         signature.parameters(),
                         scope,
-                        "function " + namespace.name() + "." + qualified.member());
+                        "function " + namespace.name() + "." + qualified.member(),
+                        fn.suspends() ? "suspends call " + fn.name() : null);
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -1334,7 +1363,8 @@ public final class OwnershipChecker {
                             call.arguments(),
                             signature.parameters(),
                             scope,
-                            "static function " + staticClass.name() + "." + staticFunction.name());
+                            "static function " + staticClass.name() + "." + staticFunction.name(),
+                            staticFunction.suspends() ? "suspends call " + staticFunction.name() : null);
                     Ast.TypeRef callResult = callableResultType(signature.result(), staticFunction.async(), false);
                     return new ValueInfo(callResult, kindOfType(callResult), null);
                 }
@@ -1484,7 +1514,8 @@ public final class OwnershipChecker {
                 checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(),
                         member.receiver(), method.explicitReceiverType() != null
                                 && method.explicitReceiverType().isBorrow()
-                                && method.explicitReceiverType().mutableBorrow());
+                                && method.explicitReceiverType().mutableBorrow(),
+                        method.suspends() ? "suspends call " + method.name() : null);
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
                     throw error("method '" + target.owner().name() + "." + method.name()
@@ -1648,11 +1679,17 @@ public final class OwnershipChecker {
     }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
-        checkArguments(arguments, params, scope, callable, null, false);
+        checkArguments(arguments, params, scope, callable, null);
     }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params,
-                                Scope scope, String callable, Ast.Expr receiver, boolean mutableReceiver) {
+                                Scope scope, String callable, String suspension) {
+        checkArguments(arguments, params, scope, callable, null, false, suspension);
+    }
+
+    private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params,
+                                Scope scope, String callable, Ast.Expr receiver, boolean mutableReceiver,
+                                String suspension) {
         ArrayList<CallLoan> callLoans = new ArrayList<>();
         try {
             // Evaluation of the implicit method receiver precedes the explicit
@@ -1703,6 +1740,9 @@ public final class OwnershipChecker {
             reserveCallLoan(argument, param, scope, callLoans);
             parameterIndex++;
         }
+        // Check the actual invocation boundary while argument and receiver
+        // loans are still live, after every argument has evaluated.
+        if (suspension != null) checkSuspensionBorrows(scope, suspension);
         } finally {
             for (int i = callLoans.size() - 1; i >= 0; i--) {
                 CallLoan loan = callLoans.get(i);
@@ -1742,7 +1782,7 @@ public final class OwnershipChecker {
             }
         }
         if (source == null) return; // Pure temporary or module/static namespace.
-        VarState owner = borrowOwner(source, scope);
+        VarState owner = borrowPlace(source, scope).owner();
         boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
         reserveStateCallLoan(owner, mutable, loans);
     }

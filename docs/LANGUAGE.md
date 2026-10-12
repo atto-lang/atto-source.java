@@ -1847,3 +1847,20 @@ When explicit thread/task spawning is added, cross-thread transfer will require 
 `@FromJson("key")` is a compiler annotation for typed class fields. It expands before type/ownership checking into public typed getters/setters; no JVM reflection or guest-code macro execution is involved. The field must have an explicit type and mutable storage. The name-first shorthand `field_name: Type` is mutable only when annotated with `@FromJson`; otherwise it is an immutable `val` field.
 
 Generated setters still require a mutable owner at the call site. Duplicate/blank keys, immutable annotated fields, accessor collisions, annotations on module bindings/callables, and annotations on actor state all fail closed. JSON wire keys participate in incremental ABI fingerprints.
+
+### Suspension and ownership audit (2026-10-12)
+
+Suspending calls check the live borrow set both before evaluating arguments and
+at invocation, while temporary argument/receiver loans still exist. A loan from
+an earlier argument also forbids suspension while evaluating a later argument.
+Synchronous calls release their temporary loans on completion. This applies to
+named functions, qualified functions, static methods and instance methods.
+
+A newly created borrowed `yield` value cannot escape into a generator result.
+Generators expose owned/copyable data; lexical borrows require an explicit
+lifetime contract before they can survive suspension.
+
+Explicit `rt take` of a move-only field/index projection is rejected until
+partial-move/drop tracking exists. Borrow the projection, or move its named
+owner. Copyable field reads remain available. `rt copy`/`rt share` continue to
+reject unsupported move-only operands rather than aliasing them.
