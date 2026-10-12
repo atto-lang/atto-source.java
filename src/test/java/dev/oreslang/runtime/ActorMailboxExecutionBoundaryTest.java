@@ -112,7 +112,7 @@ final class ActorMailboxExecutionBoundaryTest {
                     // Thread affinity is not required. An actor may resume on
                     // another worker, but never on two workers concurrently.
                     assertFalse(threads.isEmpty(), "actor must have executed");
-''                    assertEquals(1, cleanups.get());
+                    assertEquals(1, cleanups.get());
                     assertEquals(1, maximum.get(), kind + " must have one executing guest thread");
                     assertEquals(0, active.get());
                     assertFalse(runtime.currentThreadOwnsActorExecutionLease(),
