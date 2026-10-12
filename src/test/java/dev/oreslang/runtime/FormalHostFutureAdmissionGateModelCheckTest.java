@@ -100,6 +100,82 @@ final class FormalHostFutureAdmissionGateModelCheckTest {
         invariant(released);
     }
 
+    /**
+     * Separate bounded abstraction of the physical entry lease. A failed
+     * enter/leave permanently poisons the incarnation even if JVM-side lease
+     * accounting returns to zero; close is a seal, not a proof of exit.
+     */
+    private enum PhysicalEvent {
+        RESERVE, RELEASE, ENTER_UNKNOWN, LEAVE_UNKNOWN, CLOSE
+    }
+
+    private record PhysicalState(int leases, boolean poisoned, boolean closed) {
+        static PhysicalState initial() {
+            return new PhysicalState(0, false, false);
+        }
+        boolean mayRetire() {
+            return leases == 0 && !poisoned;
+        }
+    }
+
+    private static PhysicalState physicalStep(PhysicalState s, PhysicalEvent e) {
+        return switch (e) {
+            case RESERVE -> s.closed || s.poisoned || s.leases == 2
+                    ? null : new PhysicalState(s.leases + 1, false, false);
+            case RELEASE -> s.leases == 0
+                    ? null : new PhysicalState(s.leases - 1, s.poisoned, s.closed);
+            case ENTER_UNKNOWN, LEAVE_UNKNOWN -> s.leases == 0
+                    ? null : new PhysicalState(s.leases, true, true);
+            case CLOSE -> s.closed ? null : new PhysicalState(s.leases, s.poisoned, true);
+        };
+    }
+
+    @Test
+    void exhaustivePhysicalEnterLeaveAndCloseNeverClearUnknownGuestState() {
+        Set<PhysicalState> seen = new HashSet<>();
+        ArrayDeque<PhysicalState> pending = new ArrayDeque<>();
+        seen.add(PhysicalState.initial());
+        pending.add(PhysicalState.initial());
+        boolean sawUnknownDrained = false;
+        boolean sawCleanDrained = false;
+        while (!pending.isEmpty()) {
+            PhysicalState s = pending.removeFirst();
+            assertTrue(s.leases >= 0 && s.leases <= 2);
+            if (s.poisoned) {
+                assertTrue(s.closed, "unknown physical entry must seal admission");
+                assertFalse(s.mayRetire(), "zero leases cannot certify unknown entry");
+            }
+            sawUnknownDrained |= s.poisoned && s.leases == 0;
+            sawCleanDrained |= s.closed && s.leases == 0 && !s.poisoned;
+            for (PhysicalEvent event : PhysicalEvent.values()) {
+                PhysicalState next = physicalStep(s, event);
+                if (next == null) continue;
+                if (s.poisoned) assertTrue(next.poisoned,
+                        "a close, release, or retry may not clear quarantine");
+                if (s.closed) assertTrue(next.closed,
+                        "no reopening admission after close/quarantine");
+                if (seen.add(next)) pending.addLast(next);
+            }
+        }
+        assertTrue(sawUnknownDrained);
+        assertTrue(sawCleanDrained);
+        assertTrue(seen.size() >= 8);
+    }
+
+    @Test
+    void leaseCountOnlyRetirementHasConcreteUnknownEntryCounterexample() {
+        PhysicalState started = physicalStep(
+                PhysicalState.initial(), PhysicalEvent.RESERVE);
+        PhysicalState unknown = physicalStep(started, PhysicalEvent.ENTER_UNKNOWN);
+        PhysicalState released = physicalStep(unknown, PhysicalEvent.RELEASE);
+        assertEquals(0, released.leases);
+        assertFalse(released.mayRetire());
+        // This is the rejected implementation: a successful JVM decrement
+        // alone would count the unknown Truffle enter as physical DONE.
+        assertThrows(AssertionError.class, () ->
+                assertFalse(released.leases == 0));
+    }
+
     private enum OwnedEvent {
         OWN_ENTER, OWN_LEAVE, FOREIGN_ENTER, FOREIGN_LEAVE,
         HOST_BEGIN, HOST_END, SEAL
