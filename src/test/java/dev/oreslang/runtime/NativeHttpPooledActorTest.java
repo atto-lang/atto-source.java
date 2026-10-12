@@ -59,6 +59,9 @@ class NativeHttpPooledActorTest {
               stdio.println(shared.workers_reused);
               stdio.println(isolated.workers_reused);
               stdio.println(server.active);
+              stdio.println("SERVER_POOL_COUNTERS");
+              stdio.println(server.pooled_created);
+              stdio.println(server.pooled_reused);
               await server.shutdown(0);
               return;
             }
@@ -95,5 +98,7 @@ class NativeHttpPooledActorTest {
         String result = output.toString(StandardCharsets.UTF_8);
         assertTrue(result.contains("POOL_CREATIONS\n1\n1\nPOOL_REUSES\n9\n9\n0"),
             "pool did not reuse one actor per mode: " + result);
+        assertTrue(result.contains("SERVER_POOL_COUNTERS\n2\n18"),
+            "server-owned counters did not retain completed reuse accounting: " + result);
     }
 }
