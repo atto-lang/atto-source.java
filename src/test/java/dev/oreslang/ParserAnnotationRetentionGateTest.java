@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.compiler.OresCompiler;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -52,6 +53,20 @@ final class ParserAnnotationRetentionGateTest {
             IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
                     () -> Parser.parse(source), annotation);
             assertTrue(ex.getMessage().contains("guest-AOT lowering"), ex.getMessage());
+        }
+    }
+
+    @Test
+    void rejectsCodeGeneratingFromJsonOnModuleTargets() {
+        // The parser retains module metadata. Semantic admission must still
+        // reject a code-generating attribute when no target accessors exist.
+        for (String source : new String[] {
+                "@FromJson(\"id\") define module app as end",
+                "@FromJson(\"id\") define module app as pub fnc main(): int { return 42; } end"
+        }) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source), source);
+            assertTrue(ex.getMessage().contains("not module"), ex.getMessage());
         }
     }
 
