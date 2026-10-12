@@ -21,7 +21,7 @@ final class DeferredTerminalFutureNotificationTest {
 
         Runnable publish = result.prepareCompleteFromRuntime(42);
         assertTrue(result.isDone(), "terminal outcome must be readable immediately");
-        assertEquals(42, result.get());
+        assertEquals(Integer.valueOf(42), result.get());
         assertEquals(0, early.get(), "pre-registered callback must wait for publication");
 
         // Terminal registration after preparation races with the eventual
