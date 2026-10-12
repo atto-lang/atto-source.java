@@ -105,6 +105,9 @@ public final class OresVM implements AutoCloseable {
         private final Executor downstream;
         private final ArrayDeque<Runnable> held = new ArrayDeque<>();
         private int hostScopes;
+        // Root turn has claimed the entry gate and has not yet returned.
+        // Host callbacks must never overlap an already claimed root turn.
+        private int executingRootTurns;
         private boolean draining;
         // Close seals all new host entry BEFORE actor/CONTROL resources retire.
         // Active scopes and already-queued cleanup still drain on retry.
@@ -119,6 +122,10 @@ public final class OresVM implements AutoCloseable {
                 throw new RejectedExecutionException(
                         "root host handoff admission is sealed");
             }
+            if (executingRootTurns != 0) {
+                throw new RejectedExecutionException(
+                        "root guest turn already owns physical host entry");
+            }
             hostScopes++;
             return new HostHandoffLease(this);
         }
@@ -128,7 +135,9 @@ public final class OresVM implements AutoCloseable {
         }
 
         synchronized int heldCount() { return held.size(); }
-        synchronized boolean active() { return hostScopes > 0; }
+        synchronized boolean active() {
+            return hostScopes > 0 || executingRootTurns > 0;
+        }
 
         @Override public void execute(Runnable task) {
             Objects.requireNonNull(task, "task");
@@ -165,8 +174,19 @@ public final class OresVM implements AutoCloseable {
                         held.addFirst(task);
                         return;
                     }
+                    // Physically claim the root turn under the very same
+                    // monitor used by host admission. Do not hold the
+                    // monitor across guest execution or suspended cleanup.
+                    executingRootTurns++;
                 }
-                task.run();
+                try {
+                    task.run();
+                } finally {
+                    synchronized (this) {
+                        executingRootTurns--;
+                        notifyAll();
+                    }
+                }
             };
             try {
                 downstream.execute(gated);
