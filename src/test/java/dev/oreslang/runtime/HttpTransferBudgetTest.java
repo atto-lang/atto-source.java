@@ -35,6 +35,55 @@ final class HttpTransferBudgetTest {
         assertThrows(IllegalArgumentException.class, () -> new NativeHttp.TransferBudget(0));
     }
 
+    @Test void duplicateReleaseNeverInflatesBudgetCapacity() {
+        var budget = new NativeHttp.TransferBudget(2);
+        assertThrows(IllegalStateException.class, budget::release,
+                "a foreign or replayed release must not create permits");
+        assertEquals(0, budget.outstanding());
+        assertTrue(budget.tryReserve());
+        assertTrue(budget.tryReserve());
+        assertFalse(budget.tryReserve());
+        budget.release();
+        budget.release();
+        for (int replay = 0; replay < 2_000; replay++) {
+            assertThrows(IllegalStateException.class, budget::release);
+            assertEquals(0, budget.outstanding());
+        }
+        assertTrue(budget.tryReserve());
+        assertTrue(budget.tryReserve());
+        assertFalse(budget.tryReserve(), "stale release must not inflate capacity");
+        budget.release();
+        budget.release();
+    }
+
+    @Test void racingDoubleReleasesCannotOverAdmit() throws Exception {
+        var budget = new NativeHttp.TransferBudget(1);
+        assertTrue(budget.tryReserve());
+        try (var tasks = Executors.newVirtualThreadPerTaskExecutor()) {
+            var start = new CountDownLatch(1);
+            var attempts = new ArrayList<java.util.concurrent.Future<Boolean>>();
+            for (int i = 0; i < 128; i++) {
+                attempts.add(tasks.submit(() -> {
+                    start.await();
+                    try {
+                        budget.release();
+                        return true;
+                    } catch (IllegalStateException invalid) {
+                        return false;
+                    }
+                }));
+            }
+            start.countDown();
+            int succeeded = 0;
+            for (var attempt : attempts) if (attempt.get(10, TimeUnit.SECONDS)) succeeded++;
+            assertEquals(1, succeeded, "one reservation authorizes one release");
+        }
+        assertEquals(0, budget.outstanding());
+        assertTrue(budget.tryReserve());
+        assertFalse(budget.tryReserve());
+        budget.release();
+    }
+
     @Test void concurrentReservationsNeverExceedLimitAndCanBeReused() throws Exception {
         final int clients = 128;
         final int limit = 8;
