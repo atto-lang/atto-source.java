@@ -316,6 +316,57 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void starterFailureAfterSealStillQuarantinesPhysicalExit() throws Exception {
+        HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                UUID.randomUUID(), () -> true);
+        CountDownLatch starterEntered = new CountDownLatch(1);
+        CountDownLatch releaseStarter = new CountDownLatch(1);
+        AtomicReference<Throwable> ownerFailure = new AtomicReference<>();
+        AtomicInteger subsequentStarts = new AtomicInteger();
+
+        OresFuture<Integer> first = pump.request(pump.token(), () -> {
+            starterEntered.countDown();
+            try {
+                if (!releaseStarter.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("starter release not observed");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+            // Failure after host cancellation must not erase uncertainty about
+            // an operation that may have started before returning DONE evidence.
+            throw new IllegalStateException("physical producer exit unknown");
+        });
+        OresFuture<Integer> queued = pump.request(pump.token(), () -> {
+            subsequentStarts.incrementAndGet();
+            return new HostGeneratorTurnPump.Turn<>(
+                    OresFuture.completed(2), OresFuture.completed(null));
+        });
+        Thread owner = Thread.ofPlatform().start(() -> {
+            try { pump.dispatchOne(); }
+            catch (Throwable failure) { ownerFailure.set(failure); }
+        });
+        try {
+            assertTrue(starterEntered.await(5, TimeUnit.SECONDS));
+            pump.seal();
+            assertTrue(first.isCancelled(), "seal must cancel the starting public pull");
+            assertTrue(queued.isCancelled(), "queued work must be rejected at shutdown");
+            assertThrows(IllegalStateException.class, pump::requireQuiescent);
+        } finally {
+            releaseStarter.countDown();
+            owner.join(5000);
+        }
+        assertFalse(owner.isAlive(), "the owner must exit after startup failure");
+        assertNull(ownerFailure.get(), String.valueOf(ownerFailure.get()));
+        assertEquals(0, subsequentStarts.get());
+        assertFalse(pump.isQuiescent(),
+                "after starter failure, cancellation is not evidence of physical DONE");
+        assertThrows(IllegalStateException.class, pump::close,
+                "a later close retry must retain permanent unknown-exit quarantine");
+    }
+
+    @Test
     void starterFailurePoisonsQueueBeforeAnyFollowingDispatch() throws Exception {
         HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
                 UUID.randomUUID(), () -> true);
