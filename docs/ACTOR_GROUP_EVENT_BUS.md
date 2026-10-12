@@ -13,7 +13,8 @@ The supervision tree and ActorGroup membership are orthogonal.
 - The supervision tree answers who owns, cancels, restarts, and observes failure.
 - An ActorGroup answers which actors are cooperating on one problem.
 - A Mailbox is the private inbox of one actor.
-- A Channel is the low-level queue/waiter primitive.
+- A Channel is the bounded queue and atomic select/waiter primitive. Each event
+  subscription owns a channel; Mailman uses a bounded channel as its outbox.
 - An ActorEventBus is runtime infrastructure owned by an ActorGroup. It is not
   an actor and has no central mailbox/dispatcher.
 
@@ -25,8 +26,97 @@ existing members.
 
 Actor-created groups close automatically when their creator terminates.
 Host-created groups live until explicitly closed or until ActorRuntime teardown.
-Actor termination removes that actor's subscriptions before the runtime forgets
-the actor.
+Actor termination or group leave closes that actor's subscriptions, fails pending
+reads/writes, and releases unread payload reservations before membership is forgotten.
+Group close drains subscriptions and the Mailman outbox. A Mailman callback already
+in progress may finish, but its context cannot send after group close.
+
+## Managed workers and spawn readiness
+
+A cooperation group is not an implicit supervisor. Membership in a group grants
+access to its event bus, **not** lifecycle control over other members. A separate,
+explicit managed-worker registry holds strong `ActorRef` references under the
+group owner's/host supervisor's authority.
+
+Two source forms intentionally differ only in *when their reference becomes
+available*:
+
+```ores
+val worker = spawn WorkerActor();          // ActorRef<WorkerActor>, no start barrier
+val initialized = await spawn WorkerActor(); // ActorRef<WorkerActor>, on_start completed
+await worker.get_ready();                   // Future<void> startup barrier
+await worker.get_done();                    // Future<void> finalization barrier
+```
+
+`await spawn` must not wait for termination and must not discard the ActorRef.
+It fails when startup fails and does not permit observing uninitialized actor
+fields. The compiler lowers the implicit readiness wait as a suspension, never
+blocks a carrier thread, and returns the *same* reference upon resumption.
+Cancellation of readiness/done observer futures does not cancel an actor.
+
+### Host/runtime API (current Java substrate)
+
+- `group.spawnWorker(kind, policy, factory)` creates a structured child (if
+  called inside an actor) and registers it before any ready/mailbox scheduling.
+- `group.spawnReadyWorker(kind, policy, factory)` returns a non-cancellable
+  `Future<ActorRef<T>>`, completed on actor readiness.
+- `group.manageWorker(ref)` opts in an existing live same-runtime reference;
+  from actor code only the group creator can manage descendants it already
+  owns. It does **not** join the worker to the event bus.
+- `group.workers()`, `workerCount()`, `workersReady()`, and
+  `workersDone()` provide read-only *snapshots* of live managed workers.
+  Snapshot barriers do not wait for workers registered later.
+- `group.stopWorkers()` and `cancelWorkers()` require manager authority;
+  group close revokes admission and structurally cancels explicitly managed
+  workers, not unrelated cooperating members. On termination, the registry
+  evicts the finalized reference.
+
+All of these are runtime/embedding APIs today; exposing a first-class
+source-level `ActorGroup<T>` constructor and method dispatch requires explicit
+language typing, capability checks and native parity tests. Group registry
+limits are bounded by the creating actor's policy/dispatcher budget.
+Group worker refs are not transferable as ordinary data-only actor messages.
+
+### LLVM parity gate
+
+The current `oreslang-source.llvm` compiler does not yet admit actor
+declarations, `spawn`, async continuation frames or `ActorGroup`. It MUST
+reject both forms without emitting LLVM IR until it can establish all of:
+
+1. one actor identity/generation and typed `ActorRef` result for both forms;
+2. a scheduler-compatible `ready` barrier resuming after successful `on_start`;
+3. race-free worker registration before the worker can terminate, bounded
+   retention and finalization eviction;
+4. creator/supervisor-only lifecycle authority, independent group membership;
+5. cancellation, stale-ready, failure, group-close, cross-runtime, and
+   wrong-generation tests, with no carrier blocking or use-after-free.
+
+Native host-only lifecycle registries or C++ carrier test APIs do **not** prove
+source-compiler feature parity; Java/LLVM differential conformance must run on
+the exact tree once LLVM actors are supported.
+
+## Mailbox and Mailman routing
+
+Use ActorRef.send for addressed commands and replies. It enters the target actor's
+private mailbox and preserves that actor's transport/isolation policy. Publishing
+an event fans out to current subscriptions; it does not invoke actor behavior or
+implicitly enqueue a mailbox message. Actors read subscription Futures explicitly.
+There is no total order between mailbox arrivals and event arrivals.
+
+An optional Mailman consumes group.emit output on CONTROL carriers in bounded
+quanta, one callback at a time. Its FIFO outbox uses ChannelRuntime.tryWrite and
+tryRead; a full outbox rejects immediately without registering a pending writer.
+Each envelope is frozen once, holds one aggregate-memory reservation, and releases
+it on callback completion, admission rejection, dispatch failure, or teardown.
+
+ActorGroupContext.send routes through the ordinary target mailbox, including its
+capacity and isolation checks. Holding an ActorRef permits routing outside the
+group; membership is not a replacement for the reference capability. Every context
+operation requires its owning callback and carrier. Capturing a context, calling it
+from another thread, or using it in a later callback fails with SecurityException.
+Mailman callback/dispatch failure stops the Mailman and drains queued output; it
+has no implicit retry. Overflow rejects only that emit. A successful emit means
+outbox admission, not delivery or successful callback completion.
 
 ## Delivery policies
 
@@ -43,7 +133,16 @@ A successful publication returns a PublishReceipt whose completion Future
 resolves when every reliable channel write has been admitted. Waiting for this
 Future never blocks an OresVM carrier thread.
 
-Reliable delivery is therefore backpressure, not infinite buffering.
+Reliable delivery is therefore backpressure, not infinite buffering. Outstanding
+buffered plus waiting deliveries are bounded per subscriber by max(capacity + 1,
+2 * capacity). Cancelling a publication receipt cancels its pending channel writes;
+already admitted deliveries remain readable. Receipt completion acknowledges
+admission, not processing, and does not provide persistence or replay.
+
+readAsync also bounds pending reads by the subscribing actor's maxMailboxMessages
+policy. Exceeding that limit rejects before installing another channel waiter.
+Completion, cancellation, or subscription close releases the pending-read slot.
+Cancelling an unread wait does not consume the next event.
 
 ### LATEST
 
@@ -71,6 +170,11 @@ under one reduction-local critical section so concurrent improvements cannot
 publish an older bound after a newer one.
 
 The reduction lock is local to that reduction. It is not a global event-bus lock.
+Reduction notification topics are runtime-owned: publish and publishSystem reject
+these names; only reduceDouble may produce notifications. An ordinary topic cannot
+be converted into a reduction. State commits after the topic's close/admission fence
+and before notification delivery, so a rejected admission cannot silently advance
+its bound.
 
 ## Payload ownership and memory
 

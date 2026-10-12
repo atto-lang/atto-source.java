@@ -155,23 +155,36 @@ public final class OresVM implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        startupState = StartupState.CLOSED;
-        try {
-            rootScheduler.close();
-        } finally {
-            controlExecutor.shutdownNow();
+    public void close() {
+        // A CONTROL/root task cannot wait for its own carrier to leave. Reject
+        // BEFORE setting CLOSED or revoking dispatch; otherwise the scheduler's
+        // own close guard throws after the VM has been irreversibly poisoned.
+        // An ordinary actor/Mailman must likewise delegate blocking VM teardown
+        // to its supervising host after its turn finishes.
+        if (OresScheduler.current() != null
+                || ActorRuntime.inActorExecution()
+                || ActorRuntime.inActorGroupMailmanExecution()) {
+            throw new IllegalStateException(
+                    "OresVM must be closed outside actor, Mailman and scheduler turns");
+        }
+        synchronized (this) {
+            if (!closed.compareAndSet(false, true)) return;
+            startupState = StartupState.CLOSED;
             try {
-                if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                rootScheduler.close();
+            } finally {
+                controlExecutor.shutdownNow();
+                try {
+                    if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "Oreslang CONTROL scheduler carriers did not terminate");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
                     throw new IllegalStateException(
-                            "Oreslang CONTROL scheduler carriers did not terminate");
+                            "interrupted while closing Oreslang CONTROL scheduler",
+                            interrupted);
                 }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException(
-                        "interrupted while closing Oreslang CONTROL scheduler",
-                        interrupted);
             }
         }
     }

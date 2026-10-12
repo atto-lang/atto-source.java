@@ -126,7 +126,7 @@ A module contract is not a class/struct interface and cannot be implemented by a
 
 ## Functions and returns
 
-Functions use `fnc` and are private by default. `pub` exports them. Return statements are always explicit; a non-`void` function must return on every control-flow path.
+Functions use `fnc` and are private by default. `pub` exports them. Named callables and braced lambda bodies use explicit return statements; a non-`void` named callable or braced lambda must return on every control-flow path. Expression-bodied lambdas are the deliberate compact exception: their sole expression is the return value.
 
 Class fields, instance methods, and `static fnc` members are also private by default unless marked `pub`. Private class-member access is scoped to the **declaring class**, not to a particular receiver instance: code declared in class `A` may access an `A` private member on another `A` instance, but subclasses and external callers may not. A lexical lambda created inside an `A` method retains that private-access authority with its lexical environment; an explicit or inherited `nlex` lambda does not. Runtime member dispatch enforces the same rule for dynamically linked/wildcard-imported values whose static type is `Unknown`, so imports cannot bypass private visibility. Public/structural class shapes expose only public members.
 
@@ -182,7 +182,7 @@ fnc fixed(): [int, bool, string] {
 }
 
 fnc named(): {foo: int, bar: string} {
-  return obj{foo: 5, bar: "x"};
+  return infer struct{foo: 5, bar: "x"};
 }
 ```
 
@@ -499,7 +499,7 @@ define class Combined extends Cacheable, Serializable implements HasId, Named as
 end
 ```
 
-Parent order is never used to break a same-method-slot tie. If distinct parents contribute the same method name and caller-visible arity, the child must explicitly declare that slot; argument types, return types, and parent ordering never choose a winner. A true diamond that reaches the same original declaration through the same generic view is not ambiguous. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child **methods** may override inherited methods only with compatible contracts. Storage fields are not virtual slots: a field name must be unique across the effective inheritance graph, so child fields may not shadow inherited fields and two distinct parent fields may not collide. Reaching the same field declaration twice through a diamond is not a collision.
+Parent order is never used to break a same-method-slot tie. If distinct parents contribute the same method name and caller-visible arity, the child must explicitly declare that slot; argument types, return types, and parent ordering never choose a winner. A true diamond that reaches the same original declaration through the same generic view is not ambiguous. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child **methods** may override inherited methods only with compatible contracts. An overriding method or static function must remain `pub` if any inherited implementation of the same name + arity is `pub`; a `private` child declaration cannot silently hide an inherited public callable, even when it resolves a diamond conflict. Storage fields are not virtual slots: a field name must be unique across the effective inheritance graph, so child fields may not shadow inherited fields and two distinct parent fields may not collide. Reaching the same field declaration twice through a diamond is not a collision.
 
 `Object` and `List` are extensible base classes:
 
@@ -511,36 +511,48 @@ define class Names extends List as
 end
 ```
 
-Inline object and array literals are values, not classes, and cannot be inherited from.
+Anonymous structs and array literals are values, not classes, and cannot be inherited from.
 
 ## Inline values
 
-Structural inline object:
+Oreslang structs always have a compile-time-known, closed field shape. The
+canonical inferred spelling is `infer struct{...}`:
 
 ```ores
-val user = obj{name: "Ada", age: 37};
+const user = infer struct{name: "Ada", age: 37};
 stdio.println(user.name);
 ```
 
-Static object/map keys may be identifiers, reserved member keys such as
+Whitespace before the initializer is optional: `infer struct {...}`.
+An inferred struct is permanently readonly: its field set and field values
+cannot be mutated through aliases or mutable bindings.
+
+Static struct keys may be identifiers, reserved member keys such as
 `stop`/`do`/`done`, or strings written with either single or double
-quotes. Backticks make the key dynamic: the expression between the backticks
-must evaluate to a string.
+quotes:
 
 ```ores
-val key = "score";
-val stats = obj{
+const stats = infer struct{
   stop: 1,
   'do': 2,
-  "done": 3,
-  `key`: 4
+  "done": 3
 };
 ```
 
-An `obj{...}` containing a dynamic key has type `DynamicStruct<T>`, where
-`T` is the joined value type. A `DynamicStruct<T>` can also be created
-directly with `new DynamicStruct<T>()`; it accepts arbitrary string keys but
-only values assignable to `T`.
+Computed/backtick struct keys are rejected. Oreslang intentionally has no
+`DynamicStruct<T>` or open-ended anonymous object shape; this keeps anonymous
+struct layout statically knowable for AOT compilation.
+
+When mutation or staged initialization is required, declare the complete shape
+explicitly:
+
+```ores
+val stats = struct{score: int, ready: bool}{score: 1};
+stats.ready = true;
+```
+
+Explicit structs are still closed: only fields declared in the shape may ever
+exist.
 
 Inline array:
 
@@ -599,9 +611,17 @@ never erased into an ordinary structural object.
 
 ## Boolean combinator intrinsics
 
+`bool` and `boolean` are interchangeable spellings of the same primitive
+type. Both work in parameters, return types, bindings, casts, type tests,
+and nested types such as `Array<boolean>` or `Option<boolean>`. They have
+the same Copy ownership semantics. Boolean primitives do not accept type
+arguments; `boolean<int>` and `bool<>` are invalid.
+
 `And`, `Or`, and `Xor` are compiler-provided overload families in the
 built-in `BooleanOps` namespace and are also available as globals, like
 `Some`, `None`, `Ok`, and `Err`.
+No imports or declarations are needed to call `And(...)`, `Or(...)`, or
+`Xor(...)` directly. The qualified `BooleanOps` forms are also built in.
 
 Conceptually, each family has these two arity-selected overloads:
 
@@ -649,6 +669,9 @@ control-flow IR as the operators.
 The one-argument list overload has ordinary eager argument evaluation, then
 reduces the already-created list. Empty lists are valid: `And([])` is
 `true`, `Or([])` is `false`, and `Xor([])` is `false`.
+The intrinsic reads its list without consuming ownership, so the same array
+can be reused in subsequent calls. User-defined functions that shadow these
+names retain their declared parameter ownership rules.
 
 Module/top-level `fnc` and `routine` overload identity is also name + exact
 arity. Same-name/different-arity declarations are valid; same-name/same-arity
@@ -698,7 +721,7 @@ Owned sum values cannot hide lexical borrows until explicit lifetime parameters 
 
 Panics are distinct from ordinary recoverable errors. Normal `try/catch` does not swallow an unwrap panic, while lexical cleanup and `finally` still execute during unwind. Use `unwrap_safe()`, matching, or explicit variant inspection when absence/failure should remain data.
 
-`Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. `Option<void>` is invalid; use `void` when a function returns no value.
+`Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. Ordinary non-trapped functions return `void` when no value is produced. `Option<void>` is a valid compiler-produced completion marker for `trap` callables (and the proposed `trap expression` operator): `Some(void)` means the computation finished normally and `None` means an ordinary throw escaped. See [trap callable semantics](TRAP.md) and the [expression-trap/unwrap contract](TRAP_EXPRESSION_UNWRAP.md).
 
 ## Numbers
 
@@ -712,14 +735,34 @@ Numeric widening is loss-aware; real values can widen toward complex values, but
 
 ## Lambdas
 
-Lambdas are lexical closures by default and use `->`. The canonical block
-form keeps returns explicit:
+Lambdas are lexical closures by default and use `->`. The braced form keeps
+control flow explicit:
 
 ```ores
 val Fnc<int, int> inc = |int x| -> {
   return x + 1;
 };
 ```
+
+A braced lambda never treats its final statement as an implicit return. If its
+result type is non-`void`, every control-flow path must execute an explicit
+`return <value>;`.
+
+For a single returned expression, the full expression-body form omits the braces
+and `return`:
+
+```ores
+val Fnc<int, int> twice = |value| -> value * 2;
+
+val Fnc<int, int> shifted = |value| ->
+  value * 2 + 1;
+```
+
+The containing statement must end with an explicit semicolon. A newline alone
+does not terminate a statement that contains an expression-bodied lambda. Only
+an immediate `{` after `->` starts the block form; any other token begins the
+expression. This keeps prefix expressions unambiguous, including future forms
+such as `struct{...}{...}`.
 
 A normal lambda may capture activation-local bindings from its enclosing
 function or block. Captured mutable state remains part of the closure.
@@ -1318,6 +1361,9 @@ The same Oreslang source model supports three deployment profiles:
 
 The CLI accepts `--mode=jit|aot|hybrid` and `--platform=server|windows|macos|linux|android|ios`. The iOS execution contract is intentionally AOT-only. Source hot reload does not depend on executable dynamic libraries, JNI, or NFI.
 
+Build capability is fixed in the native executable; `--build-info` reports it.
+AOT-only images reject runtime requests for JIT/hybrid. See [native deployment](NATIVE_DEPLOYMENT.md).
+
 Maven profiles:
 - `mvn -Pnative-aot -DskipTests package`
 - `mvn -Pnative-hybrid -DskipTests package`
@@ -1573,13 +1619,12 @@ fnc sink(): ((bool foo) => void) {
 
 Parameter names inside function types are documentation-only; structural function compatibility is determined by parameter/result types.
 
-The canonical lambda syntax is pipe-delimited and block-only:
+The canonical lambda parameter syntax is pipe-delimited. The body may be a
+braced statement block or one returned expression:
 
 ```ores
 fnc find(bool found): F {
-  return || -> {
-    return found ? 5 : 6;
-  };
+  return || -> found ? 5 : 6;
 }
 
 fnc callback(): ((bool foo) => void) {
@@ -1592,9 +1637,12 @@ fnc callback(): ((bool foo) => void) {
 
 Lambda parameters may be inferred from a contextual function type (`|foo|`) or typed explicitly (`|bool foo|`).
 
-There are no expression-body lambdas. Every lambda has braces. When the contextual result type is non-void, every control-flow path must contain an explicit `return <value>;`. Void lambdas may use `return;`.
-
-This means higher-order functions and functors do not introduce a second return convention: named functions, methods, static functions, and anonymous functions all use the same explicit `return` statement semantics.
+Expression-bodied lambdas return exactly their sole expression. Braced lambdas
+retain ordinary statement semantics: there is no implicit last-expression
+return, non-`void` results require explicit `return <value>;` on every path,
+and `void` lambdas may use `return;`. A statement containing an
+expression-bodied lambda must use an explicit trailing semicolon, including when
+the lambda body is laid out across multiple lines.
 
 
 ## Lexical closures
@@ -1678,30 +1726,50 @@ fnc example(): void {
 }
 ```
 
-Shared immutable borrowing uses `&T`:
+Immutable borrowing uses `rt borrow value`, with `borrow T` in type positions:
 
 ```ores
-fnc inspect(&Bar value): void {
+fnc inspect(borrow Bar value): void {
   stdio.println(value.foo);
   return;
 }
 ```
 
-Exclusive mutable borrowing uses `&mut T`:
+Exclusive mutable borrowing uses `rt borrow mut value` and `borrow mut T`:
 
 ```ores
-fnc change(&mut Bar value): void {
+fnc change(borrow mut Bar value): void {
   value.foo = "changed";
   return;
 }
 
 fnc example(): void {
-  let Bar b = new Bar();
-  change(&mut b);
-  stdio.println(b.foo); // owner is usable again after the call
+  val Bar b = new Bar();
+  change(rt borrow mut b);
+  stdio.println(b.foo);
   return;
 }
 ```
+
+Parentheses group expressions; they do not create singleton tuples:
+
+```ores
+val Array<int> values = new Array<int>();
+val borrowed = (rt borrow values);
+```
+
+The explicit `tuple (...)` constructor supports zero, one, or multiple elements.
+Parenthesized sequence bindings can unpack it:
+
+```ores
+val (borrowed) = tuple (rt borrow values);
+```
+
+Immediate tuple unpacking gives each borrowed binding a lexical lease. Storing
+borrows in an owned tuple remains rejected until container lifetimes are supported.
+Neither `await` nor `rt cooperate` may suspend with an ordinary live borrow.
+Legacy ampersand borrow spellings remain parser compatibility aliases; new code
+uses the keyword forms above. There is no pointer dereference operation.
 
 Borrow rules:
 

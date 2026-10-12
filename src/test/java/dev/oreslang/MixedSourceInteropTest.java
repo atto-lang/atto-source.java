@@ -109,6 +109,47 @@ final class MixedSourceInteropTest {
     }
 
     @Test
+    void javaInteropCannotGrowClosedStructShape() throws Exception {
+        Path source = temp.resolve("closed-struct-interop.ores");
+        Files.writeString(source, """
+                java {
+                  final class StructProbe {
+                    @SuppressWarnings({"rawtypes", "unchecked"})
+                    public static boolean shapeIsProtected(java.util.Map value) {
+                      if (value.size() != 1 || !java.util.Objects.equals(value.get("foo"), 7L)) {
+                        return false;
+                      }
+                      try {
+                        value.put("injected", 99);
+                        return false;
+                      } catch (UnsupportedOperationException expected) {
+                        return value.size() == 1 && !value.containsKey("injected");
+                      }
+                    }
+                  }
+                }
+
+                pub fnc main(): void {
+                  val value = struct{foo: int}{foo: 7};
+                  stdio.println(StructProbe.shapeIsProtected(value));
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                source,
+                trustedMixedPolicy(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                out,
+                new ByteArrayOutputStream());
+
+        String output = out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+        assertTrue(output.contains("true\n"), output);
+    }
+
+    @Test
     void javaCallsOresAndPreservesJavaObjectIdentity() throws Exception {
         Path source = temp.resolve("MixedDemo.java");
         Files.writeString(source, """
@@ -151,6 +192,43 @@ final class MixedSourceInteropTest {
                 Set.of("java.util.ArrayList"),
                 new ByteArrayOutputStream(),
                 new ByteArrayOutputStream()));
+    }
+
+    @Test
+    void javaBridgeTreatsBoolAndBooleanReturnsAsTheSamePrimitive() throws Exception {
+        Path source = temp.resolve("BooleanBridge.java");
+        Files.writeString(source, """
+                public final class BooleanBridge {
+                  public static void main(String[] args) {
+                    boolean all = Ores.all(true, false, true);
+                    boolean any = Ores.any(false, false, true);
+                    boolean parity = Ores.parity(true, true, true);
+                    if (all || !any || !parity) {
+                      throw new AssertionError("boolean bridge returned incorrect results");
+                    }
+                    Ores.report();
+                  }
+                  ores {
+                    pub fnc all(boolean a, bool b, boolean c): boolean {
+                      return And(a, b, c);
+                    }
+                    pub fnc any(bool a, boolean b, bool c): bool {
+                      return Or(a, b, c);
+                    }
+                    pub fnc parity(boolean a, boolean b, boolean c): boolean {
+                      return Xor(a, b, c);
+                    }
+                    pub fnc report(): void {
+                      stdio.println("boolean-bridge-ok");
+                      return;
+                    }
+                  }
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(source, trustedMixedPolicy(), ExecutionProfile.serverJit(),
+                Set.of(), out, new ByteArrayOutputStream());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("boolean-bridge-ok"));
     }
 
     @Test

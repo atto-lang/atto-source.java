@@ -153,9 +153,12 @@ final class RuntimePermissionsTest {
 
     @Test
     void checkModeArgumentDoesNotBecomeAPermissionGrant() {
+        assertThrows(SecurityException.class, () -> RuntimePermissions.fromApplicationArguments(
+                new String[]{"--ores-permission-check=runtime", "--ores-permission-env-allow=PUBLIC_*"},
+                IsolatePolicy.developer()));
         RuntimePermissions permissions = RuntimePermissions.fromApplicationArguments(
                 new String[]{"--ores-permission-check=runtime", "--ores-permission-env-allow=PUBLIC_*"},
-                IsolatePolicy.developer());
+                IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.ENVIRONMENT));
         assertTrue(permissions.allows(RuntimePermissions.Permission.ENV, "PUBLIC_NAME"));
         assertFalse(permissions.allows(RuntimePermissions.Permission.ENV, "SECRET"));
         assertFalse(permissions.allows(RuntimePermissions.Permission.WRITE, "/tmp/out"));
