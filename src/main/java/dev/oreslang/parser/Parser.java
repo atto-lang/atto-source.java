@@ -1040,11 +1040,12 @@ public final class Parser {
             // until typed RW admission / actor pipeline source lowering is
             // implemented. Never admit them as ordinary method names or
             // silently degrade the read mode to an exclusive write gate.
-            if (check(CRITICAL_READ) || check(CRITICAL_WRITE)) {
+            if (isAdjacentCompoundKeyword("critical", "read")
+                    || isAdjacentCompoundKeyword("critical", "write")) {
                 throw error(peek(), "reader/writer critical declaration requires "
                         + "checked protected-state effects and scheduler-owned RW permits");
             }
-            if (check(TRANSFORM_PIPE)) {
+            if (isAdjacentCompoundKeyword("transform", "pipe")) {
                 throw error(peek(), "transform-pipe actor requires "
                         + "typed pipeline role, forwarding and transport lowering");
             }
@@ -3552,6 +3553,17 @@ public final class Parser {
         if (!checkNext(IDENT) && !checkNext(LBRACKET) && !checkNext(STATIC)) return false;
         advance();
         return true;
+    }
+
+    private boolean isAdjacentCompoundKeyword(String first, String second) {
+        if (current + 2 >= tokens.size()) return false;
+        Token left = tokens.get(current);
+        Token dash = tokens.get(current + 1);
+        Token right = tokens.get(current + 2);
+        return left.type() == IDENT && left.lexeme().equals(first)
+                && dash.type() == MINUS && right.type() == IDENT
+                && right.lexeme().equals(second)
+                && adjacent(left, dash) && adjacent(dash, right);
     }
 
     private boolean matchContextualShared() {
