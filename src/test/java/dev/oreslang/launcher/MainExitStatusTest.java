@@ -40,6 +40,9 @@ final class MainExitStatusTest {
         Files.writeString(path, "pub routine main(): int { return missing_variable; }");
         assertEquals(1, OresMain.exitStatusForArgs(new String[] {path.toString()}));
         assertEquals(1, OresMain.exitStatusForArgs(new String[] {"--check", path.toString()}));
+        Files.writeString(path, "pub routine helper(): void { }");
+        assertEquals(1, OresMain.exitStatusForArgs(new String[] {path.toString()}),
+                "a missing main must never produce a successful process status");
     }
 
     @Test void integerMainReturnsZero() throws Exception {
