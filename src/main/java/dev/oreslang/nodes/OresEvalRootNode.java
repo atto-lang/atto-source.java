@@ -4461,14 +4461,11 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
-            } catch (OresPanic panic) {
-                throw panic;
-            } catch (java.util.concurrent.CancellationException cancelled) {
-                throw cancelled;
-            } catch (RuntimeException ordinaryFailure) {
-                // trap is deliberately lossy: ordinary guest/runtime failure
-                // becomes None. Panic and scheduler cancellation remain distinct
-                // non-trappable control channels.
+            } catch (OresCastError ordinaryFailure) {
+                // Only a known guest recoverable failure crosses this boundary.
+                // Never collapse arbitrary RuntimeException (security, scheduler,
+                // host/internal failures or cancellation) into None.
+                // Add typed guest Throw<E> here only after effect admission.
                 return new OptionValue(false, null);
             }
         }
@@ -4841,10 +4838,12 @@ public final class OresEvalRootNode extends RootNode {
                 try { executeBlock(tried.body(), env, true); }
                 catch (TailCallSignal signal) { throw signal; }
                 catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
-                catch (OresPanic panic) { throw panic; }
-                catch (RuntimeException failure) {
+                catch (OresCastError ordinaryFailure) {
+                    // Catch only admitted guest-recoverable failures. Cancellation,
+                    // security and host/internal invariant failures must escape,
+                    // including through finally.
                     Env catchEnv = new Env(env);
-                    catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
+                    catchEnv.define(tried.errorName(), ordinaryFailure, Ast.BindingKind.VAL);
                     executeBlock(tried.catchBody(), catchEnv, true);
                 } finally { executeBlock(tried.finallyBody(), env, true); }
                 return;
