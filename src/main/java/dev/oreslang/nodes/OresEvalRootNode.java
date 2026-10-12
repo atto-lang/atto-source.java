@@ -2881,7 +2881,19 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
-                SourceValueCont continuation) {
+                SourceValueCont downstream) {
+            // The evaluator must never replay a consumer continuation when
+            // consumer code itself throws. Completion can also race a resumed
+            // await, so this fence must survive suspension and be atomic.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            SourceValueCont continuation = (resumedTask, value, failure) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "suspendable expression completed more than once");
+                }
+                downstream.accept(resumedTask, value, failure);
+            };
             try {
                 if (!expressionContainsPotentialSuspension(
                         expr,
@@ -3371,6 +3383,10 @@ public final class OresEvalRootNode extends RootNode {
 
                 continuation.accept(task, eval(expr, env), null);
             } catch (RuntimeException | Error failure) {
+                // A failure from a delivered callback belongs to the consumer,
+                // not the expression. Re-delivery could execute statements or
+                // release affine resources twice.
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
