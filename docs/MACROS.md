@@ -3,6 +3,17 @@
 Status: **first-phase implementation**. This document describes only features actually
 implemented on the macro feature branch and separates future extensions.
 
+## Parser-validated expression captures
+
+For `$name:expr` parameters, nested macro invocations are expanded at build
+time first. The ordinary Oreslang expression parser must then consume the
+**entire** captured fragment as exactly one expression. Partial expressions,
+statement fragments, free semicolons and dangling operators are rejected
+before substitution; a token sequence is not presumed to be an expression.
+The completed expanded program still undergoes its normal full type,
+ownership, actor-state and effect checks. This is a syntax-validation gate,
+not a substitute for typed AST hygiene or semantic conformance.
+
 ## Syntax and modes
 
 Oreslang expands **expression-only** declarative macros from tokens **before**
