@@ -41,6 +41,41 @@ final class OresFutureCallbackTest {
     }
 
     @Test
+    void mapAndFlatMapGuestMappersRunOnlyOnOwningScheduler() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            AtomicReference<Thread> producer = new AtomicReference<>();
+            AtomicReference<Thread> mapCarrier = new AtomicReference<>();
+            AtomicReference<Thread> flatMapCarrier = new AtomicReference<>();
+
+            OresFuture<Integer> mapped = source.mapOn(scheduler, value -> {
+                assertSame(scheduler, OresScheduler.current());
+                mapCarrier.set(Thread.currentThread());
+                return value + 1;
+            });
+            OresFuture<Integer> chained = mapped.flatMapOn(scheduler, value -> {
+                assertSame(scheduler, OresScheduler.current());
+                flatMapCarrier.set(Thread.currentThread());
+                return OresFuture.completed(value * 2);
+            });
+
+            Thread completionThread = Thread.ofPlatform().start(() -> {
+                producer.set(Thread.currentThread());
+                source.completeFromRuntime(20);
+            });
+            completionThread.join();
+
+            assertEquals(42, chained.get(5, TimeUnit.SECONDS));
+            assertNotNull(mapCarrier.get());
+            assertNotNull(flatMapCarrier.get());
+            assertNotSame(producer.get(), mapCarrier.get(),
+                    "Future.map guest mapper must never run on the producer thread");
+            assertNotSame(producer.get(), flatMapCarrier.get(),
+                    "Future.flat_map guest mapper must never run on the producer thread");
+        }
+    }
+
+    @Test
     void synchronousAttachedCallbackCannotCompleteChainOnRegistrarStack() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             AtomicBoolean insideRegistrar = new AtomicBoolean();

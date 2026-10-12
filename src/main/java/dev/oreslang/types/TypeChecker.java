@@ -49,6 +49,12 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private boolean currentMaySuspend;
+    /**
+     * Logical source return type of the currently checked callable. Async
+     * callables store their logical T here rather than Future<T>, so postfix ?
+     * propagates through the callable result without changing await semantics.
+     */
+    private Type currentReturnType;
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -246,11 +252,14 @@ public final class TypeChecker {
         }
         Ast.ActorKind previousActorKind = currentActorKind;
         boolean previousMaySuspend = currentMaySuspend;
+        Type previousReturnType = currentReturnType;
         currentActorKind = fn.actorKind();
         currentMaySuspend = fn.async() || fn.actorKind() != Ast.ActorKind.NONE;
+        currentReturnType = returns;
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
+            currentReturnType = previousReturnType;
             currentMaySuspend = previousMaySuspend;
             currentActorKind = previousActorKind;
         }
@@ -354,12 +363,15 @@ public final class TypeChecker {
             Type returns = resolve(method.returnType(), generics, callableSelf);
             Ast.ActorKind previousActorKind = currentActorKind;
             boolean previousMaySuspend = currentMaySuspend;
+            Type previousReturnType = currentReturnType;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             currentMaySuspend = method.async()
                     || (!method.isStatic() && klass.actorKind() != Ast.ActorKind.NONE);
+            currentReturnType = returns;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
+                currentReturnType = previousReturnType;
                 currentMaySuspend = previousMaySuspend;
                 currentActorKind = previousActorKind;
             }
@@ -478,7 +490,14 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
-        if (stmt instanceof Ast.DeferStmt defer) { typeOf(defer.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.DeferStmt defer) {
+            if (containsTryPropagation(defer.expression())) {
+                throw new IllegalArgumentException(
+                        "postfix ? is not legal inside defer; propagation would bypass or reorder lexical cleanup");
+            }
+            typeOf(defer.expression(), env, generics, self);
+            return;
+        }
         if (stmt instanceof Ast.IfStmt conditional) {
             for (Ast.IfBranch branch : conditional.branches()) {
                 requireAssignable(typeOf(branch.condition(), env, generics, self), Primitive.BOOL, "if condition");
@@ -549,6 +568,8 @@ public final class TypeChecker {
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
             if (name.name().equals("Futures")) return new Named("$FuturesFactory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
+            if (name.name().equals("Iterator")) return new Named("$IteratorFactory", List.of());
+            if (name.name().equals("Stream")) return new Named("$StreamFactory", List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex") || name.name().equals("RwLock")) {
                 return new Named("$" + name.name() + "Factory", List.of());
             }
@@ -617,6 +638,38 @@ public final class TypeChecker {
             Type left = typeOf(conditional.whenTrue(), env, generics, self);
             Type right = typeOf(conditional.whenFalse(), env, generics, self);
             return commonType(left, right);
+        }
+        if (expr instanceof Ast.TryPropagateExpr propagated) {
+            Type operand = deref(typeOf(propagated.expression(), env, generics, self));
+            Type returns = deref(currentReturnType);
+            if (operand instanceof Named named
+                    && named.name().equals("Option")
+                    && named.arguments().size() == 1) {
+                if (!(returns instanceof Named returnNamed)
+                        || !returnNamed.name().equals("Option")
+                        || returnNamed.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Option<T>? requires the enclosing callable to return Option<U>");
+                }
+                return named.arguments().getFirst();
+            }
+            if (operand instanceof Named named
+                    && named.name().equals("Result")
+                    && named.arguments().size() == 2) {
+                if (!(returns instanceof Named returnNamed)
+                        || !returnNamed.name().equals("Result")
+                        || returnNamed.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Result<T,E>? requires the enclosing callable to return Result<U,F>");
+                }
+                requireAssignable(
+                        named.arguments().get(1),
+                        returnNamed.arguments().get(1),
+                        "propagated Result error");
+                return named.arguments().getFirst();
+            }
+            throw new IllegalArgumentException(
+                    "postfix ? requires compiler-approved Option<T> or Result<T,E>; found " + operand);
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
@@ -764,6 +817,39 @@ public final class TypeChecker {
                             "unknown Futures member '" + futuresCall.member() + "'");
                 };
             }
+            if (call.callee() instanceof Ast.MemberExpr sequenceFactoryCall
+                    && sequenceFactoryCall.receiver() instanceof Ast.NameExpr sequenceFactory
+                    && (sequenceFactory.name().equals("Iterator")
+                            || sequenceFactory.name().equals("Stream"))) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            sequenceFactory.name() + "." + sequenceFactoryCall.member()
+                                    + " does not accept call-site type arguments");
+                }
+                if (sequenceFactoryCall.member().equals("from_values")) {
+                    if (call.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                sequenceFactory.name() + ".from_values expects exactly one iterable value");
+                    }
+                    Type element = iterableElementType(
+                            deref(typeOf(call.arguments().getFirst(), env, generics, self)));
+                    return new Named(sequenceFactory.name(), List.of(element));
+                }
+                if (sequenceFactory.name().equals("Stream")
+                        && sequenceFactoryCall.member().equals("from_future")) {
+                    if (call.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "Stream.from_future expects exactly one Awaitable<T>");
+                    }
+                    Type element = awaitablePayload(
+                            typeOf(call.arguments().getFirst(), env, generics, self),
+                            "Stream.from_future");
+                    return new Named("Stream", List.of(element));
+                }
+                throw new IllegalArgumentException(
+                        "unknown " + sequenceFactory.name() + " static member '"
+                                + sequenceFactoryCall.member() + "'");
+            }
             if (call.callee() instanceof Ast.MemberExpr factoryCall
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
                     && (factory.name().equals("Mutex")
@@ -828,6 +914,9 @@ public final class TypeChecker {
                     return fn.async() ? futureOf(logicalResult) : logicalResult;
                 }
                 if (receiver instanceof Named named) {
+                    Type compositionResult = builtinCompositionCall(
+                            call, member, named, env, generics, self);
+                    if (compositionResult != null) return compositionResult;
                     if (named.name().equals("Future")
                             && named.arguments().size() == 1
                             && member.member().equals("attach_callback")) {
@@ -1046,6 +1135,10 @@ public final class TypeChecker {
             }
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            Type iteratorMember = builtinIteratorMember(sumReceiver, member.member());
+            if (iteratorMember != null) return iteratorMember;
+            Type streamMember = builtinStreamMember(sumReceiver, member.member());
+            if (streamMember != null) return streamMember;
             Type callbackMember = builtinCallbackMember(sumReceiver, member.member());
             if (callbackMember != null) return callbackMember;
             Type actorHandleMember = builtinActorHandleMember(sumReceiver, member.member());
@@ -1269,10 +1362,13 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
             boolean previousMaySuspend = currentMaySuspend;
+            Type previousReturnType = currentReturnType;
             currentMaySuspend = lambda.async();
+            currentReturnType = Unknown.INSTANCE;
             try {
                 checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
             } finally {
+                currentReturnType = previousReturnType;
                 currentMaySuspend = previousMaySuspend;
             }
             Type invocationResult = lambda.async() ? futureOf(Unknown.INSTANCE) : Unknown.INSTANCE;
@@ -1415,15 +1511,58 @@ public final class TypeChecker {
         }
 
         boolean previousMaySuspend = currentMaySuspend;
+        Type previousReturnType = currentReturnType;
         currentMaySuspend = lambda.async();
+        currentReturnType = bodyResult;
         try {
             checkBlock(lambda.blockBody(), lambdaEnv, generics, bodyResult, self);
         } finally {
+            currentReturnType = previousReturnType;
             currentMaySuspend = previousMaySuspend;
         }
         if (bodyResult != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
         }
+    }
+
+    private boolean containsTryPropagation(Ast.Expr expr) {
+        if (expr instanceof Ast.TryPropagateExpr) return true;
+        if (expr instanceof Ast.LambdaExpr) return false;
+        if (expr instanceof Ast.UnaryExpr unary) return containsTryPropagation(unary.operand());
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return containsTryPropagation(binary.left()) || containsTryPropagation(binary.right());
+        }
+        if (expr instanceof Ast.AssignExpr assignment) {
+            return containsTryPropagation(assignment.target())
+                    || containsTryPropagation(assignment.value());
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return containsTryPropagation(conditional.condition())
+                    || containsTryPropagation(conditional.whenTrue())
+                    || containsTryPropagation(conditional.whenFalse());
+        }
+        if (expr instanceof Ast.CallExpr call) {
+            if (containsTryPropagation(call.callee())) return true;
+            for (Ast.Expr argument : call.arguments()) {
+                if (containsTryPropagation(argument)) return true;
+            }
+            return false;
+        }
+        if (expr instanceof Ast.MemberExpr member) return containsTryPropagation(member.receiver());
+        if (expr instanceof Ast.IndexExpr index) {
+            return containsTryPropagation(index.receiver()) || containsTryPropagation(index.index());
+        }
+        if (expr instanceof Ast.NewExpr created) {
+            return created.arguments().stream().anyMatch(this::containsTryPropagation);
+        }
+        if (expr instanceof Ast.AwaitExpr awaited) return containsTryPropagation(awaited.expression());
+        if (expr instanceof Ast.SpawnExpr spawned) return containsTryPropagation(spawned.call());
+        if (expr instanceof Ast.ListExpr list) return list.elements().stream().anyMatch(this::containsTryPropagation);
+        if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().anyMatch(this::containsTryPropagation);
+        if (expr instanceof Ast.ObjectExpr object) {
+            return object.fields().stream().anyMatch(field -> containsTryPropagation(field.value()));
+        }
+        return false;
     }
 
     private Type deref(Type type) {
@@ -1498,7 +1637,8 @@ public final class TypeChecker {
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("RwReadGuard") || named.name().equals("RwWriteGuard")
                 || named.name().equals("Future") || named.name().equals("ActorSpawn")
-                || named.name().equals("Awaitable") || named.name().equals("Callback")) {
+                || named.name().equals("Awaitable") || named.name().equals("Callback")
+                || named.name().equals("Iterator") || named.name().equals("Stream")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
@@ -1585,6 +1725,7 @@ public final class TypeChecker {
                 || named.name().equals("RwReadGuard") || named.name().equals("RwWriteGuard")
                 || named.name().equals("Future") || named.name().equals("ActorSpawn")
                 || named.name().equals("Awaitable") || named.name().equals("Callback")
+                || named.name().equals("Iterator") || named.name().equals("Stream")
                 || named.name().equals("OresScheduler")
                 || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
@@ -1681,21 +1822,211 @@ public final class TypeChecker {
                         new Named("Result", List.of(element, new Named("OptionUnwrapError", List.of()))));
                 case "expect" -> new Function(List.of(Primitive.STRING), element);
                 case "unwrap_or" -> new Function(List.of(element), element);
+                case "map" -> new Function(
+                        List.of(new Function(List.of(element), Unknown.INSTANCE)),
+                        new Named("Option", List.of(Unknown.INSTANCE)));
+                case "flat_map", "and_then" -> new Function(
+                        List.of(new Function(
+                                List.of(element),
+                                new Named("Option", List.of(Unknown.INSTANCE)))),
+                        new Named("Option", List.of(Unknown.INSTANCE)));
+                case "or_else" -> new Function(
+                        List.of(new Function(List.of(), named)),
+                        named);
+                case "flatten" -> new Function(List.of(), Unknown.INSTANCE);
                 default -> null;
             };
         }
         if (named.name().equals("Result") && named.arguments().size() == 2) {
             Type ok = named.arguments().get(0);
+            Type error = named.arguments().get(1);
             return switch (member) {
                 case "is_ok", "is_err" -> new Function(List.of(), Primitive.BOOL);
                 case "unwrap" -> new Function(List.of(), ok);
                 case "unwrap_safe" -> new Function(List.of(), named);
                 case "expect" -> new Function(List.of(Primitive.STRING), ok);
                 case "unwrap_or" -> new Function(List.of(ok), ok);
+                case "map" -> new Function(
+                        List.of(new Function(List.of(ok), Unknown.INSTANCE)),
+                        new Named("Result", List.of(Unknown.INSTANCE, error)));
+                case "flat_map", "and_then" -> new Function(
+                        List.of(new Function(
+                                List.of(ok),
+                                new Named("Result", List.of(Unknown.INSTANCE, error)))),
+                        new Named("Result", List.of(Unknown.INSTANCE, error)));
+                case "map_err" -> new Function(
+                        List.of(new Function(List.of(error), Unknown.INSTANCE)),
+                        new Named("Result", List.of(ok, Unknown.INSTANCE)));
+                case "or_else" -> new Function(
+                        List.of(new Function(
+                                List.of(error),
+                                new Named("Result", List.of(ok, Unknown.INSTANCE)))),
+                        new Named("Result", List.of(ok, Unknown.INSTANCE)));
+                case "flatten" -> new Function(List.of(), Unknown.INSTANCE);
                 default -> null;
             };
         }
         return null;
+    }
+
+    private Type builtinCompositionCall(
+            Ast.CallExpr call,
+            Ast.MemberExpr member,
+            Named receiver,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        String family = receiver.name();
+        String operation = member.member();
+        boolean recognized = switch (family) {
+            case "Option" -> java.util.Set.of(
+                    "map", "flat_map", "and_then", "or_else", "flatten").contains(operation);
+            case "Result" -> java.util.Set.of(
+                    "map", "flat_map", "and_then", "map_err", "or_else", "flatten").contains(operation);
+            case "Future", "Iterator", "Stream" -> java.util.Set.of(
+                    "map", "flat_map", "and_then", "flatten").contains(operation);
+            default -> false;
+        };
+        if (!recognized) return null;
+
+        if (operation.equals("flatten")) {
+            if (call.typeArgumentsPresent() || !call.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        family + ".flatten expects no arguments or type arguments");
+            }
+            Type nested = receiver.arguments().getFirst();
+            if (!(nested instanceof Named nestedNamed)
+                    || !nestedNamed.name().equals(family)) {
+                throw new IllegalArgumentException(
+                        family + ".flatten requires a nested " + family + " value");
+            }
+            if (family.equals("Result")) {
+                if (nestedNamed.arguments().size() != 2
+                        || receiver.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Result.flatten requires Result<Result<T,E>,E>");
+                }
+                Type outerError = receiver.arguments().get(1);
+                Type innerError = nestedNamed.arguments().get(1);
+                requireAssignable(innerError, outerError, "Result.flatten error");
+                requireAssignable(outerError, innerError, "Result.flatten error");
+            }
+            return nested;
+        }
+
+        if (call.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    family + "." + operation + " expects exactly one callback");
+        }
+        Ast.Expr callback = call.arguments().getFirst();
+
+        if (family.equals("Option") && operation.equals("or_else")) {
+            if (call.typeArgumentsPresent()) {
+                throw new IllegalArgumentException(
+                        "Option.or_else does not accept call-site type arguments");
+            }
+            Type expected = new Function(List.of(), receiver);
+            validateCompositionCallback(
+                    callback, expected, env, generics, self, "Option.or_else");
+            return receiver;
+        }
+
+        Type output = compositionTypeArgument(
+                call, generics, self, family + "." + operation);
+        Type input = receiver.arguments().getFirst();
+        Type callbackResult;
+        Type result;
+
+        switch (family) {
+            case "Option" -> {
+                callbackResult = operation.equals("map")
+                        ? output
+                        : new Named("Option", List.of(output));
+                result = new Named("Option", List.of(output));
+            }
+            case "Result" -> {
+                Type error = receiver.arguments().get(1);
+                if (operation.equals("map_err")) {
+                    input = error;
+                    callbackResult = output;
+                    result = new Named(
+                            "Result",
+                            List.of(receiver.arguments().getFirst(), output));
+                } else if (operation.equals("or_else")) {
+                    input = error;
+                    callbackResult = new Named(
+                            "Result",
+                            List.of(receiver.arguments().getFirst(), output));
+                    result = callbackResult;
+                } else {
+                    callbackResult = operation.equals("map")
+                            ? output
+                            : new Named("Result", List.of(output, error));
+                    result = new Named("Result", List.of(output, error));
+                }
+            }
+            case "Future" -> {
+                callbackResult = operation.equals("map")
+                        ? output
+                        : new Named("Awaitable", List.of(output));
+                result = new Named("Future", List.of(output));
+            }
+            case "Iterator" -> {
+                callbackResult = operation.equals("map")
+                        ? output
+                        : new Named("Iterator", List.of(output));
+                result = new Named("Iterator", List.of(output));
+            }
+            case "Stream" -> {
+                callbackResult = operation.equals("map")
+                        ? output
+                        : new Named("Stream", List.of(output));
+                result = new Named("Stream", List.of(output));
+            }
+            default -> throw new IllegalStateException(
+                    "unreachable composition family " + family);
+        }
+
+        validateCompositionCallback(
+                callback,
+                new Function(List.of(input), callbackResult),
+                env,
+                generics,
+                self,
+                family + "." + operation);
+        return result;
+    }
+
+    private Type compositionTypeArgument(
+            Ast.CallExpr call,
+            Set<String> generics,
+            Type self,
+            String operation) {
+        if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    operation + " requires one explicit output type argument in v0, "
+                            + "for example .map<int>(...)");
+        }
+        return resolve(call.typeArguments().getFirst(), generics, self);
+    }
+
+    private void validateCompositionCallback(
+            Ast.Expr callback,
+            Type expected,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String operation) {
+        if (!(expected instanceof Function function)) {
+            throw new IllegalStateException(
+                    "composition callback must have function type");
+        }
+        if (callback instanceof Ast.LambdaExpr lambda) {
+            validateLambdaAgainstExpected(lambda, function, env, generics, self);
+            return;
+        }
+        Type actual = typeOf(callback, env, generics, self);
+        requireAssignable(actual, expected, operation + " callback");
     }
 
     private Type builtinActorHandleMember(Type receiver, String member) {
@@ -1754,6 +2085,63 @@ public final class TypeChecker {
                     new Function(List.of(), Primitive.BOOL);
             case "get_awaited" ->
                     new Function(List.of(), futureOf(element));
+            case "map" -> new Function(
+                    List.of(new Function(List.of(element), Unknown.INSTANCE)),
+                    futureOf(Unknown.INSTANCE));
+            case "flat_map", "and_then" -> new Function(
+                    List.of(new Function(
+                            List.of(element),
+                            new Named("Awaitable", List.of(Unknown.INSTANCE)))),
+                    futureOf(Unknown.INSTANCE));
+            case "flatten" -> new Function(List.of(), Unknown.INSTANCE);
+            default -> null;
+        };
+    }
+
+    private Type builtinIteratorMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named)
+                || !named.name().equals("Iterator")
+                || named.arguments().size() != 1) {
+            return null;
+        }
+        Type element = named.arguments().getFirst();
+        return switch (member) {
+            case "next" -> new Function(
+                    List.of(),
+                    new Named("Option", List.of(element)));
+            case "map" -> new Function(
+                    List.of(new Function(List.of(element), Unknown.INSTANCE)),
+                    new Named("Iterator", List.of(Unknown.INSTANCE)));
+            case "flat_map", "and_then" -> new Function(
+                    List.of(new Function(
+                            List.of(element),
+                            new Named("Iterator", List.of(Unknown.INSTANCE)))),
+                    new Named("Iterator", List.of(Unknown.INSTANCE)));
+            case "flatten" -> new Function(List.of(), Unknown.INSTANCE);
+            default -> null;
+        };
+    }
+
+    private Type builtinStreamMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named)
+                || !named.name().equals("Stream")
+                || named.arguments().size() != 1) {
+            return null;
+        }
+        Type element = named.arguments().getFirst();
+        return switch (member) {
+            case "next" -> new Function(
+                    List.of(),
+                    futureOf(new Named("Option", List.of(element))));
+            case "map" -> new Function(
+                    List.of(new Function(List.of(element), Unknown.INSTANCE)),
+                    new Named("Stream", List.of(Unknown.INSTANCE)));
+            case "flat_map", "and_then" -> new Function(
+                    List.of(new Function(
+                            List.of(element),
+                            new Named("Stream", List.of(Unknown.INSTANCE)))),
+                    new Named("Stream", List.of(Unknown.INSTANCE)));
+            case "flatten" -> new Function(List.of(), Unknown.INSTANCE);
             default -> null;
         };
     }
@@ -2018,6 +2406,11 @@ public final class TypeChecker {
 
     private Type iterableElementType(Type iterable) {
         if (iterable instanceof ListType list) return list.element();
+        if (iterable instanceof Named namedIterator
+                && namedIterator.name().equals("Iterator")
+                && namedIterator.arguments().size() == 1) {
+            return namedIterator.arguments().getFirst();
+        }
         if (iterable instanceof Tuple tuple) {
             Type result = Unknown.INSTANCE;
             for (Type element : tuple.elements()) result = result == Unknown.INSTANCE ? element : commonType(result, element);
@@ -2842,6 +3235,17 @@ public final class TypeChecker {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
                 yield new Named("Future", List.of(element));
+            }
+            case "Iterator", "Stream" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " requires exactly one explicit type argument");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                if (element == Primitive.VOID) {
+                    throw new IllegalArgumentException(ref.name() + "<void> is invalid");
+                }
+                yield new Named(ref.name(), List.of(element));
             }
             case "Awaitable" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {

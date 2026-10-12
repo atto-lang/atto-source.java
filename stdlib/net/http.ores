@@ -1,0 +1,27 @@
+// HTTP wire-policy helpers implemented in Oreslang.
+//
+// Host Java/JNI code may provide byte transport, timers, TLS/native handles,
+// and scheduler completion primitives. HTTP status/framing policy belongs here.
+
+define module http_wire
+  pub fnc is_redirect(int status) => bool {
+    return status == 301 || status == 302 || status == 303
+        || status == 307 || status == 308;
+  }
+
+  pub fnc default_port(String scheme) => Option<int> {
+    if scheme == "http" do
+      return Some(80);
+    fi
+    if scheme == "https" do
+      return Some(443);
+    fi
+    return None;
+  }
+
+  pub fnc framing_is_ambiguous(
+      String transfer_encoding,
+      bool has_content_length) => bool {
+    return transfer_encoding != "" && has_content_length;
+  }
+end

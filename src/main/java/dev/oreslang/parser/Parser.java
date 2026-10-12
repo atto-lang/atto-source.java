@@ -1292,9 +1292,55 @@ public final class Parser {
                 Ast.Expr index = parseExpression();
                 consume(RBRACKET, "expected ']' after index");
                 expr = new Ast.IndexExpr(expr, index);
+            } else if (check(QUESTION) && !questionStartsTernary()) {
+                advance();
+                expr = new Ast.TryPropagateExpr(expr);
             } else break;
         }
         return expr;
+    }
+
+    /**
+     * A question mark belongs to the existing ternary operator when a colon is
+     * visible at this expression depth before the expression boundary.
+     * Otherwise it is the postfix Try-like propagation operator.
+     *
+     * Parentheses are the explicit disambiguator for deliberately nested forms
+     * such as {@code (value?) ? when_true : when_false}.
+     */
+    private boolean questionStartsTernary() {
+        if (!check(QUESTION)) return false;
+        int parens = 0;
+        int brackets = 0;
+        int braces = 0;
+        for (int i = current + 1; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            switch (type) {
+                case LPAREN -> parens++;
+                case RPAREN -> {
+                    if (parens == 0 && brackets == 0 && braces == 0) return false;
+                    parens--;
+                }
+                case LBRACKET -> brackets++;
+                case RBRACKET -> {
+                    if (brackets == 0 && parens == 0 && braces == 0) return false;
+                    brackets--;
+                }
+                case LBRACE -> braces++;
+                case RBRACE -> {
+                    if (braces == 0 && parens == 0 && brackets == 0) return false;
+                    braces--;
+                }
+                case COLON -> {
+                    if (parens == 0 && brackets == 0 && braces == 0) return true;
+                }
+                case SEMICOLON, COMMA, EOF, DO, DONE, FI, ELSE, ELSEIF, END -> {
+                    if (parens == 0 && brackets == 0 && braces == 0) return false;
+                }
+                default -> { }
+            }
+        }
+        return false;
     }
 
     private List<Ast.TypeRef> parseCallTypeArguments() {
