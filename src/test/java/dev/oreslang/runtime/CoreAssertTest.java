@@ -141,6 +141,61 @@ final class CoreAssertTest {
             """));
     }
 
+    @Test void synchronousPanicCannotBeMaskedByDeferredAssertionFailure() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+            trap fnc check(): bool {
+                defer Assert.fail("cleanup is ordinary");
+                val Option<bool> absent = None;
+                return absent.unwrap();
+            }
+            pub routine main(): void {
+                check();
+                stdio.stdout.write("unreachable");
+                return;
+            }
+            """));
+        assertTrue(failure.getMessage().contains("Option::unwrap"),
+                () -> "panic must remain authoritative: " + failure);
+    }
+
+    @Test void resumedPanicCannotBeMaskedByDeferredAssertionFailure() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+            trap fnc check(): bool {
+                defer Assert.fail("cleanup is ordinary");
+                rt cooperate;
+                val Option<bool> absent = None;
+                return absent.unwrap();
+            }
+            pub async fnc main(): void {
+                check();
+                stdio.stdout.write("unreachable");
+                return;
+            }
+            """));
+        assertTrue(failure.getMessage().contains("Option::unwrap"),
+                () -> "resumed panic must remain authoritative: " + failure);
+    }
+
+    @Test void panicCannotBeMaskedByFinallyAssertionFailure() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+            trap fnc check(): bool {
+                try {
+                    val Option<bool> absent = None;
+                    return absent.unwrap();
+                }
+                catch (error) { return true; }
+                finally { Assert.fail("cleanup is ordinary"); }
+            }
+            pub routine main(): void {
+                check();
+                stdio.stdout.write("unreachable");
+                return;
+            }
+            """));
+        assertTrue(failure.getMessage().contains("Option::unwrap"),
+                () -> "finally must not replace a panic: " + failure);
+    }
+
     @Test void assertImportCannotBeShadowedByApplicationFile() throws Exception {
         Path project = Files.createTempDirectory("ores-assert-shadow-");
         Path std = Files.createDirectories(project.resolve("std"));
@@ -178,7 +233,8 @@ final class CoreAssertTest {
         Path entry = Files.createTempFile("ores-assert-policy-", ".ores");
         try {
             Files.delete(blocked);
-            for (String prefix : new String[]{"", "Assert.equal_throws(1, 1);"}) {
+            for (String prefix : new String[]{"", "Assert.equal_throws(1, 1);",
+                    "defer Assert.fail(\"cleanup must not mask denial\");"}) {
                 Files.writeString(entry, """
                     import module Assert from "std/assert";
                     trap fnc guarded(): bool {
