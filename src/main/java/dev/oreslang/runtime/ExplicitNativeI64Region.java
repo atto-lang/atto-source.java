@@ -82,6 +82,13 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     private final long[] generations;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean physicalClosed = new AtomicBoolean();
+    /**
+     * Package-private fault seam for deterministic tests of the split
+     * Arena.close -> quota refund -> ownership-registry removal protocol.
+     * The owning actor must arm it before STOP; never exposed to guest code.
+     */
+    private volatile Runnable afterArenaCloseProbe = () -> { };
+    private volatile Runnable afterQuotaRefundProbe = () -> { };
     private int loanCount;
     private int occupied;
 
@@ -190,6 +197,16 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         occupied--;
     }
 
+    void installRetirementProbesForTesting(
+            Runnable afterArenaClose, Runnable afterQuotaRefund) {
+        requireActor.run();
+        synchronized (this) {
+            requireOpen();
+            afterArenaCloseProbe = Objects.requireNonNull(afterArenaClose);
+            afterQuotaRefundProbe = Objects.requireNonNull(afterQuotaRefund);
+        }
+    }
+
     public synchronized int size() { return occupied; }
     public synchronized boolean closed() { return closed.get(); }
     public synchronized boolean physicallyClosed() { return physicalClosed.get(); }
@@ -223,9 +240,12 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         Arrays.fill(live, false);
         occupied = 0;
         try {
-            // A closed Arena without a refunded physical reservation is not
-            // successful actor teardown. Report quota/registry errors too.
+            // The executor can block or throw at each fault seam in a
+            // completion thread, but never reopens guest actor admission.
+            // Published completion must wait for ALL stages.
+            afterArenaCloseProbe.run();
             reservation.close();
+            afterQuotaRefundProbe.run();
             onRetired.run();
         } catch (RuntimeException | Error releaseFailure) {
             onPhysicalCloseFailure.accept(releaseFailure);
