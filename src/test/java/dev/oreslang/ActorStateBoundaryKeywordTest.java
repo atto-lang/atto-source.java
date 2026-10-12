@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.parser.Token;
+import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -55,6 +56,47 @@ final class ActorStateBoundaryKeywordTest {
             assertTrue(failure.getMessage().contains("self.state is not accessible"),
                     failure.getMessage());
         }
+    }
+
+    @Test
+    void handleStateIntrinsicCannotBeShadowedOrOverridden() {
+        for (String declaration : List.of(
+                "pub handle_state(): int { return 3; }",
+                "pub static fnc handle_state(): int { return 3; }")) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("define actor Foo as " + declaration + " end"));
+            assertTrue(failure.getMessage().contains("sealed runtime intrinsic"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
+    void actorReceiverAliasesCannotReadState() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Foo as
+                            pub inspect(): int {
+                                val alias = self;
+                                return alias.state;
+                            }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("actor state is sealed"),
+                failure.getMessage());
+    }
+
+    @Test
+    void unknownHyphenatedSpellingsCannotBecomeIdentifiers() {
+        List<Token.Type> tokens = new Lexer(
+                "critical-reader critical-read-other nb-selectable foo-bar").scan()
+                .stream().map(Token::type).toList();
+        assertEquals(List.of(
+                Token.Type.CRITICAL, Token.Type.MINUS, Token.Type.IDENT,
+                Token.Type.CRITICAL, Token.Type.MINUS, Token.Type.IDENT,
+                Token.Type.MINUS, Token.Type.IDENT,
+                Token.Type.NB, Token.Type.MINUS, Token.Type.IDENT,
+                Token.Type.IDENT, Token.Type.MINUS, Token.Type.IDENT,
+                Token.Type.EOF), tokens);
     }
 
     @Test
