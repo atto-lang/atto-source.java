@@ -47,6 +47,13 @@ public final class GpuBufferFence implements AutoCloseable {
     public synchronized long byteLength() { active(); return state.bytes; }
     public synchronized Status status() { active(); return state.status; }
 
+    /** Immutable, per-buffer snapshot for typed DOP placement preflight only. */
+    public record Snapshot(Identity identity, long byteLength, Status status) { }
+    public synchronized Snapshot snapshot() {
+        active();
+        return new Snapshot(state.identity, state.bytes, state.status);
+    }
+
     public synchronized GpuBufferFence take() {
         active();
         if (state.status != Status.IDLE) {
