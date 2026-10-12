@@ -16,8 +16,21 @@ public final class GpuBufferFence implements AutoCloseable {
         }
     }
 
-    /** Ties one submission to a precise buffer generation and sequence. */
-    public record Ticket(long generation, long sequence) { }
+    /**
+     * Unforgeable, per-submission completion capability, not just two
+     * guessable integers. Keep the constructor inaccessible to guest code.
+     * Its object identity must match the precise in-flight submission.
+     */
+    public static final class Ticket {
+        private final long generation;
+        private final long sequence;
+        private Ticket(long generation, long sequence) {
+            this.generation = generation;
+            this.sequence = sequence;
+        }
+        public long generation() { return generation; }
+        public long sequence() { return sequence; }
+    }
 
     private static final class State {
         final Identity identity;
@@ -25,6 +38,7 @@ public final class GpuBufferFence implements AutoCloseable {
         Status status = Status.IDLE;
         boolean backendQuiescent = true;
         long sequence;
+        Ticket activeTicket;
         State(Identity identity, long bytes) {
             this.identity = Objects.requireNonNull(identity);
             if (bytes <= 0) throw new IllegalArgumentException("device byte size must be positive");
@@ -63,27 +77,25 @@ public final class GpuBufferFence implements AutoCloseable {
         if (state.sequence == Long.MAX_VALUE) throw new IllegalStateException("device fence sequence overflow");
         state.backendQuiescent = false;
         state.status = Status.IN_FLIGHT;
-        return new Ticket(state.identity.allocationGeneration(), ++state.sequence);
+        state.activeTicket = new Ticket(state.identity.allocationGeneration(), ++state.sequence);
+        return state.activeTicket;
     }
 
     /** Called ONLY after the device reports completion for this exact ticket. */
     public synchronized void complete(Ticket ticket, boolean success) {
         active();
-        if (state.status != Status.IN_FLIGHT || ticket == null
-                || ticket.generation() != state.identity.allocationGeneration()
-                || ticket.sequence() != state.sequence) {
+        if (state.status != Status.IN_FLIGHT || ticket != state.activeTicket) {
             throw new IllegalStateException("stale or mismatched device event");
         }
         state.status = success ? Status.IDLE : Status.POISONED;
         state.backendQuiescent = true;
+        state.activeTicket = null;
     }
 
     /** Cancel requires device synchronization; do not reuse or free prematurely. */
     public synchronized void cancelPending(Ticket ticket) {
         active();
-        if (state.status != Status.IN_FLIGHT || ticket == null
-                || ticket.generation() != state.identity.allocationGeneration()
-                || ticket.sequence() != state.sequence) {
+        if (state.status != Status.IN_FLIGHT || ticket != state.activeTicket) {
             throw new IllegalStateException("stale cancellation");
         }
         state.status = Status.POISONED;
@@ -92,13 +104,12 @@ public final class GpuBufferFence implements AutoCloseable {
     /** A cancelled kernel may still be running until its device fence completes. */
     public synchronized void acknowledgeCancelledDeviceEvent(Ticket ticket, Identity caller) {
         active();
-        if (!state.identity.equals(caller) || ticket == null
-                || ticket.generation() != state.identity.allocationGeneration()
-                || ticket.sequence() != state.sequence || state.status != Status.POISONED
-                || state.backendQuiescent) {
+        if (!state.identity.equals(caller) || ticket != state.activeTicket
+                || state.status != Status.POISONED || state.backendQuiescent) {
             throw new IllegalStateException("invalid cancelled-device completion");
         }
         state.backendQuiescent = true;
+        state.activeTicket = null;
     }
 
     /** After backend confirms device quiescence and releases the opaque handle. */
