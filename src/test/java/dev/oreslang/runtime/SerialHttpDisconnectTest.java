@@ -106,7 +106,13 @@ final class SerialHttpDisconnectTest {
                         received.write(bytes, 0, n);
                         if (received.size() > 16384) throw new AssertionError("oversize headers");
                     }
-                    assertTrue(received.toString(StandardCharsets.US_ASCII).startsWith("HTTP/1.1 200"));
+                    String prefix = received.toString(StandardCharsets.US_ASCII);
+                    assertTrue(prefix.startsWith("HTTP/1.1 200"));
+                    int bodyStart = prefix.indexOf("\r\n\r\n") + 4;
+                    if (received.size() <= bodyStart) {
+                        assertNotEquals(-1, socket.getInputStream().read(),
+                                "TCP reset must occur after at least one streamed byte");
+                    }
                     socket.setSoLinger(true, 0);
                 }
                 try (HttpClient healthy = HttpClient.newBuilder()
