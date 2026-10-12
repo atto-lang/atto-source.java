@@ -17,6 +17,7 @@ final class ActorExecutionAuthorityTest {
         try (var pool = Executors.newFixedThreadPool(12)) {
             CountDownLatch start = new CountDownLatch(1);
             CountDownLatch finish = new CountDownLatch(1);
+            CountDownLatch rejected = new CountDownLatch(11);
             List<Future<ActorExecutionAuthority.Claim>> futures = new ArrayList<>();
             for (int i = 1; i <= 12; i++) {
                 final long carrier = i;
@@ -24,19 +25,16 @@ final class ActorExecutionAuthorityTest {
                     start.await();
                     var ticket = gate.enter(1L, carrier);
                     if (ticket.isPresent()) finish.await();
+                    else rejected.countDown();
                     return ticket.orElse(null);
                 }));
             }
             start.countDown();
             ActorExecutionAuthority.Claim winner = null;
-            // Only the winner waits; do not block on that future while
-            // holding the release gate. Poll all non-winners first.
-            for (int attempt = 0; attempt < 200; attempt++) {
-                long done = futures.stream().filter(Future::isDone).count();
-                if (done == 11) break;
-                Thread.sleep(2);
-            }
-            assertEquals(11L, futures.stream().filter(Future::isDone).count());
+            // Rejections signal without sleeping or polling: the winning
+            // carrier cannot leave until the main test releases the latch.
+            assertTrue(rejected.await(4, TimeUnit.SECONDS),
+                    "eleven competing carriers must fail immediate admission");
             assertEquals(ActorExecutionAuthority.Phase.RUNNING, gate.phase());
             assertTrue(gate.ownerActive());
             assertTrue(gate.enter(1, 99).isEmpty());
@@ -88,6 +86,11 @@ final class ActorExecutionAuthorityTest {
         assertFalse(gate.leave(first, true));
         assertTrue(gate.leave(resumed, false));
         assertEquals(ActorExecutionAuthority.Phase.READY, gate.phase());
+    }
+
+    @Test
+    void boundedStateExplorationRefinesTheRealAuthority() {
+        ActorExecutionAuthorityModelProof.main(new String[0]);
     }
 
     @Test
