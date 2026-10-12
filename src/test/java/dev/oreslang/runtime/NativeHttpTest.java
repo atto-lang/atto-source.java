@@ -199,7 +199,7 @@ class NativeHttpTest {
                     assertEquals("pooled", response.body());
                 }
             });
-        assertTrue(output.contains("POOLED_METRICS\\n2\\n20\\n0"), output);
+        assertTrue(output.contains("POOLED_METRICS\n2\n20\n0"), output);
     }
 
     @FunctionalInterface interface Client { void run(int port) throws Exception; }
