@@ -863,10 +863,13 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
-            if (method.async() && !method.isStatic()) {
+            if (method.async()
+                    && !method.isStatic()
+                    && klass.actorKind() == Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
                         "async instance method '" + klass.name() + "." + method.name()
-                                + "' requires moving/borrowing the receiver into the task; use an async static fnc for now");
+                                + "' requires moving/borrowing the receiver into the task; "
+                                + "ordinary class receivers cannot cross an async task boundary");
             }
             if (method.async() && !method.genericParameters().isEmpty()) {
                 throw new IllegalArgumentException(
@@ -956,7 +959,7 @@ public final class TypeChecker {
                             "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
                                     + "pass an owned nominal value or copy the required fields");
                 }
-                if (method.async()) {
+                if (method.async() && method.isStatic()) {
                     validateAsyncBoundaryType(
                             parameterType,
                             false,
@@ -973,7 +976,7 @@ public final class TypeChecker {
                         "return type of actor protocol method '"
                                 + klass.name() + "." + method.name() + "'");
             }
-            if (method.async()) {
+            if (method.async() && method.isStatic()) {
                 validateAsyncBoundaryType(
                         returns,
                         true,
@@ -1983,7 +1986,7 @@ public final class TypeChecker {
                         Type callableReceiver = receiverValueType instanceof SelfType
                                 ? receiverValueType
                                 : named;
-                        return checkGenericCallable(
+                        Type result = checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
@@ -1992,6 +1995,7 @@ public final class TypeChecker {
                                 callableReceiver,
                                 bindings,
                                 label);
+                        return callableResult(method.async(), false, result);
                     }
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
