@@ -142,7 +142,7 @@ public final class OresContext implements AutoCloseable {
                     contextId, () -> generatorRootTurnAuthorized(
                             vm.isRootSchedulerCurrent(),
                             Boolean.TRUE.equals(rootGuestEntryScope.get())),
-                    () -> vm.executeControl(() -> hostGeneratorTurns.dispatchOne()),
+                    this::signalHostGeneratorOwner,
                     256, vm.rootScheduler());
         } catch (RuntimeException | Error failure) {
             if (async != null) {
@@ -398,6 +398,12 @@ public final class OresContext implements AutoCloseable {
      */
     HostGeneratorTurnPump hostGeneratorTurns() {
         return hostGeneratorTurns;
+    }
+
+    private void signalHostGeneratorOwner() {
+        // Called only after constructor publication by a staged host pull;
+        // root CONTROL admission, never a caller-thread guest execution.
+        vm.executeControl(() -> hostGeneratorTurns.dispatchOne());
     }
 
     /**
