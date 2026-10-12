@@ -161,4 +161,109 @@ final class SourceTaskCancellationDrainTest {
                     cleanupFailure.getSuppressed()[0]);
         }
     }
+
+    @Test
+    void cancellationBetweenCooperateTurnsUnwindsExactlyOnceOnOriginalTaskLane()
+            throws Exception {
+        java.util.concurrent.BlockingQueue<Runnable> queue =
+                new java.util.concurrent.LinkedBlockingQueue<>();
+        OresFuture<Void> cleanup = new OresFuture<>();
+        AtomicInteger stage = new AtomicInteger();
+        AtomicInteger cancellationRequests = new AtomicInteger();
+        AtomicInteger cleanupStarts = new AtomicInteger();
+        AtomicInteger cleanupCompletes = new AtomicInteger();
+        AtomicBoolean cleaning = new AtomicBoolean();
+        AtomicReference<Object> owner = new AtomicReference<>();
+        AtomicReference<OresScheduler.TaskCancelledException> cancellation =
+                new AtomicReference<>();
+
+        // A controlled runtime executor makes the exact boundary deterministic:
+        // first committed cooperate, then external cancel before next admission.
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "cooperate-cancel-race", 1, queue::add)) {
+            OresFuture<Integer> task = scheduler.start(
+                    new OresScheduler.CancellationAwareTask<>() {
+                        private final SourceCooperationQuantum quantum =
+                                new SourceCooperationQuantum(() -> 0L);
+
+                        @Override
+                        public void cancellationRequested(
+                                OresScheduler.TaskCancelledException reason) {
+                            cancellationRequests.incrementAndGet();
+                        }
+
+                        @Override public boolean cleanupInProgress() {
+                            return cleaning.get();
+                        }
+
+                        @Override
+                        public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+                            assertNotNull(OresScheduler.current());
+                            Object lane = OresScheduler.currentTaskDomain();
+                            Object original = owner.getAndSet(lane);
+                            if (original != null) assertSame(original, lane);
+                            switch (stage.getAndIncrement()) {
+                                case 0 -> {
+                                    assertTrue(resume.initial());
+                                    quantum.beginDispatch();
+                                    for (int i = 0; i < 512; i++) {
+                                        boolean due = quantum.completedBackedgeNeedsCheck();
+                                        if (due && i == 511) {
+                                            assertTrue(quantum.shouldCooperateAtCheck());
+                                        }
+                                    }
+                                    quantum.recordedCooperate();
+                                    return OresScheduler.cooperate();
+                                }
+                                case 1 -> {
+                                    cancellation.set(assertInstanceOf(
+                                            OresScheduler.TaskCancelledException.class,
+                                            resume.failure()));
+                                    assertFalse(resume.initial());
+                                    cleaning.set(true);
+                                    cleanupStarts.incrementAndGet();
+                                    return OresScheduler.await(cleanup);
+                                }
+                                case 2 -> {
+                                    assertNull(resume.failure(),
+                                            "an awaited finalizer is not cancelled twice");
+                                    assertTrue(cleaning.getAndSet(false));
+                                    cleanupCompletes.incrementAndGet();
+                                    return OresScheduler.done(27);
+                                }
+                                default -> throw new AssertionError(
+                                        "continuation re-entered more than once");
+                            }
+                        }
+                    });
+
+            Runnable firstTurn = queue.poll(3, TimeUnit.SECONDS);
+            assertNotNull(firstTurn);
+            firstTurn.run();
+            assertEquals(1, stage.get());
+            assertFalse(task.isDone());
+            assertEquals(1, queue.size(), "cooperate must queue a fresh carrier turn");
+
+            assertTrue(task.cancel(false));
+            assertEquals(1, cancellationRequests.get());
+            Runnable cancelledResume = queue.poll(3, TimeUnit.SECONDS);
+            assertNotNull(cancelledResume);
+            cancelledResume.run();
+            assertEquals(1, cleanupStarts.get());
+            assertFalse(task.isDone(), "suspended cleanup still owns its context");
+
+            cleanup.completeFromRuntime(null);
+            Runnable finalizerResume = queue.poll(3, TimeUnit.SECONDS);
+            assertNotNull(finalizerResume);
+            finalizerResume.run();
+
+            CancellationException terminal = assertThrows(CancellationException.class,
+                    () -> task.get(3, TimeUnit.SECONDS));
+            assertSame(cancellation.get(), terminal);
+            assertEquals(3, stage.get());
+            assertEquals(1, cleanupCompletes.get());
+            assertTrue(queue.isEmpty(), "post-commit continuation must not replay");
+        }
+    }
+
 }
