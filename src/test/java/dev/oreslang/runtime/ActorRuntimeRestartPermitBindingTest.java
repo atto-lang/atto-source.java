@@ -77,6 +77,68 @@ final class ActorRuntimeRestartPermitBindingTest {
         }
     }
 
+    @org.junit.jupiter.api.RepeatedTest(20)
+    void groupCloseAndPublicationLeaveNoHiddenPhysicalActor() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var old = runtime.spawnPrivate(
+                    (ActorRuntime.BehaviorFactory<Integer>) context ->
+                            (value, turn) -> { throw new IllegalStateException("planned"); });
+            group.manageWorker(old);
+            var first = group.supervisedWorkerSnapshot(old);
+            old.send(1);
+            assertTrue(old.awaitTermination(5, TimeUnit.SECONDS));
+            finalized(group, first.child());
+            var ticket = group.reserveFinalizedRestart(first.child(), old.id(), 1);
+            var candidate = group.spawnUnpublishedRestartCandidate(
+                    ticket, ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(), context -> (value, turn) -> {});
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var ready = new java.util.concurrent.CountDownLatch(2);
+            var committed = new java.util.concurrent.atomic.AtomicReference<
+                    SupervisorChildRegistry.Snapshot>();
+            var rejected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var closeFailed = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread publisher = new Thread(() -> {
+                ready.countDown();
+                try {
+                    start.await();
+                    committed.set(group.commitUnpublishedRestart(ticket, candidate));
+                } catch (Throwable error) {
+                    rejected.set(error);
+                }
+            }, "restart-admission");
+            Thread closer = new Thread(() -> {
+                ready.countDown();
+                try {
+                    start.await();
+                    group.close();
+                } catch (Throwable error) {
+                    closeFailed.set(error);
+                }
+            }, "supervisor-close");
+            publisher.start();
+            closer.start();
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+            publisher.join(5000);
+            closer.join(5000);
+            assertFalse(publisher.isAlive(), "publication retained lifecycle lock");
+            assertFalse(closer.isAlive(), "group close retained lifecycle lock");
+            assertNull(closeFailed.get());
+            assertTrue(candidate.awaitTermination(5, TimeUnit.SECONDS),
+                    "shutdown stranded a hidden or freshly published actor");
+            if (committed.get() == null) {
+                assertNotNull(rejected.get());
+                assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                        group.abortCleanedUnpublishedRestart(ticket, candidate).phase());
+            } else {
+                assertNull(rejected.get());
+                assertEquals(candidate.id(), committed.get().actor());
+            }
+        }
+    }
+
     @Test
     void foreignAndClosedReservationsCannotSpawnCandidates() throws Exception {
         try (var runtime = new ActorRuntime()) {
