@@ -40,6 +40,14 @@ public final class SupervisorProcess implements AutoCloseable {
     private final ActorRuntime.SupervisorId supervisorId;
     private final ActorRuntime.ActorGroupId groupId;
     private final Executor controlDispatcher;
+    /**
+     * Decision-commit fence. A concurrent close must linearize before or
+     * after an already admitted host lifecycle decision, never between
+     * validation and the decision side effect.
+     *
+     * Do not use the mailbox's own monitor for host policy callbacks.
+     */
+    private final Object decisionFence = new Object();
     private final int capacity;
     private final Function<SupervisorFailureControl.Notice,
             CompletionStage<Directive>> onFailure;
@@ -157,6 +165,7 @@ public final class SupervisorProcess implements AutoCloseable {
             SupervisorFailureControl.Notice notice,
             Directive decision,
             Throwable error) {
+        synchronized (decisionFence) {
         synchronized (this) {
             if (state != State.RUNNING) return;
             // The lease is never released while a callback is unfinished.
@@ -186,6 +195,7 @@ public final class SupervisorProcess implements AutoCloseable {
             callbackActive = false;
             scheduleLocked();
         }
+        }
     }
 
     private void failLocked(Throwable error) {
@@ -201,13 +211,17 @@ public final class SupervisorProcess implements AutoCloseable {
      * An unresolved callback cannot be declared completed by cancellation.
      */
     @Override
-    public synchronized void close() {
-        if (state == State.CLOSED) return;
-        if (state == State.RUNNING) {
-            undelivered.addAndGet(mailbox.size());
+    public void close() {
+        synchronized (decisionFence) {
+            synchronized (this) {
+                if (state == State.CLOSED) return;
+                if (state == State.RUNNING) {
+                    undelivered.addAndGet(mailbox.size());
+                }
+                state = State.CLOSED;
+                mailbox.clear();
+                callbackActive = false;
+            }
         }
-        state = State.CLOSED;
-        mailbox.clear();
-        callbackActive = false;
     }
 }
