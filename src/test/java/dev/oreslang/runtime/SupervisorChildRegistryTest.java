@@ -29,6 +29,12 @@ final class SupervisorChildRegistryTest {
                 () -> registry.stop(first.child(), firstActor, 1),
                 "STOP cannot overtake an active restart reservation");
         var nextActor = ActorRuntime.ActorId.create();
+        assertThrows(IllegalStateException.class, () -> registry.replace(reservation, nextActor));
+        registry.stageReplacement(reservation, nextActor);
+        assertThrows(IllegalStateException.class, () -> registry.replace(reservation, nextActor));
+        assertThrows(IllegalStateException.class, () ->
+                registry.acknowledgeReplacementAdmission(reservation, nextActor, () -> false));
+        registry.acknowledgeReplacementAdmission(reservation, nextActor, () -> true);
         var next = registry.replace(reservation, nextActor);
         assertThrows(IllegalStateException.class,
                 () -> registry.replace(reservation, ActorRuntime.ActorId.create()),
@@ -116,6 +122,8 @@ final class SupervisorChildRegistryTest {
         assertThrows(IllegalStateException.class, () ->
                 registry.replace(previous, ActorRuntime.ActorId.create()));
         var replacement = ActorRuntime.ActorId.create();
+        registry.stageReplacement(current, replacement);
+        registry.acknowledgeReplacementAdmission(current, replacement, () -> true);
         registry.replace(current, replacement);
         assertEquals(2, registry.snapshot(first.child()).incarnation());
         registry.finalized(first.child(), replacement, 2);
@@ -254,7 +262,10 @@ final class SupervisorChildRegistryTest {
                             if (!start.await(5, java.util.concurrent.TimeUnit.SECONDS))
                                 throw new IllegalStateException("race barrier timed out");
                             var permit = registry.beginRestart(first.child(), actor, 1);
-                            registry.replace(permit, ActorRuntime.ActorId.create());
+                            var newActor = ActorRuntime.ActorId.create();
+                            registry.stageReplacement(permit, newActor);
+                            registry.acknowledgeReplacementAdmission(permit, newActor, () -> true);
+                            registry.replace(permit, newActor);
                             success.incrementAndGet();
                         } catch (IllegalStateException expected) {
                             failed.incrementAndGet();
