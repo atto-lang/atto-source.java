@@ -27,7 +27,7 @@ final class OresHostFutureDeferredDispatchExecutionTest {
             }
             """;
 
-    private static Value parseAndInitialize(Context context) {
+    private static Value parseAndInitialize(Context context) throws java.io.IOException {
         Value value = context.parse(Source.newBuilder(OresLanguage.ID, SOURCE,
                         "host-deferred-entry.ores")
                 .mimeType(OresLanguage.MIME_TYPE)
