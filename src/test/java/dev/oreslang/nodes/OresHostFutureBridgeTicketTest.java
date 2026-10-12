@@ -25,6 +25,9 @@ final class OresHostFutureBridgeTicketTest {
         assertThrows(IllegalStateException.class, slot::result,
                 "one-use handoff must not return the same Future twice");
         assertFalse(future.isCancelled(), "delivery must not cancel the caller-owned Future");
+        slot.cancelUnreturnedOnHostFailure(new IllegalStateException("after delivery"));
+        assertFalse(future.isCancelled(),
+                "failure handling after a completed handoff must not cancel caller-owned work");
         assertThrows(SecurityException.class,
                 () -> slot.publish("work", slot.nonce(), context, root, new OresFuture<>()));
         slot.close();
