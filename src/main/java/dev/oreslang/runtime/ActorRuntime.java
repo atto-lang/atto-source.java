@@ -7023,6 +7023,15 @@ public final class ActorRuntime implements AutoCloseable {
                             // suspended handler's runnable state. A queued task
                             // from another receive or actor must not wake it.
                             SerialExecutionTicket ticket = activeEnvelope.taskTicket();
+                            // The retired fast path must never bypass actor
+                            // and incarnation identity checks. Even a retired
+                            // ticket for a *foreign* execution domain remains
+                            // an authorization violation, not benign STOP.
+                            if (ticket != null
+                                    && !ticket.issuedFor(ref.id(), executionDomain)) {
+                                throw new SecurityException(
+                                        "foreign actor continuation ticket on CONTROL carrier");
+                            }
                             if (ticket != null && ticket.isRetired()) {
                                 // Cancellation may retire a queued scheduler turn
                                 // before the actor carrier consumes it. Discard
