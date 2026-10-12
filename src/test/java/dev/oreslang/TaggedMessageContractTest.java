@@ -269,7 +269,7 @@ final class TaggedMessageContractTest {
 
 
     @Test
-    void pipelineRoutingNamesFailClosedUntilSchedulerContextIsLowered() {
+    void pipelineRoutingRequiresNominalVariantAndRejectsUnimplementedReplyOperations() {
         String source = DECLARATIONS + """
                 define actor Worker as
                     receive(ActorMail<Messages> mail): void {
@@ -284,18 +284,30 @@ final class TaggedMessageContractTest {
                     return;
                 }
                 """;
-        for (String name : List.of("forward", "backward", "respond", "done")) {
-            String attempted = source.replace("self.end();",
-                    "self." + name + "(mail.value);");
+        // A typed enum case is statically allowed; actual routing still
+        // requires a runtime-bound pipeline actor receive turn.
+        for (String operation : List.of("forward", "backward")) {
+            String typed = source.replace("self.end();",
+                    "self." + operation + "(Status.Message2(\"hello\"));");
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(typed)));
+            String untyped = source.replace("self.end();",
+                    "self." + operation + "(mail.value);");
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(attempted)),
-                    name + " must not resolve as a user actor method");
+                    () -> TypeChecker.check(Parser.parse(untyped)));
+            assertTrue(error.getMessage().contains("compiler-checked nominal"),
+                    error.getMessage());
+        }
+        for (String operation : List.of("respond", "done")) {
+            String attempted = source.replace("self.end();",
+                    "self." + operation + "(mail.value);");
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(attempted)));
             assertTrue(error.getMessage().contains("authorized lowering"),
                     error.getMessage());
         }
     }
-
 
     @Test
     void sourceActorMailboxAdmissionEnforcesPortableSixtyFourVariantLimit() {
