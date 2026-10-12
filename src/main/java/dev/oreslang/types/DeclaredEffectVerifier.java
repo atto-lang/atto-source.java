@@ -22,6 +22,10 @@ public final class DeclaredEffectVerifier {
                     check(function.name(), function.annotations(), function.body(), false);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.MethodDecl method : klass.methods()) {
+                        if (method.isStatic() && containsStateLoan(method.body())) {
+                            throw new IllegalArgumentException(
+                                    "static actor method cannot acquire a sealed instance state loan");
+                        }
                         check(klass.name() + "." + method.name(), method.annotations(),
                                 method.body(), klass.serial() && !method.isStatic());
                     }
@@ -137,7 +141,7 @@ public final class DeclaredEffectVerifier {
                         EnumSet.noneOf(FunctionEffects.Effect.class);
                 collect(callback.expressionBody(), callbackEffects, name, callableName, serial);
                 collect(callback.blockBody(), callbackEffects, name, callableName, serial);
-                // Mode grants authority, using only constrains declared effects.
+                // Callback mode grants authority; WITH only constrains declared effects.
                 if ((callback.criticalMode() == Ast.CriticalMode.NONE
                             || callback.criticalMode() == Ast.CriticalMode.READ)
                         && callbackEffects.contains(FunctionEffects.Effect.STATE_WRITE)) {
