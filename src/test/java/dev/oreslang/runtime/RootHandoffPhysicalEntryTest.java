@@ -32,8 +32,9 @@ final class RootHandoffPhysicalEntryTest {
                     "root must physically start before host attempts admission");
             assertThrows(RejectedExecutionException.class, vm::beginHostHandoff,
                     "active root turn owns entry, even after executor accepted it");
-            assertThrows(IllegalStateException.class, vm::requireHostHandoffReleased,
-                    "close may not retire while the root turn owns physical entry");
+            // Host handoff scopes are distinct from running root tasks.
+            // The root scheduler is the physical-drain authority at close.
+            vm.requireHostHandoffReleased();
             release.countDown();
             assertEquals(7, turn.get(5, TimeUnit.SECONDS));
             // Public Future completion may race with the final gate release.

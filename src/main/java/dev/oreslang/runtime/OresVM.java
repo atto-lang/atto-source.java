@@ -136,7 +136,11 @@ public final class OresVM implements AutoCloseable {
 
         synchronized int heldCount() { return held.size(); }
         synchronized boolean active() {
-            return hostScopes > 0 || executingRootTurns > 0;
+            // This tests HOST scope ownership only. Executing root tasks
+            // drain through OresScheduler.close(), where their physical
+            // carrier-exit barrier is established. Treating them as host
+            // scopes here rejects valid context teardown too early.
+            return hostScopes > 0;
         }
 
         @Override public void execute(Runnable task) {
