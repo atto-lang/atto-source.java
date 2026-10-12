@@ -112,6 +112,67 @@ final class CoreAssertTest {
         assertTrue(failure.getMessage().contains("Assert.equal: values are not equal"), failure::toString);
     }
 
+    @Test void scheduledTrapAfterCooperationPreservesOptionAndUnwind() throws Exception {
+        assertEquals("truetruetruecleantrue", run("""
+            trap fnc passes_after_yield(): bool {
+                rt cooperate;
+                return Assert.equal_throws(11, 11);
+            }
+            trap fnc fails_after_yield(): bool {
+                rt cooperate;
+                return Assert.equal_throws(11, 12);
+            }
+            trap fnc fails_with_cleanup(): bool {
+                defer stdio.stdout.write("clean");
+                rt cooperate;
+                Assert.fail("failure after scheduler handoff");
+                return true;
+            }
+            pub async fnc main(): void {
+                val Option<bool> ok = passes_after_yield();
+                val Option<bool> bad = fails_after_yield();
+                stdio.stdout.write(ok.is_some());
+                stdio.stdout.write(ok.unwrap());
+                stdio.stdout.write(bad.is_none());
+                val Option<bool> cleaned = fails_with_cleanup();
+                stdio.stdout.write(cleaned.is_none());
+                return;
+            }
+            """));
+    }
+
+    @Test void assertImportCannotBeShadowedByApplicationFile() throws Exception {
+        Path project = Files.createTempDirectory("ores-assert-shadow-");
+        Path std = Files.createDirectories(project.resolve("std"));
+        Path entry = project.resolve("main.ores");
+        try {
+            Files.writeString(std.resolve("assert.ores"), """
+                define module Assert as
+                  pub fnc equal(Any a, Any b): bool { return true; }
+                end
+                """);
+            Files.writeString(entry, """
+                import module Assert from "std/assert";
+                pub routine main(): void {
+                  stdio.stdout.write(Assert.equal(11, 12));
+                  return;
+                }
+                """);
+            var out = new ByteArrayOutputStream();
+            var build = LinkedProgramRunner.run(
+                    entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    out, new ByteArrayOutputStream());
+            assertTrue(build.units().containsKey("@std/assert.ores"));
+            assertEquals("false", out.toString(StandardCharsets.UTF_8).trim(),
+                    "application std/assert must never shadow the packaged assertion module");
+        } finally {
+            Files.deleteIfExists(entry);
+            Files.deleteIfExists(std.resolve("assert.ores"));
+            Files.deleteIfExists(std);
+            Files.deleteIfExists(project);
+        }
+    }
+
     @Test void trapCannotTurnDeniedFilesystemWritesIntoNone() throws Exception {
         Path blocked = Files.createTempFile("ores-assert-denied-", ".txt");
         Path entry = Files.createTempFile("ores-assert-policy-", ".ores");
