@@ -38,6 +38,12 @@ final class HostFutureBridgeExecutionTest {
               return 17;
             }
 
+            pub async generator fnc asyncStream(): int {
+              stdio.println("INVALID-generator-started");
+              yield 5;
+              return;
+            }
+
             pub async fnc work(): int {
               try {
                 stdio.println("armed");
@@ -206,6 +212,25 @@ final class HostFutureBridgeExecutionTest {
                     "host Future handoff requires an async public function"));
             assertEquals("", output.toString(),
                     "rejected sync function must not execute before the admission check");
+        }
+    }
+
+    @Test
+    void asyncGeneratorIsRejectedBeforeTaskOrIteratorConstruction()
+            throws Exception {
+        ConcurrentOutput output = new ConcurrentOutput();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).out(output).build()) {
+            Value parsed = context.parse(Source.newBuilder(OresLanguage.ID,
+                    PROGRAM, "host-bridge-generator-rejection.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+            parsed.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+            PolyglotException rejected = assertThrows(PolyglotException.class,
+                    () -> OresHostFutureBridge.invokePublicFuture(parsed, "asyncStream"));
+            assertTrue(rejected.getMessage().contains(
+                    "host Future handoff does not accept async generators"));
+            assertEquals("", output.toString(),
+                    "rejected generator must not run before Future bridge rejection");
         }
     }
 
