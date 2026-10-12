@@ -43,13 +43,12 @@ final class SerialActorCriticalAdmissionTest {
                 "annotation expansion must preserve serial actor metadata");
     }
 
-    @Test void serialActorMustRejectUnmarkedOrBareCriticalStateCallbacks() {
-        String unmarked = SERIAL.replace("critical write |s|", "|s|");
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.checkTypes(Parser.parse(unmarked)));
-        String bare = SERIAL.replace("critical read |s|", "critical |s|");
-        assertThrows(IllegalArgumentException.class,
-                () -> ActorStateContract.verify(Parser.parse(bare)));
+    @Test void readMayOmitCriticalButWritesRemainCriticalEvenInSerialActor() {
+        // A read is shared/readonly unless critical requests exclusive write.
+        String unmarkedRead = SERIAL.replace("critical read |s|", "|s|");
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(unmarkedRead)));
+        String plainCriticalWrite = SERIAL.replace("critical write |s|", "critical |s|");
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(plainCriticalWrite)));
     }
 
     @Test void nonSerialActorUsesSameExplicitStateModeContract() {
@@ -134,7 +133,7 @@ final class SerialActorCriticalAdmissionTest {
                 () -> Parser.parse("define serial serial actor Counter as end"));
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("define actor Counter as serial pub get(): int { return 1; } end"));
-        String underdeclared = SERIAL.replace("using state.read, state.write", "using state.write");
+        String underdeclared = SERIAL.replace("with state.read, state.write", "with state.write");
         assertThrows(IllegalArgumentException.class,
                 () -> DeclaredEffectVerifier.verify(Parser.parse(underdeclared)));
         String wrongType = SERIAL.replace(
