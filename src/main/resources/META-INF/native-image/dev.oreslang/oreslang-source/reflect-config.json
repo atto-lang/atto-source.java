@@ -1,0 +1,372 @@
+[
+  {
+    "name": "dev.oreslang.ast.Ast$Program",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ImportDecl",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ModuleDecl",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$Annotation",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$TypeRef",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$Param",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$FunctionDecl",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ClassDecl",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ConstructorDecl",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$InterfaceFunctionDecl",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$InterfaceFieldDecl",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$InterfaceDecl",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$FieldDecl",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$MethodDecl",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$MethodArity",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$TypeAliasDecl",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$BindingStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$DestructureBinding",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$DestructureStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ReturnStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ArmReturnStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$YieldStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ExprStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$DeferStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$BlockStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$BreakStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ContinueStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$IfBranch",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$IfStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$WildcardPattern",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$LiteralPattern",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$BindingPattern",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$TypePattern",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$StructuralPattern",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$TuplePattern",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$TaggedTuplePattern",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ConstructorPattern",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$MatchArm",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$MatchStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$SwitchCase",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$SwitchStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$TryStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ForOfStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ForOfDestructureStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ForStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$LoopStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$SelectArm",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$SelectStmt",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$LiteralExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$Imaginary",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$NameExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$BinaryExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$UnaryExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$AssignExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ConditionalExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ValueMatchExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$TypeTestExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$PatternTestExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$CastExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$SpreadExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$CallExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$RuntimeCallExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$MemberExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$IndexExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$NewExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$AwaitExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ChannelOpExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$DynamicSelectExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ListExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$TupleExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ObjectField",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$StructFieldSpec",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$ObjectExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  },
+  {
+    "name": "dev.oreslang.ast.Ast$LambdaExpr",
+    "allDeclaredMethods": true,
+    "queryAllDeclaredMethods": true
+  }
+]
