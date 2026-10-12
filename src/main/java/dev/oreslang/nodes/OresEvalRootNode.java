@@ -6234,6 +6234,8 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof NativeHttp.Server server) {
                 return switch (name) {
                     case "port" -> (long) server.port();
+                    case "admission_capacity" -> (long) server.admissionCapacity();
+                    case "requested_backlog" -> (long) server.requestedBacklog();
                     case "active" -> (long) server.active();
                     case "accepted" -> server.accepted();
                     case "rejected" -> server.rejected();
@@ -6335,6 +6337,14 @@ public final class OresEvalRootNode extends RootNode {
                         return context.http().listen(requireString(args.get(0), "host"),
                             ((Number) args.get(1)).intValue(), ((Number) args.get(2)).intValue(),
                             ((Number) args.get(3)).intValue(), ((Number) args.get(4)).intValue());
+                    };
+                    case "listen_with_limits" -> (Invokable) args -> {
+                        if (args.size() != 6)
+                            throw new IllegalArgumentException("http.listen_with_limits(host, port, backlog, admission_capacity, body_limit, deadline_ms)");
+                        return context.http().listenWithLimits(requireString(args.get(0), "host"),
+                            ((Number) args.get(1)).intValue(), ((Number) args.get(2)).intValue(),
+                            ((Number) args.get(3)).intValue(), ((Number) args.get(4)).intValue(),
+                            ((Number) args.get(5)).intValue());
                     };
                     case "claim" -> (Invokable) args -> context.http().claim(requireStringArg(args, "http.claim"));
                     case "get_text" -> (Invokable) http::getText;
