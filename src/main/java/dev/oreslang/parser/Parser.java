@@ -1633,7 +1633,8 @@ public final class Parser {
             advance(); // switch
             Ast.SwitchStmt statement = parseSwitch();
             match(SEMICOLON);
-            return statement;
+            return new Ast.SwitchStmt(statement.subject(), statement.cases(),
+                    statement.defaultBody(), true);
         }
         if (check(DO) && checkNext(MATCH)) {
             advance(); // do
