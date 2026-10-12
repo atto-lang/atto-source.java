@@ -15,21 +15,21 @@ final class SerialActorCriticalAdmissionTest {
             state { count: int = 0; }
 
             pub increment(): int using state.read, state.write {
-                return self.handle_state(|s| -> {
+                return self.handle_state(critical write |s| -> {
                     s.count = s.count + 1;
                     return s.count;
                 });
             }
 
             pub get_count(): int using state.read {
-                return self.handle_state(|s| -> s.count);
+                return self.handle_state(critical read |s| -> s.count);
             }
 
             receive(ActorMail<String> mail): void { return; }
         end
         """;
 
-    @Test void serialActorCanOmitCriticalWithoutLosingEffectsOrReturnTypes() {
+    @Test void serialActorRequiresExplicitModesAndRetainsEffectsAndReturnTypes() {
         Ast.Program program = Parser.parse(SERIAL);
         Ast.ClassDecl counter = (Ast.ClassDecl) program.modules().getFirst()
                 .declarations().getFirst();
@@ -43,18 +43,19 @@ final class SerialActorCriticalAdmissionTest {
                 "annotation expansion must preserve serial actor metadata");
     }
 
-    @Test void criticalMayRemainExplicitOnSerialActor() {
-        String qualified = SERIAL.replace(
-                "self.handle_state(|s|", "self.handle_state(critical |s|");
-        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(qualified)));
+    @Test void serialActorMustRejectUnmarkedOrBareCriticalStateCallbacks() {
+        String unmarked = SERIAL.replace("critical write |s|", "|s|");
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(unmarked)));
+        String bare = SERIAL.replace("critical read |s|", "critical |s|");
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(Parser.parse(bare)));
     }
 
-    @Test void nonSerialActorStillRequiresCriticalCallback() {
+    @Test void nonSerialActorUsesSameExplicitStateModeContract() {
         String ordinary = SERIAL.replace("define serial actor", "define actor");
-        assertThrows(IllegalArgumentException.class,
-                () -> ActorStateContract.verify(Parser.parse(ordinary)));
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.checkTypes(Parser.parse(ordinary)));
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(ordinary)));
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(ordinary)));
     }
 
     @Test void serialSchedulingRemainsOrthogonalToIsolation() {
@@ -110,12 +111,12 @@ final class SerialActorCriticalAdmissionTest {
                 () -> ActorStateContract.verify(Parser.parse(derived)));
     }
 
-    @Test void nonSerialInstanceAndStaticMethodCannotAcquireImplicitCritical() {
+    @Test void staticMethodCannotAcquireInstanceStateCapability() {
         String staticallyBound = """
             define serial actor Counter as
                 state { count: int = 0; }
                 static fnc bad(): int using state.read {
-                    return self.handle_state(|s| -> s.count);
+                    return self.handle_state(critical read |s| -> s.count);
                 }
             end
             """;
@@ -137,7 +138,7 @@ final class SerialActorCriticalAdmissionTest {
         assertThrows(IllegalArgumentException.class,
                 () -> DeclaredEffectVerifier.verify(Parser.parse(underdeclared)));
         String wrongType = SERIAL.replace(
-                "return self.handle_state(|s| -> s.count);",
+                "return self.handle_state(critical read |s| -> s.count);",
                 "return self.handle_state(|s| -> true);");
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse(wrongType)));
