@@ -160,16 +160,28 @@ public final class SupervisorChildRegistry {
      */
     synchronized RestartReservation beginRestart(
             ChildId child, ActorRuntime.ActorId failedActor, long incarnation) {
-        requireExpected(child, failedActor, incarnation, Phase.FINALIZED);
-        if (restartClosed || replacements.containsKey(child.logicalId()))
+        Snapshot finalized = requireExpected(
+                child, failedActor, incarnation, Phase.FINALIZED);
+        if (restartClosed || replacements.containsKey(child.logicalId())
+                || reservations.containsKey(child.logicalId()))
             throw new IllegalStateException("supervisor restart admission closed or conflicting");
         if (incarnation == Long.MAX_VALUE)
             throw new IllegalStateException("logical child generation exhausted");
+        // Construct all immutable records before publishing an exclusive
+        // restart claim. Partial failure must not leave a reservation
+        // attached to a child still marked FINALIZED.
         RestartReservation permit = new RestartReservation(
                 child, failedActor, incarnation, UUID.randomUUID());
-        reservations.put(child.logicalId(), permit);
-        children.put(child.logicalId(),
-                new Snapshot(child, failedActor, incarnation, Phase.RESTARTING));
+        Snapshot restarting = new Snapshot(
+                child, failedActor, incarnation, Phase.RESTARTING);
+        try {
+            reservations.put(child.logicalId(), permit);
+            children.put(child.logicalId(), restarting);
+        } catch (Throwable publicationFailure) {
+            reservations.remove(child.logicalId());
+            children.put(child.logicalId(), finalized);
+            throw publicationFailure;
+        }
         return permit;
     }
 
