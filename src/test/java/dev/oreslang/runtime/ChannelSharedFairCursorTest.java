@@ -99,6 +99,112 @@ final class ChannelSharedFairCursorTest {
     }
 
     @Test
+    void retirementQueuedBeforeProducerPreservesLateBufferedValue() throws Exception {
+        ChannelRuntime.FairCursor cursor = new ChannelRuntime.FairCursor();
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        OresFuture<ChannelRuntime.SelectResult> pending =
+                new ChannelRuntime.SelectSet(List.of(ChannelRuntime.read(channel)), cursor)
+                        .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+
+        java.util.concurrent.locks.ReentrantLock coordinator = coordinator();
+        java.util.concurrent.FutureTask<Void> retirement =
+                new java.util.concurrent.FutureTask<>(() -> {
+                    cursor.retire();
+                    return null;
+                });
+        java.util.concurrent.FutureTask<Boolean> producer =
+                new java.util.concurrent.FutureTask<>(() -> channel.tryWrite(101));
+
+        coordinator.lock();
+        try {
+            Thread retirementThread = new Thread(retirement, "retire-first");
+            retirementThread.start();
+            awaitQueued(coordinator, retirementThread);
+            Thread producerThread = new Thread(producer, "producer-second");
+            producerThread.start();
+            awaitQueued(coordinator, producerThread);
+        } finally {
+            coordinator.unlock();
+        }
+
+        retirement.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(producer.get(5, java.util.concurrent.TimeUnit.SECONDS));
+        assertTrue(pending.isCancelled());
+        assertEquals(101, channel.tryRead().orElseThrow(),
+                "retirement must detach pending read before producer admission");
+    }
+
+    @Test
+    void producerQueuedBeforeRetirementCommitsExactlyOnce() throws Exception {
+        ChannelRuntime.FairCursor cursor = new ChannelRuntime.FairCursor();
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        OresFuture<ChannelRuntime.SelectResult> pending =
+                new ChannelRuntime.SelectSet(List.of(ChannelRuntime.read(channel)), cursor)
+                        .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+
+        java.util.concurrent.locks.ReentrantLock coordinator = coordinator();
+        java.util.concurrent.FutureTask<Boolean> producer =
+                new java.util.concurrent.FutureTask<>(() -> channel.tryWrite(202));
+        java.util.concurrent.FutureTask<Void> retirement =
+                new java.util.concurrent.FutureTask<>(() -> {
+                    cursor.retire();
+                    return null;
+                });
+        coordinator.lock();
+        try {
+            Thread producerThread = new Thread(producer, "producer-first");
+            producerThread.start();
+            awaitQueued(coordinator, producerThread);
+            Thread retirementThread = new Thread(retirement, "retirement-second");
+            retirementThread.start();
+            awaitQueued(coordinator, retirementThread);
+        } finally {
+            coordinator.unlock();
+        }
+
+        assertTrue(producer.get(5, java.util.concurrent.TimeUnit.SECONDS));
+        retirement.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        assertFalse(pending.isCancelled(), "earlier physical commit cannot be revoked");
+        assertEquals(202, pending.join().value());
+        assertTrue(channel.tryRead().isEmpty(), "no duplicate channel value");
+    }
+
+    @Test
+    void retiredSelectionNotifiesWaitersOutsideCoordinatorLock() throws Exception {
+        ChannelRuntime.FairCursor cursor = new ChannelRuntime.FairCursor();
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0);
+        OresFuture<ChannelRuntime.SelectResult> pending =
+                new ChannelRuntime.SelectSet(List.of(ChannelRuntime.read(channel)), cursor)
+                        .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+        java.util.concurrent.locks.ReentrantLock coordinator = coordinator();
+        java.util.concurrent.atomic.AtomicBoolean callbackUnderLock =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
+        pending.whenCompleteRuntime((value, failure) ->
+                callbackUnderLock.set(coordinator.isHeldByCurrentThread()));
+        cursor.retire();
+        assertTrue(pending.isCancelled());
+        assertFalse(callbackUnderLock.get(),
+                "scheduler callbacks must run outside the channel coordinator");
+    }
+
+    private static java.util.concurrent.locks.ReentrantLock coordinator() throws Exception {
+        Field field = ChannelRuntime.class.getDeclaredField("COORDINATOR");
+        field.setAccessible(true);
+        return (java.util.concurrent.locks.ReentrantLock) field.get(null);
+    }
+
+    private static void awaitQueued(
+            java.util.concurrent.locks.ReentrantLock lock, Thread thread)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (!lock.hasQueuedThread(thread) && System.nanoTime() < deadline) {
+            if (!thread.isAlive()) throw new AssertionError("worker unexpectedly terminated");
+            Thread.onSpinWait();
+        }
+        assertTrue(lock.hasQueuedThread(thread), "worker failed to enter ordered lock queue");
+    }
+
+    @Test
     void retiredCursorCannotBeResurrectedByLaterCommit() throws Exception {
         ChannelRuntime.FairCursor cursor = new ChannelRuntime.FairCursor();
         ChannelRuntime.Channel<Integer> a = new ChannelRuntime.Channel<>(1);
