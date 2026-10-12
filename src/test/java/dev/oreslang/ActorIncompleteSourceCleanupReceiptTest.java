@@ -116,4 +116,87 @@ final class ActorIncompleteSourceCleanupReceiptTest {
             assertEquals(1, guest.resumeCount.get());
         }
     }
+    @Test
+    void sharedPrimaryFailureRetainsSeparateReceiptsForEachActor() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var original = new IllegalStateException("shared failure instance");
+            var firstStage = new CompletableFuture<Integer>();
+            var secondStage = new CompletableFuture<Integer>();
+            var firstTask = new PendingSourceTask(OresFuture.from(firstStage));
+            var secondTask = new PendingSourceTask(OresFuture.from(secondStage));
+            var first = runtime.<Integer>spawnShared(() -> (mail, context) -> {
+                if (mail == 1) context.runtime().startActorTask(firstTask);
+                else throw original;
+            });
+            var second = runtime.<Integer>spawnShared(() -> (mail, context) -> {
+                if (mail == 1) context.runtime().startActorTask(secondTask);
+                else throw original;
+            });
+
+            first.send(1);
+            second.send(1);
+            assertTrue(firstTask.entered.await(5, TimeUnit.SECONDS));
+            assertTrue(secondTask.entered.await(5, TimeUnit.SECONDS));
+
+            first.send(2);
+            assertTrue(first.awaitTermination(5, TimeUnit.SECONDS));
+            second.send(2);
+            assertTrue(second.awaitTermination(5, TimeUnit.SECONDS));
+            assertSame(original, first.failure().orElseThrow());
+            assertSame(original, second.failure().orElseThrow());
+
+            var receipts = java.util.Arrays.stream(original.getSuppressed())
+                    .filter(ActorRuntime.IncompleteSourceCleanupException.class::isInstance)
+                    .map(ActorRuntime.IncompleteSourceCleanupException.class::cast)
+                    .toList();
+            assertEquals(2, receipts.size(),
+                    "a receipt for one actor must not suppress another actor's evidence");
+            assertEquals(java.util.Set.of(first.id(), second.id()),
+                    receipts.stream().map(ActorRuntime.IncompleteSourceCleanupException::actorId)
+                            .collect(java.util.stream.Collectors.toSet()));
+
+            firstStage.complete(10);
+            secondStage.complete(11);
+            assertEquals(1, firstTask.resumeCount.get());
+            assertEquals(1, secondTask.resumeCount.get());
+        }
+    }
+
+    @Test
+    void suppressedDisabledPrimaryFailsClosedAndRetainsOriginalCause() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        // Throwable.addSuppressed is specified to be a silent no-op for this cause.
+        class NonSuppressingFailure extends RuntimeException {
+            NonSuppressingFailure() {
+                super("suppression disabled", null, false, true);
+            }
+        }
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var original = new NonSuppressingFailure();
+            var stage = new CompletableFuture<Integer>();
+            var task = new PendingSourceTask(OresFuture.from(stage));
+            var actor = runtime.<Integer>spawnShared(() -> (mail, context) -> {
+                if (mail == 1) context.runtime().startActorTask(task);
+                else throw original;
+            });
+
+            actor.send(1);
+            assertTrue(task.entered.await(5, TimeUnit.SECONDS));
+            actor.send(2);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            var incomplete = assertInstanceOf(
+                    ActorRuntime.IncompleteSourceCleanupException.class,
+                    actor.failure().orElseThrow(),
+                    "cannot silently discard missing-cleanup evidence");
+            assertEquals(actor.id(), incomplete.actorId());
+            assertSame(original, incomplete.getCause(),
+                    "fallback receipt must retain the pre-existing failure");
+            assertEquals(0, original.getSuppressed().length);
+
+            stage.complete(10);
+            assertEquals(1, task.resumeCount.get());
+        }
+    }
+
 }
