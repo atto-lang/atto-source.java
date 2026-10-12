@@ -60,12 +60,12 @@ public final class ActorStateContract {
         }
         Ast.FieldDecl state = stateField(klass);
         if (state == null) {
-            // Legacy scalar actor fields are not the one-state aggregate
-            // contract. Serial actors with no storage are valid, but serial
-            // actors with storage must declare precisely one state schema.
-            if (klass.serial() && !klass.fields().isEmpty()) {
+            // All actor kinds are sealed: SHARED, PRIVATE and UNTRUSTED
+            // cannot mint mutable stored instance slots outside state { }.
+            // Storage-free actors are legal and still checked below.
+            if (!klass.fields().isEmpty()) {
                 throw new IllegalArgumentException(
-                        "serial actor '" + klass.name()
+                        "actor '" + klass.name()
                         + "' must use one state { ... } aggregate; legacy fields are forbidden");
             }
             // Storage-free actors still require sealed member and effect checks.
@@ -78,7 +78,7 @@ public final class ActorStateContract {
                         !method.isStatic(), Ast.CriticalMode.NONE);
             }
             return;
-        } // migration: non-serial legacy actor fields retain old behavior
+        }
         if (klass.fields().size() != 1) {
             throw new IllegalArgumentException(
                     "actor '" + klass.name() + "' may declare only the state schema");
