@@ -31,7 +31,7 @@ CompleteProducer ==
          admit == UnsafeAdmission \/ authorized
      IN /\ attempted' = TRUE
         /\ reserved' = IF admit THEN TRUE ELSE reserved
-        /\ badReservation' = badReservation \/ (admit /\ ~authorized)
+        /\ badReservation' = (badReservation \/ (admit /\ ~authorized))
         /\ phase' = IF admit /\ phase = "WAIT" THEN "READY" ELSE phase
   /\ UNCHANGED <<epoch, ticketEpoch, cancelled,
                  remaining, cleanups, published, nextAdmitted>>
@@ -62,7 +62,7 @@ Finish ==
   /\ (remaining = 0 \/ UnsafePublication)
   /\ phase' = "TERMINAL"
   /\ published' = IF UnsafePublication THEN TRUE
-                   ELSE ~cancelled /\ reserved /\ epoch = ticketEpoch
+                   ELSE (~cancelled /\ reserved /\ epoch = ticketEpoch)
   /\ reserved' = FALSE
   /\ UNCHANGED <<epoch, ticketEpoch, attempted, badReservation,
                  cancelled, remaining, cleanups, nextAdmitted>>
