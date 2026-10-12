@@ -358,7 +358,9 @@ final class ActorSendContractTest {
                 childCreated.countDown();
             });
             parent.send(1);
-            assertTrue(childCreated.await(5, TimeUnit.SECONDS));
+            assertTrue(childCreated.await(5, TimeUnit.SECONDS),
+                    () -> "child spawn never completed; parent failure: "
+                            + parent.failure() + ", parent done: " + parent.getDone().isDone());
             var child = childRef.get();
             assertNotNull(child);
 
