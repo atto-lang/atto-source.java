@@ -78,12 +78,13 @@ final class HostGeneratorSessionTest {
                     "async generator fnc numbers(): int { yield 1; return; }",
                     "numbers", Map.of());
             var pending = session.nextStep();
-            var failed = assertThrows(java.util.concurrent.ExecutionException.class,
-                    () -> pending.get(5, TimeUnit.SECONDS));
-            assertInstanceOf(SecurityException.class, failed.getCause());
-            session.seal();
-            assertFalse(session.isQuiescent(), "no physical admission proof poisons session");
-            assertThrows(IllegalStateException.class, session::close);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!pending.isDone() && System.nanoTime() < deadline) Thread.onSpinWait();
+            assertTrue(pending.isCancelled(),
+                    "denied guest entry must cancel the private queued host pull");
+            session.close();
+            assertTrue(session.isQuiescent(),
+                    "rejected before producer start does not require fake physical DONE");
         }
     }
 }
