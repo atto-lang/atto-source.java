@@ -1998,6 +1998,9 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        /** Host physical-stop barrier, retained even after actors.remove(). */
+        private final OresFuture<Void> physicalTerminationFuture =
+                new OresFuture<>(() -> false, () -> { });
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind) {
@@ -2076,10 +2079,21 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+            // actors.remove() is part of out-of-lock finalization, but it
+            // occurs before terminal observers have all been signaled. Never
+            // infer physical completion from absence in the actor map.
+            // This per-ref barrier remains reachable after removal and is
+            // published only after finalization's resource/registry hooks.
+            try {
+                physicalTerminationFuture.get(timeout, unit);
+                return true;
+            } catch (java.util.concurrent.TimeoutException pending) {
+                return false;
+            } catch (java.util.concurrent.ExecutionException failure) {
+                // Physical completion is a barrier, not a success result.
+                // A failed actor still has completed physical termination.
+                return true;
+            }
         }
 
         public void send(M message) {
@@ -6747,6 +6761,10 @@ public final class ActorRuntime implements AutoCloseable {
                     finalized = true;
                     lifecycleLock.notifyAll();
                 }
+                // Publish physical stop before ready/done observers run. An
+                // observer may synchronously call awaitTermination(), and must
+                // not deadlock on the same finalization thread.
+                ref.physicalTerminationFuture.completeFromRuntime(null);
                 Throwable terminal = ref.terminationCause.get();
                 if (!ref.readyFuture.isDone()) {
                     ref.readyFuture.failFromRuntime(
