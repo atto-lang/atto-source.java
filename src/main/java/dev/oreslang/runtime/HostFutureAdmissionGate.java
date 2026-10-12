@@ -15,6 +15,11 @@ final class HostFutureAdmissionGate {
     private Thread hostOwner;
     private int depth;
     private int guestTurnReservations;
+    // Identity-based physical carrier ownership, not a forgeable ThreadLocal
+    // flag. A Java callback already running inside the SAME admitted Truffle
+    // guest turn may synchronously reenter; foreign carriers must be rejected.
+    private final java.util.IdentityHashMap<Thread, Integer> guestOwners =
+            new java.util.IdentityHashMap<>();
     private boolean closing;
     private boolean hostClaimsSealed;
     private boolean physicalExitUnproven;
@@ -24,9 +29,11 @@ final class HostFutureAdmissionGate {
         if (closing || hostClaimsSealed) throw new IllegalStateException(
                 "host Future handoff rejected during context disposal");
         Thread caller = Thread.currentThread();
-        if (guestTurnReservations != 0) {
-            // A worker already reserved its context entry. Never admit a
-            // host call over that worker's Truffle enter/leave boundary.
+        int ownGuestEntries = guestOwners.getOrDefault(caller, 0);
+        if (guestTurnReservations != ownGuestEntries) {
+            // No unrelated guest carrier may overlap an external host call.
+            // A same-carrier Java callback, however, is ALREADY physically
+            // entered and can synchronously reenter the same Truffle context.
             throw new IllegalStateException(
                     "host Future handoff requires an idle guest-entry boundary");
         }
@@ -77,6 +84,7 @@ final class HostFutureAdmissionGate {
             }
             guestTurnReservations++;
             Thread owner = Thread.currentThread();
+            guestOwners.merge(owner, 1, Integer::sum);
             final boolean[] released = {false};
             return () -> {
                 if (Thread.currentThread() != owner) {
@@ -87,8 +95,15 @@ final class HostFutureAdmissionGate {
                     if (released[0] || guestTurnReservations <= 0) {
                         throw new IllegalStateException("guest entry reservation already released");
                     }
+                    int held = guestOwners.getOrDefault(owner, 0);
+                    if (held <= 0) {
+                        throw new IllegalStateException(
+                                "physical guest owner lost its reservation");
+                    }
                     released[0] = true;
                     guestTurnReservations--;
+                    if (held == 1) guestOwners.remove(owner);
+                    else guestOwners.put(owner, held - 1);
                     HostFutureAdmissionGate.this.notifyAll();
                 }
             };
