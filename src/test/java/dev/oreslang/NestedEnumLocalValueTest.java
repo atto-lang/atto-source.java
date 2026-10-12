@@ -198,6 +198,53 @@ final class NestedEnumLocalValueTest {
     }
 
     @Test
+    void compiledNestedWireIsIdenticalToIndependentMessagePackGolden() {
+        var registry = TaggedMessageContracts.verify(Parser.parse(DECLS));
+        var codec = new TaggedMessageCodec(registry.requireDomain("Foo"));
+        var value = new TaggedMessageCodec.TaggedValue("Foo", "Message1", 1,
+                new TaggedMessageCodec.TaggedValue("Bar", "Message1", 1, null));
+        // Independent reference: SHA-256 over the canonical finite enum
+        // descriptor, MessagePack v2 [2,schema,shape,[Foo,1,[Bar,1]]].
+        String expected = "9402d98f6f7265736c616e672e656e756d2e306162326236366364343839"
+                + "373130373332323563653264353938323735336137343830326636653261316437393861"
+                + "306632646364386665383233643232612e326434356430383134646535323635373039"
+                + "326261626636363331323437633761623136303164643035373935646432616534323833"
+                + "65303665383036373039c42071605bdfa3efdbcb5fe7aa4d4230f049269d4cd630b"
+                + "72c8c27f452c9b09ea42093a3466f6f0192a342617201";
+        assertEquals(expected, java.util.HexFormat.of().formatHex(codec.encode(value)));
+        assertEquals(value, codec.decode(java.util.HexFormat.of().parseHex(expected)));
+    }
+
+    @Test
+    void sourceActorAcceptsNestedEnumAcrossBinaryMailbox() throws Exception {
+        var program = DECLS + """
+                define actor Worker as
+                    receive(ActorMail<Foo> mail): void {
+                        self.end();
+                        return;
+                    }
+                end
+
+                pub async routine main(): void {
+                    val worker = await spawn Worker();
+                    worker.send(Foo.Message1(Bar.Message1()));
+                    await worker.get_done();
+                    stdio.stdout.write("nested-actor-done");
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "nested-enum-actor.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("nested-actor-done", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void boxIsExplicitIndirectionNotImplicitSerialization() {
         var source = Parser.parse("""
                 define enum Foo as
