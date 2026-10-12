@@ -31,3 +31,7 @@ jobs:
         run: |
           npm install --ignore-scripts --no-audit --no-fund
           npx tsp compile .
+      - name: Require generated TypeSpec and normative JSON Schema parity
+        working-directory: contracts/v1/aot-artifact
+        run: |
+          python test_typespec_parity.py ./tsp-output
