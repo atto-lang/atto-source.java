@@ -952,10 +952,29 @@ public final class TypeChecker {
         Set<String> effectiveFieldNames = new LinkedHashSet<>();
         for (ResolvedField field : effectiveFieldTargets(
                 klass, nominalClassType(klass), new LinkedHashSet<>())) {
+            // This semantic check also applies to ASTs synthesized by
+            // annotations and linked/inherited declarations, not just tokens.
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && field.field().name().equals("state")) {
+                throw new IllegalArgumentException(
+                        "actor state is reserved runtime-owned storage, including inherited fields");
+            }
             effectiveFieldNames.add(field.field().name());
         }
         Set<String> effectiveInstanceMethodNames = new LinkedHashSet<>();
         collectInstanceMethodNames(klass, effectiveInstanceMethodNames, new LinkedHashSet<>());
+        if (klass.actorKind() != Ast.ActorKind.NONE) {
+            if (effectiveInstanceMethodNames.contains("handle_state")) {
+                throw new IllegalArgumentException(
+                        "actor handle_state is sealed and cannot be inherited or overridden");
+            }
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.name().equals("handle_state")) {
+                    throw new IllegalArgumentException(
+                            "actor handle_state is sealed, including static declarations");
+                }
+            }
+        }
         for (String name : effectiveFieldNames) {
             if (effectiveInstanceMethodNames.contains(name)) {
                 throw new IllegalArgumentException(
