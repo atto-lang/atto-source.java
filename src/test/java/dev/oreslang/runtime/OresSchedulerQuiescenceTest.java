@@ -286,6 +286,72 @@ final class OresSchedulerQuiescenceTest {
         assertTrue(((java.util.Set<?>) tasksField.get(scheduler)).isEmpty());
     }
 
+
+    @Test
+    void shutdownFinishesTaskCancellationWhenFutureWaiterStallsItsHook()
+            throws Exception {
+        // Future.cancel publishes its terminal state before invoking the task
+        // cancellation hook. A synchronous completion waiter can block between
+        // those two events, so close must not rely only on cancel(false).
+        java.util.concurrent.ExecutorService carrier =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "stalled-cancel-hook", 1, carrier);
+        OresFuture<Integer> unresolved = new OresFuture<>();
+        CountDownLatch stepEntered = new CountDownLatch(1);
+        CountDownLatch callbackEntered = new CountDownLatch(1);
+        CountDownLatch releaseCallback = new CountDownLatch(1);
+        CountDownLatch retired = new CountDownLatch(1);
+        AtomicInteger retirementCount = new AtomicInteger();
+        Thread canceller = null;
+        try {
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                stepEntered.countDown();
+                return OresScheduler.await(unresolved);
+            }, () -> {
+                retirementCount.incrementAndGet();
+                retired.countDown();
+            });
+            assertTrue(stepEntered.await(3, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (unresolved.pendingRuntimeWaiterCount() == 0
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, unresolved.pendingRuntimeWaiterCount(),
+                    "task must be suspended before starting the cancellation race");
+            result.whenCompleteRuntime((value, failure) -> {
+                callbackEntered.countDown();
+                try {
+                    releaseCallback.await(3, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            canceller = Thread.ofPlatform().start(() -> result.cancel(false));
+            assertTrue(callbackEntered.await(3, TimeUnit.SECONDS),
+                    "Future has settled but its cancellation hook cannot run yet");
+            assertTrue(result.isCancelled());
+
+            scheduler.close();
+            assertTrue(retired.await(2, TimeUnit.SECONDS),
+                    "close must retire a suspended task even if cancel's hook is blocked");
+            assertEquals(1, retirementCount.get());
+            assertEquals(0, unresolved.pendingRuntimeWaiterCount(),
+                    "close must detach the suspended task's awaited Future");
+        } finally {
+            releaseCallback.countDown();
+            if (canceller != null) {
+                canceller.join(3_000);
+                assertFalse(canceller.isAlive(), "cancellation callback was stranded");
+            }
+            scheduler.close();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
