@@ -54,6 +54,8 @@ public final class OresEvalRootNode extends RootNode {
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND =
             "__ores_internal_invoke_public_future_bridge__";
+    public static final String INVOKE_PUBLIC_GENERATOR_BRIDGE_COMMAND =
+            "__ores_internal_invoke_public_generator_bridge__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
 
     private final Ast.Program program;
@@ -118,6 +120,23 @@ public final class OresEvalRootNode extends RootNode {
             OresHostFutureBridge.requireActiveScope(functionName, nonce, context, this);
         }
 
+        boolean generatorBridgeCommand = arguments.length > 0
+                && INVOKE_PUBLIC_GENERATOR_BRIDGE_COMMAND.equals(arguments[0]);
+        if (generatorBridgeCommand) {
+            // Fail before linking or scheduling in strict/one-thread contexts.
+            if (context.isolatePolicy().adversarial()) {
+                throw new SecurityException(
+                        "host generator bridge requires caller-thread isolate turn pump");
+            }
+            if (arguments.length != 3
+                    || !(arguments[1] instanceof String functionName)
+                    || !(arguments[2] instanceof String nonce)) {
+                throw new SecurityException("invalid scoped generator host command");
+            }
+            OresHostGeneratorBridge.requireActiveScope(
+                    functionName, nonce, context, this);
+        }
+
         // A malformed reserved host command must not fall through to guest
         // main or trigger evaluator initialization as a side effect.
         if (arguments.length > 0
@@ -137,6 +156,10 @@ public final class OresEvalRootNode extends RootNode {
                     || (futureBridgeCommand
                         && arguments.length >= 3
                         && arguments[1] instanceof String
+                        && arguments[2] instanceof String)
+                    || (generatorBridgeCommand
+                        && arguments.length == 3
+                        && arguments[1] instanceof String
                         && arguments[2] instanceof String);
             if (!wellFormed) {
                 throw new SecurityException(
@@ -145,6 +168,19 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         Evaluator current = evaluator(context);
+        if (generatorBridgeCommand) {
+            // The actual source callable is typechecked before admission,
+            // but opening a host session may not run its guest body.
+            current.link();
+            GeneratorRuntime.HostPullSession session =
+                    context.openStagedSourceGenerator(
+                            program, (String) arguments[1], java.util.Map.of());
+            OresHostGeneratorBridge.publish(
+                    (String) arguments[1], (String) arguments[2],
+                    context, this, session);
+            // Return an ignored scalar, not a guest/host mutable handle.
+            return 0;
+        }
         if (isControl(arguments, LINK_ONLY_COMMAND)) {
             current.link();
             return null;
