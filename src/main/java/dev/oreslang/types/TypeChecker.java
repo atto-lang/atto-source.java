@@ -1982,9 +1982,9 @@ public final class TypeChecker {
                 if (call.typeArgumentsPresent() || call.arguments().size() != 1
                         || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda))
                     throw new IllegalArgumentException("self.handle_state requires one callback lambda");
-                if (!lambda.explicitStateMode() || lambda.nonLexical()) {
+                if (lambda.nonLexical()) {
                     throw new IllegalArgumentException(
-                            "sealed handle_state requires critical read or critical write");
+                            "sealed handle_state requires a lexical read or critical write callback");
                 }
                 Type schemaType = resolve(ActorStateContract.keySchema(state), generics, self);
                 Type callbackResult =
@@ -4070,8 +4070,7 @@ public final class TypeChecker {
                                                   Env parent,
                                                   Set<String> generics,
                                                   Type self) {
-        if (!lambda.explicitStateMode() || lambda.parameters().size() != 1
-                || lambda.nonLexical()) {
+        if (lambda.parameters().size() != 1 || lambda.nonLexical()) {
             throw new IllegalArgumentException(
                     "sealed actor state requires one lexical critical state parameter");
         }
