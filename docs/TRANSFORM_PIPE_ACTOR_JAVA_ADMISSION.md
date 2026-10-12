@@ -32,16 +32,28 @@ Source JUnit regression cases:
 `src/test/java/dev/oreslang/TransformPipeActorRoleTest.java`.
 
 Focused exact-source funded JDK25 validation:
-https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/38300778417
+https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/38311417501
 
-This verified 12 source blobs, javac compilation of the actual parser,
-AST, checker, ownership checker, annotation expander and tree-shaker,
-and 14 parser/compiler smoke cases. The final funded rerun also verified the stricter forged-AST and type-checker guards. This gate does **not** execute the
-source JUnit suite, full Maven, Native Image, source-level actor DATA
-delivery, or a Java 15-actor round trip.
+The funded runner verified 12 exact Java Git source blobs, compiled the
+actual parser/AST/TypeChecker/OwnershipChecker/annotation expander/tree
+shaker, and passed **23 focused positive and negative checks**.
 
-LLVM supports an executable *restricted scalar-state* transform profile in
-its separate PR #244. The canonical fixed-key `state { value: int = 0; }`
-and scoped `handle_state(critical ...)` implementation is not yet
-combined with native pipeline codegen, so design examples must remain marked
-non-executable on both backends.
+New actor-state admission:
+`state { value: int = 0; }` is parsed as `Ast.ActorStateSpec`
+**independent** of ordinary `ClassDecl.fields`. Actor instance
+`let`, `val`, and `const` are rejected. Duplicate state map declarations
+and duplicate fixed keys are rejected. The state metadata survives
+`AnnotationExpander` and `TreeShaker`. Actor classes may have methods
+without a state map. The TypeChecker **fails closed** on any state declaration
+because Java does not yet implement scoped state-loan execution.
+
+This focused CI does **not** run the full Maven/JUnit suite, Native Image,
+source-level Java actor DATA delivery, or a Java 15-actor guest roundtrip.
+JUnit regression source is included, but not claimed executed in this gate.
+
+The restricted LLVM compiler in PR #244 now **does** execute synchronous
+fixed-key state callbacks in all three real 15-actor pipeline spellings:
+https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/38311796992
+passed 24/24 focused native CTests. General async state, multiple concurrent
+flows, Java runtime parity and full legacy regression migrations are
+outstanding. See `docs/ACTOR_STATE_INVARIANT.md`.
