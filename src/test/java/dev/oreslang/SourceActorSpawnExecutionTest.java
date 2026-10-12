@@ -413,6 +413,14 @@ final class SourceActorSpawnExecutionTest {
         assertEquals("tagged-done", run(source, "source-actor-nominal-tags.ores"));
     }
 
+    @Test
+    void compiledThreeActorTypedPipelineForwardsAndReturnsAResult() throws Exception {
+        String program = java.nio.file.Files.readString(
+                java.nio.file.Path.of("examples/actor-pipeline-bidirectional.ores"));
+        assertEquals("JAVA_PIPELINE_RESULT_19",
+                run(program, "actor-pipeline-bidirectional.ores"));
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source =
