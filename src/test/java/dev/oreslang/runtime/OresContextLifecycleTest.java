@@ -84,6 +84,70 @@ final class OresContextLifecycleTest {
         }
     }
 
+    @Test
+    void guestFinallyCanResumeAfterFailedHostPreflightAndDisposeOnRetry()
+            throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        OresFuture<Integer> hostCleanupSignal = new OresFuture<>();
+        Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).out(output).build();
+        boolean disposed = false;
+        try {
+            String sourceText = """
+                    pub async fnc work(cleanupGate: Future<int>): int {
+                      try {
+                        val Channel<int> workGate = Channel.new<int>(0);
+                        stdio.println("work-entered");
+                        const result = await (nb readch workGate);
+                      } catch (ignored) {
+                        stdio.println("INVALID-work-catch");
+                      } finally {
+                        stdio.println("finally-entered");
+                        const cleanupValue = await cleanupGate;
+                        stdio.println("cleanup-result");
+                      }
+                      return 17;
+                    }
+                    """;
+            Value result = context.parse(Source.newBuilder(
+                    OresLanguage.ID, sourceText, "retry-guest-finally.ores").build())
+                    .execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
+                            "work", hostCleanupSignal);
+            OresFuture<?> task = assertInstanceOf(OresFuture.class,
+                    result.asHostObject());
+            awaitOutput(output, "work-entered");
+            assertTrue(task.cancel(false), "cancel the owned source task");
+            awaitOutput(output, "finally-entered");
+            assertFalse(task.isDone());
+
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> OresContextLifecycle.prepareForDisposal(context));
+            assertTrue(failure.toString().contains("unfinished cancellation cleanup"),
+                    failure.toString());
+            assertFalse(task.isDone(), "failed preflight cannot settle cleanup");
+
+            // A host-owned producer may finish its Future without entering
+            // the sealed guest scheduler or creating new guest tasks.
+            assertTrue(hostCleanupSignal.completeFromRuntime(77));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            awaitOutput(output, "cleanup-result");
+            assertEquals("work-entered\\nfinally-entered\\ncleanup-result\\n",
+                    output.toString(StandardCharsets.UTF_8));
+
+            OresContextLifecycle.closeWhenQuiescent(context);
+            disposed = true;
+            assertThrows(IllegalStateException.class,
+                    () -> context.parse(Source.newBuilder(OresLanguage.ID,
+                            "pub routine main(): void { return; }",
+                            "post-retirement.ores").build()));
+        } finally {
+            if (!disposed) {
+                try { context.close(); } catch (RuntimeException ignored) { }
+            }
+        }
+    }
+
     private static void awaitOutput(ByteArrayOutputStream output, String marker)
             throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
