@@ -258,4 +258,27 @@ final class BorrowedContinuationBoundaryTest {
                 }
                 """)));
     }
+    @Test
+    void deferMayReadMutableCopyLocalAtScopeUnwind() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
+                fnc good(): void {
+                  let i = 0;
+                  defer stdio.stdout.write(i);
+                  i = 1;
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void deferCannotCaptureMoveOnlyLocalWithoutLifetimePlan() {
+        reject(BOX + """
+                fnc unsafe(): void {
+                  let Box box = new Box();
+                  defer stdio.println(box.value);
+                  return;
+                }
+                """, "defer cannot capture borrowed or move-only binding 'box'");
+    }
+
 }
