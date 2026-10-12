@@ -838,6 +838,10 @@ public final class OwnershipChecker {
                 throw error("rt " + runtime.operation() + " expects exactly one argument");
             }
             Ast.Expr argument = runtime.arguments().getFirst();
+            if (runtime.operation().equals("fail")) {
+                checkExpr(argument, scope, false);
+                return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+            }
             return switch (runtime.operation()) {
                 case "borrow" -> {
                     BorrowPlace place = borrowPlace(argument, scope);

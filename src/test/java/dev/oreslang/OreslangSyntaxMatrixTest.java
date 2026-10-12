@@ -49,6 +49,7 @@ final class OreslangSyntaxMatrixTest {
         new Sample("trait/fields", "define trait Named as id:string; fnc ping()=>void; end"),
         new Sample("actor/shared", "shared actor Counter { let count=0; pub fnc read():int{return self.count;} }"),
         new Sample("actor/plain", "actor Counter { let count=0; pub fnc read():int{return self.count;} }"),
+        new Sample("actor/final-field", "actor Counter { final epoch:int=1; pub fnc read():int{return self.epoch;} }"),
         new Sample("binding/const-val-let", "fnc f():void{const n=1; val x=2; let y=3; y=y+n;return;}"),
         new Sample("binding/type-first", "fnc f():void{const int n=1;return;}"),
         new Sample("binding/type-last", "fnc f():void{const n:int=1;return;}"),

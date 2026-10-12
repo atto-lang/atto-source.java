@@ -909,6 +909,12 @@ public final class OresEvalRootNode extends RootNode {
                     pendingLoopGuardEnv = null;
                     nextStep = null;
                     initialBlockEnv = null;
+                    // Preserve control/authority failures even when a future
+                    // or resumed continuation wraps the original exception.
+                    if (function != null && function.trapped()
+                            && isTrappableFailure(failure)) {
+                        return OresScheduler.done(new OptionValue(false, null));
+                    }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
                             function != null ? function.name() : method != null ? method.name() : "<block>",
                             resume.initial() ? "source task" : "resumed source task");
@@ -1112,7 +1118,9 @@ public final class OresEvalRootNode extends RootNode {
                         function != null
                                 ? "function " + function.name()
                                 : "method " + method.name();
-                return shapeReturnedValue(returnType, value, label);
+                Object shaped = shapeReturnedValue(returnType, value, label);
+                return function != null && function.trapped()
+                        ? new OptionValue(true, shaped) : shaped;
             }
         }
 
@@ -4312,6 +4320,9 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (fn.actorKind() == Ast.ActorKind.NONE) {
+                // Imported calls may select the scheduler path. Keep the trap
+                // wrapper around that path as well as direct execution.
+                if (fn.trapped()) return callFunctionBodyRaw(fn, normalized);
                 if (fn.async() || functionContainsPotentialSuspension(fn)) {
                     OresFuture<Object> future =
                             startSourceFunctionTask(
@@ -4496,21 +4507,23 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
-            if (!fn.trapped()) {
+            if (!fn.trapped() || functionContainsPotentialSuspension(fn)) {
+                // SourceTask owns the trap boundary for scheduled execution.
                 return callFunctionBodyUnchecked(fn, args);
             }
             try {
                 return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
-            } catch (OresPanic panic) {
-                throw panic;
-            } catch (java.util.concurrent.CancellationException cancelled) {
-                throw cancelled;
-            } catch (RuntimeException ordinaryFailure) {
+            } catch (RuntimeException failure) {
+                if (!isTrappableFailure(failure)) throw failure;
                 // trap is deliberately lossy: ordinary guest/runtime failure
-                // becomes None. Panic and scheduler cancellation remain distinct
-                // non-trappable control channels.
+                // becomes None. Control and authority failures always escape.
                 return new OptionValue(false, null);
             }
+        }
+
+        private boolean isTrappableFailure(RuntimeException failure) {
+            return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
+                    failure, OresPanic.class);
         }
 
         private Object callFunctionBodyUnchecked(Ast.FunctionDecl fn, List<?> args) {
@@ -5686,6 +5699,12 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object applyRuntimeOwnership(String operation, Object value) {
             return switch (operation) {
+                case "fail" -> {
+                    if (!(value instanceof String message)) {
+                        throw new IllegalArgumentException("rt fail message must be a String");
+                    }
+                    throw new IllegalStateException(message);
+                }
                 // Borrow/take/share alter compiler ownership state, not the JVM handle.
                 case "borrow", "take", "share" -> value;
                 // Static ownership checking currently admits rt copy only for proven
