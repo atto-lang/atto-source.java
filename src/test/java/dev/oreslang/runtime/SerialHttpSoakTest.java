@@ -45,7 +45,7 @@ final class SerialHttpSoakTest {
             define serial actor Counter as
               state { count: int = 0; }
               pub increment(): int with state.read, state.write {
-                return self.handle_state(|s| -> {
+                return self.handle_state(critical |s| -> {
                   s.count = s.count + 1;
                   return s.count;
                 });
