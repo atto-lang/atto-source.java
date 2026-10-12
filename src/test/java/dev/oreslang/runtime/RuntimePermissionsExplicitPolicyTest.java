@@ -75,6 +75,52 @@ class RuntimePermissionsExplicitPolicyTest {
         }
     }
 
+    @Test void blankFilesystemAllowScopeCannotBecomeRootWideGrant() {
+        for (String scope : new String[] {"", " ", "\\t", "\\n"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> RuntimePermissions.denyAll()
+                            .withAllowed(RuntimePermissions.Permission.READ, scope));
+            assertThrows(IllegalArgumentException.class,
+                    () -> RuntimePermissions.denyAll()
+                            .withAllowed(RuntimePermissions.Permission.WRITE, scope));
+            assertThrows(IllegalArgumentException.class,
+                    () -> RuntimePermissions.denyAll()
+                            .withDenied(RuntimePermissions.Permission.READ, scope));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.denyAll()
+                        .withAllowed(RuntimePermissions.Permission.READ, (String) null));
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.denyAll()
+                        .withDenied(RuntimePermissions.Permission.READ, (String) null));
+    }
+
+    @Test void emptyScopesInSerializedArgumentsFailClosed() {
+        for (String permission : new String[] {"read", "write", "net", "env", "run", "sys", "ffi", "import"}) {
+            for (String action : new String[] {"allow", "deny"}) {
+                String malformed = "--ores-permission-" + permission + "-" + action + "=";
+                assertThrows(IllegalArgumentException.class,
+                        () -> RuntimePermissions.fromApplicationArguments(
+                                new String[]{"--ores-permission-explicit=true", malformed},
+                                powerfulPolicy()), malformed);
+            }
+        }
+    }
+
+    @Test void emptyScopeCannotWidenAnOtherwiseScopedPolicy() {
+        RuntimePermissions scoped = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, root.toString());
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.fromApplicationArguments(
+                        new String[]{
+                                "--ores-permission-explicit=true",
+                                "--ores-permission-read-allow=" + root,
+                                "--ores-permission-read-allow="
+                        }, powerfulPolicy()));
+        assertFalse(scoped.allows(RuntimePermissions.Permission.READ,
+                root.resolveSibling("sibling").resolve("sensitive.txt").toString()));
+    }
+
     @Test void malformedExplicitMarkerFailsClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> RuntimePermissions.fromApplicationArguments(
