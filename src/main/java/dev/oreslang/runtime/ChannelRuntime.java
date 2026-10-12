@@ -130,8 +130,10 @@ public final class ChannelRuntime {
             try {
                 if (registrations.isEmpty()) {
                     if (!buffer.isEmpty()) return Optional.of(buffer.removeFirst());
-                    if (closed) throw closedFailure();
-                    return Optional.empty();
+                    // Preserve the existing Future.join() failure wrapping
+                    // for a closed-empty channel: only the open probe is a
+                    // direct fast-path result.
+                    if (!closed) return Optional.empty();
                 }
             } finally {
                 COORDINATOR.unlock();
@@ -181,8 +183,8 @@ public final class ChannelRuntime {
             // A rendezvous or a registered selection must use the arbiter.
             COORDINATOR.lock();
             try {
-                if (registrations.isEmpty()) {
-                    if (closed) throw closedFailure();
+                if (registrations.isEmpty() && !closed) {
+                    // Closed writes still use the original exception wrapper.
                     if (buffer.size() >= capacity) return false;
                     buffer.addLast(value);
                     return true;
