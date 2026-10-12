@@ -96,11 +96,12 @@ final class ActorMutexFutureAuthorityTest {
             assertTrue(resumed.await(4, TimeUnit.SECONDS), "actor B did not resume from mailbox");
             assertNull(failure.get(), String.valueOf(failure.get()));
             assertNotNull(callbackDomain.get(), "runtime completion plumbing was never notified");
-            assertEquals(71, mutex.lockFor(Duration.ofSeconds(2))
-                    .map(guard -> {
-                        try { return guard.value()[0]; }
-                        finally { guard.release(); }
-                    }).orElseThrow());
+            var observed = mutex.lockFor(Duration.ofSeconds(2)).orElseThrow();
+            try {
+                assertEquals(71, observed.value()[0]);
+            } finally {
+                observed.release();
+            }
         }
     }
 }
