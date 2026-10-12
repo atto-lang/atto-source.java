@@ -1400,13 +1400,12 @@ public final class ActorRuntime implements AutoCloseable {
         boolean premature = failure != null
                 || (source ? phase != 2 * route.count()
                            : phase < 2 * route.count() - position);
-        if (source) {
-            for (ActorRef<?> stage : route.stages()) {
-                linearPipelines.remove(stage.id(), route);
-            }
-        } else {
-            linearPipelines.remove(departed.ref.id(), route);
-        }
+        // Retire only this actor's routing fence. The source may reach
+        // physical DONE before a downstream stage does; releasing sibling
+        // registrations here would allow arbitrary host DATA to bypass the
+        // pipeline's closed, scheduler-owned directional admission.
+        // Each sibling retains its fence until its own physical finalization.
+        linearPipelines.remove(departed.ref.id(), route);
         if (!premature || closed.get()) return;
         while (true) {
             int old = route.phase().get();
