@@ -91,6 +91,65 @@ class NativeHttpPooledActorTest {
             "request-local deadline killed or replaced the surviving pool worker: " + result);
     }
 
+    @Test void gracefulShutdownLetsPooledActorFinishAnAlreadyAdmittedResponse() throws Exception {
+        String program = """
+            define actor Worker as
+              receive(ActorMail<String> mail): void {
+                val exchange = http.claim(mail.value);
+                val body = await exchange.body_text();
+                await exchange.respond(200, "text/plain", body);
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val pool = http.pool_handler("Worker", 1);
+              val server = http.listen("127.0.0.1", 0, 4, 4096, 5000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              pool.dispatch(rt borrow mut request);
+              await server.shutdown(1500);
+              stdio.println("GRACEFUL_SHUTDOWN");
+              stdio.println(server.active);
+              return;
+            }
+            """;
+        CompletableFuture<Integer> port = new CompletableFuture<>();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public synchronized void write(byte[] bytes, int off, int length) {
+                super.write(bytes, off, length);
+                String text = toString(StandardCharsets.UTF_8);
+                int end = text.indexOf('\n');
+                if (end >= 0 && !port.isDone())
+                    port.complete(Integer.parseInt(text.substring(0, end).trim()));
+            }
+        };
+        try (Context context = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)
+                .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of()).out(output).build();
+             ExecutorService clients = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> work = clients.submit(() -> {
+                try (java.net.Socket socket = new java.net.Socket("127.0.0.1", port.get(10, TimeUnit.SECONDS))) {
+                    socket.setSoTimeout(7000);
+                    socket.getOutputStream().write((
+                        "POST /grace HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n" +
+                        "Connection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                    socket.getOutputStream().flush();
+                    // The supervisor starts graceful shutdown while this
+                    // request is blocked reading its not-yet-arrived body.
+                    Thread.sleep(300);
+                    socket.getOutputStream().write("ping".getBytes(StandardCharsets.US_ASCII));
+                    socket.getOutputStream().flush();
+                    String response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                    assertTrue(response.startsWith("HTTP/1.1 200"), response);
+                    assertTrue(response.contains("ping"), response);
+                } catch (Exception failure) { throw new RuntimeException(failure); }
+            });
+            context.eval(Source.newBuilder(OresLanguage.ID, program, "pooled-graceful-shutdown.ores").build());
+            work.get(30, TimeUnit.SECONDS);
+        }
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("GRACEFUL_SHUTDOWN\n0"),
+            "shutdown must drain the exchange before stopping pooled actors: " + output);
+    }
+
     @Test void poolSizeMustNotTruncateLongToValidInt() {
         String program = """
             define actor Worker as
