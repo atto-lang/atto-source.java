@@ -16,6 +16,51 @@ import org.junit.jupiter.api.Test;
  */
 final class CompiledActorSelectStopTest {
     @Test
+    void nonblockingDynamicSelectProducerBelongsToStoppedActor() throws Exception {
+        int before = ChannelRuntime.activeSelectCountForTest();
+        String source = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val Channel<int> neverReady = Channel.new<int>(0);
+                    val SelectSet cases =
+                        SelectSet.new([SelectCase.read(neverReady)]);
+                    val Future<Option<SelectResult>> pending =
+                        nb select first from cases;
+                    self.send("armed");
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("go");
+                  val started = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(started.value);
+                  worker.stop();
+                  await worker.get_done();
+                  stdio.stdout.write("|stopped");
+                  return;
+                }
+                """;
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        Source guest = Source.newBuilder(
+                OresLanguage.ID, source, "compiled-nb-dynamic-select-stop.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(out)
+                .build()) {
+            context.eval(guest);
+        }
+        assertEquals("armed|stopped", out.toString(StandardCharsets.UTF_8));
+        assertEquals(before, ChannelRuntime.activeSelectCountForTest(),
+                "actor stop must revoke the underlying select, not just its wrapper");
+    }
+
+    @Test
     void stoppedSourceActorDoesNotRetainBlockedReadchSelect() throws Exception {
         int before = ChannelRuntime.activeSelectCountForTest();
         String source = """
