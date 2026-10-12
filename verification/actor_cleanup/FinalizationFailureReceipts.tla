@@ -15,7 +15,7 @@ Record(f) ==
   /\ first' = IF first = "none" \/ UnsafeOverwrite THEN f ELSE first
   /\ seen' = seen \cup {f}
   /\ suppressed' = IF first = "none" THEN {}
-                   ELSE suppressed \cup {f}
+                   ELSE IF f = first THEN suppressed ELSE suppressed \cup {f}
   /\ UNCHANGED terminated
 Stop ==
   /\ ~terminated
