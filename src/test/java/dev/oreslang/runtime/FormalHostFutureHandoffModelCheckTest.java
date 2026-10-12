@@ -196,4 +196,72 @@ final class FormalHostFutureHandoffModelCheckTest {
         assertTrue(s.contextRetired);
         invariant(s);
     }
+    private enum PhysicalEvent {
+        HOST_BEGIN, ROOT_CLAIM, ROOT_DONE, HOST_EXIT, SEAL, CLOSE_CHECK
+    }
+
+    private record PhysicalState(
+            boolean host, boolean root, boolean sealed, boolean retired) {
+        static PhysicalState initial() {
+            return new PhysicalState(false, false, false, false);
+        }
+    }
+
+    private static PhysicalState physicalStep(PhysicalState s, PhysicalEvent event) {
+        boolean host = s.host, root = s.root;
+        boolean sealed = s.sealed, retired = s.retired;
+        switch (event) {
+            case HOST_BEGIN -> {
+                if (!sealed && !host && !root) host = true;
+            }
+            case ROOT_CLAIM -> {
+                if (!host && !root && !retired) root = true;
+            }
+            case ROOT_DONE -> root = false;
+            case HOST_EXIT -> host = false;
+            case SEAL -> sealed = true;
+            case CLOSE_CHECK -> {
+                if (sealed && !host && !root) retired = true;
+            }
+        }
+        return new PhysicalState(host, root, sealed, retired);
+    }
+
+    private static void physicalInvariant(PhysicalState state) {
+        assertFalse(state.host && state.root,
+                "host entry and a physical root turn overlap");
+        assertFalse(state.retired && (state.host || state.root),
+                "context retired while physical guest entry remained active");
+    }
+
+    @Test
+    void boundedHostAndRootPhysicalEntryAreMutuallyExclusive() {
+        Set<PhysicalState> visited = new HashSet<>();
+        ArrayDeque<PhysicalState> frontier = new ArrayDeque<>();
+        PhysicalState start = PhysicalState.initial();
+        visited.add(start);
+        frontier.add(start);
+        boolean sawHost = false, sawRoot = false, sawRetired = false;
+        while (!frontier.isEmpty()) {
+            PhysicalState state = frontier.removeFirst();
+            physicalInvariant(state);
+            sawHost |= state.host;
+            sawRoot |= state.root;
+            sawRetired |= state.retired;
+            for (PhysicalEvent event : PhysicalEvent.values()) {
+                PhysicalState next = physicalStep(state, event);
+                physicalInvariant(next);
+                if (visited.add(next)) frontier.addLast(next);
+            }
+        }
+        assertTrue(sawHost && sawRoot && sawRetired);
+        assertTrue(visited.size() >= 5);
+    }
+
+    @Test
+    void unsafeHostBeginAfterRootPhysicalClaimViolatesInvariant() {
+        PhysicalState invalid = new PhysicalState(true, true, false, false);
+        assertThrows(AssertionError.class, () -> physicalInvariant(invalid));
+    }
+
 }
