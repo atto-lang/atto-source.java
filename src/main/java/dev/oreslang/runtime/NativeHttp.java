@@ -35,21 +35,35 @@ public final class NativeHttp implements AutoCloseable {
             if (capacity < 1) throw new IllegalArgumentException("invalid transfer capacity");
             limit = Math.min(capacity, MAX_UNCLAIMED_TRANSFERS_PER_SERVER);
         }
-        boolean tryReserve() {
+        /** A one-use authority bound to precisely one admitted transfer. */
+        static final class Reservation {
+            private final TransferBudget owner;
+            private final java.util.concurrent.atomic.AtomicBoolean released =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            private Reservation(TransferBudget owner) { this.owner = owner; }
+            void release() {
+                if (!released.compareAndSet(false, true))
+                    throw new IllegalStateException("HTTP transfer reservation released more than once");
+                owner.returnSlot();
+            }
+        }
+
+        Reservation tryReserve() {
             for (;;) {
                 int held = outstanding.get();
                 if (held == limit) {
                     rejected.incrementAndGet();
-                    return false;
+                    return null;
                 }
-                if (outstanding.compareAndSet(held, held + 1)) return true;
+                if (outstanding.compareAndSet(held, held + 1))
+                    return new Reservation(this);
             }
         }
-        void release() {
+        private void returnSlot() {
             for (;;) {
                 int held = outstanding.get();
                 if (held <= 0) throw new IllegalStateException(
-                        "HTTP transfer reservation released more than once");
+                        "HTTP transfer accounting underflow");
                 if (outstanding.compareAndSet(held, held - 1)) return;
             }
         }
@@ -466,6 +480,8 @@ public final class NativeHttp implements AutoCloseable {
         volatile boolean terminal;
         boolean transportClosed;
         String ticket;
+        /** Distinct one-use admission authority; a stale ticket cannot free another slot. */
+        TransferBudget.Reservation reservation;
         /** Counted only when a terminal persistent transfer remains unclaimed. */
         boolean tombstoneCounted;
         final String requestId = UUID.randomUUID().toString();
@@ -488,13 +504,15 @@ public final class NativeHttp implements AutoCloseable {
         }
         /** Called only while holding this State's monitor. */
         void releaseTransferReservationLocked() {
-            if (ticket == null) throw new IllegalStateException("HTTP transfer reservation already released");
+            if (ticket == null || reservation == null)
+                throw new IllegalStateException("HTTP transfer reservation already released");
+            reservation.release();
+            reservation = null;
             ticket = null;
             if (tombstoneCounted) {
                 tombstoneCounted = false;
                 server.tombstones.decrementAndGet();
             }
-            server.transferBudget.release();
         }
         /** Called only while holding this State's monitor. */
         void revokeTransferLocked() {
@@ -619,8 +637,10 @@ public final class NativeHttp implements AutoCloseable {
                 if (state.busy || state.committed) throw new IllegalStateException("cannot move an active HTTP exchange");
                 if (!context.actors().isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
-                if (!state.server.transferBudget.tryReserve())
+                var lease = state.server.transferBudget.tryReserve();
+                if (lease == null)
                     throw new RejectedExecutionException("HTTP unclaimed transfer backlog exhausted");
+                state.reservation = lease;
                 state.movedNanos = System.nanoTime();
                 state.generation++; state.owner = destination.id();
                 state.actor = destination;
