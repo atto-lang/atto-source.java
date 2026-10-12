@@ -54,15 +54,26 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         }
 
         @Override public void close() {
-            if (!released.compareAndSet(false, true)) return;
+            boolean publishRetirement = false;
             synchronized (ExplicitNativeI64Region.this) {
+                if (released.get()) return;
                 if (slotLoans[slot.index] <= 0 || loanCount <= 0) {
                     throw new IllegalStateException("actor-native loan accounting underflow");
                 }
+                // Linearize one-use release under the same monitor protecting
+                // the slot and total loan counts. A failed precondition never
+                // consumes this loan's sole release authority.
+                released.set(true);
                 slotLoans[slot.index]--;
                 loanCount--;
-                if (closed.get() && loanCount == 0) finishPhysicalClose();
+                if (closed.get() && loanCount == 0) {
+                    finishPhysicalClose();
+                    publishRetirement = true;
+                }
             }
+            // Never invoke registry callbacks while holding the FFM region
+            // monitor. Other actor lifecycle callbacks may use lifecycleLock.
+            if (publishRetirement) publishPhysicalRetirement();
         }
     }
 
@@ -219,10 +230,15 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
 
     /** Stop admission immediately; defer FFM arena close until loans drain. */
     void retireFromActor() {
+        boolean publishRetirement = false;
         synchronized (this) {
             if (!closed.compareAndSet(false, true)) return;
-            if (loanCount == 0) finishPhysicalClose();
+            if (loanCount == 0) {
+                finishPhysicalClose();
+                publishRetirement = true;
+            }
         }
+        if (publishRetirement) publishPhysicalRetirement();
     }
 
     private void finishPhysicalClose() {
@@ -246,10 +262,20 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
             afterArenaCloseProbe.run();
             reservation.close();
             afterQuotaRefundProbe.run();
-            onRetired.run();
         } catch (RuntimeException | Error releaseFailure) {
             onPhysicalCloseFailure.accept(releaseFailure);
             throw releaseFailure;
+        }
+        // Ownership registry publication deliberately occurs after the FFM
+        // monitor is released, in publishPhysicalRetirement().
+    }
+
+    private void publishPhysicalRetirement() {
+        try {
+            onRetired.run();
+        } catch (RuntimeException | Error failure) {
+            onPhysicalCloseFailure.accept(failure);
+            throw failure;
         }
     }
 
