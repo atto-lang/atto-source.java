@@ -21,15 +21,22 @@ final class IntegratedOwnershipAdmissionGateTest {
             end
             """;
 
+    private record Rejection(String source, String diagnostic) {}
+
+    private static void reject(Map<String, Rejection> cases, String title,
+                               String source, String expected) {
+        cases.put(title, new Rejection(source, expected));
+    }
+
     @TestFactory Stream<DynamicTest> completeCompilerRejectsCrossFeatureEscapes() {
-        Map<String, String> cases = new LinkedHashMap<>();
-        cases.put("direct actor-state read", """
+        Map<String, Rejection> cases = new LinkedHashMap<>();
+        reject(cases, "direct actor-state read", """
                 define actor Worker as
                   state { count: int = 0; }
                   pub probe(): int { return self.state.count; }
                 end
-                """);
-        cases.put("state loan with cooperation", """
+                """, "state");
+        reject(cases, "state loan with cooperation", """
                 define actor Worker as
                   state { count: int = 0; }
                   pub probe(): void using state.read, suspend {
@@ -40,8 +47,8 @@ final class IntegratedOwnershipAdmissionGateTest {
                     return;
                   }
                 end
-                """);
-        cases.put("state loan with blocking channel read", """
+                """, "cannot");
+        reject(cases, "state loan with blocking channel read", """
                 define actor Worker as
                   state { count: int = 0; }
                   pub probe(Channel<int> ch): void using state.read, suspend, block {
@@ -52,43 +59,48 @@ final class IntegratedOwnershipAdmissionGateTest {
                     return;
                   }
                 end
-                """);
-        cases.put("borrowing becomes apparent owned cast", BOX + """
+                """, "cannot");
+        reject(cases, "borrowing becomes apparent owned cast", BOX + """
                 fnc bad(): void {
                   let Box box = new Box();
                   val Box fake = (rt borrow box) as Box;
                   return;
                 }
-                """);
-        cases.put("owned/borrowed branch merge", BOX + """
+                """, "borrowed value cannot be bound as an owned type");
+        reject(cases, "owned/borrowed branch merge", BOX + """
                 fnc bad(): void {
                   let Box box = new Box();
                   val fake = true ? box : rt borrow box;
                   return;
                 }
-                """);
-        cases.put("blocked channel under independent no_block", """
+                """, "conditional cannot merge borrowed values");
+        reject(cases, "blocked channel under independent no_block", """
                 fnc bad(Channel<int> channel): void requires no_block {
                   val item = readch channel;
                   return;
                 }
-                """);
-        cases.put("borrowed yield-star payload", BOX + """
+                """, "violates requires no_block");
+        reject(cases, "borrowed yield-star payload", BOX + """
                 fnc source(): Iterator<borrow Box> { return null; }
                 gen* fnc bad(): Iterator<borrow Box> {
                   yield* source();
                   return;
                 }
-                """);
+                """, "cannot yield borrowed elements");
 
         return cases.entrySet().stream().map(entry -> DynamicTest.dynamicTest(
                 entry.getKey(), () -> {
+                    Rejection candidate = entry.getValue();
                     var parsed = assertDoesNotThrow(
-                            () -> Parser.parse(entry.getValue()), entry.getKey() + " must parse");
-                    assertThrows(IllegalArgumentException.class,
+                            () -> Parser.parse(candidate.source()), entry.getKey() + " must parse");
+                    var failure = assertThrows(IllegalArgumentException.class,
                             () -> OresCompiler.analyze(parsed), entry.getKey());
-                    assertThrows(IllegalArgumentException.class,
-                            () -> OresCompiler.parseAndTypeCheck(entry.getValue()), entry.getKey());
+                    assertTrue(failure.getMessage().contains(candidate.diagnostic()),
+                            () -> entry.getKey() + " unexpectedly rejected for: " + failure.getMessage());
+                    var repeated = assertThrows(IllegalArgumentException.class,
+                            () -> OresCompiler.parseAndTypeCheck(candidate.source()), entry.getKey());
+                    assertTrue(repeated.getMessage().contains(candidate.diagnostic()),
+                            () -> entry.getKey() + " produced inconsistent admission: " + repeated.getMessage());
                 }));
     }
 
