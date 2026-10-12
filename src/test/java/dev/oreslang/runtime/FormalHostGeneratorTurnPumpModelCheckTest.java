@@ -19,15 +19,18 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
     private enum Event {
         ENQUEUE, OWNER_DISPATCH, FOREIGN_DISPATCH, WRONG_INCARNATION,
         SETTLE_RESULT, PHYSICAL_EXIT, CANCEL_PENDING, CANCEL_ACTIVE,
-        SEAL_CONTEXT, PUBLISH_AFTER_EXIT, RETRY_CLOSE
+        SEAL_CONTEXT, STARTER_FAILED_NO_EXIT_RECEIPT,
+        PUBLISH_AFTER_EXIT, RETRY_CLOSE
     }
 
     private record State(
             int queued, int started, int published,
             boolean active, boolean resultReady, boolean physicalExit,
-            boolean cancelled, boolean sealed, boolean retired) {
+            boolean cancelled, boolean sealed, boolean retired,
+            boolean unprovenExit) {
         static State initial() {
-            return new State(0, 0, 0, false, false, false, false, false, false);
+            return new State(0, 0, 0, false, false, false, false, false, false,
+                    false);
         }
     }
 
@@ -36,6 +39,7 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         boolean active = s.active, result = s.resultReady;
         boolean exited = s.physicalExit, cancelled = s.cancelled;
         boolean sealed = s.sealed, retired = s.retired;
+        boolean unprovenExit = s.unprovenExit;
         switch (event) {
             case ENQUEUE -> {
                 if (!sealed && queued < 2) queued++;
@@ -79,6 +83,17 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
                     result = true;
                 }
             }
+            case STARTER_FAILED_NO_EXIT_RECEIPT -> {
+                if (active && !result && !exited) {
+                    // Starter may have launched untracked work before throwing;
+                    // no physical-exit receipt means retirement must remain
+                    // permanently unproven for this context incarnation.
+                    active = false;
+                    queued = 0;
+                    sealed = true;
+                    unprovenExit = true;
+                }
+            }
             case PUBLISH_AFTER_EXIT -> {
                 if (active && result && exited) {
                     active = false;
@@ -89,11 +104,11 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
                 }
             }
             case RETRY_CLOSE -> {
-                if (sealed && queued == 0 && !active) retired = true;
+                if (sealed && queued == 0 && !active && !unprovenExit) retired = true;
             }
         }
         return new State(queued, started, published, active, result, exited,
-                cancelled, sealed, retired);
+                cancelled, sealed, retired, unprovenExit);
     }
 
     private static void invariant(State s) {
@@ -108,8 +123,13 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
             assertFalse(s.resultReady || s.physicalExit || s.cancelled,
                     "inactive activation retained source-task state");
         }
+        if (s.unprovenExit) {
+            assertTrue(s.sealed && !s.active && !s.retired,
+                    "unknown producer exit must quarantine context");
+        }
         if (s.retired) {
-            assertTrue(s.sealed && s.queued == 0 && !s.active,
+            assertTrue(s.sealed && s.queued == 0 && !s.active
+                            && !s.unprovenExit,
                     "context physically retired while guest still owned a turn");
         }
     }
@@ -155,6 +175,21 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         assertTrue(sawResultBeforeExit && sawCancelledWithoutExit
                 && sawTwoSequentialTurns && sawRetirement,
                 "expected safety-relevant states not reachable");
+    }
+
+    @Test
+    void failedStarterWithoutExitReceiptIsNotQuiescence() {
+        State state = State.initial();
+        state = step(state, Event.ENQUEUE);
+        state = step(state, Event.OWNER_DISPATCH);
+        state = step(state, Event.STARTER_FAILED_NO_EXIT_RECEIPT);
+        assertTrue(state.unprovenExit);
+        assertTrue(state.sealed);
+        assertFalse(state.active);
+        state = step(state, Event.RETRY_CLOSE);
+        assertFalse(state.retired,
+                "no proof of producer termination means no safe retirement");
+        invariant(state);
     }
 
     @Test
