@@ -78,15 +78,21 @@ final class SerialExecutionTicket {
                 || incarnation != executingIncarnation) {
             throw new IllegalStateException("stale or foreign actor continuation ticket");
         }
+        // A finished receive can leave an already-queued continuation behind
+        // before the scheduler's own terminal callback retires the ticket.
+        // It is a stale completion to drop, not a foreign guest failure that
+        // should poison the next actor turn. Check this BEFORE comparing the
+        // now-cleared/replaced activeReceive, while keeping a *live* foreign
+        // lease mismatch fatal.
+        if (handlerLease != null
+                && handlerLease.state() == SerialActorAdmission.State.FINISHED) {
+            throw new RetiredTaskException();
+        }
         if (handlerLease != activeReceive) {
             throw new IllegalStateException(
                     "scheduler task cannot borrow a different serial receive's authority");
         }
-        if (handlerLease != null) {
-            if (handlerLease.state() == SerialActorAdmission.State.FINISHED) {
-                throw new IllegalStateException("retired source task ticket");
-            }
-        } else if (admission != null) {
+        if (handlerLease == null && admission != null) {
             admission.requireIdleActorScopedCallback();
         }
     }
