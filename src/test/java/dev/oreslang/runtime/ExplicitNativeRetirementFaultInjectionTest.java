@@ -81,6 +81,53 @@ final class ExplicitNativeRetirementFaultInjectionTest {
     }
 
     @Test
+    void rejectedLoanAccountingCheckDoesNotConsumeTheOnlyCloseAuthority() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "JDK25 FFM required");
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ExplicitNativeI64Region> region = new AtomicReference<>();
+            AtomicReference<ExplicitNativeI64Region.Loan> loan = new AtomicReference<>();
+            AtomicReference<ExplicitNativeI64Region.Slot> slot = new AtomicReference<>();
+            AtomicReference<Throwable> error = new AtomicReference<>();
+            CountDownLatch created = new CountDownLatch(1);
+            var actor = runtime.<Integer>spawnPrivate(() -> (message, ctx) -> {
+                try {
+                    var nativeRegion = ctx.actorOwnedMemory().orElseThrow()
+                            .newExplicitNativeI64Region(1);
+                    region.set(nativeRegion);
+                    slot.set(nativeRegion.allocate(99));
+                    loan.set(nativeRegion.borrow(slot.get()));
+                } catch (Throwable failure) {
+                    error.compareAndSet(null, failure);
+                } finally {
+                    created.countDown();
+                }
+            });
+            actor.send(1);
+            assertTrue(created.await(5, TimeUnit.SECONDS));
+            if (error.get() != null) fail(error.get());
+            assertEquals(1, region.get().activeLoans());
+            var field = ExplicitNativeI64Region.class.getDeclaredField("slotLoans");
+            field.setAccessible(true);
+            int[] counters = (int[]) field.get(region.get());
+
+            // Fault injection: corrupt a precondition without consuming a
+            // valid loan. Only this test manipulates private accounting.
+            counters[slot.get().index()] = 0;
+            var rejected = assertThrows(IllegalStateException.class,
+                    () -> loan.get().close());
+            assertTrue(rejected.getMessage().contains("accounting underflow"));
+            assertEquals(1, region.get().activeLoans());
+            counters[slot.get().index()] = 1;
+            loan.get().close();
+            loan.get().close(); // exactly-once and retry after rejected precondition
+            assertEquals(0, region.get().activeLoans());
+            actor.stop();
+            actor.get_done().get(5, TimeUnit.SECONDS);
+            assertEquals(0L, runtime.privateMemoryBytes());
+        }
+    }
+
+    @Test
     void aggregateRefundUnderflowCannotDecrementActorOwnedNativeBytes() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "JDK25 FFM required");
         ActorRuntime runtime = new ActorRuntime();
