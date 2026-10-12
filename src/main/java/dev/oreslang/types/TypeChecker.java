@@ -915,6 +915,27 @@ public final class TypeChecker {
 
     private void checkClassBody(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
+        // State is a distinct AST namespace, not ClassDecl.fields(). Fail
+        // closed here rather than silently treating parser acceptance as
+        // runtime support. This also guards synthetic/plugin-built ASTs.
+        if (klass.actorState() != null) {
+            if (klass.actorKind() == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException("sealed state requires an actor declaration");
+            }
+            Set<String> seenStateFields = new HashSet<>();
+            for (Ast.FieldDecl field : klass.actorState().fields()) {
+                if (field.name().equals("state") || !seenStateFields.add(field.name())
+                        || field.type() == null || field.initializer() == null
+                        || field.visibility() == Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "invalid sealed actor state field: " + field.name());
+                }
+            }
+            throw new IllegalArgumentException(
+                    "sealed actor state AST is recognized but execution requires "
+                            + "compiler-enforced handle_state effects, ownership "
+                            + "and scheduler-owned scope cleanup; lowering is disabled");
+        }
         Type self = nominalClassType(klass);
 
         Set<String> parentNames = new HashSet<>();
