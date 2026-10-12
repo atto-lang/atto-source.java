@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -40,6 +41,8 @@ final class ActorDispatchIdentityTest {
         AtomicInteger deliveries = new AtomicInteger();
         AtomicInteger executing = new AtomicInteger();
         AtomicInteger peak = new AtomicInteger();
+        AtomicReference<Object> cellForReplay = new AtomicReference<>();
+        AtomicReference<Object> staleTicketForReplay = new AtomicReference<>();
 
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(2, 2, 1, 32))) {
@@ -53,6 +56,26 @@ final class ActorDispatchIdentityTest {
                         firstEntered.countDown();
                         assertTrue(releaseFirst.await(3, TimeUnit.SECONDS));
                     } else if (message == 2) {
+                        // Host regression: even a stale invocation nested
+                        // within an active actor must not clear ACTOR_CARRIER
+                        // or alter its identity/capability context.
+                        Object currentCell = cellForReplay.get();
+                        Object staleTicket = staleTicketForReplay.get();
+                        assertNotNull(currentCell);
+                        assertNotNull(staleTicket);
+                        try {
+                            Method replay = currentCell.getClass().getDeclaredMethod(
+                                    "runBatch", Object.class);
+                            replay.setAccessible(true);
+                            replay.invoke(currentCell, staleTicket);
+                        } catch (ReflectiveOperationException error) {
+                            throw new AssertionError("nested stale replay must be inert", error);
+                        }
+                        assertTrue(ActorRuntime.isActorCarrierThread(),
+                                "stale dispatch must not clear outer carrier marker");
+                        assertTrue(runtime.currentThreadOwnsActorExecutionLease());
+                        assertEquals(context.self().id(),
+                                ActorRuntime.currentActorId().orElseThrow());
                         secondEntered.countDown();
                         assertTrue(releaseSecond.await(3, TimeUnit.SECONDS));
                     } else if (message == 3) {
@@ -65,11 +88,13 @@ final class ActorDispatchIdentityTest {
             try {
                 actor.ready().get(3, TimeUnit.SECONDS);
                 Object actorCell = cell(runtime, actor.id());
+                cellForReplay.set(actorCell);
 
                 actor.send(1);
                 assertTrue(firstEntered.await(3, TimeUnit.SECONDS));
                 Object oldTicket = activeTicket(actorCell);
                 assertNotNull(oldTicket);
+                staleTicketForReplay.set(oldTicket);
 
                 actor.send(2);
                 releaseFirst.countDown();
