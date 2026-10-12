@@ -9,6 +9,51 @@ import org.junit.jupiter.api.Test;
 
 final class OresVMTest {
     @Test
+    void inlineExecutorThatRunsGuestThenThrowsCannotReplayCompletedTurn()
+            throws Exception {
+        var submissions = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.Executor executor = runnable -> {
+            runnable.run();
+            if (submissions.incrementAndGet() == 1) {
+                throw new java.util.concurrent.RejectedExecutionException(
+                        "executor reported rejection after running the guest");
+            }
+        };
+        try (OresVM vm = OresVM.create(Runnable::run, executor)) {
+            var host = vm.beginHostHandoff();
+            var firstEffects = new java.util.concurrent.atomic.AtomicInteger();
+            var secondEffects = new java.util.concurrent.atomic.AtomicInteger();
+            try {
+                OresFuture<Integer> first = vm.rootScheduler().startSync(() -> {
+                    firstEffects.incrementAndGet();
+                    return 11;
+                });
+                OresFuture<Integer> second = vm.rootScheduler().startSync(() -> {
+                    secondEffects.incrementAndGet();
+                    return 22;
+                });
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        java.util.concurrent.RejectedExecutionException.class,
+                        host::close);
+                assertEquals(11, first.get(5, TimeUnit.SECONDS));
+                assertEquals(1, firstEffects.get(),
+                        "inline-executed guest must not be queued for replay");
+                assertEquals(0, secondEffects.get());
+                assertEquals(1, vm.queuedHostHandoffTurns(),
+                        "only never-started second task remains in FIFO");
+                host.close(); // idempotent owner retry, no second lease release
+                assertEquals(22, second.get(5, TimeUnit.SECONDS));
+                assertEquals(1, firstEffects.get());
+                assertEquals(1, secondEffects.get());
+                assertEquals(0, vm.queuedHostHandoffTurns());
+                vm.requireHostHandoffReleased();
+            } finally {
+                host.close();
+            }
+        }
+    }
+
+    @Test
     void rejectedRootDrainCanRetryWithoutReleasingHostLeaseTwice()
             throws Exception {
         var accepted = new java.util.concurrent.LinkedBlockingQueue<Runnable>();

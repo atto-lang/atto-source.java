@@ -170,7 +170,7 @@ public final class OresVM implements AutoCloseable {
                     return;
                 }
             }
-            submitGuarded(task);
+            submitGuarded(task, false);
         }
 
         /**
@@ -179,7 +179,7 @@ public final class OresVM implements AutoCloseable {
          * Claim exactly once, and requeue rather than enter the guest while
          * that host owns entry. No scheduler carrier waits for the host.
          */
-        private void submitGuarded(Runnable task) {
+        private void submitGuarded(Runnable task, boolean fromDrain) {
             AtomicBoolean started = new AtomicBoolean();
             Runnable gated = () -> {
                 if (!started.compareAndSet(false, true)) return;
@@ -210,10 +210,19 @@ public final class OresVM implements AutoCloseable {
             try {
                 downstream.execute(gated);
             } catch (RuntimeException | Error failure) {
-                // A broken executor can accept a runnable and then throw.
-                // Revoke that stale runnable so it cannot later enter guest
-                // code after the caller has treated submission as rejected.
-                started.compareAndSet(false, true);
+                // A rejecting executor may have accepted but not started
+                // the runnable. CAS revokes that stale body. Conversely, an
+                // inline executor can run the guest and then throw: NEVER
+                // requeue a task whose physical entry already started.
+                boolean revokedBeforeStart = started.compareAndSet(false, true);
+                if (fromDrain) {
+                    synchronized (this) {
+                        if (revokedBeforeStart) held.addFirst(task);
+                        // A failed drain must not leave the FIFO permanently
+                        // locked. A later owner-close retry can resume it.
+                        draining = false;
+                    }
+                }
                 throw failure;
             }
         }
@@ -251,17 +260,10 @@ public final class OresVM implements AutoCloseable {
                         return;
                     }
                 }
-                try {
-                    submitGuarded(next);
-                } catch (RuntimeException | Error failure) {
-                    synchronized (this) {
-                        // Requeue with exactly the same physical admission
-                        // authority; a rejected executor proves no guest DONE.
-                        held.addFirst(next);
-                        draining = false;
-                    }
-                    throw failure;
-                }
+                // submitGuarded only retries an executor failure when
+                // it revoked an actually unstarted runnable. An inline
+                // executor's already-run guest body is never replayed.
+                submitGuarded(next, true);
             }
         }
     }
