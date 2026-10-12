@@ -173,8 +173,8 @@ public final class TaggedMessageContracts {
                             boolean boxedWire = unsupported.getMessage().contains(
                                     "no portable Serializable wire codec: Box")
                                     && hasExplicitBox(entry.payload());
-                            if (!localOnly || !indirect
-                                    || (!recursiveWire && !boxedWire)) {
+                            if (!localOnly
+                                    || (!boxedWire && !(indirect && recursiveWire))) {
                                 throw unsupported;
                             }
                         }
