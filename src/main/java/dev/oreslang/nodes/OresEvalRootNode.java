@@ -929,6 +929,12 @@ public final class OresEvalRootNode extends RootNode {
                     pendingLoopGuardEnv = null;
                     nextStep = null;
                     initialBlockEnv = null;
+                    // Preserve the canonical trapped-function behavior while
+                    // moving the source loop onto a heap-owned continuation.
+                    if (function != null && function.trapped()
+                            && isTrappableFailure(failure)) {
+                        return OresScheduler.done(new OptionValue(false, null));
+                    }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
                             function != null ? function.name() : method != null ? method.name() : "<block>",
                             resume.initial() ? "source task" : "resumed source task");
@@ -1055,7 +1061,8 @@ public final class OresEvalRootNode extends RootNode {
                         // lease. They must not be forcefully interrupted.
                         if (!untrusted && checkDue
                                 && !guardEnv.hasLiveMutexGuards()
-                                && cooperationQuantum.shouldCooperateAtCheck()) {
+                                && cooperationQuantum.shouldCooperateAtCheck(
+                                        context.watchdogPreemptionRequested())) {
                             context.recordSourceLoopCooperate();
                             cooperate(next);
                             return;
