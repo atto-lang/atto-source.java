@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TaggedMessageContracts;
+import dev.oreslang.types.NominalEnumValueGuards;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.runtime.TaggedMessageCodec;
 import org.graalvm.polyglot.Context;
@@ -104,6 +105,66 @@ final class NestedEnumLocalValueTest {
                 () -> TypeChecker.check(Parser.parse(source)));
         assertTrue(error.getMessage().contains("no portable actor wire codec"),
                 error.getMessage());
+    }
+
+    @Test
+    void nestedRuntimeConstructorRejectsForgedTagOwnerAndNullaryPayload() {
+        var registry = TaggedMessageContracts.forTypes(Parser.parse(DECLS));
+        var foo = registry.requireCase("Foo.Message1");
+        var good = new TaggedMessageCodec.TaggedValue("Bar", "Message1", 1, null);
+        assertDoesNotThrow(() -> NominalEnumValueGuards.requirePayload(registry, foo, good));
+
+        var forgedTag = new TaggedMessageCodec.TaggedValue("Bar", "Message1", 99, null);
+        assertTrue(assertThrows(IllegalArgumentException.class, () ->
+                NominalEnumValueGuards.requirePayload(registry, foo, forgedTag))
+                .getMessage().contains("forged"));
+        var wrongOwner = new TaggedMessageCodec.TaggedValue("Foo", "Message1", 1, good);
+        assertTrue(assertThrows(IllegalArgumentException.class, () ->
+                NominalEnumValueGuards.requirePayload(registry, foo, wrongOwner))
+                .getMessage().contains("nominal owner"));
+        var forgedNullary = new TaggedMessageCodec.TaggedValue("Bar", "Message1", 1, "smuggled");
+        assertTrue(assertThrows(IllegalArgumentException.class, () ->
+                NominalEnumValueGuards.requirePayload(registry, foo, forgedNullary))
+                .getMessage().contains("nullary"));
+    }
+
+    @Test
+    void nestedEnumInsideTupleChecksAllNominalElementsAndRejectsCycle() {
+        var parsed = Parser.parse("""
+                define enum Bar as
+                    Ready
+                end
+                define enum Foo as
+                    Payload: Tuple[int, Bar]
+                end
+                """);
+        var registry = TaggedMessageContracts.forTypes(parsed);
+        var foo = registry.requireCase("Foo.Payload");
+        var valid = List.of(42L, new TaggedMessageCodec.TaggedValue("Bar", "Ready", 1, null));
+        assertDoesNotThrow(() -> NominalEnumValueGuards.requirePayload(registry, foo, valid));
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalEnumValueGuards.requirePayload(registry, foo,
+                        List.of(42L, new TaggedMessageCodec.TaggedValue("Foo", "Payload", 1, valid))));
+        var cyclic = new java.util.ArrayList<Object>();
+        cyclic.add(42L);
+        cyclic.add(cyclic);
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalEnumValueGuards.requirePayload(registry, foo, cyclic));
+    }
+
+    @Test
+    void rejectsMalformedBoxArityAtDependencyBoundary() {
+        for (String type : List.of("Box<>", "Box<Bar, Foo>")) {
+            var source = Parser.parse(DECLS + """
+                    define enum Holder as
+                        More: %s
+                    end
+                    """.formatted(type));
+            var problem = assertThrows(IllegalArgumentException.class,
+                    () -> TaggedMessageContracts.forTypes(source));
+            assertTrue(problem.getMessage().contains("Box<T> requires exactly one"),
+                    problem.toString());
+        }
     }
 
     @Test
