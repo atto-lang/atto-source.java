@@ -36,7 +36,7 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
                              String schemaId,
                              MessagePackCollectionCodec.Shape shape) { }
     private final Map<String, CaseCodec> byName;
-    private final List<CaseCodec> cases;
+    private final Map<String, CaseCodec> bySchemaId;
 
     public TaggedMessageCodec(TaggedMessageContracts.Domain domain) {
         Objects.requireNonNull(domain);
@@ -44,7 +44,7 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
             throw new IllegalArgumentException("tagged actor domain must have 1..4096 cases");
         }
         Map<String, CaseCodec> entries = new HashMap<>();
-        ArrayList<CaseCodec> ordered = new ArrayList<>();
+        Map<String, CaseCodec> schemas = new HashMap<>();
         StringBuilder fingerprint = new StringBuilder("oreslang.tagged.domain.v1/");
         fingerprint.append(domain.name()).append('/');
         domain.cases().stream().map(TaggedMessageContracts.Case::qualifiedName)
@@ -80,10 +80,12 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
             if (entries.putIfAbsent(source.qualifiedName(), cc) != null) {
                 throw new IllegalArgumentException("duplicate case in pattern: " + source.qualifiedName());
             }
-            ordered.add(cc);
+            if (schemas.putIfAbsent(id, cc) != null) {
+                throw new IllegalArgumentException("duplicate compiled enum case schema ID");
+            }
         }
         byName = Map.copyOf(entries);
-        cases = List.copyOf(ordered);
+        bySchemaId = Map.copyOf(schemas);
     }
 
     private static String digestHex(String input) {
@@ -123,26 +125,25 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
     @Override
     public TaggedValue decode(byte[] bytes) {
         Objects.requireNonNull(bytes);
-        // We deliberately do not derive a codec from any untrusted embedded
-        // type name. Only compiled-in alternatives can ever be tried.
-        for (CaseCodec cc : cases) {
-            final Object decoded;
-            try {
-                decoded = MessagePackCollectionCodec.decode(cc.schemaId(), cc.shape(), bytes);
-            } catch (IllegalArgumentException rejectedCase) {
-                continue;
-            }
-            if (!(decoded instanceof List<?> value)
-                    || value.size() != (cc.source().payload() == null ? 2 : 3)
-                    || !Objects.equals(value.get(0), cc.source().owner())
-                    || !(value.get(1) instanceof Long tag)
-                    || tag.longValue() != cc.source().tag()) {
-                throw new IllegalArgumentException("enum type/tag mismatch in binary payload");
-            }
-            return new TaggedValue(cc.source().owner(), cc.source().name(),
-                    cc.source().tag(), value.size() == 3 ? value.get(2) : null);
+        // One bounded header parse, then a lookup in the *compiled* closed
+        // schema table. Never execute up to 4096 decoder attempts for one
+        // hostile message. This does not trust the on-wire schema: the
+        // complete MessagePack shape and tag are rechecked below.
+        String id = MessagePackCollectionCodec.envelopeSchemaId(bytes);
+        CaseCodec cc = bySchemaId.get(id);
+        if (cc == null) {
+            throw new IllegalArgumentException(
+                    "unknown enum message schema in this actor pattern");
         }
-        throw new IllegalArgumentException(
-                "unknown, noncanonical or incompatible enum message in this actor pattern");
+        Object decoded = MessagePackCollectionCodec.decode(cc.schemaId(), cc.shape(), bytes);
+        if (!(decoded instanceof List<?> value)
+                || value.size() != (cc.source().payload() == null ? 2 : 3)
+                || !Objects.equals(value.get(0), cc.source().owner())
+                || !(value.get(1) instanceof Long tag)
+                || tag.longValue() != cc.source().tag()) {
+            throw new IllegalArgumentException("enum type/tag mismatch in binary payload");
+        }
+        return new TaggedValue(cc.source().owner(), cc.source().name(),
+                cc.source().tag(), value.size() == 3 ? value.get(2) : null);
     }
 }
