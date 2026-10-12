@@ -352,8 +352,8 @@ final class ActorSendContractTest {
                     new java.util.concurrent.atomic.AtomicReference<>();
             CountDownLatch childCreated = new CountDownLatch(1);
             var parent = runtime.<Integer>spawnShared(() -> (message, context) -> {
-                var child = context.runtime().<Integer>spawnShared(
-                        () -> (childMessage, childContext) -> { });
+                var child = context.runtime().<Integer>spawnPrivate(
+                        factoryContext -> (childMessage, childContext) -> { });
                 childRef.set(child);
                 childCreated.countDown();
             });
