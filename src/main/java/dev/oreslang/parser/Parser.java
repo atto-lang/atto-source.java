@@ -793,10 +793,13 @@ public final class Parser {
      */
     private List<Ast.Annotation> parseSignatureEffects(List<Ast.Annotation> annotations) {
         List<Ast.Annotation> result = new ArrayList<>(annotations);
-        if (match(USING)) {
+        if (matchContextualIdentifier("with") || match(USING)) {
+            // `with` is the canonical effect-bound signature spelling. The
+            // historical signature `using` is accepted only during migration;
+            // `using state.read/write(...)` in expressions is a scoped loan.
             List<String> names = new ArrayList<>();
             do {
-                String name = consume(IDENT, "expected function effect after using").lexeme();
+                String name = consume(IDENT, "expected function effect after with").lexeme();
                 if (match(DOT)) name += "." + consume(IDENT, "expected effect member after '.'").lexeme();
                 names.add(name);
             } while (match(COMMA));
@@ -3093,6 +3096,38 @@ public final class Parser {
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
         if (match(SELF)) return new Ast.NameExpr("self");
+        // Scoped actor capabilities are compiler-owned syntax, never dynamic
+        // calls to a user-supplied "state" object. Lower to the same sealed
+        // handle_state intrinsic so escape/borrow/effect verification applies.
+        if (match(USING)) {
+            Token usingToken = previous();
+            Token namespace = consume(IDENT, "using requires the actor state namespace");
+            if (!namespace.lexeme().equals("state")) {
+                throw error(namespace, "using currently supports only state.read/write scoped capabilities");
+            }
+            consume(DOT, "expected '.' after using state");
+            Token operation = consume(IDENT, "expected read or write after using state.");
+            Ast.CriticalMode mode;
+            if (operation.lexeme().equals("read")) mode = Ast.CriticalMode.READ;
+            else if (operation.lexeme().equals("write")) mode = Ast.CriticalMode.WRITE;
+            else throw error(operation, "unknown actor state capability; expected read or write");
+            consume(LPAREN, "expected '(' after using state." + operation.lexeme());
+            boolean markedCritical = match(CRITICAL);
+            if (mode == Ast.CriticalMode.WRITE && !markedCritical) {
+                throw error(usingToken, "using state.write requires a critical callback");
+            }
+            if (mode == Ast.CriticalMode.READ && markedCritical) {
+                throw error(usingToken, "using state.read cannot request critical write access");
+            }
+            Ast.LambdaExpr callback;
+            if (check(PIPE)) callback = parsePipeLambda(false, mode);
+            else if (check(LPAREN) && looksLikeLambda()) callback = parseLambda(false, mode);
+            else throw error(peek(), "using state.read/write requires one inline lexical callback");
+            consume(RPAREN, "expected ')' after using state capability callback");
+            return new Ast.CallExpr(
+                    new Ast.MemberExpr(new Ast.NameExpr("self"), "handle_state"),
+                    List.of(callback));
+        }
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).
         if (match(ACTOR)) return new Ast.NameExpr("actor");
