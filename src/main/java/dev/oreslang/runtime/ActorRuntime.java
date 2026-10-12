@@ -1719,10 +1719,24 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+            // The actor registry entry is removed before the final READY/DONE
+            // notifications. Absence from actors (or the internal finalized
+            // state flip) is therefore not a sufficient completion barrier.
+            // Observe the actor-owned DONE receipt directly, regardless of
+            // whether the registry still contains its cell.
+            if (doneFuture.isDone()) return true;
+            java.util.concurrent.CountDownLatch settled =
+                    new java.util.concurrent.CountDownLatch(1);
+            OresFuture.RuntimeWaiterRegistration<Void> registration =
+                    doneFuture.whenCompleteRuntimeCancellable(
+                            (ignored, failure) -> settled.countDown());
+            try {
+                return settled.await(timeout, unit) || doneFuture.isDone();
+            } finally {
+                // Bounded host waits must not accumulate runtime callbacks
+                // when the actor is stalled or force-cancellation is pending.
+                registration.detach();
+            }
         }
 
         public void send(M message) {
