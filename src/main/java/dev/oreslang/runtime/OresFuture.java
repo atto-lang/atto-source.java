@@ -103,6 +103,13 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private final Runnable onNotificationDrained;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
+    /**
+     * A subscriber registering after the cancellation CAS must not run its
+     * callback before the internal revoker. Deferring such a subscriber to
+     * the winner's ordinary waiter drain also avoids reentrant deadlocks if
+     * a cancellation hook registers another waiter on its own Future.
+     */
+    private final AtomicBoolean cancelRevocationComplete = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
     private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
@@ -423,12 +430,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         waiters.add(waiter);
 
         Object observed = state.get();
-        if (observed != PENDING) {
-            // A registration racing with (or following) settlement must not
-            // leave an already-claimed callback strongly retained in the
-            // pending waiter queue. Removing before notification is race-safe:
-            // if settle() already polled it, remove is a no-op and the claimed
-            // bit still guarantees exactly-once callback delivery.
+        if (observed != PENDING
+                && (!(observed instanceof Cancelled)
+                        || cancelRevocationComplete.get())) {
+            // Cancellation state is visible immediately at CAS, but ordinary
+            // runtime subscribers must not run until internal revocation.
+            // If revocation is still underway, leave this registration in
+            // the queue: the cancelling thread will drain it afterwards.
+            // Otherwise remove/claim atomically against the settlement drain
+            // so the callback runs no more than once.
             waiters.remove(waiter);
             notifyWaiter(waiter, observed);
         }
@@ -586,7 +596,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         try {
             // The winning cancellation claim runs its internal revoker before
             // notifying potentially blocking synchronous host subscribers.
-            afterStateClaimed.run();
+            // Publish revocation completion BEFORE draining registrations:
+            // later registrations can then notify directly without waiting.
+            if (terminal instanceof Cancelled) {
+                try {
+                    afterStateClaimed.run();
+                } finally {
+                    cancelRevocationComplete.set(true);
+                }
+            } else {
+                afterStateClaimed.run();
+            }
             RuntimeWaiterRegistration<T> waiter;
             while ((waiter = waiters.poll()) != null) {
                 notifyWaiter(waiter, terminal);
