@@ -1126,7 +1126,7 @@ public final class OwnershipChecker {
                     || call.typeArgumentsPresent() || call.arguments().size() != 1
                     || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)
                     || lambda.parameters().size() != 1 || lambda.nonLexical()
-                    || (!lambda.critical() && !actor.serial())) {
+                    || !lambda.explicitStateMode()) {
                 throw error("state loan requires sealed inline critical callback on an actor");
             }
             Ast.Param loan = lambda.parameters().getFirst();
@@ -1136,10 +1136,11 @@ public final class OwnershipChecker {
             // Only this checked lexical callback gets an exclusive mutable
             // borrow. The guest AST remains unchanged and cannot reify or
             // return the synthesized mutable capability.
-            Ast.Param scoped = new Ast.Param(loan.type(), loan.name(), false, true);
+            Ast.Param scoped = new Ast.Param(loan.type(), loan.name(), false,
+                    lambda.criticalMode() == Ast.CriticalMode.WRITE);
             Ast.LambdaExpr checked = new Ast.LambdaExpr(
                     List.of(scoped), lambda.expressionBody(), lambda.blockBody(),
-                    false, lambda.critical());
+                    false, lambda.criticalMode());
             actorStateLoanDepth++;
             try {
                 checkLambda(checked, scope, null);
