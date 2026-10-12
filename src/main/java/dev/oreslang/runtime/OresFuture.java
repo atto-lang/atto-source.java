@@ -282,9 +282,20 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             }
 
             Throwable terminalFailure = unwrap(failure);
-            boolean cancelled = stage instanceof Future<?> hostFuture
-                    ? hostFuture.isCancelled()
-                    : terminalFailure instanceof CancellationException;
+            // MinimalStage implements Future yet forbids isCancelled(), just
+            // as it forbids cancel(). Falling back to the observed terminal
+            // failure is safe here: this callback was invoked only AFTER the
+            // producer actually completed, and no ownership is discarded.
+            boolean cancelled;
+            if (stage instanceof Future<?> hostFuture) {
+                try {
+                    cancelled = hostFuture.isCancelled();
+                } catch (UnsupportedOperationException unsupported) {
+                    cancelled = terminalFailure instanceof CancellationException;
+                }
+            } else {
+                cancelled = terminalFailure instanceof CancellationException;
+            }
 
             if (cancelled) {
                 // The host has ALREADY settled cancellation. Do not invoke its
