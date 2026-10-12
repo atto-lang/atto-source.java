@@ -189,4 +189,42 @@ final class HostFutureAdmissionGateTest {
             thread.join(5_000);
         }
     }
+
+    @Test
+    void closingSealsNewHostClaimsWithoutAbortingAlreadyQueuedGuestCleanup()
+            throws Exception {
+        HostFutureAdmissionGate gate = new HostFutureAdmissionGate();
+        gate.begin();
+        CountDownLatch ready = new CountDownLatch(1);
+        AtomicInteger cleanupEntered = new AtomicInteger();
+        FutureTask<Void> carrier = new FutureTask<>(() -> {
+            ready.countDown();
+            Runnable physical = gate.reserveGuestTurn();
+            try {
+                cleanupEntered.incrementAndGet();
+            } finally {
+                physical.run();
+            }
+            return null;
+        });
+        Thread worker = new Thread(carrier, "cleanup-waiting-for-host-exit");
+        try {
+            worker.start();
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            gate.sealHostClaims();
+            assertThrows(IllegalStateException.class, gate::begin);
+            assertEquals(0, cleanupEntered.get());
+            // The old host can still finish and release its original scope.
+            gate.end();
+            carrier.get(5, TimeUnit.SECONDS);
+            assertEquals(1, cleanupEntered.get());
+            gate.close();
+            assertThrows(RejectedExecutionException.class, gate::reserveGuestTurn);
+        } finally {
+            gate.close();
+            worker.join(5_000);
+        }
+        assertFalse(worker.isAlive());
+    }
+
 }
