@@ -6869,6 +6869,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            List<DrainWaiter> failedDrainWaiters;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -6876,10 +6877,10 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 stopped.set(true);
                 sealing = true;
-                for (DrainWaiter waiter : pendingDrains) {
-                    waiter.completion().failFromRuntime(
-                            cause == null ? terminated(ref) : cause);
-                }
+                // Detach pending observers under the actor monitor. Settling an
+                // OresFuture invokes runtime callbacks inline, so never settle
+                // one while holding lifecycleLock.
+                failedDrainWaiters = List.copyOf(pendingDrains);
                 pendingDrains.clear();
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
@@ -6890,6 +6891,13 @@ public final class ActorRuntime implements AutoCloseable {
                 pendingOperations.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
+            }
+
+            // Runtime Future callbacks can take other actor/lifecycle locks.
+            // Publish failure only after teardown has released lifecycleLock.
+            Throwable drainFailure = cause == null ? terminated(ref) : cause;
+            for (DrainWaiter waiter : failedDrainWaiters) {
+                waiter.completion().failFromRuntime(drainFailure);
             }
 
             // Cancellation removes channel/select waiter registrations before
