@@ -139,8 +139,6 @@ final class HostGeneratorTurnPump implements AutoCloseable {
                     "generator dispatch requires an authorized context-owned guest turn");
         }
         Request<?> selected = null;
-        Throwable startFailure = null;
-        Turn<?> started = null;
         synchronized (gate) {
             if (sealed || active != null) return false;
             while (!pending.isEmpty()) {
@@ -151,30 +149,72 @@ final class HostGeneratorTurnPump implements AutoCloseable {
                 }
             }
             if (selected == null) return false;
+            // Reserve the full logical and physical turn before starting.
+            // A simultaneous seal sees this reservation even when the
+            // starter has not returned its result/exit barriers yet.
             active = selected;
-            // Admission and seal must be ordered atomically. Start is required
-            // to be nonblocking; never wait for guest execution under gate.
-            try {
-                started = selected.start.start();
-                if (started == null) {
-                    throw new IllegalStateException(
-                            "generator turn starter returned no physical-exit barrier");
-                }
-                selected.turn = castTurn(started);
-            } catch (RuntimeException | Error failure) {
-                selected.finished = true;
-                active = null;
-                startFailure = failure;
-            }
         }
-        if (startFailure != null) {
-            failSelected(selected, startFailure);
+
+        if (selected.future.isDone() || isSealed()) {
+            // The cancellation/shutdown won after dequeuing but before
+            // producer startup. It is safe to release this unused reservation.
+            synchronized (gate) {
+                selected.finished = true;
+                if (active != selected) {
+                    throw new IllegalStateException("generator reservation changed owner");
+                }
+                active = null;
+            }
             signalIfReady();
             return true;
         }
+
+        Turn<?> started;
+        try {
+            // NEVER execute user-supplied starter code while holding gate.
+            // A stalled or reentrant callback must not prevent close() from
+            // sealing admission or cancelling pending/active host Futures.
+            started = selected.start.start();
+            if (started == null) {
+                throw new IllegalStateException(
+                        "generator turn starter returned no physical-exit barrier");
+            }
+        } catch (RuntimeException | Error failure) {
+            synchronized (gate) {
+                selected.finished = true;
+                if (active != selected) {
+                    throw new IllegalStateException("generator reservation changed owner", failure);
+                }
+                active = null;
+            }
+            // A starter that throws could have partially launched guest work
+            // but supplied no physical-exit barrier. Poison the queue instead
+            // of admitting another turn without proof of physical cleanup.
+            seal();
+            selected.future.failFromRuntime(failure);
+            return true;
+        }
+
+        boolean cancelled;
+        synchronized (gate) {
+            if (active != selected) {
+                throw new IllegalStateException("generator reservation changed owner");
+            }
+            selected.turn = castTurn(started);
+            cancelled = selected.future.isCancelled() || sealed;
+        }
         attachCallbacks(selected);
-        if (selected.future.isCancelled()) started.result().cancel(false);
+        // The host can cancel while the starter is running. Seal may also
+        // precede publication of turn: either way, carry cancellation into
+        // the newly returned source task without releasing physical ownership.
+        if (cancelled || selected.future.isCancelled()) started.result().cancel(false);
         return true;
+    }
+
+    private boolean isSealed() {
+        synchronized (gate) {
+            return sealed;
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -288,14 +328,19 @@ final class HostGeneratorTurnPump implements AutoCloseable {
     void seal() {
         List<Request<?>> rejected;
         Turn<?> running;
+        Request<?> starting;
         synchronized (gate) {
             if (sealed) return;
             sealed = true;
             rejected = new ArrayList<>(pending);
             pending.clear();
             running = active == null ? null : active.turn;
+            // Cancellation must remain observable while start.start() has
+            // dropped the gate but has not handed its physical exit back.
+            starting = active != null && running == null ? active : null;
         }
         for (Request<?> request : rejected) request.future.cancel(false);
+        if (starting != null) starting.future.cancel(false);
         if (running != null) running.result().cancel(false);
     }
 
