@@ -1780,7 +1780,11 @@ public final class ActorRuntime implements AutoCloseable {
         // The handler admission can outlive this individual source task.
         // A canceled or completed task must not replay an already-enqueued
         // continuation under the still-live handler's ticket.
-        completion.whenCompleteRuntime((ignored, failure) -> ticket.retire());
+        cell.sourceTaskTickets.put(completion, ticket);
+        completion.whenCompleteRuntime((ignored, failure) -> {
+            ticket.retire();
+            cell.sourceTaskTickets.remove(completion, ticket);
+        });
         return completion;
     }
 
@@ -1839,6 +1843,10 @@ public final class ActorRuntime implements AutoCloseable {
         // An old or foreign task must not be able to exhaust a newer
         // incarnation's bounded CONTROL lane, even momentarily. Carrier-time
         // requireAdmissible() remains the authoritative live-lease check.
+        if (cell.cleanupOnlyRequested
+                && (taskTicket == null
+                    || (taskTicket != cell.cleanupSourceTaskTicket
+                        && taskTicket != cell.cleanupCompletionTicket))) return false;
         if (taskTicket != null && (!taskTicket.issuedFor(actorId, cell.executionDomain)
                 || !taskTicket.mayEnqueue())) {
             return false;
@@ -1853,6 +1861,10 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || closed.get()) return false;
+                if (cell.cleanupOnlyRequested
+                        && (taskTicket == null
+                            || (taskTicket != cell.cleanupSourceTaskTicket
+                                && taskTicket != cell.cleanupCompletionTicket))) return false;
                 // Cell retirement/replacement might race slot reservation.
                 // Recheck immutable ticket provenance at publication too.
                 if (taskTicket != null
@@ -1914,6 +1926,9 @@ public final class ActorRuntime implements AutoCloseable {
             // This is deliberately minted under the same lifecycle lock as
             // sourceReceiveSuspended. issueSourceTaskTicket is reentrant here.
             completionTicket = cell.issueSourceTaskTicket();
+            cell.activeSourceReceiveFuture = future;
+            cell.activeSourceReceiveTicket = cell.sourceTaskTickets.get(future);
+            cell.sourceReceiveCompletionTicket = completionTicket;
             cell.sourceReceiveSuspended = true;
         }
         future.whenCompleteRuntime((ignored, failure) -> {
@@ -1923,7 +1938,21 @@ public final class ActorRuntime implements AutoCloseable {
                     synchronized (cell.lifecycleLock) {
                         cell.sourceReceiveSuspended = false;
                         cell.activeMail = null;
+                        cell.activeSourceReceiveFuture = null;
+                        cell.activeSourceReceiveTicket = null;
+                        cell.sourceReceiveCompletionTicket = null;
                         cell.lifecycleLock.notifyAll();
+                    }
+                    if (cell.cleanupOnlyRequested) {
+                        Throwable terminal = failure == null ? null : OresFuture.unwrap(failure);
+                        if (terminal instanceof java.util.concurrent.CancellationException) {
+                            cell.terminateTree(null, false);
+                        } else {
+                            cell.terminateTree(new IllegalStateException(
+                                    "actor source cleanup incomplete: cancellation did not settle "
+                                            + "as a completed source unwind", terminal), true);
+                        }
+                        return;
                     }
                     if (failure != null) {
                         Throwable terminal = OresFuture.unwrap(failure);
@@ -6355,6 +6384,18 @@ public final class ActorRuntime implements AutoCloseable {
         private long nextUserMessageSequence;
         /** Scheduler task IDs are monotonic per actor incarnation, never reused. */
         private long nextSourceTaskId;
+        private final java.util.concurrent.ConcurrentHashMap<
+                OresFuture<?>, SerialExecutionTicket> sourceTaskTickets =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        // External STOP seals the user mailbox while the originating source
+        // receive and one-shot completion may still execute lexical cleanup.
+        private volatile boolean cleanupOnlyRequested;
+        private OresFuture<?> activeSourceReceiveFuture;
+        private SerialExecutionTicket activeSourceReceiveTicket;
+        private SerialExecutionTicket sourceReceiveCompletionTicket;
+        private OresFuture<?> cleanupSourceFuture;
+        private SerialExecutionTicket cleanupSourceTaskTicket;
+        private SerialExecutionTicket cleanupCompletionTicket;
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -6985,7 +7026,8 @@ public final class ActorRuntime implements AutoCloseable {
                         // Continuations always outrank user mail. While a
                         // source receive is suspended, user mail is not runnable.
                         envelope = continuationMailbox.tryRead().orElse(null);
-                        if (envelope == null && !sourceReceiveSuspended) {
+                        if (envelope == null && !sourceReceiveSuspended
+                                && !cleanupOnlyRequested) {
                             envelope = mailbox.tryRead().orElse(null);
                         }
                     }
@@ -7013,6 +7055,15 @@ public final class ActorRuntime implements AutoCloseable {
                             if (stopped.get() || finalized) break;
                         }
 
+                        if (cleanupOnlyRequested
+                                && (!activeEnvelope.isContinuation()
+                                    || (activeEnvelope.taskTicket() != cleanupSourceTaskTicket
+                                        && activeEnvelope.taskTicket() != cleanupCompletionTicket))) {
+                            // A revoked callback may have committed before STOP
+                            // captured cleanup authority. Never run guest code
+                            // under another source task's CONTROL reservation.
+                            continue;
+                        }
                         if (activeEnvelope.isContinuation()) {
                             if (serialReceiveLease != null
                                     && activeEnvelope.taskTicket() == null) {
@@ -7229,7 +7280,47 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void stop() {
-            terminateTree(null, false);
+            OresFuture<?> pendingCleanup = null;
+            OresScheduler cleanupScheduler = null;
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized || cleanupOnlyRequested) return;
+                if (!endRequested && !forceKillFenced && !closed.get()
+                        && sourceReceiveSuspended && sourceScheduler != null
+                        && activeSourceReceiveFuture != null
+                        && !activeSourceReceiveFuture.isDone()
+                        && activeSourceReceiveTicket != null
+                        && sourceReceiveCompletionTicket != null) {
+                    cleanupOnlyRequested = true;
+                    cleanupSourceFuture = activeSourceReceiveFuture;
+                    cleanupSourceTaskTicket = activeSourceReceiveTicket;
+                    cleanupCompletionTicket = sourceReceiveCompletionTicket;
+                    mailbox.close();
+                    pendingCleanup = cleanupSourceFuture;
+                    cleanupScheduler = sourceScheduler;
+                }
+            }
+            if (pendingCleanup == null) {
+                terminateTree(null, false);
+                return;
+            }
+            if (!cleanupScheduler.requestStructuredCancellation(pendingCleanup)) {
+                terminateTree(new IllegalStateException(
+                        "actor source cleanup incomplete: STOP could not claim "
+                                + "the suspended source continuation"), true);
+                return;
+            }
+            final OresFuture<?> origin = pendingCleanup;
+            long budgetMillis = Math.max(1_000L,
+                    Math.min(30_000L, policy.maxWallTime().toMillis()));
+            java.util.concurrent.CompletableFuture.delayedExecutor(
+                    budgetMillis, TimeUnit.MILLISECONDS).execute(() -> {
+                synchronized (lifecycleLock) {
+                    if (!cleanupOnlyRequested || stopped.get()
+                            || finalized || cleanupSourceFuture != origin) return;
+                }
+                terminateTree(new IllegalStateException(
+                        "actor source cleanup incomplete: STOP cleanup deadline expired"), true);
+            });
         }
 
         private void cancel(ActorCancelledException cancellation) {
