@@ -446,7 +446,7 @@ untrusted actor RequestSandbox {
 }
 ```
 
-- an unqualified `actor` is **private**;
+- an unqualified `actor` is **shared**; use `isoactor` for confined/private actor memory;
 - `shared actor` is a **shared-memory-capable** actor;
 - `untrusted actor` is a **memory-isolated adversarial sandbox** with a hard lifetime/fuel/capability budget;
 - private, shared, and untrusted actors are scheduled on **different dispatcher pools** for bulkheading;
@@ -457,6 +457,48 @@ untrusted actor RequestSandbox {
 - no lock is required around ordinary actor-owned fields, including fields of a shared actor;
 - actor `self` and move-only state rooted at `self` cannot escape the mailbox turn by value or returned borrow; copy-like values such as integers, booleans, and strings may be returned normally;
 - synchronized shared memory requires the host-granted `SHARED_MEMORY` capability.
+
+Actor callables are entry points, not ordinary functions. They are invoked only
+with `spawn`:
+
+```ores
+val pending = spawn worker(41);
+
+// Available synchronously after identity reservation + spawn admission.
+stdio.println(pending.id);
+
+// READY means the actor runtime has initialized the actor and its mailbox/control
+// endpoint. It does not mean worker() has finished.
+val ref = await pending.ready;
+
+// Equivalent readiness shorthand:
+val other_ref = await spawn worker(1);
+
+// Completion is separate from readiness.
+val completed = await pending.done;
+
+// Actor functions additionally expose their returned value.
+val answer = await pending.result;
+```
+
+`spawn actor_fnc(...)` returns an `ActorSpawn<T>` ticket immediately after the
+runtime has reserved an `ActorId` and admitted the initial spawn/message. The
+fast path must not wait for actor behavior construction or actor-callable
+completion. `ActorSpawn<T>` exposes `id`, `ready: Future<ActorRef>`,
+and `done: Future<bool>`. `done` resolves to `true` only after normal actor
+callable completion and fails exceptionally on actor failure/cancellation.
+Any non-`void` actor callable—`fnc` or `routine`—additionally exposes
+`result: Future<T>`. A void actor callable has no result value and uses
+`done` when completion must be observed.
+
+`await spawn actor_fnc(...)` awaits **READY only** and yields an `ActorRef`.
+It never waits for the actor function/routine to finish. The ready reference
+exposes stable actor identity/control metadata such as `id` and
+`is_alive()`. One-shot actor callables do **not** expose an application
+mailbox: they terminate after their invocation, so accepting queued messages
+would be misleading. Typed mailboxes belong to persistent actor behavior/receive
+semantics rather than this one-shot callable launch primitive. Ordinary
+`worker(...)` calls are compile errors when `worker` is declared `actor`.
 
 Private and untrusted actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 

@@ -184,12 +184,33 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
             List<?> normalized = normalizeFunctionArguments(fn, args);
+            if (fn.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalStateException(
+                        "actor callable '" + fn.name()
+                                + "' cannot be invoked directly; use spawn " + fn.name() + "(...)");
+            }
+            return callFunctionBody(fn, normalized);
+        }
+
+        private Object spawnFunction(Ast.CallExpr call, Env env) {
+            Ast.FunctionDecl fn;
+            if (call.callee() instanceof Ast.NameExpr name) {
+                fn = findFunction(name.name());
+            } else if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr namespace) {
+                fn = functions.get(namespace.name() + "." + member.member());
+            } else {
+                throw new IllegalArgumentException(
+                        "spawn requires a direct actor fnc/routine call");
+            }
+            if (fn == null) throw new IllegalArgumentException("unknown spawn target");
             if (fn.actorKind() == Ast.ActorKind.NONE) {
-                return callFunctionBody(fn, normalized);
+                throw new IllegalArgumentException(
+                        "spawn target '" + fn.name() + "' is not an actor callable");
             }
 
             ActorRuntime.ActorKind runtimeKind = switch (fn.actorKind()) {
-                case NONE -> throw new AssertionError("non-actor callable reached actor lowering");
+                case NONE -> throw new AssertionError("non-actor callable reached spawn lowering");
                 case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
                 case SHARED -> ActorRuntime.ActorKind.SHARED;
                 case UNTRUSTED -> throw new SecurityException(
@@ -197,7 +218,9 @@ public final class OresEvalRootNode extends RootNode {
                                 + "the ordinary JVM interpreter must not execute hostile guest code");
             };
 
-            return context.actors().invoke(
+            List<Object> evaluated = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+            List<?> normalized = normalizeFunctionArguments(fn, evaluated);
+            return context.actors().spawnInvocation(
                     runtimeKind,
                     normalized,
                     (delivered, actorContext) -> callFunctionBody(fn, delivered));
@@ -516,13 +539,26 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 return owner.instantiate(klass, args);
             }
+            if (expr instanceof Ast.SpawnExpr spawned) {
+                return spawnFunction(spawned.call(), env);
+            }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
-                if (value instanceof CompletionStage<?> stage) {
+                CompletionStage<?> stage = null;
+                if (value instanceof ActorRuntime.ActorSpawn<?, ?> spawn) {
+                    stage = spawn.ready();
+                } else if (value instanceof CompletionStage<?> futureValue) {
+                    stage = futureValue;
+                }
+                if (stage != null) {
                     var future = stage.toCompletableFuture();
                     if (ActorRuntime.inActorExecution() && !future.isDone()) {
                         throw new IllegalStateException(
                                 "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
+                    }
+                    if (ActorRuntime.currentRootIsAdversarial() && !future.isDone()) {
+                        throw new IllegalStateException(
+                                "await would block an adversarial serialized root context; continuation lowering must suspend/resume before awaiting actor readiness/result");
                     }
                     return future.join();
                 }
@@ -595,6 +631,25 @@ public final class OresEvalRootNode extends RootNode {
                     case "all" -> (Invokable) futures::all;
                     case "race" -> (Invokable) futures::race;
                     default -> throw new IllegalArgumentException("unknown Futures member " + name);
+                };
+            }
+            if (receiver instanceof ActorRuntime.ActorSpawn<?, ?> spawn) {
+                return switch (name) {
+                    case "id" -> spawn.id();
+                    case "ready" -> spawn.ready();
+                    case "done" -> spawn.done();
+                    case "result" -> spawn.result();
+                    default -> throw new IllegalArgumentException("unknown ActorSpawn member " + name);
+                };
+            }
+            if (receiver instanceof ActorRuntime.ActorRef<?> ref) {
+                return switch (name) {
+                    case "id" -> ref.id();
+                    case "is_alive" -> (Invokable) args -> {
+                        requireZero(args, "ActorRef.is_alive");
+                        return ref.isAlive();
+                    };
+                    default -> throw new IllegalArgumentException("unknown ActorRef member " + name);
                 };
             }
             if (receiver instanceof CompletionStage<?> stage) {

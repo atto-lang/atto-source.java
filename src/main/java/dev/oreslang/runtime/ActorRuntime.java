@@ -118,6 +118,11 @@ public final class ActorRuntime implements AutoCloseable {
         return CURRENT_ROOT_RUNTIME.get();
     }
 
+    public static boolean currentRootIsAdversarial() {
+        ActorRuntime runtime = CURRENT_ROOT_RUNTIME.get();
+        return runtime != null && runtime.policyCeiling.adversarial();
+    }
+
     public static IsolatePolicy currentActorPolicy() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.policy();
@@ -2227,16 +2232,34 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
+        private final OresFuture<ActorRef<M>> readiness;
+        private final CompletableFuture<Boolean> termination = new CompletableFuture<>();
 
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
             this.kind = kind;
+            this.readiness = new OresFuture<>(() -> requestStop(id));
         }
 
         public ActorId id() { return id; }
+        private OresFuture<ActorRef<M>> readiness() { return readiness; }
+        private CompletionStage<Boolean> termination() { return termination; }
+        private void markReady() { readiness.completeFromRuntime(this); }
+        private void failReady(Throwable failure) {
+            if (!readiness.isDone()) readiness.failFromRuntime(failure);
+        }
         public ActorKind kind() { return kind; }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
-        public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
+        public boolean isAlive() {
+            ActorExecutionContext caller = CURRENT_ACTOR_EXECUTION.get();
+            if (caller != null
+                    && caller.kind() == ActorKind.UNTRUSTED
+                    && !caller.actorId().equals(id)) {
+                throw new SecurityException(
+                        "untrusted actors cannot inspect another actor's lifecycle state");
+            }
+            return ActorRuntime.this.isAlive(this);
+        }
         public Optional<Throwable> failure() {
             ActorExecutionContext caller = CURRENT_ACTOR_EXECUTION.get();
             if (caller != null
@@ -2279,6 +2302,37 @@ public final class ActorRuntime implements AutoCloseable {
         public String toString() {
             return "ActorRef[" + kind + ":" + id.value() + "]";
         }
+    }
+
+    /**
+     * Two-phase source-level actor spawn handle.
+     *
+     * Creation returns after identity reservation and mailbox admission. The
+     * readiness future completes only after behavior initialization has
+     * succeeded; the result future tracks the one-shot actor callable itself.
+     */
+    public final class ActorSpawn<M, R> {
+        private final ActorRef<M> ref;
+        private final OresFuture<R> result;
+        private final OresFuture<Boolean> done;
+
+        private ActorSpawn(ActorRef<M> ref, OresFuture<R> result) {
+            this.ref = Objects.requireNonNull(ref);
+            this.result = Objects.requireNonNull(result);
+            this.done = new OresFuture<>(() -> result.cancel(true));
+            result.whenComplete((value, failure) -> {
+                if (failure == null) {
+                    done.completeFromRuntime(Boolean.TRUE);
+                } else {
+                    done.failFromRuntime(OresFuture.unwrap(failure));
+                }
+            });
+        }
+
+        public ActorId id() { return ref.id(); }
+        public OresFuture<ActorRef<M>> ready() { return ref.readiness(); }
+        public OresFuture<Boolean> done() { return done; }
+        public OresFuture<R> result() { return result; }
     }
 
     /**
@@ -2812,31 +2866,27 @@ public final class ActorRuntime implements AutoCloseable {
     /**
      * Compiler-only lowering target for source-level actor/isoactor callables.
      *
-     * A fresh actor receives exactly one transported message, computes one
-     * data-only result, then terminates. Synchronous nesting from an actor turn
-     * is rejected so a bounded dispatcher cannot be starved by callers waiting
-     * on actors scheduled onto the same runtime.
+     * This is deliberately two-phase. The caller synchronously receives an
+     * ActorSpawn after identity reservation and initial-message admission.
+     * Behavior construction happens later on the actor dispatcher. ready()
+     * completes at the READY boundary; result() completes only when the
+     * one-shot actor callable itself returns or fails.
      */
-    public <M, R> R invoke(
+    public <M, R> ActorSpawn<M, R> spawnInvocation(
             ActorKind kind,
             M message,
             Invocation<M, R> invocation) {
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(invocation, "invocation");
-        requireCallerRuntimeAffinity("invoke actor callables");
-        if (inActorExecution()) {
-            throw new IllegalStateException(
-                    "synchronous actor-callable invocation from an actor turn is forbidden; "
-                            + "use mailbox-oriented actor composition");
-        }
-        if (inRootExecution() && policyCeiling.adversarial()) {
-            throw new SecurityException(
-                    "adversarial root/main execution cannot synchronously invoke an actor; "
-                            + "the strict Truffle turn is serialized, so use an async/sandbox actor boundary");
-        }
+        requireCallerRuntimeAffinity("spawn actor callables");
 
         IsolatePolicy policy = defaultSpawnPolicy();
-        CompletableFuture<R> completion = new CompletableFuture<>();
+        AtomicReference<ActorRef<M>> spawnedRef = new AtomicReference<>();
+        OresFuture<R> completion = new OresFuture<>(() -> {
+            ActorRef<M> ref = spawnedRef.get();
+            if (ref != null) requestStop(ref.id());
+        });
+
         ActorRef<M> ref = spawnInternal(
                 kind,
                 policy,
@@ -2844,34 +2894,85 @@ public final class ActorRuntime implements AutoCloseable {
                     try {
                         @SuppressWarnings("unchecked")
                         R frozen = (R) freeze(invocation.run(delivered, turnContext));
-                        completion.complete(frozen);
+                        completion.completeFromRuntime(frozen);
                     } catch (VirtualMachineError fatal) {
-                        completion.completeExceptionally(fatal);
+                        completion.failFromRuntime(fatal);
                         throw fatal;
                     } catch (ThreadDeath fatal) {
-                        completion.completeExceptionally(fatal);
+                        completion.failFromRuntime(fatal);
                         throw fatal;
                     } catch (LinkageError fatal) {
-                        completion.completeExceptionally(fatal);
+                        completion.failFromRuntime(fatal);
                         throw fatal;
-                    } catch (Throwable failure) {
-                        completion.completeExceptionally(failure);
+                    } catch (Exception failure) {
+                        completion.failFromRuntime(failure);
+                        throw failure;
+                    } catch (Error failure) {
+                        completion.failFromRuntime(failure);
+                        throw failure;
                     } finally {
                         turnContext.self().stop();
                     }
                 },
                 true);
+        spawnedRef.set(ref);
+        ActorSpawn<M, R> spawn = new ActorSpawn<>(ref, completion);
+        ref.readiness().whenComplete((readyRef, startupFailure) -> {
+            if (startupFailure != null && !completion.isDone()) {
+                completion.failFromRuntime(OresFuture.unwrap(startupFailure));
+            }
+        });
+        ref.termination().whenComplete((normalTermination, terminationFailure) -> {
+            if (completion.isDone()) return;
+            if (terminationFailure != null) {
+                completion.failFromRuntime(OresFuture.unwrap(terminationFailure));
+            } else {
+                completion.failFromRuntime(new CancellationException(
+                        "actor terminated before its callable completed"));
+            }
+        });
 
         try {
-            try {
-                send(ref, message);
-            } catch (ActorTerminatedException terminatedBeforeDelivery) {
-                Throwable startupFailure = ref.terminationCause.get();
-                if (startupFailure instanceof RuntimeException runtime) throw runtime;
-                if (startupFailure instanceof Error error) throw error;
-                if (startupFailure != null) throw new RuntimeException(startupFailure);
-                throw terminatedBeforeDelivery;
+            send(ref, message);
+        } catch (RuntimeException | Error admissionFailure) {
+            completion.failFromRuntime(admissionFailure);
+            if (ref.isAlive()) {
+                try {
+                    stop(ref);
+                } catch (IllegalStateException ignored) {
+                    // Concurrent startup failure already terminated it.
+                }
             }
+            throw admissionFailure;
+        }
+        return spawn;
+    }
+
+    /**
+     * Legacy blocking host API retained for embedders/tests. Oreslang source
+     * lowering must use spawnInvocation; ordinary actor-callable invocation is
+     * rejected by the type checker.
+     */
+    public <M, R> R invoke(
+            ActorKind kind,
+            M message,
+            Invocation<M, R> invocation) {
+        requireCallerRuntimeAffinity("invoke actor callables");
+        if (inActorExecution()) {
+            throw new IllegalStateException(
+                    "synchronous actor-callable invocation from an actor turn is forbidden; "
+                            + "use spawn/mailbox-oriented actor composition");
+        }
+        if (inRootExecution() && policyCeiling.adversarial()) {
+            throw new SecurityException(
+                    "adversarial root/main execution cannot synchronously invoke an actor; "
+                            + "use nonblocking spawn and continuation-based await");
+        }
+
+        ActorSpawn<M, R> spawn = spawnInvocation(kind, message, invocation);
+        IsolatePolicy policy = defaultSpawnPolicy();
+
+        try {
             long timeoutNanos;
             try {
                 timeoutNanos = policy.maxWallTime().toNanos();
@@ -2879,8 +2980,7 @@ public final class ActorRuntime implements AutoCloseable {
                 timeoutNanos = Long.MAX_VALUE;
             }
             if (timeoutNanos <= 0) timeoutNanos = 1;
-
-            return completion.get(timeoutNanos, TimeUnit.NANOSECONDS);
+            return spawn.result().get(timeoutNanos, TimeUnit.NANOSECONDS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new CancellationException("actor callable invocation interrupted");
@@ -2894,6 +2994,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (cause instanceof Error error) throw error;
             throw new RuntimeException(cause);
         } finally {
+            ActorRef<M> ref = spawn.ref;
             if (ref.isAlive()) {
                 try {
                     stop(ref);
@@ -3169,6 +3270,19 @@ public final class ActorRuntime implements AutoCloseable {
         // deterministic teardown. Keep it alive until finalization has closed
         // private memory, drained reservations, and unregistered the cell.
         return cell != null && !cell.finalized();
+    }
+
+    /**
+     * Nonblocking cancellation primitive used by runtime-owned Futures.
+     *
+     * This only requests actor termination; it never waits for finalization and
+     * therefore is safe to invoke from an actor carrier or async completion
+     * callback. The public stop(ActorRef) host API remains the synchronization
+     * point that may wait for deterministic teardown.
+     */
+    private void requestStop(ActorId id) {
+        ActorCell<?> cell = actors.get(Objects.requireNonNull(id));
+        if (cell != null) cell.stop();
     }
 
     public void stop(ActorRef<?> ref) {
@@ -3817,6 +3931,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "actor message graph exceeds maximum node count " + MAX_MESSAGE_GRAPH_NODES);
         }
+        if (value instanceof ActorRuntime.ActorSpawn<?, ?>) {
+            throw new IllegalArgumentException(
+                    "ActorSpawn is local control state and cannot cross actor boundaries");
+        }
         if (value == null || isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.Recipient<?>
@@ -3894,6 +4012,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.Recipient<?>
+                || value instanceof ActorRuntime.ActorSpawn<?, ?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
@@ -3937,6 +4056,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
         if (value instanceof ActorRuntime.Recipient<?> recipient) return recipient;
+        if (value instanceof ActorRuntime.ActorSpawn<?, ?>) {
+            throw new IllegalArgumentException(
+                    "ActorSpawn is local control state and cannot cross actor boundaries");
+        }
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
         if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -4005,6 +4128,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting, depth + 1);
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
         if (value instanceof ActorRuntime.Recipient<?> recipient) return recipient;
+        if (value instanceof ActorRuntime.ActorSpawn<?, ?>) {
+            throw new IllegalArgumentException(
+                    "ActorSpawn is local control state and cannot cross actor boundaries");
+        }
 
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
@@ -4128,6 +4255,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (value instanceof ActorRuntime.Recipient<?>) return 48L;
+        if (value instanceof ActorRuntime.ActorSpawn<?, ?>) {
+            throw new IllegalArgumentException(
+                    "ActorSpawn is local control state and cannot cross actor boundaries");
+        }
         if (seen.put(value, Boolean.TRUE) != null) return 0L;
 
         long bytes = 24L;
@@ -4653,6 +4784,7 @@ public final class ActorRuntime implements AutoCloseable {
                         "untrusted actor exceeded hard lifetime of "
                                 + hardLifetime.toSeconds() + " seconds");
                 ref.terminationCause.compareAndSet(null, failure);
+                ref.failReady(failure);
                 stopped.set(true);
                 drainMailboxReservations();
                 carrier = activeCarrier;
@@ -4725,6 +4857,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 + TimeUnit.NANOSECONDS.toMillis(dispatcherConfig.maxMessageNanos())
                                 + " ms");
                 ref.terminationCause.compareAndSet(null, failure);
+                ref.failReady(failure);
                 stopped.set(true);
                 drainMailboxReservations();
                 overrunCounter(kind).incrementAndGet();
@@ -4798,6 +4931,12 @@ public final class ActorRuntime implements AutoCloseable {
         private void finalizeStopLocked() {
             if (finalized || activeTurns != 0) return;
             finalized = true;
+            if (!ref.readiness().isDone()) {
+                Throwable cause = ref.terminationCause.get();
+                ref.failReady(cause != null
+                        ? cause
+                        : new CancellationException("actor terminated before reaching READY"));
+            }
             ScheduledFuture<?> timer = lifetimeFuture;
             lifetimeFuture = null;
             if (timer != null) timer.cancel(false);
@@ -4828,6 +4967,12 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable ignored) {
                 // Actor termination must still complete. Runtime cleanup hooks
                 // are best-effort and retryable by the process collector.
+            }
+            Throwable terminalCause = ref.terminationCause.get();
+            if (terminalCause == null) {
+                ref.termination.complete(Boolean.TRUE);
+            } else {
+                ref.termination.completeExceptionally(terminalCause);
             }
             unregisterActor(this);
             lifecycleLock.notifyAll();
@@ -4978,6 +5123,7 @@ public final class ActorRuntime implements AutoCloseable {
                             validatePrivateBehaviorState(ref.id(), created);
                         }
                         behavior = created;
+                        ref.markReady();
                     } finally {
                         disarmMessageDeadline(factoryDeadline);
                     }
@@ -5041,6 +5187,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void fail(Throwable failure) {
             synchronized (lifecycleLock) {
                 ref.terminationCause.compareAndSet(null, failure);
+                ref.failReady(failure);
                 stopped.set(true);
                 drainMailboxReservations();
                 finalizeStopLocked();
@@ -5049,6 +5196,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void stop() {
             synchronized (lifecycleLock) {
+                if (!ref.readiness().isDone()) {
+                    ref.failReady(new CancellationException(
+                            "actor stopped before reaching READY"));
+                }
                 stopped.set(true);
                 drainMailboxReservations();
                 finalizeStopLocked();

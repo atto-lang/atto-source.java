@@ -148,6 +148,41 @@ Oreslang deliberately uses three executors:
 
 A per-actor atomic scheduling gate ensures only one drain task for that actor is active. The executor may run different turns on different threads; thread identity is never actor identity.
 
+### Two-phase actor spawn
+
+Source-level actor callables use a two-phase launch contract:
+
+```text
+RESERVED -> STARTING -> READY -> TERMINATED
+                  \-> FAILED_TO_START
+```
+
+`spawn` returns at the RESERVED/admitted boundary with a lightweight
+`ActorSpawn` ticket. The synchronous path reserves the stable `ActorId`,
+creates the control futures, admits the initial message, and schedules the actor;
+it does not wait for behavior initialization or user actor code. This path is
+designed to be comfortably below 1 ms in the uncontended normal case for
+small/ordinary argument graphs, but the language does **not** promise a
+wall-clock deadline because OS scheduling, contention, sandbox admission, and
+host load are external variables. Initial actor-call arguments are validated
+and snapshotted/admitted synchronously so caller mutation cannot race actor
+startup; therefore spawn latency is also intentionally proportional to an
+unusually large argument graph. Bulk data should use bounded streaming,
+owned-region transfer, or other explicit capabilities rather than giant spawn
+arguments.
+
+The ticket's `ready` future completes only after actor behavior initialization
+succeeds and the mailbox/control endpoint is usable. `await spawn ...` is
+defined as awaiting that readiness future, not actor completion. A separate
+`done: Future<bool>` tracks callable completion for both actor functions and
+actor routines. Any non-void actor callable, whether `fnc` or `routine`,
+additionally exposes a `result` future. Startup failure settles readiness, done, and result exceptionally; no failed
+startup may leave a pending control future behind. Likewise, termination after
+READY but before callable completion settles `result`/`done` as cancelled
+rather than leaving either future pending. Cancelling `ready`, `result`, or
+`done` only issues a nonblocking stop request; future cancellation must never
+wait for actor finalization on a carrier thread.
+
 Ordinary cancellation is observed at compiler-injected scheduler safepoints. A separate per-message watchdog enforces the configured hard turn deadline for all actor domains and can activate bounded compensation when a carrier remains stuck. Untrusted actors additionally have the independent lifetime watchdog and per-turn fuel budget. Every runtime-owned carrier clears watchdog interrupts before reuse. Security does not depend on the guest voluntarily yielding: untrusted statement/expression dispatch, loop backedges, and callable/recursion execution consume runtime fuel and recheck the deadline.
 
 

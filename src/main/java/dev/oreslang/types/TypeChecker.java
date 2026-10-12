@@ -583,12 +583,10 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.NameExpr functionName) {
                 Ast.FunctionDecl target = findFunction(functionName.name());
                 if (target != null) {
-                    if (target.actorKind() != Ast.ActorKind.NONE
-                            && currentActorKind != Ast.ActorKind.NONE) {
+                    if (target.actorKind() != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
                                 "actor callable '" + target.name()
-                                        + "' cannot be synchronously invoked from another actor turn; "
-                                        + "use mailbox-oriented actor composition");
+                                        + "' is an actor entry point; invoke it with 'spawn " + target.name() + "(...)'");
                     }
                     String label = "function " + functionName.name();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
@@ -608,12 +606,11 @@ public final class TypeChecker {
                     && modules.containsKey(namespace.name())) {
                 Ast.FunctionDecl target = functions.get(namespace.name() + "." + qualifiedCall.member());
                 if (target != null) {
-                    if (target.actorKind() != Ast.ActorKind.NONE
-                            && currentActorKind != Ast.ActorKind.NONE) {
+                    if (target.actorKind() != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
                                 "actor callable '" + namespace.name() + "." + target.name()
-                                        + "' cannot be synchronously invoked from another actor turn; "
-                                        + "use mailbox-oriented actor composition");
+                                        + "' is an actor entry point; invoke it with 'spawn "
+                                        + namespace.name() + "." + target.name() + "(...)'");
                     }
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
@@ -770,6 +767,11 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr namespace && modules.containsKey(namespace.name())) {
                 Ast.FunctionDecl moduleFunction = functions.get(namespace.name() + "." + member.member());
                 if (moduleFunction != null) {
+                    if (moduleFunction.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "actor callable '" + namespace.name() + "." + member.member()
+                                        + "' is not an ordinary function value; invoke it with spawn");
+                    }
                     if (!moduleFunction.genericParameters().isEmpty()) {
                         throw new IllegalArgumentException(
                                 "generic callable '" + namespace.name() + "." + member.member()
@@ -795,6 +797,8 @@ public final class TypeChecker {
             }
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            Type actorHandleMember = builtinActorHandleMember(sumReceiver, member.member());
+            if (actorHandleMember != null) return actorHandleMember;
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
             receiver = unwrapMutexGuard(receiver);
@@ -901,9 +905,64 @@ public final class TypeChecker {
             }
             return nominal;
         }
+        if (expr instanceof Ast.SpawnExpr spawned) {
+            if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                throw new IllegalArgumentException(
+                        "untrusted actors cannot spawn child actors; use bounded async I/O/Futures instead");
+            }
+            Ast.CallExpr call = spawned.call();
+            Ast.FunctionDecl target;
+            String label;
+            if (call.callee() instanceof Ast.NameExpr functionName) {
+                target = findFunction(functionName.name());
+                label = "actor callable " + functionName.name();
+            } else if (call.callee() instanceof Ast.MemberExpr qualified
+                    && qualified.receiver() instanceof Ast.NameExpr namespace
+                    && modules.containsKey(namespace.name())) {
+                target = functions.get(namespace.name() + "." + qualified.member());
+                label = "actor callable " + namespace.name() + "." + qualified.member();
+            } else {
+                throw new IllegalArgumentException(
+                        "spawn requires a direct actor fnc/routine call, optionally module-qualified");
+            }
+            if (target == null) throw new IllegalArgumentException("spawn target is not a known callable");
+            if (target.actorKind() == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "spawn target '" + target.name() + "' is not declared with the actor keyword");
+            }
+            if (currentActorKind == Ast.ActorKind.PRIVATE
+                    && target.actorKind() == Ast.ActorKind.SHARED) {
+                throw new IllegalArgumentException(
+                        "isoactor/private actor code cannot spawn shared actor callable '"
+                                + target.name()
+                                + "' because that would escalate into the SHARED_MEMORY domain");
+            }
+            validateCallTypeArgumentMarker(call, target.genericParameters(), label);
+            Type result = checkGenericCallable(
+                    target.genericParameters(),
+                    target.parameters(),
+                    target.returnType(),
+                    call.arguments(),
+                    env, generics, self,
+                    null,
+                    explicitGenericBindings(
+                            target.genericParameters(),
+                            call.typeArguments(),
+                            generics,
+                            self,
+                            label),
+                    label);
+            return new Named("ActorSpawn", List.of(result));
+        }
         if (expr instanceof Ast.AwaitExpr awaited) {
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
-            if (awaitedType instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1) return named.arguments().getFirst();
+            if (awaitedType instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+            if (awaitedType instanceof Named named && named.name().equals("ActorSpawn")
+                    && named.arguments().size() == 1) {
+                return new Named("ActorRef", List.of());
+            }
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.ListExpr list) {
@@ -1129,7 +1188,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) {
+        if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
+                || named.name().equals("Future") || named.name().equals("ActorSpawn")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
@@ -1199,7 +1259,8 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("SharedMutex")) return false;
+                || named.name().equals("Future") || named.name().equals("ActorSpawn")
+                || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
@@ -1306,6 +1367,45 @@ public final class TypeChecker {
                 case "expect" -> new Function(List.of(Primitive.STRING), ok);
                 case "unwrap_or" -> new Function(List.of(ok), ok);
                 default -> null;
+            };
+        }
+        return null;
+    }
+
+    private Type builtinActorHandleMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named)) return null;
+        if (named.name().equals("ActorSpawn") && named.arguments().size() == 1) {
+            Type result = named.arguments().getFirst();
+            return switch (member) {
+                case "id" -> new Named("ActorId", List.of());
+                case "ready" -> new Named(
+                        "Future",
+                        List.of(new Named("ActorRef", List.of())));
+                case "done" -> new Named("Future", List.of(Primitive.BOOL));
+                case "result" -> {
+                    if (result == Primitive.VOID) {
+                        throw new IllegalArgumentException(
+                                "void actor callable has no result value; await spawn.done for completion");
+                    }
+                    yield new Named("Future", List.of(result));
+                }
+                default -> throw new IllegalArgumentException(
+                        "unknown ActorSpawn member '" + member + "'");
+            };
+        }
+        if (named.name().equals("ActorRef") && named.arguments().isEmpty()) {
+            return switch (member) {
+                case "id" -> new Named("ActorId", List.of());
+                case "is_alive" -> {
+                    if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                        throw new IllegalArgumentException(
+                                "untrusted actors cannot inspect ActorRef lifecycle state");
+                    }
+                    yield new Function(List.of(), Primitive.BOOL);
+                }
+                default -> throw new IllegalArgumentException(
+                        "unknown ActorRef member '" + member
+                                + "'; one-shot actor callables expose identity/control, not an application mailbox");
             };
         }
         return null;
@@ -1877,6 +1977,8 @@ public final class TypeChecker {
             }
         } else if (expression instanceof Ast.AwaitExpr awaited) {
             rejectStaticClassGenericReferences(awaited.expression(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.SpawnExpr spawned) {
+            rejectStaticClassGenericReferences(spawned.call(), classGenerics, klass, method);
         } else if (expression instanceof Ast.ListExpr list) {
             for (Ast.Expr item : list.elements()) {
                 rejectStaticClassGenericReferences(item, classGenerics, klass, method);
@@ -2501,6 +2603,7 @@ public final class TypeChecker {
         else if (expr instanceof Ast.IndexExpr e) { collectCalls(e.receiver(), module, out); collectCalls(e.index(), module, out); }
         else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) collectCalls(arg, module, out);
         else if (expr instanceof Ast.AwaitExpr e) collectCalls(e.expression(), module, out);
+        else if (expr instanceof Ast.SpawnExpr e) collectCalls(e.call(), module, out);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField f : e.fields()) collectCalls(f.value(), module, out);
