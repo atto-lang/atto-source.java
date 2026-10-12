@@ -54,6 +54,7 @@ public final class OresContext implements AutoCloseable {
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
+    private final HostFutureAdmissionGate hostFutureAdmission = new HostFutureAdmissionGate();
     // Separate from the context monitor used by code/image registration: an
     // unwinding guest continuation may still need that monitor while close()
     // waits for its carrier to finish.
@@ -394,6 +395,18 @@ public final class OresContext implements AutoCloseable {
         return hostGeneratorTurns;
     }
 
+    /**
+     * Scoped, authenticated public-Future bridge only. Does not authorize
+     * unrelated direct Polyglot Context.eval/Value.execute/close operations.
+     */
+    public void beginScopedHostFutureHandoff() {
+        hostFutureAdmission.begin();
+    }
+
+    public void endScopedHostFutureHandoff() {
+        hostFutureAdmission.end();
+    }
+
     /** Neither a scheduler binding nor a guest-entry lease alone suffices. */
     static boolean generatorRootTurnAuthorized(
             boolean rootSchedulerBound, boolean rootGuestPhysicallyEntered) {
@@ -434,16 +447,30 @@ public final class OresContext implements AutoCloseable {
 
     private void executeGuestTurn(Runnable turn, boolean serialize) {
         if (serialize) adversarialActorTurnLock.lock();
-        TruffleContext truffleContext = env.getContext();
-        Object previous = null;
-        boolean entered = false;
+        Runnable guestLease = null;
         try {
-            previous = truffleContext.enter(null);
-            entered = true;
-            turn.run();
+            // Atomic reservation BEFORE physical enter closes the gap where
+            // an authenticated host bridge could claim while a CONTROL/root,
+            // actor or async carrier had already committed to enter.
+            guestLease = hostFutureAdmission.reserveGuestTurn();
+            TruffleContext truffleContext = env.getContext();
+            Object previous = null;
+            boolean entered = false;
+            try {
+                previous = truffleContext.enter(null);
+                entered = true;
+                turn.run();
+            } finally {
+                if (entered) truffleContext.leave(null, previous);
+            }
         } finally {
-            if (entered) truffleContext.leave(null, previous);
-            if (serialize) adversarialActorTurnLock.unlock();
+            try {
+                // Only physical TruffleContext.leave (or failed entry) can
+                // release this reservation; public Future completion cannot.
+                if (guestLease != null) guestLease.run();
+            } finally {
+                if (serialize) adversarialActorTurnLock.unlock();
+            }
         }
     }
 
@@ -488,6 +515,10 @@ public final class OresContext implements AutoCloseable {
             }
             closeOwner = Thread.currentThread();
             try {
+                // Stop new scoped host handoffs now. Do NOT revoke pending
+                // guest entries: cleanup may still require root/actor/async
+                // carriers and a failed close must be safely retryable.
+                hostFutureAdmission.sealHostClaims();
                 hostGeneratorTurns.seal();
                 // Actor-owned finalizers may still need the VM CONTROL scheduler,
                 // async workers, imported code, network or native I/O. Never
@@ -504,6 +535,9 @@ public final class OresContext implements AutoCloseable {
                 // even after its Future was cancelled. Its executor shutdown
                 // is a physical-exit barrier, not merely Future.isDone().
                 asyncRuntime.close();
+                // Only after all scheduler and async carriers prove physical
+                // exit may we revoke the residual admission gate.
+                hostFutureAdmission.close();
 
                 // Physical guest and host carriers are now retired. Only then
                 // revoke the remaining external resources and linked code.
