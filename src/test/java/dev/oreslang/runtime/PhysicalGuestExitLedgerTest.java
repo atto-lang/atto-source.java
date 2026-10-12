@@ -18,8 +18,8 @@ final class PhysicalGuestExitLedgerTest {
         var receipt = entry.receipt();
         var completed = new AtomicReference<Throwable>();
         receipt.whenCompleteRuntime((ignored, failure) -> completed.set(failure));
-        assertTrue(receipt.claim(identity));
-        assertFalse(receipt.claim(identity), "replay must not claim DONE twice");
+        assertTrue(receipt.claim(identity, ledger));
+        assertFalse(receipt.claim(identity, ledger), "replay must not claim DONE twice");
         ledger.completedAfterTruffleLeave(entry, null);
         assertNull(completed.get());
         assertTrue(receipt.generation() > 0);
@@ -34,8 +34,10 @@ final class PhysicalGuestExitLedgerTest {
         var ledger = new PhysicalGuestExitLedger(identity);
         var entry = ledger.enteredAfterTruffleEnter();
         assertFalse(entry.receipt().claim(
-                new HostGeneratorTurnPump.OwnerToken(identity.contextId(), UUID.randomUUID())));
-        assertTrue(entry.receipt().claim(identity));
+                new HostGeneratorTurnPump.OwnerToken(identity.contextId(), UUID.randomUUID()), ledger));
+        assertFalse(entry.receipt().claim(identity, new PhysicalGuestExitLedger(identity)),
+                "same IDs from an unrelated ledger are not sufficient");
+        assertTrue(entry.receipt().claim(identity, ledger));
         ledger.completedAfterTruffleLeave(entry, null);
     }
 
