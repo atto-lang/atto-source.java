@@ -3193,10 +3193,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException("current actor is no longer registered");
         }
 
-        // Never invoke group shutdown while holding groupMembershipLock. Group
-        // close acquires authorityLock before taking that membership lock; a
-        // synchronous rollback from inside this critical section would invert
-        // the ordering and deadlock against concurrent close/rotation.
+        // Never invoke group shutdown while holding groupMembershipLock.
+        // Group close has separate authority and membership phases; a nested
+        // rollback here would hold global admission locks across authority
+        // acquisition, worker cancellation and event-bus teardown. Keeping
+        // teardown outside both locks avoids lock coupling and callback stalls.
         ActorGroup newlyCreated = null;
         boolean creatorStoppedDuringPublication = false;
         synchronized (runtimeLifecycleLock) {
