@@ -29,8 +29,7 @@ final class GpuAtomicAdmissionTest {
         assertThrows(IllegalStateException.class, input::take);
         assertThrows(IllegalStateException.class, output::take);
         assertThrows(IllegalStateException.class, () -> input.beginCommand(tickets.input()));
-        input.complete(tickets.inputTicket(), true);
-        output.complete(tickets.outputTicket(), true);
+        GpuBufferFence.completePair(input, output, tickets, true);
         assertEquals(GpuBufferFence.Status.IDLE, input.status());
         assertEquals(GpuBufferFence.Status.IDLE, output.status());
     }
@@ -51,8 +50,7 @@ final class GpuAtomicAdmissionTest {
         assertEquals(GpuBufferFence.Status.IN_FLIGHT, input.status());
         assertEquals(GpuBufferFence.Status.IN_FLIGHT, output.status());
         unrelated.complete(outsiderTicket, true);
-        input.complete(tickets.inputTicket(), true);
-        output.complete(tickets.outputTicket(), true);
+        GpuBufferFence.completePair(input, output, tickets, true);
     }
 
     @Test
@@ -82,13 +80,11 @@ final class GpuAtomicAdmissionTest {
                 () -> GpuBufferFence.claimPair(input, output, 32));
         assertEquals(GpuBufferFence.Status.IDLE, input.status());
         var tickets = GpuBufferFence.claimPair(input, successor, 32);
-        successor.cancelPending(tickets.outputTicket());
-        input.cancelPending(tickets.inputTicket());
+        GpuBufferFence.cancelPair(input, successor, tickets);
         assertThrows(IllegalStateException.class, successor::take);
         assertThrows(IllegalStateException.class,
                 () -> GpuBufferFence.claimPair(input, successor, 32));
-        successor.acknowledgeCancelledDeviceEvent(tickets.outputTicket(), tickets.output());
-        input.acknowledgeCancelledDeviceEvent(tickets.inputTicket(), tickets.input());
+        GpuBufferFence.acknowledgeCancelledPair(input, successor, tickets);
         successor.retireAfterBackendRelease(tickets.output());
         input.retireAfterBackendRelease(tickets.input());
         successor.close();
@@ -118,11 +114,9 @@ final class GpuAtomicAdmissionTest {
             var won = winnerTicket.get();
             assertNotNull(won);
             if (won.input().allocationGeneration() == 1) {
-                a.complete(won.inputTicket(), true);
-                b.complete(won.outputTicket(), true);
+                GpuBufferFence.completePair(a, b, won, true);
             } else {
-                b.complete(won.inputTicket(), true);
-                a.complete(won.outputTicket(), true);
+                GpuBufferFence.completePair(b, a, won, true);
             }
         }
     }
@@ -185,8 +179,7 @@ final class GpuAtomicAdmissionTest {
             if (claimed.get() != null) {
                 assertEquals(GpuBufferFence.Status.IN_FLIGHT, input.status());
                 assertEquals(GpuBufferFence.Status.IN_FLIGHT, output.status());
-                input.complete(claimed.get().inputTicket(), true);
-                output.complete(claimed.get().outputTicket(), true);
+                GpuBufferFence.completePair(input, output, claimed.get(), true);
             } else {
                 assertEquals(GpuBufferFence.Status.IDLE, input.status());
                 assertEquals(GpuBufferFence.Status.IDLE, moved.get().status());
@@ -210,8 +203,7 @@ final class GpuAtomicAdmissionTest {
         assertEquals(plan.byteLength(), claimed.binding().bytesPerBuffer());
         assertEquals(GpuBufferFence.Status.IN_FLIGHT, src.status());
         assertEquals(GpuBufferFence.Status.IN_FLIGHT, dst.status());
-        src.complete(claimed.tickets().inputTicket(), true);
-        dst.complete(claimed.tickets().outputTicket(), true);
+        GpuBufferFence.completePair(src, dst, claimed.tickets(), true);
     }
     @Test
     void pairedCompletionIsAtomicAndRejectsMixedOrReplayTickets() {
@@ -266,12 +258,13 @@ final class GpuAtomicAdmissionTest {
         var source = owner(401, "tenant", "gpu", 64);
         var destination = owner(402, "tenant", "gpu", 64);
         var pair = GpuBufferFence.claimPair(source, destination, 64);
-        source.complete(pair.inputTicket(), true);
         assertThrows(IllegalStateException.class,
-                () -> GpuBufferFence.completePair(source, destination, pair, true));
-        assertEquals(GpuBufferFence.Status.IDLE, source.status());
+                () -> source.complete(pair.inputTicket(), true));
+        assertThrows(IllegalStateException.class,
+                () -> destination.cancelPending(pair.outputTicket()));
+        assertEquals(GpuBufferFence.Status.IN_FLIGHT, source.status());
         assertEquals(GpuBufferFence.Status.IN_FLIGHT, destination.status());
-        destination.complete(pair.outputTicket(), true);
+        GpuBufferFence.completePair(source, destination, pair, true);
     }
 
 }
