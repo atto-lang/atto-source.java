@@ -73,7 +73,7 @@ final class HostPolyglotGeneratorBridgeTest {
     }
 
     @Test
-    void forgedGeneratorControlCommandCannotMintSession() {
+    void forgedGeneratorControlCommandCannotMintSession() throws Exception {
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(true).build()) {
             Value parsed = context.parse(Source.newBuilder(
