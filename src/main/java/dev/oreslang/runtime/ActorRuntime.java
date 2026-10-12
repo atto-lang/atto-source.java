@@ -4142,20 +4142,33 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void unregisterActor(ActorCell<?> cell) {
-        // Keep the actor discoverable until all runtime-owned teardown that is
-        // part of its termination contract has completed. ActorRef.awaitTermination()
-        // treats absence from this map as terminal, so removing the actor first
-        // would let observers race ahead of creator-owned ActorGroup cleanup.
-        for (ActorGroup group : List.copyOf(actorGroups.values())) {
-            group.actorTerminated(cell.ref.id());
-        }
-        if (actors.remove(cell.ref.id(), cell)) {
-            int remaining = actorCount.decrementAndGet();
-            if (remaining < 0) {
-                actorCount.incrementAndGet();
-                throw new IllegalStateException("actor count accounting underflow");
+        // Group teardown must precede removal from the registry, but a
+        // failure in one group callback must not strand the actor in the map
+        // or prevent teardown of other groups. Publish the failure through
+        // the actor's terminal cause after the registry accounting is fixed.
+        Throwable failure = null;
+        try {
+            for (ActorGroup group : List.copyOf(actorGroups.values())) {
+                try {
+                    group.actorTerminated(cell.ref.id());
+                } catch (Throwable error) {
+                    if (failure == null) failure = error;
+                    else if (error != failure) failure.addSuppressed(error);
+                }
+            }
+        } finally {
+            if (actors.remove(cell.ref.id(), cell)) {
+                int remaining = actorCount.decrementAndGet();
+                if (remaining < 0) {
+                    actorCount.incrementAndGet();
+                    throw new IllegalStateException("actor count accounting underflow");
+                }
             }
         }
+        if (failure instanceof Error error) throw error;
+        if (failure instanceof RuntimeException runtime) throw runtime;
+        if (failure != null) throw new IllegalStateException(
+                "actor group termination hook failed", failure);
     }
 
     public <T> SyncCell<T> syncCell(T initialValue) {
