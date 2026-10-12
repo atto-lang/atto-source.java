@@ -297,7 +297,7 @@ public final class ChannelRuntime {
      */
     public static final class SelectSet {
         private final List<SelectCase> cases;
-        private final AtomicLong fairCursor = new AtomicLong();
+        private final AtomicLong fairCursor;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -311,13 +311,19 @@ public final class ChannelRuntime {
         public SelectSet(
                 Collection<? extends SelectCase> cases,
                 long initialFairCursor) {
+            this(cases, new AtomicLong(initialFairCursor));
+        }
+
+        private SelectSet(
+                Collection<? extends SelectCase> cases,
+                AtomicLong sharedCursor) {
             Objects.requireNonNull(cases, "cases");
+            this.fairCursor = Objects.requireNonNull(sharedCursor, "sharedCursor");
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
             }
             this.cases = List.copyOf(cases);
-            this.fairCursor.set(initialFairCursor);
             long defaults = this.cases.stream()
                     .filter(DefaultCase.class::isInstance)
                     .count();
@@ -420,6 +426,46 @@ public final class ChannelRuntime {
 
         public SelectPlan(Collection<? extends SelectCase> cases) {
             this(new SelectSet(cases));
+        }
+
+        public SelectPlan(Collection<? extends SelectCase> cases, long initialCursor) {
+            this(new SelectSet(cases, initialCursor));
+        }
+
+        /**
+         * Safe compiler-hoisting target for read/default sites. Each visit
+         * evaluates channel operands; a stable identity reuses exactly the
+         * existing plan. Rebinding builds new descriptors but shares the
+         * per-site FAIR cursor across generations, including earlier pending
+         * registrations; no stale registration is transferred to new channels.
+         *
+         * Ownership of the returned plan remains with one actor incarnation
+         * (or the root execution). Caller serializes updates to its site map.
+         */
+        public SelectPlan rebindReadOnly(Collection<? extends SelectCase> evaluated) {
+            Objects.requireNonNull(evaluated, "evaluated");
+            List<SelectCase> next = List.copyOf(evaluated);
+            if (next.size() != set.cases.size()) {
+                throw new IllegalArgumentException("static select arity changed during execution");
+            }
+            boolean unchanged = true;
+            for (int i = 0; i < next.size(); i++) {
+                SelectCase before = set.cases.get(i);
+                SelectCase after = next.get(i);
+                if (before instanceof ReadCase<?> oldRead
+                        && after instanceof ReadCase<?> newRead) {
+                    if (oldRead.channel() != newRead.channel()) unchanged = false;
+                } else if (before instanceof DefaultCase
+                        && after instanceof DefaultCase) {
+                    // Source defaults carry no channel or value.
+                } else {
+                    throw new IllegalArgumentException(
+                            "reusable static select plans require READ/DEFAULT arms");
+                }
+            }
+            return unchanged
+                    ? this
+                    : new SelectPlan(new SelectSet(next, set.fairCursor));
         }
 
         private SelectPlan(SelectSet set) {
@@ -897,7 +943,12 @@ public final class ChannelRuntime {
         if (selection.decided) return;
 
         selection.decided = true;
-        selection.set.selected(result.index(), selection.policy);
+        // DEFAULT performs no channel operation and earns no FAIR credit.
+        // Otherwise a hot default branch could rotate the cursor despite
+        // never delivering a channel event.
+        if (result.operation() != SelectOperation.DEFAULT) {
+            selection.set.selected(result.index(), selection.policy);
+        }
         unregisterLocked(selection);
         completions.add(() ->
                 selection.future.completeFromRuntime(result));
