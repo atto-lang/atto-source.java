@@ -163,10 +163,17 @@ terminal publication. Its owner-ticket check enumerates task, incarnation
 and lexical frame identities, and exhibits a concrete counterexample for
 checking only the numeric frame ID. This is an **abstract contract check**,
 not a proof the current `SourceFlow` payload includes all three identities.
-The runtime currently stores only the task-local match frame ID; task/
-incarnation fencing is delegated to the containing source task/scheduler and
-requires a separate implementation refinement gate.
+The runtime now stores and checks both task object identity and the
+task-local match frame ID before consuming ARM_RESULT. Incarnation fencing
+continues to rely on the containing source task / actor scheduler ticket,
+which still needs an implementation refinement proof.
 
 Additional guest regression tests exercise `ARM_RESULT` through `try/finally`,
 `if` and awaited scalar arithmetic. Native and full JVM CI must be rerun on
 the exact new source and test tree before treating this audit as verified.
+
+A new guest regression forces a real scheduler handoff by executing
+`rt cooperate` inside an awaited async producer, then checks that the
+match subject is evaluated exactly once and its defer runs before the result
+is published. Earlier guest fixtures with already-complete Futures alone did
+not prove this property.
