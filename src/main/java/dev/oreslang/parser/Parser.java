@@ -1622,6 +1622,15 @@ public final class Parser {
             return new Ast.ContinueStmt();
         }
         if (match(IF)) return parseIf();
+        // Procedural do switch exits the enclosing callable on ReturnStmt.
+        // Value-producing switch remains a separate expression-lowering gate.
+        if (check(DO) && checkNext(SWITCH)) {
+            advance(); // do
+            advance(); // switch
+            Ast.SwitchStmt statement = parseSwitch();
+            match(SEMICOLON);
+            return statement;
+        }
         if (check(DO) && checkNext(MATCH)) {
             advance(); // do
             advance(); // match
