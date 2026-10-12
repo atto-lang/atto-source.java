@@ -1709,7 +1709,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = SourceFlow.throwing(preferFailure(initialFlow.failure(), failure));
                 }
                 // The consumer owns any failure it throws. Do not call it twice.
                 continuation.accept(task, completed);
@@ -1737,7 +1737,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = SourceFlow.throwing(preferFailure(currentFlow.failure(), failure));
                 }
                 continuation.accept(task, completed);
                 return;
@@ -1751,14 +1751,11 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
-                            if (currentFlow.failure() != null) {
-                                failure.addSuppressed(currentFlow.failure());
-                            }
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    SourceFlow.throwing(failure),
+                                    SourceFlow.throwing(preferFailure(currentFlow.failure(), failure)),
                                     continuation);
                         } else {
                             runOneDefer(
@@ -4585,6 +4582,29 @@ public final class OresEvalRootNode extends RootNode {
             executeBlock(statements, parent, false);
         }
 
+        // Never downgrade a pending panic/cancellation/fatal host failure
+        // into an ordinary guest cast failure during defer or guard cleanup.
+        private static int failurePriority(Throwable failure) {
+            if (failure instanceof Error) return 5;
+            if (failure instanceof OresPanic
+                    || failure instanceof java.util.concurrent.CancellationException
+                    || failure instanceof SecurityException) return 4;
+            if (failure instanceof OresCastError) return 1;
+            // Unknown host/runtime failures are not admitted guest throws.
+            return 3;
+        }
+
+        private static Throwable preferFailure(Throwable existing, Throwable incoming) {
+            Objects.requireNonNull(incoming, "incoming failure");
+            if (existing == null || existing == incoming) return incoming;
+            if (failurePriority(incoming) > failurePriority(existing)) {
+                incoming.addSuppressed(existing);
+                return incoming;
+            }
+            existing.addSuppressed(incoming);
+            return existing;
+        }
+
         private void executeBlock(List<Ast.Stmt> statements, Env parent, boolean inheritedTailBarrier) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
@@ -4611,23 +4631,17 @@ public final class OresEvalRootNode extends RootNode {
                                 ? new Ast.CallExpr(cleanup, List.of())
                                 : cleanup, env);
                     } catch (RuntimeException | Error failure) {
-                        if (pendingFailure != null && pendingFailure != failure) {
-                            failure.addSuppressed(pendingFailure);
-                        }
-                        pendingFailure = failure;
+                        pendingFailure = preferFailure(pendingFailure, failure);
                     }
                 }
                 try {
                     env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    if (pendingFailure != null && pendingFailure != failure) {
-                        failure.addSuppressed(pendingFailure);
-                    }
-                    pendingFailure = failure;
+                    pendingFailure = preferFailure(pendingFailure, failure);
                 }
                 // If only the body failed, Java will rethrow it naturally.
-                // If cleanup failed, the most recent failure takes precedence
-                // and retains earlier failures as suppressed exceptions.
+                // Only a stronger cleanup failure can replace the body failure;
+                // lesser failures remain suppressed on the selected primary.
                 if (pendingFailure != null && pendingFailure != originalFailure) {
                     if (pendingFailure instanceof RuntimeException runtimeFailure) {
                         throw runtimeFailure;
