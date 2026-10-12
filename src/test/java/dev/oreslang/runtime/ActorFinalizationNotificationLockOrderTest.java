@@ -182,4 +182,72 @@ final class ActorFinalizationNotificationLockOrderTest {
                     "failed external hook must not leak the actor registry entry");
         }
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void stoppedMailboxEnvelopeReleasesOutsideActorLifecycleMonitor()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(() ->
+                    (message, context) -> { });
+            Object lifecycle = monitor(runtime, actor.id());
+            Field actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((Map<?, ?>) actorsField.get(runtime)).get(actor.id());
+            assertNotNull(cell);
+
+            java.lang.reflect.Method reserve =
+                    cell.getClass().getDeclaredMethod("reserveMailboxSlot");
+            reserve.setAccessible(true);
+            assertTrue((Boolean) reserve.invoke(cell));
+
+            CountDownLatch releaseEntered = new CountDownLatch(1);
+            CountDownLatch releaseAllowed = new CountDownLatch(1);
+            AtomicBoolean callbackHeldMonitor = new AtomicBoolean(true);
+            AtomicInteger releaseCount = new AtomicInteger();
+            Runnable release = () -> {
+                releaseCount.incrementAndGet();
+                callbackHeldMonitor.set(Thread.holdsLock(lifecycle));
+                releaseEntered.countDown();
+                try {
+                    if (!releaseAllowed.await(8, TimeUnit.SECONDS)) {
+                        throw new AssertionError("envelope release callback timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("release callback interrupted", interrupted);
+                }
+            };
+            Class<?> envelope = Class.forName(
+                    "dev.oreslang.runtime.ActorRuntime$MessageEnvelope");
+            java.lang.reflect.Constructor<?> ctor = envelope.getDeclaredConstructor(
+                    Object.class, Runnable.class, Runnable.class,
+                    ActorRuntime.ActorId.class, long.class);
+            ctor.setAccessible(true);
+            Object message = ctor.newInstance("unread", release, null, null, 1L);
+            Field mailboxField = cell.getClass().getDeclaredField("mailbox");
+            mailboxField.setAccessible(true);
+            ChannelRuntime.Channel<Object> mailbox =
+                    (ChannelRuntime.Channel<Object>) mailboxField.get(cell);
+            assertTrue(mailbox.tryWrite(message), "inject one accepted unread envelope");
+
+            Thread stop = new Thread(actor::stop, "actor-mailbox-release-stop");
+            try {
+                stop.start();
+                assertTrue(releaseEntered.await(5, TimeUnit.SECONDS));
+                assertFalse(callbackHeldMonitor.get(),
+                        "shutdown envelope release must run outside lifecycleLock");
+                synchronized (lifecycle) {
+                    assertFalse(actor.done().isDone(),
+                            "DONE cannot overtake cleanup release callback");
+                }
+            } finally {
+                releaseAllowed.countDown();
+                stop.join(5_000);
+            }
+            assertFalse(stop.isAlive(), "stop deadlocked mailbox release");
+            actor.done().get(5, TimeUnit.SECONDS);
+            assertEquals(1, releaseCount.get(), "envelope release must be exactly once");
+        }
+    }
 }
