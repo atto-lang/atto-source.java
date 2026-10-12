@@ -92,6 +92,7 @@ public final class TypeChecker {
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         program = AnnotationExpander.expand(program);
+        ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
@@ -1491,6 +1492,10 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
         if (stmt instanceof Ast.DeferStmt defer) {
+            if (defer.expression() instanceof Ast.LambdaExpr lambda && !lambda.parameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "defer cleanup lambda must accept zero parameters");
+            }
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
             try {
                 typeOf(defer.expression(), env, generics, self);
