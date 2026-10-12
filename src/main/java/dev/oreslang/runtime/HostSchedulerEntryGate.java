@@ -48,11 +48,13 @@ final class HostSchedulerEntryGate {
         boolean acquired = false;
         try {
             synchronized (this) {
+                // Sealing prohibits NEW nested host admission too. An existing
+                // owner still gets to close its original lease and drain work.
+                rejectIfSealed();
                 if (hostOwner == caller) {
                     hostDepth++;
                     return new HostLease(caller);
                 }
-                rejectIfSealed();
                 hostWaiters++;
                 try {
                     while (hostOwner != null || activeGuests != 0) {
