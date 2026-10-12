@@ -15,20 +15,24 @@ import java.util.function.BiConsumer;
  */
 final class PhysicalGuestExitLedger {
     static final class Receipt {
+        private final PhysicalGuestExitLedger issuer;
         private final HostGeneratorTurnPump.OwnerToken owner;
         private final long generation;
         private final UUID nonce;
         private final OresFuture<Void> completion = new OresFuture<>();
         private boolean claimed;
 
-        private Receipt(HostGeneratorTurnPump.OwnerToken owner, long generation) {
+        private Receipt(PhysicalGuestExitLedger issuer,
+                        HostGeneratorTurnPump.OwnerToken owner, long generation) {
+            this.issuer = issuer;
             this.owner = owner;
             this.generation = generation;
             this.nonce = UUID.randomUUID();
         }
 
-        synchronized boolean claim(HostGeneratorTurnPump.OwnerToken expected) {
-            if (!owner.equals(expected) || claimed) return false;
+        synchronized boolean claim(HostGeneratorTurnPump.OwnerToken expected,
+                                   PhysicalGuestExitLedger expectedIssuer) {
+            if (issuer != expectedIssuer || !owner.equals(expected) || claimed) return false;
             claimed = true;
             return true;
         }
@@ -62,15 +66,24 @@ final class PhysicalGuestExitLedger {
     private final HostGeneratorTurnPump.OwnerToken owner;
     private final ThreadLocal<Entry> entered = new ThreadLocal<>();
     private long generation;
+    // No physical receipt or nested Entry allocation for contexts that have
+    // never accepted a host generator request. Once enabled, never downgrade.
+    private volatile boolean trackingEnabled;
 
     PhysicalGuestExitLedger(HostGeneratorTurnPump.OwnerToken owner) {
         this.owner = Objects.requireNonNull(owner, "owner");
     }
 
+    HostGeneratorTurnPump.OwnerToken owner() { return owner; }
+
+    boolean trackingEnabled() { return trackingEnabled; }
+
+    void enableTracking() { trackingEnabled = true; }
+
     synchronized Entry enteredAfterTruffleEnter() {
         // The caller must be the context-owned physical entry/leave wrapper.
         // This method alone is not guest-entry authorization.
-        Entry entry = new Entry(this, entered.get(), new Receipt(owner, ++generation));
+        Entry entry = new Entry(this, entered.get(), new Receipt(this, owner, ++generation));
         entered.set(entry);
         return entry;
     }
