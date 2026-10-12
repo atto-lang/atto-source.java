@@ -60,7 +60,23 @@ correctness are not yet measured.
 not the device allocation itself. A real provider must construct/use the
 ledger alongside its opaque allocation and authenticate runtime capabilities.
 Strings/identity labels in this prototype are comparison guards, *not*
-cryptographically unforgeable authorization.
+cryptographically unforgeable authorization. Submission tickets are now
+opaque JVM objects with non-public constructors: completion/cancellation must
+present the **same ticket instance** issued for the in-flight command, not
+merely matching numerical generation and sequence values. This prevents
+cross-buffer ticket forgery and replay but is **not** backend authentication:
+code holding a genuine ticket could still falsely report device completion.
+The ledger's backend lifecycle transitions (`beginCommand`, `complete`,
+`cancelPending`, `acknowledgeCancelledDeviceEvent`, and
+`retireAfterBackendRelease`) are package-private trusted-runtime operations,
+not guest-visible Java API methods. Positive lifecycle tests run in that
+runtime package; an API regression checks the operations remain non-public.
+Package visibility alone is **not** a security boundary against arbitrary
+host-Java code, reflection, or malicious same-package classes: the Oreslang
+guest interop must still deny these classes, and the backend must use a
+trusted provider/device-event proof before calling completion or retirement.
+A real provider is not implemented, so genuine-ticket holders inside the
+trusted runtime are not authenticated hardware completion witnesses.
 
 Lifecycle:
 
@@ -94,7 +110,12 @@ out-of-range registers, post-measurement gates and unmeasured circuits are
 rejected before emitting QASM or running the simulator. The simulator
 executes an ideal real-valued statevector, returns exact marginal
 probabilities, and offers deterministic seeded shot sampling (up to 1M
-shots). No noise model, complex phase gates, mid-circuit measurement,
+shots). Circuit builders reject the 1,025th gate **at append time**, preventing
+unbounded intermediate guest allocations. Shot selection precomputes a CDF
+and uses strict-upper-bound binary search; sampling complexity is
+O(2^classicalBits + shots * classicalBits), not
+O(shots * 2^classicalBits). The simulator rejects invalid probability mass
+and never selects zero-probability bins. No noise model, complex phase gates, mid-circuit measurement,
 connectivity map or error correction is implemented. The QASM output uses
 OpenQASM 3.0 and the standard gate library.
 
