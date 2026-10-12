@@ -449,20 +449,24 @@ public final class OresContext implements AutoCloseable {
             }
             closeOwner = Thread.currentThread();
             try {
-                // Actor-owned finalizers may still need the VM CONTROL scheduler,
-                // async workers, imported code, network or native I/O. Never
-                // retire those dependencies before actor quiescence is proven.
+                // HTTP exchanges are actor-owned capabilities. Shut down
+                // listeners and cancel their in-flight actor turns while the
+                // actor CONTROL scheduler, guest cleanup continuations and
+                // native I/O workers are all still available. Otherwise an
+                // actor suspended on a streaming exchange can strand
+                // ActorRuntime.close() before HTTP gets to revoke it.
+                http.close();
+
+                // Once HTTP exchange/actor reservations have been discharged,
+                // drain any remaining actors and the root VM scheduler.
+                // Neither scheduler can be retired while guest finally/defer
+                // still owns a continuation or native resource loan.
                 actors.close();
                 vm.close();
-                // An async carrier may still own an entered Truffle context
-                // even after its Future was cancelled. Its executor shutdown
-                // is a physical-exit barrier, not merely Future.isDone().
-                asyncRuntime.close();
 
-                // Physical guest and host carriers are now retired. Only then
-                // revoke the remaining external resources and linked code.
+                // A settled/cancelled Future is not physical worker exit.
+                asyncRuntime.close();
                 nativeIo.close();
-                http.close();
                 synchronized (this) {
                     linkedCodeUnits.clear();
                     linkedImportResolutions.clear();
