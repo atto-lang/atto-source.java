@@ -187,6 +187,53 @@ class NativeHttpTest {
             """, port -> assertEquals("onetwo", request(port, "GET", "/", "").body()));
     }
 
+    @Test
+    void streamingResponseCancellationReleasesActorBeforeHttpDrain() throws Exception {
+        String output = run("""
+            define actor StreamHolder as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                defer stdio.println("stream-cleanup");
+                await request.start(200, "text/plain");
+                await request.write("first-chunk");
+                self.send("chunk-ready");
+                val Channel<int> gate = Channel.new<int>(0);
+                const ignored = await (nb readch gate);
+                await request.write("INVALID-late-chunk");
+                self.end();
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              val streamer = spawn StreamHolder();
+              await streamer.ready;
+              streamer.send(request.move_to(streamer));
+              await streamer.outputs.next();
+              stdio.println("stream-started");
+              await server.shutdown(0);
+              stdio.println("stream-drained");
+              return;
+            }
+            """, port -> {
+            try {
+                var response = request(port, "GET", "/", "");
+                assertEquals(200, response.statusCode());
+                assertFalse(response.body().contains("INVALID-late-chunk"));
+            } catch (java.io.IOException expectedDisconnect) {
+                // Transport stop may terminate a partially streamed response.
+            }
+        });
+        assertTrue(output.contains("stream-started"), output);
+        assertTrue(output.contains("stream-cleanup"), output);
+        assertTrue(output.contains("stream-drained"), output);
+        assertFalse(output.contains("INVALID-late-chunk"), output);
+        assertTrue(output.indexOf("stream-cleanup") < output.indexOf("stream-drained"),
+                "the actor's deferred cleanup must precede HTTP drain completion");
+    }
+
     @Test void ordinaryBorrowsStillCannotSpanActorAwait() {
         for (String binding : new String[] {
                 "val borrowed = rt borrow values;",
