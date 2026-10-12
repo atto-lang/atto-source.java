@@ -6,6 +6,8 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 
 /**
  * Supervisor-backed source UNTRUSTED actors in exactly ONE shared Graal
@@ -150,6 +152,20 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
         private final UntrustedJitCodeUnit code;
         private final UntrustedJitCodeUnit.RemoteUntrustedActor remote;
         private final AtomicBoolean revoked = new AtomicBoolean();
+        private final FutureTask<Void> closeOnce = new FutureTask<>(() -> {
+            try {
+                // No group monitor is held here: Context.close(true) must
+                // interrupt a malicious running guest rather than deadlock.
+                group.close();
+                // Only confirmed physical Context retirement releases capacity.
+                synchronized (lifecycle) { active.remove(this); }
+            } finally {
+                // Even when guest teardown fails, every old actor proxy stays
+                // revoked. Its occupied slot prevents over-admission.
+                code.fenceAfterContextClose();
+            }
+            return null;
+        });
 
         private Actor(SharedUntrustedIsolatePool.Group group,
                       UntrustedJitCodeUnit code,
@@ -213,15 +229,19 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
         }
 
         @Override public void close() {
-            if (!revoked.compareAndSet(false, true)) return;
+            revoked.set(true);
+            closeOnce.run();
             try {
-                // Important: do NOT acquire the group's guest execution
-                // monitor to cancel first. Context.close(true) must be able
-                // to revoke a stuck guest while its operation holds that lock.
-                group.close();
-            } finally {
-                code.fenceAfterContextClose();
-                synchronized (lifecycle) { active.remove(this); }
+                closeOnce.get();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "interrupted before untrusted actor retirement was confirmed");
+            } catch (ExecutionException failed) {
+                // A failed Context close consumes capacity until the entire
+                // Engine can be safely retired, never silently recycled.
+                throw new IllegalStateException(
+                        "untrusted actor close was not confirmed; lease remains reserved");
             }
         }
     }
