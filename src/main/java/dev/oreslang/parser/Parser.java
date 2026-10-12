@@ -677,11 +677,23 @@ public final class Parser {
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        Ast.ActorStateDecl actorState = null;
         insideActorClass = true;
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+                if (actorState != null) {
+                    throw error(peek(), "duplicate sealed actor state block");
+                }
+                validateActorFieldModifiers(mods);
+                if (!annotations.isEmpty() || mods.trapped || mods.suspends) {
+                    throw error(peek(), "sealed actor state blocks cannot have annotations or callable modifiers");
+                }
+                actorState = parseSealedActorStateBlock();
+                continue;
+            }
             if (isLegacyFnSpelling()) {
                 if (mods.isStatic) throw error(peek(), "static actor functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "actor methods omit 'fn'/'fnc'; declare the method name directly");
@@ -753,8 +765,49 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         insideActorClass = false;
+        if (actorState != null) {
+            for (Ast.FieldDecl stateField : actorState.fields()) {
+                for (Ast.FieldDecl ordinary : fields) {
+                    if (ordinary.name().equals(stateField.name())) {
+                        throw error(previous(), "sealed actor state name collides with ordinary actor field: "
+                                + stateField.name());
+                    }
+                }
+                for (Ast.MethodDecl method : methods) {
+                    if (method.name().equals(stateField.name())) {
+                        throw error(previous(), "sealed actor state name collides with actor method: "
+                                + stateField.name());
+                    }
+                }
+            }
+        }
         return new Ast.ClassDecl(
-                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+                name, visibility, false, actorKind, generics, parents, interfaces,
+                fields, null, methods, actorState);
+    }
+
+    private Ast.ActorStateDecl parseSealedActorStateBlock() {
+        consumeContextualIdentifier("state", "expected sealed actor state");
+        consume(LBRACE, "expected '{' after sealed actor state");
+        List<Ast.FieldDecl> stateFields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            if (stateFields.size() >= 128) {
+                throw error(peek(), "sealed actor state exceeds 128 declared fields");
+            }
+            // Explicit name: Type = initializer only: no public/static
+            // modifiers, inference, uninitialized slots or ordinary fields.
+            Ast.FieldDecl field = parseColonField(List.of(), Ast.Visibility.PRIVATE);
+            if (field.initializer() == null) {
+                throw error(previous(), "sealed actor state fields require initialization");
+            }
+            if (field.name().equals("state") || !names.add(field.name())) {
+                throw error(previous(), "duplicate or reserved sealed actor state field: " + field.name());
+            }
+            stateFields.add(field);
+        }
+        consume(RBRACE, "expected '}' to close sealed actor state");
+        return new Ast.ActorStateDecl(stateFields);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
