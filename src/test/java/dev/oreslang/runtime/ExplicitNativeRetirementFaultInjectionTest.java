@@ -78,6 +78,64 @@ final class ExplicitNativeRetirementFaultInjectionTest {
         assertThrows(IllegalStateException.class, runtime::close);
     }
 
+    @Test
+    void aggregateRefundUnderflowCannotDecrementActorOwnedNativeBytes() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "JDK25 FFM required");
+        ActorRuntime runtime = new ActorRuntime();
+        AtomicReference<ExplicitNativeI64Region.Loan> loan = new AtomicReference<>();
+        AtomicReference<ExplicitNativeI64Region> region = new AtomicReference<>();
+        AtomicReference<ActorRuntime.ActorMemorySlice> slice = new AtomicReference<>();
+        AtomicReference<Throwable> actorError = new AtomicReference<>();
+        CountDownLatch allocated = new CountDownLatch(1);
+        var actor = runtime.<Integer>spawnPrivate(() -> (message, ctx) -> {
+            try {
+                var owner = ctx.actorOwnedMemory().orElseThrow();
+                slice.set(owner);
+                var nativeRegion = owner.newExplicitNativeI64Region(1);
+                region.set(nativeRegion);
+                loan.set(nativeRegion.borrow(nativeRegion.allocate(81)));
+            } catch (Throwable error) {
+                actorError.compareAndSet(null, error);
+            } finally {
+                allocated.countDown();
+            }
+        });
+        actor.send(1);
+        assertTrue(allocated.await(5, TimeUnit.SECONDS));
+        if (actorError.get() != null) fail(actorError.get());
+        CompletableFuture<Void> stop = CompletableFuture.runAsync(actor::stop);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!region.get().closed() && System.nanoTime() < deadline) Thread.sleep(2);
+        assertTrue(region.get().closed());
+        assertEquals(8L, slice.get().usedBytes());
+
+        // Test-only corruption of the private aggregate counter to force
+        // the normally unreachable aggregate-underflow branch. No production
+        // hook or guest authority is added by this regression.
+        var field = ActorRuntime.class.getDeclaredField("privateMemoryBytes");
+        field.setAccessible(true);
+        var aggregate = (java.util.concurrent.atomic.AtomicLong) field.get(runtime);
+        assertEquals(8L, aggregate.get());
+        aggregate.set(0L);
+
+        IllegalStateException failure = assertThrows(
+                IllegalStateException.class, () -> loan.get().close());
+        assertTrue(failure.getMessage().contains("actor native budget accounting underflow"));
+        assertEquals(8L, slice.get().usedBytes(),
+                "failed aggregate refund must not partially decrement actor-owned bytes");
+        assertEquals(0L, runtime.privateMemoryBytes(),
+                "failed aggregate refund must not publish a second global decrement");
+        assertFalse(actor.get_done().isDone());
+        var failedShutdown = assertThrows(
+                java.util.concurrent.ExecutionException.class,
+                () -> actor.get_shutdown_result().get(5, TimeUnit.SECONDS));
+        assertTrue(String.valueOf(failedShutdown.getCause())
+                .contains("actor native budget accounting underflow"));
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> stop.get(5, TimeUnit.SECONDS));
+        assertThrows(IllegalStateException.class, runtime::close);
+    }
+
     private void checkPausedRetirement(boolean pauseBeforeRefund) throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "JDK25 FFM required");
         ActorRuntime runtime = new ActorRuntime();
