@@ -594,6 +594,15 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private void requireUntrustedActorGuestPlacement(ActorRuntime.ActorKind kind) {
+            if (kind == ActorRuntime.ActorKind.UNTRUSTED
+                    && !context.isolatePolicy().adversarial()) {
+                throw new SecurityException(
+                        "source UNTRUSTED actor requires the shared sandboxed Graal "
+                        + "isolate; trusted host ActorRuntime dispatch is forbidden");
+            }
+        }
+
         private void requireIsolatedGuestRoot() {
             // An adversarial group policy is required but not, alone,
             // proof of VM-level isolation. The trusted host adapter MUST
@@ -4384,7 +4393,15 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (fn.actorKind() == Ast.ActorKind.NONE) {
-                if (fn.async() || functionContainsPotentialSuspension(fn)) {
+                // An actor function declared UNTRUSTED must never be executed by
+            // the trusted host's in-process ActorRuntime. The pooled guest
+            // Context itself may schedule UNTRUSTED code on its own runtime.
+            // Until the source-callable transport supports typed results and
+            // Future settlement, reject host dispatch rather than silently
+            // downgrade physical isolation.
+            requireUntrustedActorGuestPlacement(runtimeKind);
+
+            if (fn.async() || functionContainsPotentialSuspension(fn)) {
                     OresFuture<Object> future =
                             startSourceFunctionTask(
                                     fn,
@@ -5925,6 +5942,7 @@ public final class OresEvalRootNode extends RootNode {
                                 case SHARED -> ActorRuntime.ActorKind.SHARED;
                                 case UNTRUSTED -> ActorRuntime.ActorKind.UNTRUSTED;
                             };
+                    requireUntrustedActorGuestPlacement(runtimeKind);
                     return context.actors().spawnCodeActor(
                             runtimeKind,
                             this,
