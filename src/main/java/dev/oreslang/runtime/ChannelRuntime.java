@@ -122,6 +122,20 @@ public final class ChannelRuntime {
          * method returns empty.
          */
         public Optional<T> tryRead() {
+            // Fast path: no registered selection can have an earlier claim on
+            // this channel, so a buffered read/empty probe linearizes here.
+            // If waiters exist, use the full arbiter to preserve rendezvous
+            // and previously registered multi-channel selects.
+            COORDINATOR.lock();
+            try {
+                if (registrations.isEmpty()) {
+                    if (!buffer.isEmpty()) return Optional.of(buffer.removeFirst());
+                    if (closed) throw closedFailure();
+                    return Optional.empty();
+                }
+            } finally {
+                COORDINATOR.unlock();
+            }
             Optional<SelectResult> result =
                     SelectSet.of(read(this)).trySelect(SelectPolicy.PRIORITY);
             if (result.isEmpty()) return Optional.empty();
@@ -134,14 +148,25 @@ public final class ChannelRuntime {
         boolean drainOne(java.util.function.Consumer<? super T> consumer) {
             Objects.requireNonNull(consumer, "consumer");
             T value;
+            ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
                 if (buffer.isEmpty()) return false;
                 value = buffer.removeFirst();
+                // Removing a buffered value can unblock a queued writer.
+                // Without re-arbitration, that writer may remain stranded
+                // indefinitely unless an unrelated channel operation occurs.
+                pumpLocked(completions);
             } finally {
                 COORDINATOR.unlock();
             }
-            consumer.accept(value);
+            try {
+                consumer.accept(value);
+            } finally {
+                // Never invoke Future waiters under the channel coordinator,
+                // even when the drain consumer reports an exception.
+                runCompletions(completions);
+            }
             return true;
         }
 
@@ -151,6 +176,20 @@ public final class ChannelRuntime {
          */
         public boolean tryWrite(T value) {
             requireValue(value);
+            // No pending select/read/write on this channel: buffer admission
+            // can commit without creating a new SelectSet or waiter Future.
+            // A rendezvous or a registered selection must use the arbiter.
+            COORDINATOR.lock();
+            try {
+                if (registrations.isEmpty()) {
+                    if (closed) throw closedFailure();
+                    if (buffer.size() >= capacity) return false;
+                    buffer.addLast(value);
+                    return true;
+                }
+            } finally {
+                COORDINATOR.unlock();
+            }
             return SelectSet.of(write(this, value))
                     .trySelect(SelectPolicy.PRIORITY)
                     .isPresent();
