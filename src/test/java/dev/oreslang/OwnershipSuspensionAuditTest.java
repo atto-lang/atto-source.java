@@ -101,6 +101,36 @@ final class OwnershipSuspensionAuditTest {
             reject(BOX + "fnc bad(): void { val Box box = new Box(); val view = rt borrow box; val result = rt " + operation + " view; return; }", "rt " + operation);
         }
     }
+    @Test void delegatedGeneratorCannotExportBorrowedElement() {
+        reject(BOX + """
+                fnc fabricate(): Iterator<borrow Box> { return null; }
+                gen* fnc bad(): Iterator<borrow Box> {
+                  yield* fabricate();
+                  return;
+                }
+                """, "cannot yield borrowed elements");
+    }
+
+    @Test void delegatedGeneratorCannotHideBorrowInNestedElement() {
+        reject(BOX + """
+                fnc fabricate(): Iterator<Option<borrow Box>> { return null; }
+                gen* fnc bad(): Iterator<Option<borrow Box>> {
+                  yield* fabricate();
+                  return;
+                }
+                """, "cannot yield borrowed elements");
+    }
+
+    @Test void delegatedOwnedScalarElementRemainsValid() {
+        check("""
+                fnc fabricate(): Iterator<int> { return null; }
+                gen* fnc good(): Iterator<int> {
+                  yield* fabricate();
+                  return;
+                }
+                """);
+    }
+
     @Test void endedLoansPermitSuspensionAndOwnerTransfer() {
         check(BOX + """
                 fnc read(borrow Box box): int { return box.value; }
