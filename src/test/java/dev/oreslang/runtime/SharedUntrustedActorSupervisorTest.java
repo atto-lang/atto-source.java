@@ -92,6 +92,31 @@ final class SharedUntrustedActorSupervisorTest {
 
     @Test
     @EnabledIfEnvironmentVariable(named="ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches="true")
+    void hotReloadAndActorSupervisorUseTheSameOnlyUntrustedEngine() {
+        try (var pool = new SharedUntrustedIsolatePool(256L << 20, 4);
+             var loader = HotReloadManager.forUntrustedActors(
+                     IsolatePolicy.developer(), ExecutionProfile.serverJit(), pool);
+             var supervisor = new SharedUntrustedActorSupervisor(pool, 2)) {
+            var generation = loader.load("code.ores",
+                    "pub routine main(): void { return; }");
+            generation.start();
+            try (var actor = supervisor.spawn(WORKER, "worker", "IsolatedWorker")) {
+                assertTrue(actor.sharesPhysicalCollectorWith(generation.context()),
+                        "hot reload and source actors must share one Engine, not two");
+            }
+            assertEquals(0, supervisor.activeActors());
+            // Loader is not permitted to close the caller-owned shared Engine.
+            var engine = generation.context().getEngine();
+            loader.close();
+            try (var group = pool.createGroup()) {
+                assertSame(engine, group.contextForSupervisor().getEngine(),
+                        "externally owned pool must stay live after loader close");
+            }
+        }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named="ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches="true")
     void externallyOwnedPoolSupportsTwoSupervisorsWithoutExtraIsolates() {
         try (var pool = new SharedUntrustedIsolatePool(256L << 20, 2);
              var one = new SharedUntrustedActorSupervisor(pool, 1);
