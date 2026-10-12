@@ -40,6 +40,8 @@ public final class OresScheduler implements AutoCloseable {
     private static final ThreadLocal<OresScheduler> CURRENT = new ThreadLocal<>();
     private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
     private static final ThreadLocal<Object> CURRENT_TASK_DOMAIN = new ThreadLocal<>();
+    private static final ThreadLocal<SchedulerCooperationWatchdog.Lease>
+            CURRENT_WATCHDOG_LEASE = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> SCHEDULER_CARRIER = new ThreadLocal<>();
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
 
@@ -113,6 +115,7 @@ public final class OresScheduler implements AutoCloseable {
     private final TurnExecutor turnExecutor;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicLong greedyDispatchObservations = new AtomicLong();
     // Read/written only while holding this scheduler's synchronized close().
     // Retains the original failed-drain exception for concurrent host callers.
     private Throwable closeFailure;
@@ -244,6 +247,21 @@ public final class OresScheduler implements AutoCloseable {
 
     public int parallelism() {
         return parallelism;
+    }
+
+    /** Host diagnostic: dispatches that exceeded the 4ms advisory threshold. */
+    public long greedyDispatchObservations() {
+        return greedyDispatchObservations.get();
+    }
+
+    /**
+     * Read only at a compiler-proven post-commit safe point. The watchdog
+     * cannot preempt a Java carrier, guest finalizer, mutex guard or actor
+     * lease; it only asks the current logical task to cooperate.
+     */
+    public static boolean watchdogCooperationRequested() {
+        SchedulerCooperationWatchdog.Lease lease = CURRENT_WATCHDOG_LEASE.get();
+        return lease != null && lease.cooperationRequested();
     }
 
     public boolean isClosed() {
@@ -505,6 +523,8 @@ public final class OresScheduler implements AutoCloseable {
         private static final int TERMINAL = 4;
 
         private final Task<T> task;
+        private final SchedulerCooperationWatchdog.Lease watchdogLease =
+                new SchedulerCooperationWatchdog.Lease(greedyDispatchObservations);
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
@@ -696,7 +716,11 @@ public final class OresScheduler implements AutoCloseable {
 
             everStarted.set(true);
             Object priorTaskDomain = CURRENT_TASK_DOMAIN.get();
+            SchedulerCooperationWatchdog.Lease priorWatchdog =
+                    CURRENT_WATCHDOG_LEASE.get();
             CURRENT_TASK_DOMAIN.set(this);
+            CURRENT_WATCHDOG_LEASE.set(watchdogLease);
+            watchdogLease.enter();
             try {
                 detachActiveAwaitRegistration();
                 Resume resume = pendingResume.getAndSet(null);
@@ -747,6 +771,14 @@ public final class OresScheduler implements AutoCloseable {
                 failTerminal(new IllegalStateException(
                         "unknown OresScheduler task step " + step.getClass().getName()));
             } finally {
+                // Quiesce before resetting carrier thread-locals. This must
+                // also happen on thrown cancellation and fatal failures.
+                watchdogLease.leave();
+                if (priorWatchdog == null) {
+                    CURRENT_WATCHDOG_LEASE.remove();
+                } else {
+                    CURRENT_WATCHDOG_LEASE.set(priorWatchdog);
+                }
                 if (priorTaskDomain == null) {
                     CURRENT_TASK_DOMAIN.remove();
                 } else {

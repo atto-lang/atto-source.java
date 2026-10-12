@@ -2096,6 +2096,23 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean isAlive() { return ref.isAlive(); }
         public Optional<Throwable> failure() { return ref.failure(); }
 
+        /**
+         * Host/supervisor-only advisory count of overdue source-task dispatches.
+         * This count is not a hard deadline violation or an authorization to
+         * interrupt the carrier; it is valid only while the actor is registered.
+         * A serial actor retains its single-writer lease while overdue.
+         */
+        public long greedyDispatchObservations() {
+            requireSupervisorContext("inspect an actor's scheduler watchdog");
+            ActorCell<?> cell = actors.get(ref.id());
+            if (cell == null) return 0L;
+            synchronized (cell.lifecycleLock) {
+                OresScheduler scheduler = cell.sourceScheduler;
+                return scheduler == null ? 0L
+                        : scheduler.greedyDispatchObservations();
+            }
+        }
+
         public Optional<ActorId> parentId() {
             ActorCell<?> cell = actors.get(ref.id());
             return cell == null || cell.parent == null
@@ -4643,11 +4660,19 @@ public final class ActorRuntime implements AutoCloseable {
             throw new ActorCancellationSignal("actor execution stopped");
         }
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
-            cell.untrustedSafepoints++;
+            long safepoints = ++cell.untrustedSafepoints;
             if (--cell.untrustedFuelRemaining < 0) {
                 throw new UntrustedActorQuotaExceededException(
                         UntrustedActorQuotaExceededException.Resource.FUEL,
                         "untrusted actor exhausted its execution fuel");
+            }
+            // Fuel is charged at EVERY safepoint, but reading nanoTime and the
+            // JVM thread CPU clock on every loop iteration is expensive.
+            // Check on entry and then every 64 safepoints. This is a bounded
+            // soft sampling interval, NOT a guarantee of asynchronous kill.
+            if (safepoints != 1
+                    && (safepoints & (SourceCooperationQuantum.LOOP_CHECK_INTERVAL - 1)) != 0) {
+                return;
             }
             long wallBudget = cell.policy.maxWallTime().toNanos();
             if (System.nanoTime() - cell.turnStartedWallNanos > wallBudget) {
