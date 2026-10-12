@@ -269,16 +269,16 @@ public final class OresHostFutureBridge {
      * Ordinary guest/actor calls do not inherit this host-specific deferral.
      */
     public static <T> OresFuture<T> startSourceTask(
-            OresScheduler scheduler, OresScheduler.Task<T> task) {
+            Object context, OresScheduler scheduler, OresScheduler.Task<T> task) {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(task, "task");
         ArrayDeque<Slot> slots = CAPTURES.get();
         if (slots == null || slots.isEmpty()) return scheduler.start(task);
         Slot slot = slots.peek();
         slot.requireOwnerThread();
-        if (slot.state != Slot.State.CLAIMED) {
+        if (slot.state != Slot.State.CLAIMED || slot.ownerContext != context) {
             throw new SecurityException(
-                    "host Future source start requires an active claimed scope");
+                    "host Future source start requires the owning context and claimed scope");
         }
         OresScheduler.DeferredStart<T> deferred = scheduler.prepareDeferred(task);
         try {
