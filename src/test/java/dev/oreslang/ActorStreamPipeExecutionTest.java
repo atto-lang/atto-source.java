@@ -96,4 +96,35 @@ final class ActorStreamPipeExecutionTest {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(malformed)));
     }
+
+    @Test void prematureTransformStopFailsTheWholeActorStreamDoneBarrier() throws Exception {
+        String broken = program().replace(
+                "self.forward(Signal.Data(n + 1));",
+                "self.end();");
+        assertNotEquals(program(), broken);
+        assertThrows(PolyglotException.class, () -> execute(broken),
+                "an early middle-stage STOP must never complete ActorStream.get_done successfully");
+    }
+
+    @Test void rejectMoreThanSixteenActorsBeforeAnyRuntimeAdmission() throws Exception {
+        String source = program().replace(
+                "spawn Sink()",
+                "spawn Transform(),\n        spawn Transform(),\n        spawn Sink()");
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)),
+                "ActorStream caps its actor count before spawning any stages");
+    }
+
+    @Test void explicitStaticResolutionDoesNotTurnPrivateMethodsPublic() throws Exception {
+        String source = """
+                define class Utility as
+                    static fnc secret(): int { return 42; }
+                end
+                pub async routine main(): void {
+                    stdio.stdout.write(Utility::secret());
+                    return;
+                }
+                """;
+        assertThrows(PolyglotException.class, () -> execute(source));
+    }
 }

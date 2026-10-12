@@ -34,3 +34,15 @@ exists*. This is enforced in the parser/typechecker and runtime with an
 internal, non-source static-namespace receiver; it never calls a shadowing
 instance's method. `Utility.answer()` uses ordinary lexical/instance
 lookup, and is therefore ambiguous if the value name shadows the class.
+
+## Physical completion gate
+
+`ActorStream.get_done()` is a **whole-route** barrier: success requires
+both the completed `2*N` phase transition and physical DONE settlement
+from **all N actors**. A failed stage, an aborted route, or an incomplete
+roundtrip rejects the observer without treating source-only termination
+as sufficient evidence. Cancelling an observation cannot cancel the actors.
+
+The pipeline remains a single-flow construct: only one root DATA ingress
+may complete. Replaying a root message or sending directly to a middle
+actor is not equivalent to `ActorStream.send`.
