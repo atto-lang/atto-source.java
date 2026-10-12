@@ -347,6 +347,9 @@ final class SupervisorChildRegistryTest {
                 var child = registry.register(actor);
                 registry.finalized(child.child(), actor, 1);
                 var ticket = registry.beginStop(child.child(), actor, 1, i + 100L);
+                // Simulate the already-entered host callback before racing its
+                // returned success against an independent authoritative receipt.
+                registry.claimHostStopInvocation(ticket);
                 var start = new java.util.concurrent.CountDownLatch(1);
                 var original = workers.submit(() -> {
                     start.await();
