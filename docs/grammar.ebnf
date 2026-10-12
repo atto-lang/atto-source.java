@@ -143,7 +143,8 @@ for_init        = binding_kind [ type_ref ] IDENT "=" expression
                 | expression ;
 
 expression      = assignment ;
-assignment      = conditional [ "=" assignment ] ;
+assignment      = "yield" assignment
+                | conditional [ "=" assignment ] ;
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
 logic_or        = equality { "|" equality } ;
 equality        = comparison { ( "==" | "!=" ) comparison } ;
