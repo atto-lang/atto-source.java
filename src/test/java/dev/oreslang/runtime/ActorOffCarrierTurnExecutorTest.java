@@ -41,14 +41,51 @@ final class ActorOffCarrierTurnExecutorTest {
                     "no actor constructor ran on an admitted carrier");
             assertNotNull(escaped.get());
 
-            // This is an unsupported callback on an arbitrary host thread.
-            // The actor must fail closed BEFORE running any actor-owned code.
-            escaped.get().run();
+            // The host's no-op execute() must fail the actor immediately,
+            // not wait indefinitely for an escaped callback to be invoked.
             assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isPresent(),
+                    "TurnExecutor returning without executing must fail closed");
+            // A delayed callback cannot revive an already-retired actor or
+            // execute the actor constructor on an unauthorized host thread.
+            assertThrows(IllegalStateException.class, escaped.get()::run);
             assertFalse(actorConstructorInvoked.get());
             assertTrue(ref.failure().isPresent(),
                     "off-carrier execution must cause an observable failure");
             assertFalse(runtime.currentThreadOwnsActorExecutionLease());
+        }
+    }
+
+    @Test
+    void duplicateTurnCallbackFailsWithoutExecutingAnActorTwice() throws Exception {
+        AtomicBoolean callbackDuplicated = new AtomicBoolean();
+        AtomicReference<Throwable> violation = new AtomicReference<>();
+        AtomicBoolean factoryExecuted = new AtomicBoolean();
+        ActorRuntime.TurnExecutor duplicate = turn -> {
+            turn.run();
+            callbackDuplicated.set(true);
+            try {
+                turn.run();
+            } catch (IllegalStateException rejected) {
+                violation.set(rejected);
+                throw rejected;
+            }
+        };
+
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 1, 16), duplicate)) {
+            var ref = runtime.<String>spawnShared(() -> {
+                if (!factoryExecuted.compareAndSet(false, true)) {
+                    throw new IllegalStateException("actor constructor executed twice");
+                }
+                return (message, context) -> { };
+            });
+            assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(callbackDuplicated.get());
+            assertNotNull(violation.get());
+            assertTrue(factoryExecuted.get());
+            assertTrue(ref.failure().isPresent(),
+                    "duplicate actor callback must terminate its actor");
         }
     }
 }
