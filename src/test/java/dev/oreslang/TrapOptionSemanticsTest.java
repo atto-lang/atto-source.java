@@ -545,7 +545,7 @@ final class TrapOptionSemanticsTest {
                 end
 
                 async fnc answer(): int { return 11; }
-                async fnc recover(): int {
+                async fnc recover_cast(): int {
                   val int seed = await answer();
                   val Animal animal = new Cat();
                   let mut int status = 0;
@@ -560,7 +560,7 @@ final class TrapOptionSemanticsTest {
                   return status;
                 }
                 pub fnc main(): void {
-                  stdio.stdout.write(await recover());
+                  stdio.stdout.write(await recover_cast());
                   return;
                 }
                 """;
