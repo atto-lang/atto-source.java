@@ -776,7 +776,14 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void cancelFromSchedulerClose() {
+            // A Future may publish its cancelled state before executing its
+            // cancellation hook: runtime waiters are notified synchronously
+            // first, and a waiter can block in that interval. Do not assume
+            // isCancelled() means the TaskRunner has observed cancellation.
+            // close() must sever await registrations and retire idle tasks
+            // independently of the thread running Future.cancel(false).
             completion.cancel(false);
+            cancelFromFuture(); // idempotent if the normal hook already ran
         }
     }
 
