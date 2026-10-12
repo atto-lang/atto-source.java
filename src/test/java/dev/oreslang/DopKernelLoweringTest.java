@@ -48,7 +48,7 @@ final class DopKernelLoweringTest {
         }
         var newOwner = source.take();
         assertThrows(IllegalStateException.class, () -> source.read(0, 0));
-        assertThrows(IllegalStateException.class, () -> DopKernelIR.executeCpu(kernel, newOwner, newOwner));
+        assertThrows(IllegalArgumentException.class, () -> DopKernelIR.executeCpu(kernel, newOwner, newOwner));
         assertThrows(IllegalArgumentException.class,
                 () -> DopKernelIR.lowerOpenCl(kernel, new DopKernelIR.GpuTarget(64, 1, 10, true)));
         assertThrows(IllegalArgumentException.class,
