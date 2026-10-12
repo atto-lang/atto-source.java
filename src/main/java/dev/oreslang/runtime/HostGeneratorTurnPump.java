@@ -166,6 +166,25 @@ final class HostGeneratorTurnPump implements AutoCloseable {
         return owner;
     }
 
+    /**
+     * A staged host iterator must be tied to the context's actual root
+     * scheduler before it can admit a public pull. Checking only when a
+     * certificate is redeemed would poison the whole context on a simple
+     * foreign-scheduler construction mistake.
+     */
+    void requireOwningScheduler(OresScheduler scheduler) {
+        if (scheduler == null || owningScheduler == null || owningScheduler != scheduler) {
+            throw new SecurityException(
+                    "host generator iterator requires the pump's owning root scheduler");
+        }
+        synchronized (gate) {
+            if (sealed || scheduler.isClosed()) {
+                throw new RejectedExecutionException(
+                        "host generator iterator belongs to a closing context or scheduler");
+            }
+        }
+    }
+
     <T> OresFuture<T> request(OwnerToken token, Start<T> start) {
         // The synthetic completion path exists only for isolated queue
         // regressions. A production OresContext always supplies the owning
