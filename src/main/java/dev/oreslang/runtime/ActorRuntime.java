@@ -6916,24 +6916,40 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void drainMailboxReservations() {
+            // A channel's drain callback may run while its channel lock is
+            // held. Only detach references there; invoking envelope.close()
+            // can release user-owned capabilities and run callbacks.
+            List<MessageEnvelope> continuations = new ArrayList<>();
+            List<MessageEnvelope> userMail = new ArrayList<>();
             synchronized (lifecycleLock) {
-                while (continuationMailbox.drainOne(continuation -> {
-                    releaseMailboxSlot(true);
-                    continuation.close();
-                })) {
-                    // Reclaim admitted control mail even after termination closes the channel.
+                while (continuationMailbox.drainOne(continuations::add)) {
+                    // Detach CONTROL envelopes after lane admission is fenced.
+                }
+                while (mailbox.drainOne(userMail::add)) {
+                    // Detach committed user messages, including after close.
                 }
                 sourceHandoffRequested = false;
+                sourceReceiveSuspended = false;
+                activeMail = null;
             }
-
-            while (mailbox.drainOne(envelope -> {
-                releaseMailboxSlot(false);
-                envelope.close();
-            })) {
-                // Drain all committed user-message envelopes, including after close.
+            if (Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "actor mailbox cleanup must release lifecycleLock before envelope callbacks");
             }
-            sourceReceiveSuspended = false;
-            activeMail = null;
+            for (MessageEnvelope continuation : continuations) {
+                try {
+                    continuation.close();
+                } finally {
+                    releaseMailboxSlot(true);
+                }
+            }
+            for (MessageEnvelope envelope : userMail) {
+                try {
+                    envelope.close();
+                } finally {
+                    releaseMailboxSlot(false);
+                }
+            }
         }
 
         private void fail(Throwable failure) {
@@ -6970,12 +6986,16 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
-                drainMailboxReservations();
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
                 lifecycleLock.notifyAll();
             }
+
+            // Once admissions are sealed, detach mailbox envelopes under the
+            // actor monitor and release their backing resources outside it.
+            // Do this before publishing any termination receipts.
+            drainMailboxReservations();
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.
