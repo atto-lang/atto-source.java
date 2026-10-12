@@ -1,0 +1,90 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Concurrent transfer publication versus runtime shutdown. The registry's
+ * seal is the linearization point: no transfer published after it may escape
+ * the close sweep, and every successful registration is included in it.
+ */
+final class HttpTransferPublicationRaceTest {
+    @Test void publicationBeforeSealIsIncludedAndPublicationAfterSealIsRejected() {
+        var registry = new NativeHttp.TransferPublicationGate<String>();
+        registry.publish("first", "one");
+        registry.publish("second", "two");
+        assertEquals(2, registry.size());
+        assertEquals(new HashSet<>(List.of("one", "two")),
+                new HashSet<>(registry.sealAndSnapshot()));
+        assertThrows(IllegalStateException.class,
+                () -> registry.publish("third", "three"));
+        assertEquals(2, registry.size());
+        assertEquals(2, registry.sealAndSnapshot().size());
+        assertEquals("one", registry.remove("first"));
+        assertTrue(registry.remove("second", "two"));
+        assertEquals(0, registry.size());
+        assertThrows(IllegalStateException.class,
+                () -> registry.publish("first", "one"),
+                "restarting the registry would resurrect stale authority");
+    }
+
+    @Test void concurrentPublishesAndSealHaveExactLinearizableSnapshot() throws Exception {
+        final int attempts = 96;
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int round = 0; round < 24; round++) {
+                var registry = new NativeHttp.TransferPublicationGate<Integer>();
+                var begin = new CountDownLatch(1);
+                var published = new AtomicInteger();
+                var rejected = new AtomicInteger();
+                var tasks = new ArrayList<java.util.concurrent.Future<?>>();
+                for (int n = 0; n < attempts; n++) {
+                    final int ticket = n;
+                    tasks.add(workers.submit(() -> {
+                        begin.await();
+                        try {
+                            registry.publish(Integer.toString(ticket), ticket);
+                            published.incrementAndGet();
+                        } catch (IllegalStateException closed) {
+                            rejected.incrementAndGet();
+                        }
+                        return null;
+                    }));
+                }
+                var seal = workers.submit(() -> {
+                    begin.await();
+                    return registry.sealAndSnapshot();
+                });
+                begin.countDown();
+                List<Integer> snapshot = seal.get(10, TimeUnit.SECONDS);
+                for (var t : tasks) t.get(10, TimeUnit.SECONDS);
+                assertEquals(attempts, published.get() + rejected.get(),
+                        "each concurrent transfer must either publish or reject");
+                assertEquals(published.get(), snapshot.size(),
+                        "close sweep must observe every successfully published token");
+                assertEquals(published.get(), registry.size());
+                assertEquals(snapshot.size(), new HashSet<>(snapshot).size(),
+                        "tokens in close sweep must be unique");
+                assertThrows(IllegalStateException.class,
+                        () -> registry.publish("post-shutdown", -1));
+            }
+        }
+    }
+
+    @Test void duplicatePublicationCannotOverwriteOriginalTransfer() {
+        var registry = new NativeHttp.TransferPublicationGate<String>();
+        registry.publish("ticket", "original-actor");
+        assertThrows(IllegalStateException.class,
+                () -> registry.publish("ticket", "foreign-actor"));
+        assertEquals("original-actor", registry.get("ticket"));
+        assertEquals(List.of("original-actor"), registry.sealAndSnapshot());
+    }
+}
