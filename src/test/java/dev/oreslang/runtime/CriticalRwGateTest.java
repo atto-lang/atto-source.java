@@ -207,6 +207,51 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void activeReaderBoundQueuesExcessReadersAndAdmitsWhenCapacityReturns() {
+        CriticalRwGate gate = new CriticalRwGate();
+        java.util.List<CriticalRwGate.Ticket> admitted = new java.util.ArrayList<>();
+        for (int i = 0; i < CriticalRwGate.MAX_ACTIVE_READERS; i++) {
+            var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+            assertTrue(reader.enterAsync().isDone());
+            admitted.add(reader);
+        }
+        assertEquals(CriticalRwGate.MAX_ACTIVE_READERS, gate.activeReaderCount());
+        var overflow = gate.newTicket(CriticalRwGate.Mode.READ);
+        assertFalse(overflow.enterAsync().isDone(), "reader cap must not over-admit");
+        assertEquals(1, gate.queuedCount());
+        admitted.getFirst().close();
+        assertTrue(overflow.isHeld(), "vacated reader slot must hand off without parking");
+        assertEquals(CriticalRwGate.MAX_ACTIVE_READERS, gate.activeReaderCount());
+        gate.close();
+        assertFalse(overflow.isHeld());
+        assertEquals(0, gate.activeReaderCount());
+        assertEquals(0, gate.queuedCount());
+    }
+
+    @Test
+    void crossGateLogicalOwnershipRejectsOverlapWithoutBlockingOtherDomains() {
+        CriticalRwGate one = new CriticalRwGate();
+        CriticalRwGate two = new CriticalRwGate();
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            var result = scheduler.startSync(() -> {
+                var writer = one.newTicket(CriticalRwGate.Mode.WRITE);
+                writer.enterAsync();
+                try {
+                    var reader = two.newTicket(CriticalRwGate.Mode.READ);
+                    assertThrows(IllegalStateException.class, reader::enterAsync,
+                            "same logical task cannot hold two unverified critical domains");
+                } finally {
+                    writer.close();
+                }
+                return true;
+            });
+            assertTrue(result.join());
+        }
+        assertFalse(one.hasWriter());
+        assertEquals(0, two.queuedCount());
+    }
+
+    @Test
     void completionBindingIsSingleOwnerAndCancelsQueuedTickets() {
         CriticalRwGate gate = new CriticalRwGate();
         var owner = gate.newTicket(CriticalRwGate.Mode.WRITE);
