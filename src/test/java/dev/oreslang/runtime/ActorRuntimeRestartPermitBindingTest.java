@@ -78,22 +78,29 @@ final class ActorRuntimeRestartPermitBindingTest {
     }
 
     @Test
-    void noUnreservedCandidateAllocation() {
+    void foreignAndClosedReservationsCannotSpawnCandidates() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup();
-            var wrongGroup = runtime.createActorGroup();
-            var other = runtime.spawnPrivate(
+            var otherGroup = runtime.createActorGroup();
+            var failed = runtime.spawnPrivate(
                     (ActorRuntime.BehaviorFactory<Integer>) context ->
-                            (value, turn) -> {});
-            wrongGroup.manageWorker(other);
-            // A closed group cannot mint a reservation via a plain ActorId.
-            assertEquals(0, group.trackedLogicalChildren());
-            group.close();
-            assertThrows(IllegalStateException.class,
-                    () -> group.spawnUnpublishedRestartCandidate(null,
+                            (value, turn) -> { throw new IllegalStateException("failure"); });
+            otherGroup.manageWorker(failed);
+            var child = otherGroup.supervisedWorkerSnapshot(failed);
+            failed.send(1);
+            assertTrue(failed.awaitTermination(5, TimeUnit.SECONDS));
+            finalized(otherGroup, child.child());
+            var ticket = otherGroup.reserveFinalizedRestart(child.child(), failed.id(), 1);
+            assertThrows(SecurityException.class,
+                    () -> group.spawnUnpublishedRestartCandidate(ticket,
                             ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
                             context -> (value, turn) -> {}));
-            wrongGroup.close();
+            otherGroup.close();
+            assertThrows(IllegalStateException.class,
+                    () -> otherGroup.spawnUnpublishedRestartCandidate(ticket,
+                            ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                            context -> (value, turn) -> {}));
+            group.close();
         }
     }
 }
