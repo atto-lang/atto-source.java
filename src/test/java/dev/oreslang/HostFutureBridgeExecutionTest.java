@@ -33,6 +33,11 @@ final class HostFutureBridgeExecutionTest {
 
             pub fnc ordinary(): int { return 17; }
 
+            pub fnc syncSideEffect(): int {
+              stdio.println("INVALID-sync-executed");
+              return 17;
+            }
+
             pub async fnc work(): int {
               try {
                 stdio.println("armed");
@@ -158,6 +163,26 @@ final class HostFutureBridgeExecutionTest {
                     "matching scoped invocation"));
             assertEquals("", output.toString(),
                     "malformed or guessed bridge must not run guest work or main");
+        }
+    }
+
+    @Test
+    void synchronousGuestSideEffectsMustNotRunBeforeAsyncRejection()
+            throws Exception {
+        ConcurrentOutput output = new ConcurrentOutput();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).out(output).build()) {
+            Value parsed = context.parse(Source.newBuilder(OresLanguage.ID,
+                    PROGRAM, "sync-side-effect-rejection.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+            parsed.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+            PolyglotException rejection = assertThrows(PolyglotException.class,
+                    () -> OresHostFutureBridge.invokePublicFuture(
+                            parsed, "syncSideEffect"));
+            assertTrue(rejection.getMessage().contains(
+                    "host Future handoff requires an async public function"));
+            assertEquals("", output.toString(),
+                    "rejected sync function must not execute before the admission check");
         }
     }
 
