@@ -24,6 +24,21 @@ final class QuantumCircuitLoweringTest {
     }
 
     @Test
+    void circuitRejectsOversizedExternalListWithoutTraversingIt() {
+        // Adversarial list: size() is cheap, but any iteration triggers
+        // arbitrary work. Circuit admission must reject before List.copyOf.
+        java.util.List<QuantumCircuitIR.Gate> oversized =
+                new java.util.AbstractList<>() {
+                    @Override public int size() { return 1025; }
+                    @Override public QuantumCircuitIR.Gate get(int index) {
+                        throw new AssertionError("oversized gate collection was traversed");
+                    }
+                };
+        assertThrows(IllegalArgumentException.class,
+                () -> new QuantumCircuitIR.Circuit(1, 1, oversized));
+    }
+
+    @Test
     void highDimensionalShotsRemainBoundedAndSeedDeterministic() {
         // This shape previously required about 6.5 billion comparisons at
         // 100,000 shots; sampling must scale logarithmically in bit patterns.
