@@ -35,7 +35,8 @@ pub routine main(): void {
 `trap` is currently a callable modifier, not a call-site operator. It wraps normal
 returns in Some and ordinary runtime failures in None, without retaining error
 detail. Untrapped assertion failures retain the message and can be caught by
-ordinary try/catch. Panic, cancellation, and termination continue to bypass trap.
+ordinary try/catch. Panic, cancellation, process termination, and capability or
+permission denials must bypass trap: they are not assertion mismatches.
 
 The source module uses `rt fail(String message): void`, a general runtime failure
 operation. The host only transports that failure; predicates and messages live in
