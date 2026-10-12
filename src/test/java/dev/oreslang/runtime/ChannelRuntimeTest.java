@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -402,6 +403,53 @@ final class ChannelRuntimeTest {
             assertTrue(channel.tryRead().isEmpty(),
                     "cancelled generations must not retain a waiter or steal data");
         }
+    }
+
+    @Test
+    void readOnlySelectPlanReusesDescriptorAcrossStableEntries() {
+        ChannelRuntime.Channel<Integer> a = new ChannelRuntime.Channel<>(2);
+        ChannelRuntime.Channel<Integer> b = new ChannelRuntime.Channel<>(2);
+        ChannelRuntime.SelectPlan original = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.read(a), ChannelRuntime.read(b));
+        var stable = original.rebindReadOnly(java.util.List.of(
+                ChannelRuntime.read(a), ChannelRuntime.read(b)));
+        assertSame(original, stable, "stable site must not rebuild the SelectPlan");
+
+        assertTrue(a.tryWrite(1));
+        assertTrue(b.tryWrite(2));
+        assertEquals(0, stable.selectAsync().join().index());
+
+        ChannelRuntime.Channel<Integer> rebound = new ChannelRuntime.Channel<>(2);
+        assertTrue(rebound.tryWrite(3));
+        var refreshed = stable.rebindReadOnly(java.util.List.of(
+                ChannelRuntime.read(rebound), ChannelRuntime.read(b)));
+        assertNotSame(stable, refreshed, "changed channel must bind a new descriptor");
+        assertEquals(1, refreshed.selectAsync().join().index(),
+                "channel rebinding must preserve the site FAIR cursor");
+        assertEquals(3, rebound.tryRead().orElseThrow(),
+                "loser of the rebound registration must keep its value");
+
+        assertThrows(IllegalArgumentException.class, () ->
+                refreshed.rebindReadOnly(java.util.List.of(
+                        ChannelRuntime.write(a, 99), ChannelRuntime.read(b))));
+    }
+
+    @Test
+    void defaultArmDoesNotSpendCircularFairnessCredit() {
+        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.read(first),
+                ChannelRuntime.read(second),
+                ChannelRuntime.defaultCase());
+        for (int i = 0; i < 25; i++) {
+            var result = plan.selectAsync().join();
+            assertEquals(ChannelRuntime.SelectOperation.DEFAULT, result.operation());
+        }
+        assertTrue(first.tryWrite(1));
+        assertTrue(second.tryWrite(2));
+        assertEquals(0, plan.selectAsync().join().index(),
+                "DEFAULT must not rotate the cursor before ready channel work");
     }
 
     @Test
