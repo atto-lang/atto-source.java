@@ -6989,6 +6989,23 @@ public final class ActorRuntime implements AutoCloseable {
             terminateTree(cancellation, true);
         }
 
+        /**
+         * A normal teardown callback failure must not strand unrelated actor
+         * drains, owned operations, or structured descendants. Preserve the
+         * failure in getDone while continuing best-effort cancellation.
+         * Catastrophic VM failures retain their fail-fast behavior.
+         */
+        private void runTerminationCleanup(Runnable cleanup) {
+            try {
+                cleanup.run();
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                ref.terminationCause.compareAndSet(null, fatal);
+                throw fatal;
+            } catch (Throwable failure) {
+                ref.terminationCause.compareAndSet(null, failure);
+            }
+        }
+
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
@@ -7022,32 +7039,27 @@ public final class ActorRuntime implements AutoCloseable {
                 // a channel settles registered asynchronous selectors inline.
                 // Each close must run outside that monitor and both lanes must
                 // be attempted even if one completion callback throws.
-                try {
-                    mailbox.close(cause);
-                } catch (Throwable closeFailure) {
-                    ref.terminationCause.compareAndSet(null, closeFailure);
-                }
-                try {
-                    continuationMailbox.close(cause);
-                } catch (Throwable closeFailure) {
-                    ref.terminationCause.compareAndSet(null, closeFailure);
-                }
+                runTerminationCleanup(() -> mailbox.close(cause));
+                runTerminationCleanup(() -> continuationMailbox.close(cause));
 
-                // Detach closed mailbox envelopes while holding the monitor,
-                // but release their resources after leaving the lock.
-                drainMailboxReservations();
+                // One failing reservation release must not skip cancellation
+                // of runtime-owned operations or any structured descendants.
+                runTerminationCleanup(this::drainMailboxReservations);
 
                 Throwable drainFailure = cause == null ? terminated(ref) : cause;
                 for (DrainWaiter waiter : failedDrainWaiters) {
-                    waiter.completion().failFromRuntime(drainFailure);
+                    runTerminationCleanup(
+                            () -> waiter.completion().failFromRuntime(drainFailure));
                 }
                 // Cancel runtime-owned operations before canceling children;
                 // none of these Future callbacks may run under lifecycleLock.
-                for (OresFuture<?> future : pending) future.cancel(false);
+                for (OresFuture<?> future : pending) {
+                    runTerminationCleanup(() -> future.cancel(false));
+                }
                 for (ActorCell<?> child : descendants) {
-                    child.cancel(new ActorCancelledException(
+                    runTerminationCleanup(() -> child.cancel(new ActorCancelledException(
                             child.ref.id(),
-                            "parent actor " + ref.id() + " terminated"));
+                            "parent actor " + ref.id() + " terminated")));
                 }
             } finally {
                 // Even if an envelope release, waiter or cancellation hook
