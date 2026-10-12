@@ -13,8 +13,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(25)
 final class SourceActorStructuredCleanupGuestTest {
-    @Test
-    void hostStopUnwindsRealTypedMatchArmDeferAndFinally() throws Exception {
+    private record Outcome(String output, Throwable failure) { }
+
+    private static Outcome runStoppedGuest(boolean failingDefer) throws Exception {
         String program = """
             define serial actor Worker as
               pub static async fnc waitForever(): int {
@@ -43,6 +44,10 @@ final class SourceActorStructuredCleanupGuestTest {
             end
             pub fnc main(): void { return; }
             """;
+        if (failingDefer) {
+            program = program.replace("defer stdio.println(\"arm-defer\");",
+                    "defer stdio.println(1 % 0);");
+        }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false).out(out).build()) {
@@ -71,11 +76,30 @@ final class SourceActorStructuredCleanupGuestTest {
             Thread.sleep(50); // pending readch has no writer
             worker.stop();
             assertTrue(worker.awaitTermination(8, TimeUnit.SECONDS));
-            assertTrue(worker.failure().isEmpty(), String.valueOf(worker.failure()));
+            return new Outcome(out.toString(StandardCharsets.UTF_8),
+                    worker.failure().orElse(null));
         }
-        String result = out.toString(StandardCharsets.UTF_8);
+    }
+
+    @Test
+    void hostStopUnwindsRealTypedMatchArmDeferAndFinally() throws Exception {
+        Outcome outcome = runStoppedGuest(false);
+        assertNull(outcome.failure(), String.valueOf(outcome.failure()));
+        String result = outcome.output();
         assertEquals(1, result.lines().filter("finally-once"::equals).count(), result);
         assertEquals(1, result.lines().filter("arm-defer"::equals).count(), result);
         assertFalse(result.contains("published"), result);
+    }
+
+    @Test
+    void failingGuestDeferMakesCleanupIncompleteAndNeverPublishes() throws Exception {
+        Outcome outcome = runStoppedGuest(true);
+        assertNotNull(outcome.failure(),
+                "cancellation with a failed defer must never report graceful done");
+        assertTrue(outcome.failure().toString().contains("cleanup incomplete"),
+                String.valueOf(outcome.failure()));
+        assertEquals(1, outcome.output().lines().filter("finally-once"::equals).count(),
+                outcome.output());
+        assertFalse(outcome.output().contains("published"), outcome.output());
     }
 }
