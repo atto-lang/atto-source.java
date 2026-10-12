@@ -65,7 +65,8 @@ final class ActorTreePhysicalShutdownBarrierTest {
                 ActorRuntime.ActorContext<Integer> ignored) {
             return (mail, ctx) -> {
                 TreeState state = ACTIVE.get();
-                ctx.runtime().startActorTask(
+                try {
+                    ctx.runtime().startActorTask(
                     new OresScheduler.CancellationAwareTask<Integer>() {
                         @Override public boolean cleanupInProgress() {
                             return state.cleaning.get();
@@ -91,6 +92,10 @@ final class ActorTreePhysicalShutdownBarrierTest {
                             return OresScheduler.done(73);
                         }
                     });
+                } catch (Throwable failure) {
+                    state.failure.compareAndSet(null, failure);
+                    state.sourceArmed.countDown();
+                }
             };
         }
     }
@@ -123,7 +128,10 @@ final class ActorTreePhysicalShutdownBarrierTest {
                 assertTrue(state.spawned.await(5, TimeUnit.SECONDS));
                 if (state.failure.get() != null) fail(state.failure.get());
                 assertTrue(state.loanAllocated.await(5, TimeUnit.SECONDS));
-                assertTrue(state.sourceArmed.await(5, TimeUnit.SECONDS));
+                assertTrue(state.sourceArmed.await(5, TimeUnit.SECONDS),
+                        () -> "source child never armed; child failure="
+                                + state.cleanupChild.get().failure()
+                                + "; readyDone=" + state.cleanupChild.get().ready().isDone());
                 if (state.failure.get() != null) fail(state.failure.get());
                 assertEquals(parent.id(), state.nativeChild.get().parentId().orElseThrow());
                 assertEquals(parent.id(), state.cleanupChild.get().parentId().orElseThrow());
