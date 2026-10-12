@@ -804,6 +804,13 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "host Future handoff requires an async public function: " + name);
             }
+            if (requireAsync && fn.generator()) {
+                // An async generator returns a pull-driven AsyncIterator,
+                // never an OresFuture. Refuse the bridge before constructing
+                // the generator or running any of its source/host effects.
+                throw new IllegalArgumentException(
+                        "host Future handoff does not accept async generators: " + name);
+            }
             Object result = callFunction(fn, java.util.Arrays.asList(arguments));
             return result instanceof HostObjectFacade host ? host.value() : result;
         }
