@@ -69,7 +69,12 @@ final class ExplicitNativeRetirementFaultInjectionTest {
         assertTrue(region.get().physicallyClosed());
         // This fault deliberately leaves a registered actor-owned arena. Fail
         // closed instead of pretending that logical STOP implies physical DONE.
-        stop.get(5, TimeUnit.SECONDS); // STOP request itself is nonblocking.
+        var rejectedStop = assertThrows(
+                java.util.concurrent.ExecutionException.class,
+                () -> stop.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(IllegalStateException.class, rejectedStop.getCause());
+        assertTrue(String.valueOf(rejectedStop.getCause())
+                .contains("did not finalize within the stop deadline"));
         assertThrows(IllegalStateException.class, runtime::close);
     }
 
