@@ -168,24 +168,24 @@ public final class OresVM implements AutoCloseable {
                     "OresVM must be closed outside actor and CONTROL scheduler turns");
         }
         synchronized (this) {
-        if (!closed.compareAndSet(false, true)) return;
-        startupState = StartupState.CLOSED;
-        try {
-            rootScheduler.close();
-        } finally {
-            controlExecutor.shutdownNow();
+            if (!closed.compareAndSet(false, true)) return;
+            startupState = StartupState.CLOSED;
             try {
-                if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                rootScheduler.close();
+            } finally {
+                controlExecutor.shutdownNow();
+                try {
+                    if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "Oreslang CONTROL scheduler carriers did not terminate");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
                     throw new IllegalStateException(
-                            "Oreslang CONTROL scheduler carriers did not terminate");
+                            "interrupted while closing Oreslang CONTROL scheduler",
+                            interrupted);
                 }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException(
-                        "interrupted while closing Oreslang CONTROL scheduler",
-                        interrupted);
             }
-        }
         }
     }
 }
