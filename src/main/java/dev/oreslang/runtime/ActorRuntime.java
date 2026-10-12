@@ -666,6 +666,26 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Compiler-owned immutable static READ/DEFAULT select plan, scoped to this
+     * exact actor incarnation. Each entry re-evaluates channel expressions,
+     * reuses a stable descriptor and preserves one FAIR cursor on rebinding.
+     * Never expose this mutable scheduler capability through actor messages.
+     */
+    public ChannelRuntime.SelectPlan actorLocalReadSelectPlan(
+            Object selectSite,
+            java.util.List<? extends ChannelRuntime.SelectCase> evaluated) {
+        Objects.requireNonNull(selectSite, "selectSite");
+        Objects.requireNonNull(evaluated, "evaluated");
+        requireCallerRuntimeAffinity("reuse actor-local select plan");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "actor-local SelectPlan requires an active actor turn");
+        }
+        return cell.readSelectPlan(selectSite, evaluated);
+    }
+
+    /**
      * Package-private proof hook for the explicitly whitelisted immutable code
      * image attached to one actor. The actor never receives ambient access to
      * the process code store; only this exact handle is exposed through its
@@ -6193,6 +6213,8 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private final IdentityHashMap<Object, Long> staticSelectCursors =
                 new IdentityHashMap<>();
+        private final IdentityHashMap<Object, ChannelRuntime.SelectPlan> readSelectPlans =
+                new IdentityHashMap<>();
         /** Settles only after the actor has fully crossed its TurnExecutor boundary. */
         private final OresFuture<Void> finalizedFuture = new OresFuture<>();
         /** Mailbox transport for ordinary user messages. */
@@ -6283,6 +6305,20 @@ public final class ActorRuntime implements AutoCloseable {
             // failed spawn must not leak an unregistered output stream.
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
+        }
+
+        private ChannelRuntime.SelectPlan readSelectPlan(
+                Object selectSite,
+                java.util.List<? extends ChannelRuntime.SelectCase> evaluated) {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) throw terminated(ref);
+                ChannelRuntime.SelectPlan existing = readSelectPlans.get(selectSite);
+                ChannelRuntime.SelectPlan next = existing == null
+                        ? new ChannelRuntime.SelectPlan(evaluated)
+                        : existing.rebindReadOnly(evaluated);
+                if (existing != next) readSelectPlans.put(selectSite, next);
+                return next;
+            }
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
