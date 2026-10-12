@@ -140,6 +140,54 @@ final class OresVMTest {
     }
 
     @Test
+    void actorAndMailmanCallbacksCannotCloseTheOwningVm() throws Exception {
+        try (OresVM vm = OresVM.create(Runnable::run);
+             ActorRuntime runtime = new ActorRuntime(
+                     IsolatePolicy.developer(),
+                     new ActorRuntime.DispatcherConfig(1, 1, 8, 64),
+                     ActorRuntime.TurnExecutor.direct(),
+                     vm::executeControl)) {
+            var actorDenied = new java.util.concurrent.CountDownLatch(1);
+            var mailmanDenied = new java.util.concurrent.CountDownLatch(1);
+            var callbackFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            group.<Integer>installMailman(8, (mail, context) -> {
+                try {
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            IllegalStateException.class, vm::close);
+                    assertTrue(vm.started());
+                    assertEquals(group.id(), context.groupId());
+                } catch (Throwable failure) {
+                    callbackFailure.compareAndSet(null, failure);
+                } finally {
+                    mailmanDenied.countDown();
+                }
+            });
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnShared(() -> (message, context) -> {
+                try {
+                    group.joinCurrent(join);
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            IllegalStateException.class, vm::close);
+                    assertTrue(vm.started());
+                    group.emit(message);
+                } catch (Throwable failure) {
+                    callbackFailure.compareAndSet(null, failure);
+                } finally {
+                    actorDenied.countDown();
+                }
+            });
+            actor.send(17);
+            assertTrue(actorDenied.await(5, TimeUnit.SECONDS));
+            assertTrue(mailmanDenied.await(5, TimeUnit.SECONDS));
+            org.junit.jupiter.api.Assertions.assertNull(callbackFailure.get(),
+                    "the actor and CONTROL Mailman must both reject VM close");
+            assertEquals(23, vm.rootScheduler().startSync(() -> 23)
+                    .get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void startupIsIdempotentAndSchedulerDispatchIdsRemainFresh() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try {
