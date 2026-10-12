@@ -57,8 +57,9 @@ delimiters may be `()`, `{}` or `[]`. The implementation rejects:
   lexically resolved macro invocation);
 - introduced `val`, `let`, `const`, functions, actors, modules, or other
   declarations and statements;
-- duplicate uses of a captured expression, to prevent evaluation of an affine
-  input or side-effecting expression multiple times;
+- duplicate **or unused** captures: each parameter must appear exactly once
+  in the template, preventing both repeated side effects and erasure of source
+  that would otherwise undergo syntax, ownership and actor-state checking;
 - unresolved macro names, malformed delimiters, duplicate definitions and
   wrong argument counts/kinds.
 
@@ -75,7 +76,9 @@ These restrictions avoid claiming full hygienic identifier generation before
 the AST can represent symbols carrying unique macro-definition identities.
 They are *conservative*, not a substitute for full hygiene or type checking.
 
-Bounds: 256 declarations, 32 recursive expansion levels, and up to 50,000 token-work units beyond the original input size.
+Bounds: 256 declarations, 32 recursive expansion levels, 128 nested macro
+delimiter groups per scanning pass, and up to 50,000 token-work units beyond
+the original input size.
 Expanders operate on token lists, without runtime callbacks or file/network
 capabilities. String lexemes are preserved; generated template token locations
 currently point at invocations. Definition-site diagnostic provenance is future
