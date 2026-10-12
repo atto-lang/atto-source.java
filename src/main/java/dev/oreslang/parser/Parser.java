@@ -799,7 +799,12 @@ public final class Parser {
         if (match(WITH)) {
             List<String> names = new ArrayList<>();
             do {
-                String name = consume(IDENT, "expected function effect after with").lexeme();
+                // 'block' is also a statement keyword; it remains a valid
+                // effect-row member in 'with io, block'.
+                if (!check(IDENT) && !check(BLOCK)) {
+                    throw error(peek(), "expected function effect after with");
+                }
+                String name = advance().lexeme();
                 if (match(DOT)) name += "." + consume(IDENT, "expected effect member after '.'").lexeme();
                 names.add(name);
             } while (match(COMMA));
