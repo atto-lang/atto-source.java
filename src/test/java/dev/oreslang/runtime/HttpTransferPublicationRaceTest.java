@@ -29,7 +29,7 @@ final class HttpTransferPublicationRaceTest {
                 () -> registry.publish("third", "three"));
         assertEquals(2, registry.size());
         assertEquals(2, registry.sealAndSnapshot().size());
-        assertEquals("one", registry.remove("first"));
+        assertTrue(registry.remove("first", "one"));
         assertTrue(registry.remove("second", "two"));
         assertEquals(0, registry.size());
         assertThrows(IllegalStateException.class,
@@ -93,7 +93,7 @@ final class HttpTransferPublicationRaceTest {
         assertEquals(List.of("old-incarnation"), pending.sealAndSnapshot());
         assertFalse(pending.claimIfOpen("stale", "old-incarnation"),
                 "a guest cannot claim a published ticket after runtime shutdown");
-        assertEquals("old-incarnation", pending.remove("stale"),
+        assertTrue(pending.remove("stale", "old-incarnation"),
                 "authorized teardown may still revoke the stale ticket");
     }
 
