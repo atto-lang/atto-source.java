@@ -713,9 +713,21 @@ public final class NativeHttp implements AutoCloseable {
                     // already-authorized exchange teardown.
                     for (Server server : closing) {
                         if (!server.awaitActiveDrain(deadline)) {
+                            String unresolved = server.active.stream().map(state -> {
+                                synchronized (state) {
+                                    return state.requestId + "{terminal=" + state.terminal
+                                            + ", transportClosed=" + state.transportClosed
+                                            + ", inFlight=" + state.inFlightOperations
+                                            + ", actorDone=" + (state.actor == null
+                                                || state.actor.done().isDone())
+                                            + ", rejectedAbort=" + rejectedAborts.contains(state)
+                                            + "}";
+                                }
+                            }).sorted().collect(java.util.stream.Collectors.joining(", "));
                             throw new IllegalStateException(
                                     "HTTP close still owns " + server.active.size()
-                                            + " active exchange/actor reservation(s)");
+                                            + " active exchange/actor reservation(s): "
+                                            + unresolved);
                         }
                     }
 
