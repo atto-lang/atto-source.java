@@ -1,9 +1,10 @@
 package dev.oreslang;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Lexer;
@@ -24,7 +25,7 @@ final class HyphenatedCompoundKeywordTest {
     }
 
     @Test
-    void nbSelectIsAcceptedInStaticStatementAndDoStatement() {
+    void nbSelectWorksInStaticAndDynamicSelection() {
         Ast.Program ast = Parser.parse("""
                 fnc choose(): void {
                   nb-select {
@@ -33,46 +34,27 @@ final class HyphenatedCompoundKeywordTest {
                   do nb-select {
                     default: {}
                   }
-                  return;
-                }
-                """);
-        Ast.FunctionDecl fn = (Ast.FunctionDecl) ast.modules().getFirst().declarations().getFirst();
-        Ast.SelectStmt first = assertInstanceOf(Ast.SelectStmt.class, fn.body().get(0));
-        Ast.SelectStmt second = assertInstanceOf(Ast.SelectStmt.class, fn.body().get(1));
-        assertEquals(Ast.WaitMode.NONBLOCKING, first.mode());
-        assertEquals(Ast.WaitMode.NONBLOCKING, second.mode());
-        assertEquals(false, first.explicitDo());
-        assertEquals(true, second.explicitDo());
-    }
-
-    @Test
-    void dynamicNbSelectRetainsNonblockingPolicy() {
-        Ast.Program ast = Parser.parse("""
-                fnc choose(): void {
                   val result = nb-select first from cases;
                   return;
                 }
                 """);
-        Ast.FunctionDecl fn = (Ast.FunctionDecl) ast.modules().getFirst().declarations().getFirst();
-        Ast.BindingStmt local = assertInstanceOf(Ast.BindingStmt.class, fn.body().get(0));
-        Ast.DynamicSelectExpr select =
-                assertInstanceOf(Ast.DynamicSelectExpr.class, local.initializer());
-        assertEquals(Ast.WaitMode.NONBLOCKING, select.mode());
-        assertEquals(Ast.SelectPolicy.PRIORITY, select.policy());
+        Ast.FunctionDecl fn =
+                (Ast.FunctionDecl) ast.modules().getFirst().declarations().getFirst();
+        Ast.SelectStmt first = assertInstanceOf(Ast.SelectStmt.class, fn.body().get(0));
+        Ast.SelectStmt second = assertInstanceOf(Ast.SelectStmt.class, fn.body().get(1));
+        Ast.BindingStmt binding = assertInstanceOf(Ast.BindingStmt.class, fn.body().get(2));
+        Ast.DynamicSelectExpr dynamic =
+                assertInstanceOf(Ast.DynamicSelectExpr.class, binding.initializer());
+        assertEquals(Ast.WaitMode.NONBLOCKING, first.mode());
+        assertEquals(Ast.WaitMode.NONBLOCKING, second.mode());
+        assertEquals(false, first.explicitDo());
+        assertEquals(true, second.explicitDo());
+        assertEquals(Ast.WaitMode.NONBLOCKING, dynamic.mode());
+        assertEquals(Ast.SelectPolicy.PRIORITY, dynamic.policy());
     }
 
     @Test
-    void reservedCompoundTokensNeverDowngradeToOrdinaryNames() {
-        List<Token> tokens = new Lexer(
-                "critical-read critical-write transform-pipe nb-select").scan();
-        assertEquals(List.of(
-                Token.Type.CRITICAL_READ, Token.Type.CRITICAL_WRITE,
-                Token.Type.TRANSFORM_PIPE, Token.Type.NB, Token.Type.SELECT,
-                Token.Type.EOF), tokens.stream().map(Token::type).toList());
-        assertEquals("critical-read", tokens.get(0).lexeme());
-        assertEquals("critical-write", tokens.get(1).lexeme());
-        assertEquals("transform-pipe", tokens.get(2).lexeme());
-
+    void contextualCriticalAndPipelineModifiersFailClosed() {
         String[] unsupported = {
             "pub fnc critical-read get(): int { return 1; }",
             "pub critical-read fnc get(): int { return 1; }",
@@ -94,32 +76,40 @@ final class HyphenatedCompoundKeywordTest {
     }
 
     @Test
-    void compoundKeywordsRequireExactAsciiHyphenAndWordBoundary() {
-        List<Token> tokens = new Lexer(
-                "critical-readonly critical-write2 transform-pipex nb-selectMore " +
-                "critical - read 7-3").scan();
-        // A non-ASCII en dash is deliberately an unsupported lexical character.
-        // The preceding fragments must never turn into compound tokens.
-        assertEquals(Token.Type.IDENT, tokens.get(0).type());
-        assertEquals(Token.Type.MINUS, tokens.get(1).type());
-        assertEquals(Token.Type.IDENT, tokens.get(2).type());
-        assertEquals(Token.Type.IDENT, tokens.get(3).type());
-        assertEquals(Token.Type.MINUS, tokens.get(4).type());
-        assertEquals(Token.Type.IDENT, tokens.get(5).type());
-        assertThrows(IllegalArgumentException.class,
-                () -> new Lexer("nb" + (char) 0x2013 + "select").scan());
+    void contextualCompoundWordsNeverStealSubtractionFromIdentifiers() {
+        // 'critical', 'read', 'transform', and 'pipe' are all valid variable
+        // names. The hyphens in expression position remain MINUS tokens.
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc difference(int critical, int read, int transform, int pipe): int {
+                  return critical-read + transform-pipe;
+                }
+                """));
+        List<Token> tokens = new Lexer("critical-read transform-pipe").scan();
+        assertEquals(List.of(
+                Token.Type.IDENT, Token.Type.MINUS, Token.Type.IDENT,
+                Token.Type.IDENT, Token.Type.MINUS, Token.Type.IDENT,
+                Token.Type.EOF), tokens.stream().map(Token::type).toList());
     }
 
     @Test
-    void arithmeticAndWhitespaceAreNotCompoundKeywords() {
+    void whitespaceNearMissesAndNonAsciiDashesAreNotCompounds() {
+        List<Token> fragments = new Lexer(
+                "critical-readonly critical-write2 transform-pipex nb-selectMore").scan();
+        assertEquals(4L, fragments.stream()
+                .filter(token -> token.type() == Token.Type.MINUS).count());
+        assertThrows(IllegalArgumentException.class,
+                () -> new Lexer("nb" + (char) 0x2013 + "select").scan());
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc wrong(): void { nb - select { default: {} } }"));
+    }
+
+    @Test
+    void subtractionWithReservedNbAndSelectDoesNotGetRewrittenAcrossWhitespace() {
         List<Token> tokens = new Lexer("a-b nb - select nb-selectMore").scan();
         assertEquals(List.of(
                 Token.Type.IDENT, Token.Type.MINUS, Token.Type.IDENT,
                 Token.Type.NB, Token.Type.MINUS, Token.Type.SELECT,
                 Token.Type.NB, Token.Type.MINUS, Token.Type.IDENT,
-                Token.Type.EOF),
-                tokens.stream().map(Token::type).toList());
-        assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("fnc wrong(): void { nb - select { default: {} } }"));
+                Token.Type.EOF), tokens.stream().map(Token::type).toList());
     }
 }
