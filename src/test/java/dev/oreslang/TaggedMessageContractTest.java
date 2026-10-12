@@ -269,6 +269,59 @@ final class TaggedMessageContractTest {
 
 
     @Test
+    void pipelineRouteIdentityIncludesCaseTagsAndExactPayloadShapes() {
+        // All four contracts use the SAME names and pattern. The previously
+        // name-only identity accepted the incompatible tag and payload shapes.
+        String common = """
+                define pattern PipeMessages as
+                    Signal.Data
+                    Signal.Result
+                end
+                """;
+        String declaration = """
+                define enum Signal as
+                    Data: int = 1
+                    Result: int = 2
+                end
+                """;
+        String reordered = """
+                define enum Signal as
+                    Result: int = 2
+                    Data: int = 1
+                end
+                """;
+        String differentTag = """
+                define enum Signal as
+                    Data: int = 7
+                    Result: int = 2
+                end
+                """;
+        String differentShape = """
+                define enum Signal as
+                    Data: string = 1
+                    Result: int = 2
+                end
+                """;
+        String original = new TaggedMessageCodec(
+                TaggedMessageContracts.verify(Parser.parse(declaration + common))
+                        .requireDomain("PipeMessages")).closedDomainIdentity();
+        String same = new TaggedMessageCodec(
+                TaggedMessageContracts.verify(Parser.parse(reordered + common))
+                        .requireDomain("PipeMessages")).closedDomainIdentity();
+        String tagChanged = new TaggedMessageCodec(
+                TaggedMessageContracts.verify(Parser.parse(differentTag + common))
+                        .requireDomain("PipeMessages")).closedDomainIdentity();
+        String shapeChanged = new TaggedMessageCodec(
+                TaggedMessageContracts.verify(Parser.parse(differentShape + common))
+                        .requireDomain("PipeMessages")).closedDomainIdentity();
+        assertEquals(original, same, "declaration order must not change the route contract");
+        assertNotEquals(original, tagChanged,
+                "pipeline binding must reject same names with different numeric tags");
+        assertNotEquals(original, shapeChanged,
+                "pipeline binding must reject same names with different payload shapes");
+    }
+
+    @Test
     void pipelineRoutingRequiresNominalVariantAndRejectsUnimplementedReplyOperations() {
         String source = DECLARATIONS + """
                 define actor Worker as
