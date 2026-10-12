@@ -90,6 +90,19 @@ final class WithStateCapabilityContractTest {
         }
     }
 
+    @Test void actorStateCannotBeMovedOrSharedOutOfALiveLoan() {
+        for (String op : new String[] { "take", "share", "borrow" }) {
+            String viaIntrinsic = actor("with state.read",
+                    "self.handle_state(|s| -> { rt " + op + " s.v; return s.v; })");
+            assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(Parser.parse(viaIntrinsic)), op);
+            String viaUsing = actor("with state.read",
+                    "using state.read(|s| -> { rt " + op + " s.v; return s.v; })");
+            assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(Parser.parse(viaUsing)), op);
+        }
+    }
+
     @Test void sealedCallbackEffectsFollowLoweringAndCannotBeForged() {
         Ast.Program p = Parser.parse(actor("with state.read",
                 "using state.read(|s| -> { return s.v; })"));
