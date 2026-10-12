@@ -1721,6 +1721,29 @@ public final class OresEvalRootNode extends RootNode {
             return SourceFlow.throwing(cleanupFailure);
         }
 
+        /**
+         * Execute a try/finally completion without allowing a later cleanup
+         * exit to replace an already pending failure or an earlier exit.
+         * Terminal panic/exit control must bypass source-level catches.
+         */
+        private SourceFlow mergeFinallyFlow(SourceFlow pending, SourceFlow finallyFlow) {
+            if (finallyFlow.kind() == SourceFlowKind.NORMAL) return pending;
+            if (pending.kind() == SourceFlowKind.THROW) {
+                Throwable earlier = pending.failure();
+                if (earlier instanceof ProcessExitSignal || earlier instanceof OresPanic) {
+                    if (finallyFlow.kind() == SourceFlowKind.THROW
+                            && earlier != finallyFlow.failure()) {
+                        earlier.addSuppressed(finallyFlow.failure());
+                    }
+                    return pending;
+                }
+                if (finallyFlow.kind() == SourceFlowKind.THROW) {
+                    return mergeCleanupFailure(pending, finallyFlow.failure());
+                }
+            }
+            return finallyFlow;
+        }
+
         private void finishBlock(
                 SourceTask task,
                 Env env,
@@ -2010,7 +2033,9 @@ public final class OresEvalRootNode extends RootNode {
                             attempted.body(),
                             env,
                             (t, flow) -> {
-                                if (flow.kind() == SourceFlowKind.THROW) {
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && !(flow.failure() instanceof ProcessExitSignal)
+                                        && !(flow.failure() instanceof OresPanic)) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
@@ -2028,10 +2053,7 @@ public final class OresEvalRootNode extends RootNode {
                                                             (t3, finallyFlow) ->
                                                                     continuation.accept(
                                                                             t3,
-                                                                            finallyFlow.kind()
-                                                                                            != SourceFlowKind.NORMAL
-                                                                                    ? finallyFlow
-                                                                                    : catchFlow)));
+                                                                            mergeFinallyFlow(catchFlow, finallyFlow))));
                                 } else {
                                     runBlock(
                                             t,
@@ -2040,10 +2062,7 @@ public final class OresEvalRootNode extends RootNode {
                                             (t2, finallyFlow) ->
                                                     continuation.accept(
                                                             t2,
-                                                            finallyFlow.kind()
-                                                                            != SourceFlowKind.NORMAL
-                                                                    ? finallyFlow
-                                                                    : flow));
+                                                            mergeFinallyFlow(flow, finallyFlow)));
                                 }
                             });
                     return;
@@ -4880,15 +4899,42 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.TryStmt tried) {
                 // A call under catch/finally is not a proper tail call: the
                 // caller still owns exception/cleanup semantics after the call.
-                try { executeBlock(tried.body(), env, true); }
-                catch (TailCallSignal signal) { throw signal; }
-                catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
-                catch (OresPanic panic) { throw panic; }
-                catch (RuntimeException failure) {
-                    Env catchEnv = new Env(env);
-                    catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
-                    executeBlock(tried.catchBody(), catchEnv, true);
-                } finally { executeBlock(tried.finallyBody(), env, true); }
+                // Track any pending failure so a later finally exit cannot
+                // silently turn a failed root into exit(0), or replace an
+                // earlier explicit exit with a different one.
+                Throwable pendingTryFailure = null;
+                try {
+                    try { executeBlock(tried.body(), env, true); }
+                    catch (TailCallSignal signal) { throw signal; }
+                    catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
+                    catch (OresPanic panic) { throw panic; }
+                    catch (RuntimeException failure) {
+                        Env catchEnv = new Env(env);
+                        catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
+                        executeBlock(tried.catchBody(), catchEnv, true);
+                    }
+                } catch (RuntimeException | Error failure) {
+                    pendingTryFailure = failure;
+                    throw failure;
+                } finally {
+                    try {
+                        executeBlock(tried.finallyBody(), env, true);
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        if (pendingTryFailure instanceof ProcessExitSignal
+                                || pendingTryFailure instanceof OresPanic
+                                || (pendingTryFailure != null
+                                        && cleanupFailure instanceof ProcessExitSignal)) {
+                            if (pendingTryFailure != cleanupFailure) {
+                                pendingTryFailure.addSuppressed(cleanupFailure);
+                            }
+                        } else {
+                            if (pendingTryFailure != null && pendingTryFailure != cleanupFailure) {
+                                cleanupFailure.addSuppressed(pendingTryFailure);
+                            }
+                            throw cleanupFailure;
+                        }
+                    }
+                }
                 return;
             }
             if (stmt instanceof Ast.ForOfDestructureStmt loop) {
