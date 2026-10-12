@@ -43,11 +43,14 @@ can turn an actor into a new physical isolate.
 
 `SharedUntrustedIsolatePool` constructs one shared Engine and a bounded
 number of untrusted group Contexts. A process-local singleton admission fence
-rejects a second live pool and is released only after the first Engine closes;
-separate classloaders, JVMs and independently created ad-hoc adversarial
-Contexts are not yet governed by this application topology policy.
-Never use an arbitrary `IsolatePolicy.restrictedContextBuilder()`
-for production untrusted actor placement. This is **hosting infrastructure**, not
+rejects a second live pool and is released only after the first Engine closes.
+Ad-hoc adversarial `IsolatePolicy.restrictedContextBuilder()` is now rejected
+before Engine allocation; all adversarial callers must use the pool-owned
+Engine. Different classloaders or JVM processes still require an external
+deployment supervisor to enforce a process-wide / cluster-wide one-pool
+topology. Existing `HotReloadManager.forUntrustedActors()` staging that has
+not yet been routed to the pool intentionally fails closed at Context
+admission; update its transport before enabling production hot loading. This is **hosting infrastructure**, not
 yet a working cross-engine actor router. Existing
 `ActorRuntime.spawnUntrusted` inside the trusted host still runs on
 its parent's JVM heap; production admission must reject that path until
