@@ -20,6 +20,8 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
 public final class OresContext implements AutoCloseable {
@@ -39,6 +41,11 @@ public final class OresContext implements AutoCloseable {
     // Truffle guest entry. Scope this marker inside executeGuestTurn after
     // TruffleContext.enter succeeds and always clear it on leave.
     private final ThreadLocal<Boolean> rootGuestEntryScope = new ThreadLocal<>();
+    // A Truffle access check may be performed by a DIFFERENT caller than
+    // the requested already-entering runtime CONTROL/actor carrier. Only
+    // physical entry wrappers publish these short-lived thread permits.
+    private final ConcurrentHashMap<Thread, AtomicInteger> physicalGuestEntryPermits =
+            new ConcurrentHashMap<>();
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
     private final AsyncRuntime asyncRuntime;
@@ -478,8 +485,41 @@ public final class OresContext implements AutoCloseable {
         executeGuestTurn(turn, false);
     }
 
+    public boolean hasRegisteredPhysicalGuestEntry(Thread requested) {
+        AtomicInteger registered = physicalGuestEntryPermits.get(requested);
+        return registered != null && registered.get() > 0;
+    }
+
+    private void acquirePhysicalGuestEntryPermit() {
+        if (!OresScheduler.isSchedulerCarrierThread()
+                && !ActorRuntime.isActorCarrierThread()
+                && !AsyncRuntime.isAsyncCarrierThread()) {
+            throw new SecurityException(
+                    "physical guest entry requires a runtime-owned carrier");
+        }
+        physicalGuestEntryPermits.compute(Thread.currentThread(), (thread, old) -> {
+            if (old == null) return new AtomicInteger(1);
+            old.incrementAndGet();
+            return old;
+        });
+    }
+
+    private void releasePhysicalGuestEntryPermit() {
+        Thread current = Thread.currentThread();
+        physicalGuestEntryPermits.compute(current, (thread, counter) -> {
+            if (counter == null || counter.decrementAndGet() < 0) {
+                throw new IllegalStateException("physical guest entry permit underflow");
+            }
+            return counter.get() == 0 ? null : counter;
+        });
+    }
+
     private void executeGuestTurn(Runnable turn, boolean serialize) {
         if (serialize) adversarialActorTurnLock.lock();
+        // The permit is published immediately before TruffleContext.enter,
+        // never when a Future is merely queued. Failed entry and failed leave
+        // both revoke it; physical DONE proof remains a separate barrier.
+        acquirePhysicalGuestEntryPermit();
         TruffleContext truffleContext = env.getContext();
         Object previous = null;
         boolean entered = false;
@@ -488,8 +528,12 @@ public final class OresContext implements AutoCloseable {
             entered = true;
             turn.run();
         } finally {
-            if (entered) truffleContext.leave(null, previous);
-            if (serialize) adversarialActorTurnLock.unlock();
+            try {
+                if (entered) truffleContext.leave(null, previous);
+            } finally {
+                releasePhysicalGuestEntryPermit();
+                if (serialize) adversarialActorTurnLock.unlock();
+            }
         }
     }
 
