@@ -118,11 +118,15 @@ public final class OresMain {
                 else if (arg.startsWith("--platform=")) platform = arg.substring("--platform=".length());
                 else if (arg.startsWith("--allow=")) {
                     String raw = arg.substring("--allow=".length());
-                    if (!raw.isBlank()) {
-                        for (String value : raw.split(",")) {
-                            additionalCapabilities.add(IsolatePolicy.Capability.valueOf(
-                                    value.trim().toUpperCase(Locale.ROOT)));
+                    if (raw.isBlank()) {
+                        throw new UsageException("--allow requires a comma-separated capability list");
+                    }
+                    for (String value : raw.split(",", -1)) {
+                        if (value.isBlank()) {
+                            throw new UsageException("--allow cannot contain empty capabilities");
                         }
+                        additionalCapabilities.add(IsolatePolicy.Capability.valueOf(
+                                value.trim().toUpperCase(Locale.ROOT)));
                     }
                 } else if (arg.startsWith("--allow-host-class=")) {
                     String raw = arg.substring("--allow-host-class=".length()).trim();
@@ -137,6 +141,12 @@ public final class OresMain {
             } catch (IllegalArgumentException invalidOption) {
                 throw new UsageException(invalidOption.getMessage());
             }
+        }
+
+        // Report mutually exclusive CLI flags before opening/discovering a file.
+        // An invalid invocation is status 2 even when the source path is absent.
+        if (checkOnly && buildAnalysis) {
+            throw new UsageException("--check and --build-analysis are mutually exclusive");
         }
 
         CorePerf.configure(corePerf);
@@ -159,13 +169,13 @@ public final class OresMain {
             }
             filename = path.toString();
         } else {
-            path = Path.of(filename);
+            try {
+                path = Path.of(filename);
+            } catch (java.nio.file.InvalidPathException invalidPath) {
+                throw new UsageException("invalid source path: " + invalidPath.getMessage());
+            }
         }
         if (!Files.isRegularFile(path)) throw new IllegalArgumentException("not a file: " + path);
-
-        if (checkOnly && buildAnalysis) {
-            throw new UsageException("--check and --build-analysis are mutually exclusive");
-        }
 
         String directOresSource = filename.endsWith(".ores") ? Files.readString(path) : null;
         if (directOresSource != null) {
