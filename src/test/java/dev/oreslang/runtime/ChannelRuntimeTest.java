@@ -1,7 +1,11 @@
 package dev.oreslang.runtime;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -11,6 +15,72 @@ import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.Test;
 
 final class ChannelRuntimeTest {
+    @Test
+    void internalDrainReleasesBufferedCapacityAndWakesPendingWriter() {
+        ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(1);
+        assertTrue(channel.tryWrite("first"));
+        OresFuture<Void> waitingWriter = channel.writeAsync("second");
+        assertFalse(waitingWriter.isDone());
+
+        java.util.concurrent.atomic.AtomicReference<String> delivered =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        assertTrue(channel.drainOne(delivered::set));
+        assertEquals("first", delivered.get());
+        assertTrue(waitingWriter.isDone(),
+                "opening capacity must commit a queued writer without a second wake");
+        waitingWriter.join();
+        assertEquals("second", channel.tryRead().orElseThrow());
+        assertFalse(channel.drainOne(ignored -> {
+            throw new AssertionError("empty drain must not invoke consumer");
+        }));
+    }
+
+    @Test
+    void drainConsumerFailureStillDeliversPendingWriterCompletion() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        assertTrue(channel.tryWrite(1));
+        OresFuture<Void> queued = channel.writeAsync(2);
+        assertThrows(IllegalStateException.class,
+                () -> channel.drainOne(ignored -> {
+                    throw new IllegalStateException("consumer failed");
+                }));
+        assertTrue(queued.isDone(),
+                "runtime completion cannot remain pending after an exception");
+        queued.join();
+        assertEquals(2, channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void uncontendedImmediateProbesAndRendezvousPreserveChannelSemantics() {
+        ChannelRuntime.Channel<Integer> buffered = new ChannelRuntime.Channel<>(1);
+        for (int i = 0; i < 10_000; i++) {
+            assertTrue(buffered.tryWrite(i));
+            assertFalse(buffered.tryWrite(-1), "full buffer must reject a probe");
+            assertEquals(i, buffered.tryRead().orElseThrow());
+            assertTrue(buffered.tryRead().isEmpty());
+        }
+        buffered.close();
+        assertInstanceOf(ChannelRuntime.ChannelClosedException.class,
+                assertThrows(java.util.concurrent.CompletionException.class,
+                        () -> buffered.tryWrite(1)).getCause());
+        assertInstanceOf(ChannelRuntime.ChannelClosedException.class,
+                assertThrows(java.util.concurrent.CompletionException.class,
+                        buffered::tryRead).getCause());
+
+        ChannelRuntime.Channel<Integer> rendezvous = new ChannelRuntime.Channel<>(0);
+        assertFalse(rendezvous.tryWrite(17));
+        assertTrue(rendezvous.tryRead().isEmpty());
+        OresFuture<Integer> reader = rendezvous.readAsync();
+        assertTrue(rendezvous.tryWrite(18),
+                "registered rendezvous reader must force slow-path arbitration");
+        assertEquals(18, reader.join());
+
+        OresFuture<Void> writer = rendezvous.writeAsync(19);
+        assertEquals(19, rendezvous.tryRead().orElseThrow(),
+                "registered rendezvous writer must force slow-path arbitration");
+        writer.join();
+    }
+
     @Test
     void pendingWriterCannotOvertakeBufferedValue() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
@@ -273,6 +343,113 @@ final class ChannelRuntimeTest {
 
         first.tryWrite("a2");
         assertEquals(1, plan.selectAsync(ChannelRuntime.SelectPolicy.FAIR).join().index());
+    }
+
+    @Test
+    void reusedThreeArmPlanRemainsFairAcrossTenThousandReadySelections() {
+        ChannelRuntime.Channel<Integer> control = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> workers = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> timers = new ChannelRuntime.Channel<>(1);
+        assertTrue(control.tryWrite(0));
+        assertTrue(workers.tryWrite(1));
+        assertTrue(timers.tryWrite(2));
+
+        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.read(control),
+                ChannelRuntime.read(workers),
+                ChannelRuntime.read(timers));
+        var descriptors = plan.cases();
+        int[] selected = new int[3];
+        for (int i = 0; i < 10_000; ++i) {
+            ChannelRuntime.SelectResult result =
+                    plan.selectAsync(ChannelRuntime.SelectPolicy.FAIR).join();
+            assertEquals(i % 3, result.index(),
+                    "simultaneously-ready cases must rotate on the reused plan");
+            assertEquals(result.index(), result.value());
+            selected[result.index()]++;
+            ChannelRuntime.Channel<Integer> won =
+                    switch (result.index()) {
+                        case 0 -> control;
+                        case 1 -> workers;
+                        case 2 -> timers;
+                        default -> throw new AssertionError("invalid select arm");
+                    };
+            assertTrue(won.tryWrite(result.index()),
+                    "every iteration must consume only the winning arm");
+            assertSame(descriptors, plan.cases(),
+                    "immutable plan descriptors must be reused each iteration");
+        }
+        assertArrayEquals(new int[] {3334, 3333, 3333}, selected);
+        assertEquals(1, control.size());
+        assertEquals(1, workers.size());
+        assertEquals(1, timers.size());
+    }
+
+    @Test
+    void cancelledGenerationCannotStealMessagesFromLaterPlanIteration() {
+        ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.SelectPlan plan =
+                ChannelRuntime.SelectPlan.of(ChannelRuntime.read(channel));
+        for (int i = 0; i < 1_000; ++i) {
+            OresFuture<ChannelRuntime.SelectResult> cancelled =
+                    plan.selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+            assertFalse(cancelled.isDone());
+            assertTrue(cancelled.cancel(false));
+            OresFuture<ChannelRuntime.SelectResult> next =
+                    plan.selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+            assertTrue(channel.tryWrite("turn-" + i));
+            assertEquals("turn-" + i, next.join().value());
+            assertThrows(CancellationException.class, cancelled::join);
+            assertTrue(channel.tryRead().isEmpty(),
+                    "cancelled generations must not retain a waiter or steal data");
+        }
+    }
+
+    @Test
+    void readOnlySelectPlanReusesDescriptorAcrossStableEntries() {
+        ChannelRuntime.Channel<Integer> a = new ChannelRuntime.Channel<>(2);
+        ChannelRuntime.Channel<Integer> b = new ChannelRuntime.Channel<>(2);
+        ChannelRuntime.SelectPlan original = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.read(a), ChannelRuntime.read(b));
+        var stable = original.rebindReadOnly(java.util.List.of(
+                ChannelRuntime.read(a), ChannelRuntime.read(b)));
+        assertSame(original, stable, "stable site must not rebuild the SelectPlan");
+
+        assertTrue(a.tryWrite(1));
+        assertTrue(b.tryWrite(2));
+        assertEquals(0, stable.selectAsync().join().index());
+
+        ChannelRuntime.Channel<Integer> rebound = new ChannelRuntime.Channel<>(2);
+        assertTrue(rebound.tryWrite(3));
+        var refreshed = stable.rebindReadOnly(java.util.List.of(
+                ChannelRuntime.read(rebound), ChannelRuntime.read(b)));
+        assertNotSame(stable, refreshed, "changed channel must bind a new descriptor");
+        assertEquals(1, refreshed.selectAsync().join().index(),
+                "channel rebinding must preserve the site FAIR cursor");
+        assertEquals(3, rebound.tryRead().orElseThrow(),
+                "loser of the rebound registration must keep its value");
+
+        assertThrows(IllegalArgumentException.class, () ->
+                refreshed.rebindReadOnly(java.util.List.of(
+                        ChannelRuntime.write(a, 99), ChannelRuntime.read(b))));
+    }
+
+    @Test
+    void defaultArmDoesNotSpendCircularFairnessCredit() {
+        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.read(first),
+                ChannelRuntime.read(second),
+                ChannelRuntime.defaultCase());
+        for (int i = 0; i < 25; i++) {
+            var result = plan.selectAsync().join();
+            assertEquals(ChannelRuntime.SelectOperation.DEFAULT, result.operation());
+        }
+        assertTrue(first.tryWrite(1));
+        assertTrue(second.tryWrite(2));
+        assertEquals(0, plan.selectAsync().join().index(),
+                "DEFAULT must not rotate the cursor before ready channel work");
     }
 
     @Test

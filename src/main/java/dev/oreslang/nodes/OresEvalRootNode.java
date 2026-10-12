@@ -20,6 +20,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.SourceChannelWaitOwnership;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.SourceCooperationQuantum;
@@ -175,6 +176,10 @@ public final class OresEvalRootNode extends RootNode {
         // code never implies shared mutable scheduler state.
         private final IdentityHashMap<Ast.SelectStmt, AtomicLong> rootStaticSelectCursors =
                 new IdentityHashMap<>();
+        // Root-only cache. Actors retain independent plans in ActorCell,
+        // never in the shared evaluator / immutable code image.
+        private final IdentityHashMap<Ast.SelectStmt, ChannelRuntime.SelectPlan>
+                rootReadSelectPlans = new IdentityHashMap<>();
         private StartupPhase startupPhase = StartupPhase.CREATED;
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
@@ -873,6 +878,8 @@ public final class OresEvalRootNode extends RootNode {
                 implements OresScheduler.CancellationAwareTask<Object> {
             private final ArrayDeque<SourceCleanupScope> activeScopes = new ArrayDeque<>();
             private volatile boolean cancellationRequested;
+            private final SourceChannelWaitOwnership ownedChannelWait =
+                    new SourceChannelWaitOwnership();
             private volatile OresScheduler.TaskCancelledException cancellationReason;
             // Observed by cancellation admission on arbitrary host threads.
             // Mutations remain exclusive to the owning scheduler/actor lane,
@@ -891,6 +898,10 @@ public final class OresEvalRootNode extends RootNode {
                     OresScheduler.TaskCancelledException reason) {
                 cancellationReason = Objects.requireNonNull(reason, "reason");
                 cancellationRequested = true;
+                // OresScheduler detaches its Future observer separately.
+                // This also cancels the source-owned channel registration,
+                // so a stopped actor cannot steal a subsequent message.
+                ownedChannelWait.cancellationRequested();
             }
 
             private SourceFlow cancellationFlow() {
@@ -954,6 +965,7 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     return resumeSource(resume);
                 } catch (RuntimeException failure) {
+                    ownedChannelWait.abort();
                     awaitingContinuation = null;
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
@@ -1112,6 +1124,26 @@ public final class OresEvalRootNode extends RootNode {
                         }
                     }
                     next.accept(this, null, null);
+                }
+            }
+
+            /**
+             * Suspend on a channel operation created by this source task.
+             * Unlike generic await, source owns the producer registration.
+             * Cancellation revokes it unless it belongs to lexical cleanup.
+             */
+            private void suspendOwnedChannel(
+                    OresFuture<?> future,
+                    SourceValueCont continuation) {
+                ownedChannelWait.arm(future, cleanupDepth > 0);
+                try {
+                    suspend(future, (t, value, failure) -> {
+                        ownedChannelWait.resumed(future);
+                        continuation.accept(t, value, failure);
+                    });
+                } catch (RuntimeException | Error failure) {
+                    ownedChannelWait.abort();
+                    throw failure;
                 }
             }
 
@@ -2504,8 +2536,8 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt select,
                 Env env,
                 SourceFlowCont continuation) {
-            ChannelRuntime.SelectSet set =
-                    buildStaticSelectSet(select, env);
+            ChannelRuntime.SelectPlan set =
+                    buildStaticSelectPlan(select, env);
             ChannelRuntime.SelectPolicy policy =
                     runtimeSelectPolicy(select.policy());
 
@@ -2575,7 +2607,7 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
-            task.suspend(
+            task.suspendOwnedChannel(
                     future,
                     (t, value, failure) -> {
                         if (failure != null) {
@@ -3328,6 +3360,13 @@ public final class OresEvalRootNode extends RootNode {
                                             set.selectAsync(policy);
                                     if (selected.mode()
                                             == Ast.WaitMode.NONBLOCKING) {
+                                        // The wrapper below is a separate
+                                        // Future-chain task. Own the actual
+                                        // producer-side select registration
+                                        // so STOP cancels its pending arms.
+                                        if (ActorRuntime.inActorExecution()) {
+                                            context.actors().ownCurrentActorFuture(future);
+                                        }
                                         continuation.accept(
                                                 t,
                                                 wrapFutureSome(future),
@@ -3343,7 +3382,7 @@ public final class OresEvalRootNode extends RootNode {
                                                 null);
                                         return;
                                     }
-                                    t.suspend(
+                                    t.suspendOwnedChannel(
                                             future,
                                             (t2, value, failure2) ->
                                                     continuation.accept(
@@ -4001,7 +4040,7 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                 }
                             } else {
-                                t.suspend(
+                                t.suspendOwnedChannel(
                                         future,
                                         (t2, value, failure) ->
                                                 continuation.accept(
@@ -4111,7 +4150,7 @@ public final class OresEvalRootNode extends RootNode {
                                                     failure);
                                         }
                                     } else {
-                                        t2.suspend(
+                                        t2.suspendOwnedChannel(
                                                 future,
                                                 (t3, ignored, failure) ->
                                                         continuation.accept(
@@ -5286,7 +5325,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt selected,
                 Env env,
                 boolean tailBarrier) {
-            ChannelRuntime.SelectSet set = buildStaticSelectSet(selected, env);
+            ChannelRuntime.SelectPlan set = buildStaticSelectPlan(selected, env);
             ChannelRuntime.SelectPolicy policy = runtimeSelectPolicy(selected.policy());
 
             if (selected.mode() == Ast.WaitMode.IMMEDIATE) {
@@ -5338,39 +5377,68 @@ public final class OresEvalRootNode extends RootNode {
             executeSelectedArm(selected, result, env, tailBarrier, false);
         }
 
-        private ChannelRuntime.SelectSet buildStaticSelectSet(
+        private ChannelRuntime.SelectPlan buildStaticSelectPlan(
                 Ast.SelectStmt selected,
                 Env env) {
+            // Do not skip/reorder source operand evaluation. Expressions may
+            // have side effects or rebind channels between iterations; only
+            // *after* evaluating each arm can we safely reuse a read-only
+            // descriptor. WRITE payloads remain unhoisted to preserve their
+            // Copy/ownership and per-execution evaluation contract.
             ArrayList<ChannelRuntime.SelectCase> cases =
                     new ArrayList<>(selected.arms().size());
+            boolean readOnly = true;
             for (Ast.SelectArm arm : selected.arms()) {
                 switch (arm.operation()) {
                     case DEFAULT -> cases.add(ChannelRuntime.defaultCase());
                     case READ -> cases.add(ChannelRuntime.read(
                             requireChannel(eval(arm.channel(), env), "readch select case")));
-                    case WRITE -> cases.add(ChannelRuntime.write(
-                            requireChannel(eval(arm.channel(), env), "writech select case"),
-                            eval(arm.value(), env)));
+                    case WRITE -> {
+                        readOnly = false;
+                        cases.add(ChannelRuntime.write(
+                                requireChannel(eval(arm.channel(), env), "writech select case"),
+                                eval(arm.value(), env)));
+                    }
                 }
             }
-            return new ChannelRuntime.SelectSet(
-                    cases,
-                    staticSelectTicket(selected));
-        }
 
-        private long staticSelectTicket(Ast.SelectStmt selected) {
+            if (!readOnly) {
+                // WRITE descriptors are always fresh: retain only the owner's
+                // committed FAIR cursor, never an earlier captured payload.
+                ActorRuntime owner = ActorRuntime.currentActorRuntime();
+                if (owner != null) {
+                    if (owner != context.actors()) {
+                        throw new SecurityException(
+                                "static WRITE select crossed ActorRuntime ownership");
+                    }
+                    return owner.actorFreshStaticSelectPlan(selected, cases);
+                }
+                synchronized (rootStaticSelectCursors) {
+                    return new ChannelRuntime.SelectPlan(
+                            cases,
+                            rootStaticSelectCursors.computeIfAbsent(
+                                    selected, ignored -> new AtomicLong()));
+                }
+            }
+
             ActorRuntime actorRuntime = ActorRuntime.currentActorRuntime();
             if (actorRuntime != null) {
                 if (actorRuntime != context.actors()) {
                     throw new SecurityException(
-                            "static select attempted to cross ActorRuntime ownership");
+                            "static SelectPlan attempted to cross ActorRuntime ownership");
                 }
-                return actorRuntime.nextActorLocalSelectTicket(selected);
+                return actorRuntime.actorLocalReadSelectPlan(selected, cases);
             }
             synchronized (rootStaticSelectCursors) {
-                return rootStaticSelectCursors
-                        .computeIfAbsent(selected, ignored -> new AtomicLong())
-                        .getAndIncrement();
+                ChannelRuntime.SelectPlan existing = rootReadSelectPlans.get(selected);
+                ChannelRuntime.SelectPlan plan = existing == null
+                        ? new ChannelRuntime.SelectPlan(
+                                cases,
+                                rootStaticSelectCursors.computeIfAbsent(
+                                        selected, ignored -> new AtomicLong()))
+                        : existing.rebindReadOnly(cases);
+                if (plan != existing) rootReadSelectPlans.put(selected, plan);
+                return plan;
             }
         }
 
@@ -6369,6 +6437,9 @@ public final class OresEvalRootNode extends RootNode {
                 OresFuture<ChannelRuntime.SelectResult> future =
                         set.selectAsync(policy);
                 if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    if (ActorRuntime.inActorExecution()) {
+                        context.actors().ownCurrentActorFuture(future);
+                    }
                     return wrapFutureSome(future);
                 }
                 return new OptionValue(

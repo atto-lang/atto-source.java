@@ -439,6 +439,92 @@ The outer `Option` is intentionally part of the language-facing selection
 contract. It also composes uniformly with `trap` and Future APIs; the runtime
 must not flatten nested `Option` values.
 
+## Scheduler-loop `readch` contract and fairness arbitration
+
+The current **canonical source syntax** uses `when readch channel: let value { ... }`
+(or `val`/`const`). `on readch(channel) as event` was an illustrative
+proposal, **not** a verified parser spelling. For example:
+
+```ores
+while self.running {
+  select {
+    when readch self.control: let event {
+      self.handle_control(event);
+    }
+    when readch self.workers: let event {
+      self.handle_worker(event);
+    }
+    when readch self.timers: let event {
+      self.handle_timer(event);
+    }
+  }
+}
+```
+
+This describes intended source semantics; it does not certify that all actor
+suspension/continuation paths are lowered by the current Java or LLVM compiler.
+`nb readch` registers a cancellable asynchronous read; `try readch` probes
+once and leaves no pending waiter; a blocking `readch` must suspend the guest
+execution context without parking a bounded actor worker.
+
+A separate **native or VM scheduler CONTROL loop** may use a host-level
+`*_blocking` condition/selector wait, because it owns a dedicated scheduler
+OS thread. Host wakeups cannot directly invoke guest actor callbacks or turn
+the master scheduler into a guest carrier.
+
+A reusable `SelectPlan` retains its immutable case layout and fairness state;
+each iteration still performs a fresh atomic selection with detachable waiters.
+Importantly, even when *multiple pending registrations share one plan*, FAIR
+arbitration must observe the **current** cursor at commit time rather than an
+order snapshot taken earlier. PRIORITY retains lexical order; RANDOM fixes
+its randomized order per registration. This is not a general no-starvation
+proof: FAIR only rotates among concurrently available arms and does not promise
+bounded service under arbitrary independent producers, closed channels,
+CONTROL priority overrides, or a stalled actor scheduler. Stronger
+anti-starvation rules and guaranteed compiled-plan caching across loops remain
+tracked as separate future work:
+https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/17
+
+The Java implementation has bounded trace-refinement tests for selection
+across multiple plan generations; these do not prove LLVM source lowering,
+unbounded liveness, or complete Java compiler optimization parity.
+
+## Compiled while/select site reuse (READ/DEFAULT first milestone)
+
+Java/GraalVM now parses `while condition { ... }` by lowering to the
+existing resumable `ForStmt` engine. The compiler evaluator retains one
+immutable `SelectPlan` for each stable static READ/DEFAULT select site,
+scoped to its owning actor incarnation (or root evaluator); the same shared
+AST executed by two actors never shares mutable fairness state.
+
+The implementation still evaluates channel operands in source order on
+**every** entry. When channel identities are unchanged, it reuses the
+retained plan and its FAIR cursor; when any READ operand points at a
+different channel, it builds new descriptors that share the site's cursor
+but do **not** reuse old registrations. Each select invocation still gets
+one fresh atomic registration and loser cancellation/teardown. A DEFAULT
+winner never rotates the FAIR cursor because no channel event committed.
+This behavior applies to both the regular execution path and the
+resumable SourceTask select path.
+
+WRITE arms are intentionally **not hoisted**: their evaluated payloads
+must not accidentally persist and replay across loop iterations, and
+move-only/Copy ownership semantics are not yet fully proven for cached
+writes. They use **fresh per-entry SelectPlan descriptors**, but share their
+actor/root-site FAIR cursor so that *only a committed winning arm* advances
+rotation, even for mixed READ/WRITE. The site never retains the old write
+payload; pending registrations still own their original evaluated payload
+until completion or cancellation. Dynamic-plan mutations, allocation-free
+static case expression lowering, arbitrary suspension of guest expressions,
+and LLVM compiler parity remain future work.
+
+Fairness has a precise scope: if all N READ arms remain ready at every
+atomic winner decision, a reused FAIR site selects each within N committed
+wins. This guarantee says nothing about event arrival adversaries, a guest
+handler that never yields, or intentionally strict supervisor CONTROL
+priority. Runtime source assertions and bounded TLC remain necessary;
+compilation alone is not a proof of global starvation freedom.
+
 ## Select plans: optional optimization layer
 
 A `SelectPlan` is an optional reusable descriptor for hot repeated selects and

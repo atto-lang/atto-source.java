@@ -111,6 +111,7 @@ public final class OresContext implements AutoCloseable {
                     ActorRuntime.DispatcherConfig.defaults(),
                     this::executeActorTurn,
                     vm::executeControl);
+            vm.attachActorRuntime(actors);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             actors.setActorExitHook(gc::retireActorDomain);
@@ -415,6 +416,8 @@ public final class OresContext implements AutoCloseable {
                 "scheduler_started", vm.started(),
                 "control_carriers_started", vm.controlCarrierCount(),
                 "scheduler_safepoints", schedulerSafepoints.get()));
+        descriptor.put("master_scheduler_threads", vm.masterSchedulerThreadCount());
+        descriptor.put("actor_pool_scheduler_threads", actors.activatedActorPoolSchedulers());
         descriptor.put("source_loop_cooperates", sourceLoopCooperates.get());
         // All actors in this OresContext share its managed guest heap, even
         // when the context itself runs inside a Graal polyglot isolate.

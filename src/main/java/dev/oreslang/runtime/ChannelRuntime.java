@@ -36,6 +36,16 @@ public final class ChannelRuntime {
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
     private static long nextTicket;
 
+    /** Package-private regression probe: no guest access to ACTIVE. */
+    static int activeSelectCountForTest() {
+        COORDINATOR.lock();
+        try {
+            return ACTIVE.size();
+        } finally {
+            COORDINATOR.unlock();
+        }
+    }
+
     public enum SelectPolicy {
         /** Deterministic rotating fairness on a reusable SelectSet. */
         FAIR,
@@ -122,6 +132,22 @@ public final class ChannelRuntime {
          * method returns empty.
          */
         public Optional<T> tryRead() {
+            // Fast path: no registered selection can have an earlier claim on
+            // this channel, so a buffered read/empty probe linearizes here.
+            // If waiters exist, use the full arbiter to preserve rendezvous
+            // and previously registered multi-channel selects.
+            COORDINATOR.lock();
+            try {
+                if (registrations.isEmpty()) {
+                    if (!buffer.isEmpty()) return Optional.of(buffer.removeFirst());
+                    // Preserve the existing Future.join() failure wrapping
+                    // for a closed-empty channel: only the open probe is a
+                    // direct fast-path result.
+                    if (!closed) return Optional.empty();
+                }
+            } finally {
+                COORDINATOR.unlock();
+            }
             Optional<SelectResult> result =
                     SelectSet.of(read(this)).trySelect(SelectPolicy.PRIORITY);
             if (result.isEmpty()) return Optional.empty();
@@ -134,14 +160,25 @@ public final class ChannelRuntime {
         boolean drainOne(java.util.function.Consumer<? super T> consumer) {
             Objects.requireNonNull(consumer, "consumer");
             T value;
+            ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
                 if (buffer.isEmpty()) return false;
                 value = buffer.removeFirst();
+                // Removing a buffered value can unblock a queued writer.
+                // Without re-arbitration, that writer may remain stranded
+                // indefinitely unless an unrelated channel operation occurs.
+                pumpLocked(completions);
             } finally {
                 COORDINATOR.unlock();
             }
-            consumer.accept(value);
+            try {
+                consumer.accept(value);
+            } finally {
+                // Never invoke Future waiters under the channel coordinator,
+                // even when the drain consumer reports an exception.
+                runCompletions(completions);
+            }
             return true;
         }
 
@@ -151,6 +188,20 @@ public final class ChannelRuntime {
          */
         public boolean tryWrite(T value) {
             requireValue(value);
+            // No pending select/read/write on this channel: buffer admission
+            // can commit without creating a new SelectSet or waiter Future.
+            // A rendezvous or a registered selection must use the arbiter.
+            COORDINATOR.lock();
+            try {
+                if (registrations.isEmpty() && !closed) {
+                    // Closed writes still use the original exception wrapper.
+                    if (buffer.size() >= capacity) return false;
+                    buffer.addLast(value);
+                    return true;
+                }
+            } finally {
+                COORDINATOR.unlock();
+            }
             return SelectSet.of(write(this, value))
                     .trySelect(SelectPolicy.PRIORITY)
                     .isPresent();
@@ -256,7 +307,7 @@ public final class ChannelRuntime {
      */
     public static final class SelectSet {
         private final List<SelectCase> cases;
-        private final AtomicLong fairCursor = new AtomicLong();
+        private final AtomicLong fairCursor;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -270,13 +321,19 @@ public final class ChannelRuntime {
         public SelectSet(
                 Collection<? extends SelectCase> cases,
                 long initialFairCursor) {
+            this(cases, new AtomicLong(initialFairCursor));
+        }
+
+        private SelectSet(
+                Collection<? extends SelectCase> cases,
+                AtomicLong sharedCursor) {
             Objects.requireNonNull(cases, "cases");
+            this.fairCursor = Objects.requireNonNull(sharedCursor, "sharedCursor");
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
             }
             this.cases = List.copyOf(cases);
-            this.fairCursor.set(initialFairCursor);
             long defaults = this.cases.stream()
                     .filter(DefaultCase.class::isInstance)
                     .count();
@@ -337,25 +394,10 @@ public final class ChannelRuntime {
             return registration.tryNow();
         }
 
-        private int[] initialOrder(SelectPolicy policy) {
-            int count = cases.size();
-            int[] order = new int[count];
-
-            if (policy == SelectPolicy.PRIORITY) {
-                for (int i = 0; i < count; i++) order[i] = i;
-                return order;
-            }
-
-            if (policy == SelectPolicy.FAIR) {
-                int start = Math.floorMod(fairCursor.get(), count);
-                for (int i = 0; i < count; i++) {
-                    order[i] = (start + i) % count;
-                }
-                return order;
-            }
-
-            for (int i = 0; i < count; i++) order[i] = i;
-            for (int i = count - 1; i > 0; i--) {
+        private int[] randomizedOrder() {
+            int[] order = new int[cases.size()];
+            for (int i = 0; i < order.length; i++) order[i] = i;
+            for (int i = order.length - 1; i > 0; i--) {
                 int j = ThreadLocalRandom.current().nextInt(i + 1);
                 int tmp = order[i];
                 order[i] = order[j];
@@ -394,6 +436,56 @@ public final class ChannelRuntime {
 
         public SelectPlan(Collection<? extends SelectCase> cases) {
             this(new SelectSet(cases));
+        }
+
+        public SelectPlan(Collection<? extends SelectCase> cases, long initialCursor) {
+            this(new SelectSet(cases, initialCursor));
+        }
+
+        /**
+         * Compiler/runtime hook: fresh WRITE descriptors can share only their
+         * owner site's committed fairness cursor, not captured payloads.
+         * The AtomicLong is actor/root-owned and must never cross actor domains.
+         */
+        public SelectPlan(Collection<? extends SelectCase> cases,
+                AtomicLong ownerSiteCursor) {
+            this(new SelectSet(cases, ownerSiteCursor));
+        }
+
+        /**
+         * Safe compiler-hoisting target for read/default sites. Each visit
+         * evaluates channel operands; a stable identity reuses exactly the
+         * existing plan. Rebinding builds new descriptors but shares the
+         * per-site FAIR cursor across generations, including earlier pending
+         * registrations; no stale registration is transferred to new channels.
+         *
+         * Ownership of the returned plan remains with one actor incarnation
+         * (or the root execution). Caller serializes updates to its site map.
+         */
+        public SelectPlan rebindReadOnly(Collection<? extends SelectCase> evaluated) {
+            Objects.requireNonNull(evaluated, "evaluated");
+            List<SelectCase> next = List.copyOf(evaluated);
+            if (next.size() != set.cases.size()) {
+                throw new IllegalArgumentException("static select arity changed during execution");
+            }
+            boolean unchanged = true;
+            for (int i = 0; i < next.size(); i++) {
+                SelectCase before = set.cases.get(i);
+                SelectCase after = next.get(i);
+                if (before instanceof ReadCase<?> oldRead
+                        && after instanceof ReadCase<?> newRead) {
+                    if (oldRead.channel() != newRead.channel()) unchanged = false;
+                } else if (before instanceof DefaultCase
+                        && after instanceof DefaultCase) {
+                    // Source defaults carry no channel or value.
+                } else {
+                    throw new IllegalArgumentException(
+                            "reusable static select plans require READ/DEFAULT arms");
+                }
+            }
+            return unchanged
+                    ? this
+                    : new SelectPlan(new SelectSet(next, set.fairCursor));
         }
 
         private SelectPlan(SelectSet set) {
@@ -470,7 +562,10 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        private final int[] order;
+        // FAIR/PRIORITY compute arm indexes without allocation per invocation;
+        // RANDOM retains a shuffled order for this selection generation.
+        private final int[] randomOrder;
+        private final int admissionStart;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
         private final int defaultIndex;
@@ -478,10 +573,37 @@ public final class ChannelRuntime {
         private boolean decided;
         private boolean registered;
 
+        /**
+         * FAIR arbitration observes the cursor at the actual commit boundary,
+         * not only when this registration was created. Several pending waits
+         * may share a reusable SelectPlan; another wait may win and advance the
+         * cursor before this wait becomes ready. RANDOM deliberately retains
+         * the one-time shuffled order, and PRIORITY stays lexical.
+         *
+         * Called only under COORDINATOR during arbitration.
+         */
+        private int arbitrationIndex(int position) {
+            if (policy == SelectPolicy.PRIORITY) return position;
+            if (policy == SelectPolicy.RANDOM) return randomOrder[position];
+            return (int) ((Math.floorMod(set.fairCursor.get(), set.cases.size())
+                    + (long) position) % set.cases.size());
+        }
+
+        private int admissionIndex(int position) {
+            if (policy == SelectPolicy.PRIORITY) return position;
+            if (policy == SelectPolicy.RANDOM) return randomOrder[position];
+            return (int) ((admissionStart + (long) position) % set.cases.size());
+        }
+
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
             this.policy = policy;
-            this.order = set.initialOrder(policy);
+            this.admissionStart = policy == SelectPolicy.FAIR
+                    ? Math.floorMod(set.fairCursor.get(), set.cases.size())
+                    : 0;
+            this.randomOrder = policy == SelectPolicy.RANDOM
+                    ? set.randomizedOrder()
+                    : null;
 
             int foundDefault = -1;
             for (int i = 0; i < set.cases.size(); i++) {
@@ -554,7 +676,8 @@ public final class ChannelRuntime {
         selection.registered = true;
         ACTIVE.add(selection);
 
-        for (int index : selection.order) {
+        for (int position = 0; position < selection.set.cases.size(); position++) {
+            int index = selection.admissionIndex(position);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -671,7 +794,8 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int index : selection.order) {
+        for (int position = 0; position < selection.set.cases.size(); position++) {
+            int index = selection.arbitrationIndex(position);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -708,7 +832,8 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int index : selection.order) {
+        for (int position = 0; position < selection.set.cases.size(); position++) {
+            int index = selection.arbitrationIndex(position);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -838,7 +963,12 @@ public final class ChannelRuntime {
         if (selection.decided) return;
 
         selection.decided = true;
-        selection.set.selected(result.index(), selection.policy);
+        // DEFAULT performs no channel operation and earns no FAIR credit.
+        // Otherwise a hot default branch could rotate the cursor despite
+        // never delivering a channel event.
+        if (result.operation() != SelectOperation.DEFAULT) {
+            selection.set.selected(result.index(), selection.policy);
+        }
         unregisterLocked(selection);
         completions.add(() ->
                 selection.future.completeFromRuntime(result));

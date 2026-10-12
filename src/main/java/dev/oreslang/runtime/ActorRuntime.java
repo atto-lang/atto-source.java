@@ -277,8 +277,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public static DispatcherConfig defaults() {
-            int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
-            int shared = Integer.getInteger("ores.runtime.actor.shared.parallelism", cpus);
+            // Default carrier pool policy: between one and five physical
+            // workers per activated pool. Descriptors start with zero.
+            int cpus = Math.max(1, Math.min(5, Runtime.getRuntime().availableProcessors()));
+            int requestedShared = Integer.getInteger("ores.runtime.actor.shared.parallelism", cpus);
+            if (requestedShared < 1) {
+                throw new IllegalArgumentException("shared actor parallelism must be positive");
+            }
+            int shared = Math.min(5, requestedShared);
             return new DispatcherConfig(cpus, shared, 64, 16_384);
         }
     }
@@ -372,6 +378,11 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
+    // Eager descriptors; exactly one sleeping CONTROL thread per pool once it has an actor.
+    private final ActorPoolControlScheduler privatePoolScheduler;
+    private final ActorPoolControlScheduler sharedPoolScheduler;
+    private final ActorPoolControlScheduler untrustedPoolScheduler;
+    private volatile Consumer<ActorKind> masterPoolWakeup;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
@@ -418,6 +429,12 @@ public final class ActorRuntime implements AutoCloseable {
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
+        this.privatePoolScheduler = new ActorPoolControlScheduler(
+                "ores-private", dispatcherConfig.maxActors());
+        this.sharedPoolScheduler = new ActorPoolControlScheduler(
+                "ores-shared", dispatcherConfig.maxActors());
+        this.untrustedPoolScheduler = new ActorPoolControlScheduler(
+                "ores-untrusted", dispatcherConfig.maxActors());
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
         ExecutorService privatePool = null;
@@ -451,6 +468,13 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    /** Effective physical maximum, not an actor/continuation concurrency limit. */
+    public int workerCarrierLimit(ActorKind kind) {
+        Objects.requireNonNull(kind, "kind");
+        return Math.min(5, kind == ActorKind.SHARED
+                ? dispatcherConfig.sharedParallelism() : dispatcherConfig.privateParallelism());
+    }
 
     /**
      * Physical carrier implementation currently backing actor turns.
@@ -639,6 +663,43 @@ public final class ActorRuntime implements AutoCloseable {
                     "actor-local select fairness is only available during an actor turn");
         }
         return cell.nextStaticSelectTicket(selectSite);
+    }
+
+    /**
+     * Compiler-owned immutable static READ/DEFAULT select plan, scoped to this
+     * exact actor incarnation. Each entry re-evaluates channel expressions,
+     * reuses a stable descriptor and preserves one FAIR cursor on rebinding.
+     * Never expose this mutable scheduler capability through actor messages.
+     */
+    public ChannelRuntime.SelectPlan actorLocalReadSelectPlan(
+            Object selectSite,
+            java.util.List<? extends ChannelRuntime.SelectCase> evaluated) {
+        Objects.requireNonNull(selectSite, "selectSite");
+        Objects.requireNonNull(evaluated, "evaluated");
+        requireCallerRuntimeAffinity("reuse actor-local select plan");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "actor-local SelectPlan requires an active actor turn");
+        }
+        return cell.readSelectPlan(selectSite, evaluated);
+    }
+
+    /**
+     * A WRITE-containing static select must evaluate fresh payload descriptors
+     * on each visit, while retaining the actor-local FAIR cursor across visits.
+     * Unlike READ/DEFAULT sites, no payload-bearing plan is cached by ActorCell.
+     */
+    public ChannelRuntime.SelectPlan actorFreshStaticSelectPlan(
+            Object selectSite,
+            java.util.List<? extends ChannelRuntime.SelectCase> evaluated) {
+        Objects.requireNonNull(selectSite, "selectSite");
+        Objects.requireNonNull(evaluated, "evaluated");
+        requireCallerRuntimeAffinity("build actor-owned static select");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) throw new IllegalStateException(
+                "static select plan requires an active actor turn");
+        return cell.freshStaticSelectPlan(selectSite, evaluated);
     }
 
     /**
@@ -1917,6 +1978,10 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorId id() { return id; }
         public ActorKind kind() { return kind; }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
+        /** True while the actor still accepts work. This becomes false as
+         * soon as stop is requested, which may precede finalizers, memory
+         * release, and physical carrier exit. Use awaitTermination() or
+         * get_done() when resource teardown must have completed. */
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
@@ -3872,10 +3937,30 @@ public final class ActorRuntime implements AutoCloseable {
                 } else {
                     actors.put(id, cell);
                 }
+                // The pool scheduler is created eagerly, but only its first
+                // actor registration starts its dedicated CONTROL thread.
+                poolSchedulerFor(kind).registerActor(id);
+                Consumer<ActorKind> notifyMaster = masterPoolWakeup;
+                if (notifyMaster != null) notifyMaster.accept(kind);
                 return ref;
             } catch (RuntimeException | Error failure) {
-                if (linkedToParent && cell != null) parent.children.remove(cell);
+                if (linkedToParent && cell != null) {
+                    synchronized (parent.lifecycleLock) {
+                        parent.children.remove(cell);
+                    }
+                }
+                actors.remove(id);
+                poolSchedulerFor(kind).unregisterActor(id);
                 actorCount.decrementAndGet();
+                // Actor identity was never published. Reclaim its owned slice
+                // and output-channel reservation on first-actor thread-start
+                // failure, supervisor races, or any later admission failure.
+                if (cell != null) {
+                    try { cell.outputStream.closeAndDrainFromRuntime(); }
+                    catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+                    try { cell.memorySlice.close(); }
+                    catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+                }
                 throw failure;
             }
         }
@@ -4161,6 +4246,7 @@ public final class ActorRuntime implements AutoCloseable {
             group.actorTerminated(cell.ref.id());
         }
         if (actors.remove(cell.ref.id(), cell)) {
+            poolSchedulerFor(cell.kind).unregisterActor(cell.ref.id());
             int remaining = actorCount.decrementAndGet();
             if (remaining < 0) {
                 actorCount.incrementAndGet();
@@ -5898,6 +5984,29 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        // Source cancellation cleanup owns its scheduler and worker lane
+        // across a failed close deadline. Never stop the pool scheduler while
+        // a suspended finalizer still needs to be re-admitted on retry.
+        if (!sourceCleanupPending || (stillRunning.isEmpty() && dispatchersTerminated && !interrupted)) {
+        for (ActorPoolControlScheduler scheduler :
+                List.of(privatePoolScheduler, sharedPoolScheduler, untrustedPoolScheduler)) {
+            scheduler.shutdown();
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                dispatchersTerminated = false;
+                continue;
+            }
+            try {
+                if (!scheduler.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+                    dispatchersTerminated = false;
+                }
+            } catch (InterruptedException waitInterrupted) {
+                interrupted = true;
+                dispatchersTerminated = false;
+            }
+        }
+        }
+
         // Source tasks retain their owned resources across failed cleanup
         // drains. When there were no source tasks to unwind, preserve the
         // older fail-closed revocation of shared handles even if a hostile
@@ -5943,12 +6052,62 @@ public final class ActorRuntime implements AutoCloseable {
         };
     }
 
+    void setMasterPoolWakeup(Consumer<ActorKind> sink) {
+        Objects.requireNonNull(sink, "sink");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (masterPoolWakeup != null) throw new IllegalStateException("master already attached");
+            masterPoolWakeup = sink;
+        }
+    }
+
+    private ActorPoolControlScheduler poolSchedulerFor(ActorKind kind) {
+        return switch (kind) {
+            case PRIVATE -> privatePoolScheduler;
+            case SHARED -> sharedPoolScheduler;
+            case UNTRUSTED -> untrustedPoolScheduler;
+        };
+    }
+
+    /** Only physical actor pool scheduler CONTROL threads, not carrier or VM threads. */
+    public int activatedActorPoolSchedulers() {
+        return (privatePoolScheduler.started() ? 1 : 0)
+                + (sharedPoolScheduler.started() ? 1 : 0)
+                + (untrustedPoolScheduler.started() ? 1 : 0);
+    }
+
+    /** Host-owned master scheduler sends a wakeup, never a cross-thread guest callback. */
+    void wakeActorPoolSchedulerFromMaster(ActorKind kind) {
+        poolSchedulerFor(Objects.requireNonNull(kind)).signalMasterControl();
+    }
+
     private static boolean usesNativeCarriers(ExecutorService executor) {
         return executor instanceof NativeCarrierExecutor
+                || executor instanceof LazyActorCarrierExecutor lazy && lazy.nativeCarriers()
                 || executor instanceof ActorAffinityDispatcher lanes && lanes.nativeCarriers();
     }
 
+    /** Host diagnostic: count physical actor carrier pools activated by work.
+     * Zero at bootstrap, even when group and scheduler descriptors exist.
+     * Does not count VM CONTROL or JVM-managed internal threads.
+     */
+    public int activatedActorCarrierPools() {
+        return activatedPoolCount(privateDispatcher)
+                + activatedPoolCount(sharedDispatcher)
+                + activatedPoolCount(untrustedDispatcher);
+    }
+
+    private static int activatedPoolCount(ExecutorService executor) {
+        if (executor instanceof LazyActorCarrierExecutor lazy) return lazy.activated() ? 1 : 0;
+        if (executor instanceof ActorAffinityDispatcher lanes) return lanes.activatedLaneCount();
+        return 0;
+    }
+
     private static ExecutorService newActorDispatcher(int parallelism, int capacity, String prefix) {
+        // Every actor pool is physically limited to five workers, including
+        // legacy explicit configurations that request greater parallelism.
+        // Logical actor concurrency is separate from physical carrier count.
+        parallelism = Math.min(5, parallelism);
         String mode = System.getProperty("ores.actor.affinity", "lane").trim();
         if (mode.equals("none")) return newDispatcher(parallelism, capacity, prefix);
         if (!mode.equals("lane") && !mode.equals("cpu")) {
@@ -5970,8 +6129,7 @@ public final class ActorRuntime implements AutoCloseable {
             int readyQueueCapacity,
             String threadPrefix) {
         String requested = System.getProperty(CARRIER_BACKEND_PROPERTY, "auto")
-                .trim()
-                .toLowerCase(java.util.Locale.ROOT);
+                .trim().toLowerCase(java.util.Locale.ROOT);
         if (!requested.equals("auto")
                 && !requested.equals("native")
                 && !requested.equals("java")) {
@@ -5980,6 +6138,22 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         boolean unix = isNativeCarrierPlatform();
+        if (requested.equals("native") && !unix) {
+            throw new IllegalStateException(
+                    "native Oreslang carriers currently require Linux or macOS");
+        }
+        // Capture the backend policy at construction. Changes to system
+        // properties after bootstrap cannot change the first actor's pool.
+        // The native library and pthreads are NOT loaded/created here.
+        boolean preferredNative = !requested.equals("java") && unix;
+        return new LazyActorCarrierExecutor(
+                () -> createCarrierDispatcher(parallelism, readyQueueCapacity,
+                        threadPrefix, requested, unix), preferredNative);
+    }
+
+    private static ExecutorService createCarrierDispatcher(
+            int parallelism, int readyQueueCapacity, String threadPrefix,
+            String requested, boolean unix) {
         if (!requested.equals("java") && (requested.equals("native") || unix)) {
             if (!unix) {
                 throw new IllegalStateException(
@@ -6056,6 +6230,13 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private final IdentityHashMap<Object, Long> staticSelectCursors =
                 new IdentityHashMap<>();
+        private final IdentityHashMap<Object, ChannelRuntime.SelectPlan> readSelectPlans =
+                new IdentityHashMap<>();
+        // Source-site cursor is independent of registered operations and
+        // retained descriptors. WRITE plans may be ephemeral and must not
+        // rotate merely because source evaluation entered the select again.
+        private final IdentityHashMap<Object, java.util.concurrent.atomic.AtomicLong>
+                staticSelectPlanCursors = new IdentityHashMap<>();
         /** Settles only after the actor has fully crossed its TurnExecutor boundary. */
         private final OresFuture<Void> finalizedFuture = new OresFuture<>();
         /** Mailbox transport for ordinary user messages. */
@@ -6141,9 +6322,42 @@ public final class ActorRuntime implements AutoCloseable {
                     Math.max(1, policy.maxMailboxMessages()));
             this.outputStream = new ActorOutputStream<>(
                     ref.id(), outputChannel);
+            this.memorySlice = new ActorMemorySlice(ref.id(), policy.maxHeapBytes());
+            // Publish only after every constructor allocation succeeds. A
+            // failed spawn must not leak an unregistered output stream.
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
-            this.memorySlice = new ActorMemorySlice(ref.id(), policy.maxHeapBytes());
+        }
+
+        private ChannelRuntime.SelectPlan readSelectPlan(
+                Object selectSite,
+                java.util.List<? extends ChannelRuntime.SelectCase> evaluated) {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) throw terminated(ref);
+                ChannelRuntime.SelectPlan existing = readSelectPlans.get(selectSite);
+                ChannelRuntime.SelectPlan next = existing == null
+                        ? new ChannelRuntime.SelectPlan(
+                                evaluated,
+                                staticSelectPlanCursors.computeIfAbsent(
+                                        selectSite,
+                                        ignored -> new java.util.concurrent.atomic.AtomicLong()))
+                        : existing.rebindReadOnly(evaluated);
+                if (existing != next) readSelectPlans.put(selectSite, next);
+                return next;
+            }
+        }
+
+        private ChannelRuntime.SelectPlan freshStaticSelectPlan(
+                Object selectSite,
+                java.util.List<? extends ChannelRuntime.SelectCase> evaluated) {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) throw terminated(ref);
+                return new ChannelRuntime.SelectPlan(
+                        evaluated,
+                        staticSelectPlanCursors.computeIfAbsent(
+                                selectSite,
+                                ignored -> new java.util.concurrent.atomic.AtomicLong()));
+            }
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
@@ -6356,6 +6570,12 @@ public final class ActorRuntime implements AutoCloseable {
             }
             drainMailboxReservations();
             staticSelectCursors.clear();
+            // A finalized incarnation must retain neither source-site
+            // descriptors nor channel capability references via its plan
+            // cache. Old completed/aborted continuations cannot resurrect
+            // them because admission is fenced above by stopped/finalized.
+            readSelectPlans.clear();
+            staticSelectPlanCursors.clear();
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
@@ -6536,12 +6756,11 @@ public final class ActorRuntime implements AutoCloseable {
                     || forceKillFenced || (closed.get() && !sourceCleanupDraining)) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
+                poolSchedulerFor(kind).signalActorWork();
+                Consumer<ActorKind> notifyMaster = masterPoolWakeup;
+                if (notifyMaster != null) notifyMaster.accept(kind);
                 ExecutorService dispatcher = dispatcherFor(kind);
-                if (dispatcher instanceof ActorAffinityDispatcher lanes) {
-                    lanes.executeOnLane(dispatchLane, this::runBatch);
-                } else {
-                    dispatcher.execute(this::runBatch);
-                }
+                poolSchedulerFor(kind).dispatch(dispatcher, dispatchLane, this::runBatch);
             } catch (RejectedExecutionException rejected) {
                 scheduled.set(false);
                 stop();
