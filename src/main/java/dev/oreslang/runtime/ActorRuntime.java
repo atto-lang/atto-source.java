@@ -826,10 +826,18 @@ public final class ActorRuntime implements AutoCloseable {
          * ScratchTurn must close before an await/cooperate suspension.
          */
         public ActorArena newActorArena(int persistentSlots, int scratchSlots) {
-            requireCurrentOwner();
-            ActorArena arena = ActorArena.open(this, persistentSlots, scratchSlots);
-            actorArenas.add(arena);
-            return arena;
+            ActorCell<?> cell = requireCurrentOwner();
+            // Register the composite arena under the same lifecycle monitor
+            // as its two constituent FFM regions. Actor shutdown must never
+            // observe the native allocations but miss this scratch-scope fence.
+            synchronized (cell.lifecycleLock) {
+                if (sliceClosed.get() || cell.stopped.get()) {
+                    throw new IllegalStateException("actor heap retired during arena admission");
+                }
+                ActorArena arena = ActorArena.open(this, persistentSlots, scratchSlots);
+                actorArenas.add(arena);
+                return arena;
+            }
         }
 
         /** Zero-allocation admission for hot native arena reads and writes. */
