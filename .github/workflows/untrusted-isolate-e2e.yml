@@ -31,7 +31,7 @@ jobs:
       - name: Verify host-only source admission and tests not requiring an isolate
         run: >
           mvn -B -ntp
-          -Dtest=SourceActorSpawnExecutionTest,IsolationHotReloadTest,SharedUntrustedIsolatePoolTest,SharedUntrustedActorSupervisorTest,ActorStrictHeapAdmissionTest
+          -Dtest=SourceActorSpawnExecutionTest,IsolationHotReloadTest,SharedUntrustedIsolatePoolTest,SharedUntrustedActorSupervisorTest,SharedUntrustedActorSupervisorNoImageTest,ActorStrictHeapAdmissionTest,VerifiedCloseFenceTest
           test
 
   native-isolate-e2e:
@@ -64,7 +64,7 @@ jobs:
           set -eu
           mvn -B -ntp \
             -DargLine="-Dpolyglot.engine.IsolateLibrary=${PWD}/target/liboresvm.so" \
-            -Dtest=SharedUntrustedIsolatePoolTest,UntrustedJitCodeUnitTest,SharedUntrustedActorSupervisorTest,ActorStrictHeapAdmissionTest \
+            -Dtest=SharedUntrustedIsolatePoolTest,UntrustedJitCodeUnitTest,SharedUntrustedActorSupervisorTest,ActorStrictHeapAdmissionTest,VerifiedCloseFenceTest \
             test
       - name: Report actually executed integration tests
         if: always()
@@ -76,6 +76,7 @@ jobs:
               'target/surefire-reports/TEST-dev.oreslang.runtime.UntrustedJitCodeUnitTest.xml',
               'target/surefire-reports/TEST-dev.oreslang.runtime.SharedUntrustedActorSupervisorTest.xml',
               'target/surefire-reports/TEST-dev.oreslang.runtime.ActorStrictHeapAdmissionTest.xml',
+              'target/surefire-reports/TEST-dev.oreslang.runtime.VerifiedCloseFenceTest.xml',
           ]
           executed = skipped = 0
           for path in names:
@@ -85,6 +86,6 @@ jobs:
               executed += int(root.get('tests', '0')) - int(root.get('skipped', '0'))
               skipped += int(root.get('skipped', '0'))
           print('Executed tests:', executed, 'Skipped tests:', skipped)
-          if executed < 6 or skipped:
+          if executed < 12 or skipped:
               raise SystemExit('isolate E2E must execute all required tests without skip')
           PY
