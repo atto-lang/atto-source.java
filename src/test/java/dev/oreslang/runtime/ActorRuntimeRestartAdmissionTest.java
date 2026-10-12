@@ -115,6 +115,12 @@ final class ActorRuntimeRestartAdmissionTest {
             assertEquals(SupervisorChildRegistry.Phase.RESTARTING,
                     group.childSnapshot(old.child()).phase(),
                     "failed admission must not fabricate a committed replacement");
+            var restored = group.abortCleanedUnpublishedRestart(permit, next);
+            assertEquals(SupervisorChildRegistry.Phase.FINALIZED, restored.phase());
+            assertEquals(old.child(), restored.child());
+            assertThrows(IllegalStateException.class,
+                    () -> group.abortCleanedUnpublishedRestart(permit, next),
+                    "physically completed cleanup cannot replay a consumed permit");
             group.close();
         }
     }
