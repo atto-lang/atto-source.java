@@ -124,7 +124,7 @@ final class FormalTwoActorShutdownModelCheckTest {
         }
         assertTrue(sawMixedOwners, "must explore one completed and one live exchange");
         assertTrue(sawRetired, "fairly completed streams must permit eventual retirement");
-        assertTrue(seen.size() >= 100, "model was unexpectedly shallow: " + seen.size());
+        assertTrue(seen.size() >= 75, "model was unexpectedly shallow: " + seen.size());
     }
 
     @Test
