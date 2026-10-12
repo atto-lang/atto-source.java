@@ -264,8 +264,13 @@ final class SupervisorDecisionCommitFenceTest {
             assertFalse(process.healthy());
             assertThrows(IllegalStateException.class,
                     () -> process.accept(notice(supervisor, group)));
+            // The additional notice rejected after failure must be counted
+            // independently; only close() itself is required to be idempotent.
+            long accounted = process.undelivered();
+            assertEquals(2, accounted, "rejected post-failure notice was not accounted");
             process.close();
-            assertEquals(1, process.undelivered(), "repeat close double-counted failure");
+            assertEquals(accounted, process.undelivered(),
+                    "repeat close double-counted an already recorded failure");
         }
     }
 
