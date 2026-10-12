@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -457,4 +458,23 @@ final class MatchOverSemanticsTest {
                 }
                 """);
     }
+    @Test
+    void explicitDoSwitchCarriesProceduralMarkerDistinctFromLegacySwitch() {
+        Ast.SwitchStmt procedural = firstSwitch(Parser.parse("fnc choose(int n): int { do switch n case 7 -> { return 42; } default -> { return 0; } end return 99; }"));
+        Ast.SwitchStmt legacy = firstSwitch(Parser.parse("fnc choose(int n): int { switch n case 7 -> { return 42; } default -> { return 0; } end return 99; }"));
+        assertTrue(procedural.procedural(), "do switch must keep FUNCTION_RETURN intent");
+        assertFalse(legacy.procedural(), "legacy switch must not impersonate explicit do switch");
+    }
+
+    private static Ast.SwitchStmt firstSwitch(Ast.Program program) {
+        return program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .flatMap(function -> function.body().stream())
+                .filter(Ast.SwitchStmt.class::isInstance)
+                .map(Ast.SwitchStmt.class::cast)
+                .findFirst().orElseThrow();
+    }
+
 }
