@@ -63,7 +63,28 @@ public final class OresMutex {
      * could be detached from the mutex's domain/permit accounting.</p>
      */
     public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
+        // Queued failures and caller cancellation must physically unlink the
+        // deadlock edge before completing the public Future. The callback is
+        // set before an async waiter can escape to the caller.
+        private volatile java.util.function.BooleanSupplier revokeQueuedWaiter;
+
         private GuardFuture() { }
+
+        private boolean failQueuedFromRuntime(Throwable failure) {
+            java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
+            return revoke != null && revoke.getAsBoolean() && super.completeExceptionally(failure);
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
+            if (revoke != null && !revoke.getAsBoolean()) {
+                // Dequeue already won: an in-flight physical handoff is
+                // noncancellable until the resulting Guard is published.
+                return false;
+            }
+            return super.cancel(mayInterruptIfRunning);
+        }
 
         private boolean completeFromRuntime(Guard<T> guard) {
             return super.complete(guard);
@@ -556,6 +577,22 @@ public final class OresMutex {
         }
 
         /**
+         * Claim cancellation/timeout of a still-queued waiter BEFORE publishing
+         * its terminal Future. Removal and deadlock-edge cleanup share the
+         * dequeue monitor, so a concurrent permit handoff wins or loses as
+         * one atomic decision. A dequeued waiter is already committed to
+         * handoff (including the poisoned failure path).
+         */
+        private boolean revokeQueuedWaiter(AsyncWaiter waiter) {
+            synchronized (asyncQueueLock) {
+                if (!asyncQueue.remove(waiter)) return false;
+                endWait(waiter.ownerDomain);
+                releaseDomain(waiter.ownerDomain);
+                return true;
+            }
+        }
+
+        /**
          * Releases the physical permit or directly transfers it to a queued
          * async waiter. Direct handoff avoids one virtual thread per waiter.
          *
@@ -717,6 +754,7 @@ public final class OresMutex {
                     ownerDomain,
                     enforceOwnerDomain,
                     future);
+            future.revokeQueuedWaiter = () -> revokeQueuedWaiter(waiter);
 
             future.whenComplete((ignored, failure) -> {
                 boolean removed;
@@ -803,18 +841,18 @@ public final class OresMutex {
 
             long timeoutNanos = saturatedNanos(timeout);
             if (timeoutNanos == 0L) {
-                future.failFromRuntime(new LockTimeoutException(timeout));
+                future.failQueuedFromRuntime(new LockTimeoutException(timeout));
                 return future;
             }
 
             final java.util.concurrent.ScheduledFuture<?> timeoutTask;
             try {
                 timeoutTask = ASYNC_TIMEOUTS.schedule(
-                        () -> future.failFromRuntime(new LockTimeoutException(timeout)),
+                        () -> future.failQueuedFromRuntime(new LockTimeoutException(timeout)),
                         timeoutNanos,
                         TimeUnit.NANOSECONDS);
             } catch (RuntimeException schedulingFailure) {
-                future.failFromRuntime(schedulingFailure);
+                future.failQueuedFromRuntime(schedulingFailure);
                 return future;
             }
             future.whenComplete((ignored, failure) -> timeoutTask.cancel(false));
