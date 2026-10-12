@@ -433,6 +433,16 @@ public final class ChannelRuntime {
         }
 
         /**
+         * Compiler/runtime hook: fresh WRITE descriptors can share only their
+         * owner site's committed fairness cursor, not captured payloads.
+         * The AtomicLong is actor/root-owned and must never cross actor domains.
+         */
+        public SelectPlan(Collection<? extends SelectCase> cases,
+                AtomicLong ownerSiteCursor) {
+            this(new SelectSet(cases, ownerSiteCursor));
+        }
+
+        /**
          * Safe compiler-hoisting target for read/default sites. Each visit
          * evaluates channel operands; a stable identity reuses exactly the
          * existing plan. Rebinding builds new descriptors but shares the
