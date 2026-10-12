@@ -4,6 +4,8 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.parser.MacroExpander;
+import dev.oreslang.parser.Lexer;
+import dev.oreslang.parser.Token;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -118,7 +120,10 @@ public final class HotReloadManager implements AutoCloseable {
         if (codeUnitId.isBlank()) {
             throw new IllegalArgumentException("codeUnitId cannot be blank");
         }
-        if (!guestPolicy.adversarial()) return;
+        if (!guestPolicy.adversarial()) {
+            rejectRuntimeMacroExpansion(sourceText);
+            return;
+        }
         // Persist AOT lineage across retirement without allowing unbounded IDs in hostile loads.
         if (!macroSnapshotsByCodeUnit.containsKey(codeUnitId)
                 && macroSnapshotsByCodeUnit.size() >= MAX_ADVERSARIAL_MACRO_LINEAGES) {
@@ -134,6 +139,25 @@ public final class HotReloadManager implements AutoCloseable {
             throw new IllegalArgumentException(
                     "adversarial hot-load source exceeds maximum character count "
                             + MAX_ADVERSARIAL_SOURCE_CHARS);
+        }
+        rejectRuntimeMacroExpansion(sourceText);
+    }
+
+    /**
+     * Source hot loading executes inside a running application. Macro expansion here
+     * would bypass the required offline guest-AOT build and artifact-admission gate.
+     * Until pre-expanded, signed artifact loading exists, fail before macro parsing.
+     */
+    static void rejectRuntimeMacroExpansion(String sourceText) {
+        java.util.List<Token> tokens = new Lexer(sourceText).scan();
+        for (int i = 0; i + 1 < tokens.size(); i++) {
+            Token current = tokens.get(i);
+            if (current.type() == Token.Type.IDENT
+                    && current.lexeme().equals("macro_rules")
+                    && tokens.get(i + 1).type() == Token.Type.BANG) {
+                throw new IllegalArgumentException(
+                        "runtime macro expansion forbidden: compile the macro into a guest-AOT artifact before loading");
+            }
         }
     }
 
