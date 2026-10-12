@@ -1361,10 +1361,12 @@ final class MutexRuntimeTest {
         var held = OresMutex.shared(new int[]{0});
         var owner = held.lock();
         AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch queued = new CountDownLatch(1);
 
         Thread requester = Thread.ofPlatform().start(() -> {
             try {
                 var pending = held.lockAsyncFor(Duration.ofSeconds(3));
+                queued.countDown();
                 var guard = pending.get(3, TimeUnit.SECONDS);
                 assertEquals(0, queuedAsyncReservations(held),
                         "successful handoff exposed guard before quota was settled");
@@ -1373,12 +1375,7 @@ final class MutexRuntimeTest {
                 failure.set(problem);
             }
         });
-        // Wait until the requester has registered its physical queue entry
-        // without relying on sleep-based timing.
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-        while (queuedAsyncReservations(held) == 0 && System.nanoTime() < deadline) {
-            Thread.onSpinWait();
-        }
+        assertTrue(queued.await(2, TimeUnit.SECONDS));
         assertEquals(1, queuedAsyncReservations(held));
         owner.release();
         requester.join(4_000);
