@@ -156,7 +156,9 @@ public final class SupervisorChildRegistry {
         } catch (Throwable failure) {
             children.remove(id.logicalId());
             activeActors.remove(actor);
-            seenActors.remove(actor);
+            // Physical actor creation has already occurred. A failed registry
+            // insertion must not make its ActorId reusable by stale callbacks.
+            // Burn that identity even though no logical child was published.
             throw failure;
         }
         recordTransition("register", first, null, 0L, null);
