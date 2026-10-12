@@ -1529,7 +1529,7 @@ public final class ActorRuntime implements AutoCloseable {
         };
         OresFuture<T> future;
         try {
-            future = cell.sourceScheduler().start(resume -> {
+            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
                 UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
                 CURRENT_UNTRUSTED_QUOTA.set(quota);
                 boolean entered = false;
@@ -1548,7 +1548,10 @@ public final class ActorRuntime implements AutoCloseable {
                         else CURRENT_UNTRUSTED_QUOTA.set(previous);
                     }
                 }
-            }, retireOnce);
+            }, retireOnce, quota.remainingWallNanos(),
+                    new UntrustedActorQuotaExceededException(
+                            UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                            "untrusted logical task exceeded wall-time budget while suspended"));
         } catch (RuntimeException | Error failure) {
             // No task was admitted. Release the pre-reserved quota slot.
             // The scheduler's own retirement callback also claims this
@@ -4915,6 +4918,15 @@ public final class ActorRuntime implements AutoCloseable {
 
         boolean ownedBy(ActorRuntime runtime, ActorId actor) {
             return ownerRuntime == runtime && Objects.equals(ownerActor, actor);
+        }
+
+        /** Remaining cohort wall time, including elapsed suspended time. */
+        synchronized long remainingWallNanos() {
+            long elapsed = wallClock.getAsLong() - startedNanos;
+            // Overflow, an already-expired quota or a late child all expire
+            // immediately. Never create another full budget for a child.
+            if (elapsed < 0 || elapsed >= wallBudgetNanos) return 0L;
+            return wallBudgetNanos - elapsed;
         }
 
         synchronized void enter() {
