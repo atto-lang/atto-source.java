@@ -34,10 +34,24 @@ try (var actors = new SharedUntrustedActorSupervisor(256L << 20, 16);
 
 Prefer sharing an externally owned `SharedUntrustedIsolatePool` with the
 hot-reload manager and other trusted supervisor components when those are
-composed into one application; two independently constructed pool instances
-are explicitly forbidden while the first remains live. A pool is created
-lazily in the convenience constructor to preserve validation-before-native
-resource-allocation guarantees.
+composed into one application. For example:
+
+```java
+try (var pool = new SharedUntrustedIsolatePool(256L << 20, 16);
+     var loader = HotReloadManager.forUntrustedActors(
+             IsolatePolicy.developer(), ExecutionProfile.serverJit(), pool);
+     var actors = new SharedUntrustedActorSupervisor(pool, 16)) {
+    // Loader Contexts and actor Contexts use the SAME Engine/GC/JIT.
+    // Pool lifetime belongs to this outer try-with-resources scope.
+}
+```
+
+Two independently constructed pool instances are explicitly forbidden while
+the first remains live. A pool is created lazily in the convenience
+supervisor constructor to preserve validation-before-native-resource
+allocation guarantees. This initial implementation allocates a lightweight
+guest Context per actor; further Context pooling is a separate optimization
+and must not allocate a new physical Engine or degrade actor isolation.
 
 `ActorRuntime.HeapIsolationRequirement.REQUIRE_INDEPENDENT_COLLECTOR`
 remains fail-closed for **all** actor kinds in the ordinary Truffle runtime:
