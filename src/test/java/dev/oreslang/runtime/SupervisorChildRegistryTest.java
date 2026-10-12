@@ -412,4 +412,54 @@ final class SupervisorChildRegistryTest {
                 registry.beginRestart(child.child(), failed, 1));
     }
 
+
+    @Test
+    void restartAdmissionVerifierCannotPublishAfterConcurrentGroupClose() throws Exception {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var dying = ActorRuntime.ActorId.create();
+        var child = registry.register(dying);
+        registry.finalized(child.child(), dying, 1);
+        var claim = registry.beginRestart(child.child(), dying, 1);
+        var candidate = ActorRuntime.ActorId.create();
+        registry.stageReplacement(claim, candidate);
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var finish = new java.util.concurrent.CountDownLatch(1);
+        var result = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var worker = new Thread(() -> {
+            try {
+                registry.acknowledgeReplacementAdmission(claim, candidate, () -> {
+                    // This callback must execute WITHOUT the registry monitor.
+                    assertEquals(SupervisorChildRegistry.Phase.RESTARTING,
+                            registry.snapshot(child.child()).phase());
+                    entered.countDown();
+                    try {
+                        if (!finish.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                            throw new IllegalStateException("proof gate timed out");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return false;
+                    }
+                    return true;
+                });
+            } catch (Throwable failure) {
+                result.set(failure);
+            }
+        });
+        worker.start();
+        try {
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            registry.closeRestartAdmission();
+        } finally {
+            finish.countDown();
+        }
+        worker.join(5000);
+        assertFalse(worker.isAlive(), "admission verifier deadlocked the registry");
+        assertInstanceOf(IllegalStateException.class, result.get());
+        assertThrows(IllegalStateException.class, () -> registry.replace(claim, candidate));
+        assertThrows(IllegalStateException.class, () -> registry.abortRestart(claim));
+        registry.acknowledgeReplacementCleanup(claim, candidate, () -> true);
+        registry.abortRestart(claim);
+    }
+
 }
