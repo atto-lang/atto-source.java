@@ -34,6 +34,7 @@ final class ActorSourceTearDownTest {
         private final AtomicInteger receives = new AtomicInteger();
         private final AtomicInteger teardowns = new AtomicInteger();
         private final AtomicInteger finalCleanups = new AtomicInteger();
+        private final AtomicInteger teardownOutputsAccepted = new AtomicInteger();
         private final boolean teardownFails;
         private boolean teardownEmitsOutput;
         private volatile CountDownLatch teardownEntered;
@@ -96,6 +97,7 @@ final class ActorSourceTearDownTest {
             }
             if (teardownEmitsOutput) {
                 context.runtime().emitCurrentActorOutput("teardown-output");
+                teardownOutputsAccepted.incrementAndGet();
             }
             if (teardownFails) throw new IllegalStateException("teardown failure");
         }
@@ -239,6 +241,7 @@ final class ActorSourceTearDownTest {
         try (SharedCodeImageStore store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             Executor executor = new Executor(image(store), false);
+            executor.teardownEmitsOutput = true;
             executor.teardownEntered = new CountDownLatch(1);
             executor.releaseTeardown = new CountDownLatch(1);
             var ref = runtime.spawnCodeActor(
@@ -255,6 +258,8 @@ final class ActorSourceTearDownTest {
             assertEquals(1, executor.teardowns.get());
             assertEquals(0, executor.finalCleanups.get(),
                     "cancel must not enter the last guest callback");
+            assertEquals(0, executor.teardownOutputsAccepted.get(),
+                    "cancellation must revoke teardown output authority");
         }
     }
 
