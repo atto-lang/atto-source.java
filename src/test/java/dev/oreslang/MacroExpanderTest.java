@@ -123,7 +123,7 @@ final class MacroExpanderTest {
     void nestedArgumentsAndMultipleCapturesExpandWithoutSplittingNestedCommas() {
         String source = """
                 macro_rules! left {
-                  ($a:expr, $b:expr) => { ($a) };
+                  ($a:expr, $b:expr) => { ($a + $b) };
                 }
                 define module app as
                   pub fnc run(): int {
@@ -330,21 +330,36 @@ final class MacroExpanderTest {
     }
 
     @Test
-    void doesNotExecuteOrDuplicateArgumentsNotReferencedByTemplate() {
-        String source = """
+    void rejectsUnusedCapturesBeforeTheyCanEraseUncheckedSource() {
+        String definition = """
                 macro_rules! first { ($a:expr, $b:expr) => { $a }; }
                 define module app as
-                  fnc run(): int { return first!(42, 1 + 2); }
+                  fnc run(): int { return first!(42, rt borrow mut self.state); }
                 end
                 """;
-        List<Token> expanded = MacroExpander.expand(new Lexer(source).scan()).tokens();
-        assertEquals(1, expanded.stream().filter(t -> t.type() == Token.Type.INT
-                && t.lexeme().equals("42")).count());
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(definition));
+        assertTrue(ex.getMessage().contains("unused macro capture $b"), ex.getMessage());
+
+        for (String malformed : List.of("this is not an expression", "@Unsafe", "return 2",
+                "rt take self.state")) {
+            String source = """
+                    macro_rules! swallow { ($hidden:expr) => { 42 }; }
+                    define module app as
+                      fnc run(): int { return swallow!(%s); }
+                    end
+                    """.formatted(malformed);
+            IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(source).scan()), malformed);
+            assertTrue(rejected.getMessage().contains("unused macro capture"),
+                    rejected.getMessage());
+        }
     }
+
     @Test
     void aotFingerprintDistinguishesMalformedUnicodeCodeUnits() {
         String prefix = "macro_rules! unicode { ($v:expr) => { \"";
-        String suffix = "\" }; }";
+        String suffix = "\" + $v }; }";
         String initialSource = prefix + (char) 0xD800 + suffix;
         String modifiedSource = prefix + (char) 0xD801 + suffix;
         MacroExpander.Snapshot previous =
