@@ -903,12 +903,10 @@ public final class OresEvalRootNode extends RootNode {
                     pendingLoopGuardEnv = null;
                     nextStep = null;
                     initialBlockEnv = null;
-                    // Trappable failures must not absorb panic, cancellation,
-                    // or denied runtime authority while a task resumes.
+                    // Preserve control/authority failures even when a future
+                    // or resumed continuation wraps the original exception.
                     if (function != null && function.trapped()
-                            && !(failure instanceof OresPanic)
-                            && !(failure instanceof java.util.concurrent.CancellationException)
-                            && !(failure instanceof SecurityException)) {
+                            && isTrappableFailure(failure)) {
                         return OresScheduler.done(new OptionValue(false, null));
                     }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
@@ -4475,21 +4473,32 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
-            } catch (OresPanic panic) {
-                throw panic;
-            } catch (java.util.concurrent.CancellationException cancelled) {
-                throw cancelled;
-            } catch (SecurityException authorizationFailure) {
-                // A denied capability is not an ordinary guest exception.
-                // In particular, trap cannot downgrade an authorization error
-                // to None and let a caller continue as if a check passed.
-                throw authorizationFailure;
-            } catch (RuntimeException ordinaryFailure) {
+            } catch (RuntimeException failure) {
+                if (!isTrappableFailure(failure)) throw failure;
                 // trap is deliberately lossy: ordinary guest/runtime failure
-                // becomes None. Panic and scheduler cancellation remain distinct
-                // non-trappable control channels.
+                // becomes None. Control and authority failures always escape.
                 return new OptionValue(false, null);
             }
+        }
+
+        private boolean isTrappableFailure(RuntimeException failure) {
+            // Never turn an authorization denial, panic, or cancellation into
+            // None, even when future/completion wrappers obscure its subtype.
+            // Bound traversal and detect cycles: Throwable causes need not be
+            // a well-formed acyclic chain from arbitrary foreign integrations.
+            java.util.IdentityHashMap<Throwable, Boolean> visited =
+                    new java.util.IdentityHashMap<>();
+            Throwable current = failure;
+            for (int depth = 0; current != null && depth < 64; depth++) {
+                if (visited.put(current, Boolean.TRUE) != null) return false;
+                if (current instanceof OresPanic
+                        || current instanceof SecurityException
+                        || current instanceof java.util.concurrent.CancellationException) {
+                    return false;
+                }
+                current = current.getCause();
+            }
+            return current == null;
         }
 
         private Object callFunctionBodyUnchecked(Ast.FunctionDecl fn, List<?> args) {
