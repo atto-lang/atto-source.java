@@ -100,6 +100,10 @@ public final class SourceSupervisorLowering {
                 // effect throws, STOPPING remains quarantined for manual
                 // reconciliation rather than silently reopening RESTART.
                 var permit = group.reserveFinalizedStop(resolution);
+                // The claim is committed by the trusted runtime immediately
+                // before the host callback. A late/replayed CONTROL turn can
+                // never re-enter the effect even if acknowledgment is lost.
+                group.claimReservedStopInvocation(permit);
                 try {
                     hostDecision.accept(resolution);
                 } catch (Throwable error) {
@@ -150,7 +154,8 @@ public final class SourceSupervisorLowering {
             // Acquire STOP ownership before the asynchronous host operation.
             // The reservation survives suspension without pinning a worker.
             // If the host result is ambiguous, leave STOPPING quarantined.
-            group.reserveFinalizedStop(resolution);
+            var stopPermit = group.reserveFinalizedStop(resolution);
+            group.claimReservedStopInvocation(stopPermit);
             return Objects.requireNonNull(hostAcknowledgment.apply(resolution),
                     "host STOP acknowledgment stage");
         }, resolution -> {
