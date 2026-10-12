@@ -1895,6 +1895,11 @@ public final class ActorRuntime implements AutoCloseable {
                     "suspended source receive requires an executing actor turn");
         }
 
+        // The terminal completion ticket and the transition to SUSPENDED
+        // form one lifecycle operation. If ticket issuance fails (including
+        // monotonic task-id exhaustion), the receive must remain runnable;
+        // no actor may be stranded suspended without its terminal authority.
+        final SerialExecutionTicket completionTicket;
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(cell.ref);
             if (cell.sourceReceiveSuspended) {
@@ -1906,31 +1911,38 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         "only an active user-mail receive may suspend the actor mailbox");
             }
+            // This is deliberately minted under the same lifecycle lock as
+            // sourceReceiveSuspended. issueSourceTaskTicket is reentrant here.
+            completionTicket = cell.issueSourceTaskTicket();
             cell.sourceReceiveSuspended = true;
         }
-
-        // The terminal completion is itself a trusted continuation of this
-        // exact source receive. It must not resume another handler's lease.
-        SerialExecutionTicket completionTicket = cell.issueSourceTaskTicket();
         future.whenCompleteRuntime((ignored, failure) -> {
             if (!completionTicket.mayEnqueue()
                     || !enqueueContinuation(cell.ref.id(), () -> {
-                synchronized (cell.lifecycleLock) {
-                    cell.sourceReceiveSuspended = false;
-                    cell.activeMail = null;
-                    cell.lifecycleLock.notifyAll();
-                }
-                if (failure != null) {
-                    Throwable terminal = OresFuture.unwrap(failure);
-                    if (terminal instanceof java.util.concurrent.CancellationException
-                            && cell.endRequested) {
-                        return;
+                try {
+                    synchronized (cell.lifecycleLock) {
+                        cell.sourceReceiveSuspended = false;
+                        cell.activeMail = null;
+                        cell.lifecycleLock.notifyAll();
                     }
-                    if (terminal instanceof RuntimeException runtime) throw runtime;
-                    if (terminal instanceof Error error) throw error;
-                    throw new RuntimeException(terminal);
+                    if (failure != null) {
+                        Throwable terminal = OresFuture.unwrap(failure);
+                        if (terminal instanceof java.util.concurrent.CancellationException
+                                && cell.endRequested) {
+                            return;
+                        }
+                        if (terminal instanceof RuntimeException runtime) throw runtime;
+                        if (terminal instanceof Error error) throw error;
+                        throw new RuntimeException(terminal);
+                    }
+                } finally {
+                    // This is a one-shot source completion. Do not leave an
+                    // issued host ticket live after its callback has settled.
+                    completionTicket.retire();
                 }
             }, completionTicket)) {
+                // Rejected work has no carrier on which to retire its ticket.
+                completionTicket.retire();
                 synchronized (cell.lifecycleLock) {
                     if (!cell.stopped.get() && !cell.finalized) {
                         cell.sourceReceiveSuspended = false;
