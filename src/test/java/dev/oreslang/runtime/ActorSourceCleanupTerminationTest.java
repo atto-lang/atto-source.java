@@ -102,12 +102,16 @@ final class ActorSourceCleanupTerminationTest {
             CompletableFuture<Void> stop = CompletableFuture.runAsync(actor::stop);
             assertTrue(state.cleanupEntered.await(5, TimeUnit.SECONDS));
             assertFalse(actor.get_done().isDone());
-            ExecutionException failedDone = assertThrows(
+            ExecutionException failedShutdown = assertThrows(
                     ExecutionException.class,
-                    () -> actor.get_done().get(9, TimeUnit.SECONDS));
-            assertTrue(failedDone.getCause().toString()
+                    () -> actor.get_shutdown_result().get(9, TimeUnit.SECONDS));
+            assertTrue(failedShutdown.getCause().toString()
                             .contains("unfinished cancellation cleanup"),
-                    "the scheduler's failed drain must reach the actor observer");
+                    "the scheduler's failed drain must reach shutdown observer");
+            assertFalse(actor.get_done().isDone(),
+                    "a failed cleanup is NOT a physical termination barrier");
+            assertFalse(actor.get_done().cancel(false),
+                    "physical termination observation is not cancellation authority");
             ExecutionException failedStop = assertThrows(
                     ExecutionException.class,
                     () -> stop.get(5, TimeUnit.SECONDS));
