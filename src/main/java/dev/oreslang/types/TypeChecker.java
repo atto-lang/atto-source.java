@@ -884,6 +884,16 @@ public final class TypeChecker {
                     "transform pipe actor requires Java directional DATA ingress "
                     + "dispatcher and typed port lowering (not implemented)");
         }
+        // Parsing a state map is not permission to run source-level state
+        // operations through the legacy class-field scheduler. No ordinary
+        // actor instance property may stand in for the hidden state loan.
+        if (klass.actorKind() != Ast.ActorKind.NONE && !klass.fields().isEmpty())
+            throw new IllegalArgumentException(
+                    "actor class instance data must be declared in its state map");
+        if (klass.stateSpec() != null)
+            throw new IllegalArgumentException(
+                    "actor state map requires scoped handle_state compiler/runtime lowering "
+                    + "(not implemented on Java)");
         if (inheritsBuiltinSerialActor(klass, new HashSet<>())) {
             if (klass.actorKind() != Ast.ActorKind.SHARED || klass.proxySpec() != null
                     || (klass.concurrencySpec() != null
