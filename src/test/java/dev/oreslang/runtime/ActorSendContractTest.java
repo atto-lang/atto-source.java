@@ -345,4 +345,71 @@ final class ActorSendContractTest {
         }
     }
 
+    @Test
+    void parentChildStopPublishesReceiptsWithoutNestedActorMonitors() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            java.util.concurrent.atomic.AtomicReference<ActorRuntime.ActorRef<Integer>> childRef =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            CountDownLatch childCreated = new CountDownLatch(1);
+            var parent = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                var child = context.runtime().<Integer>spawnShared(
+                        () -> (childMessage, childContext) -> { });
+                childRef.set(child);
+                childCreated.countDown();
+            });
+            parent.send(1);
+            assertTrue(childCreated.await(5, TimeUnit.SECONDS));
+            var child = childRef.get();
+            assertNotNull(child);
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var actors = (java.util.Map<?, ?>) actorsField.get(runtime);
+            Object parentCell = actors.get(parent.id());
+            Object childCell = actors.get(child.id());
+            assertNotNull(parentCell);
+            assertNotNull(childCell);
+            var monitorField = parentCell.getClass().getDeclaredField("lifecycleLock");
+            monitorField.setAccessible(true);
+            Object parentMonitor = monitorField.get(parentCell);
+            Object childMonitor = monitorField.get(childCell);
+
+            AtomicInteger callbacksUnderMonitor = new AtomicInteger();
+            AtomicInteger parentReceipts = new AtomicInteger();
+            AtomicInteger childReceipts = new AtomicInteger();
+            CountDownLatch settled = new CountDownLatch(2);
+            parent.getDone().whenCompleteRuntime((value, error) -> {
+                if (Thread.holdsLock(parentMonitor) || Thread.holdsLock(childMonitor)) {
+                    callbacksUnderMonitor.incrementAndGet();
+                }
+                parentReceipts.incrementAndGet();
+                settled.countDown();
+            });
+            child.getDone().whenCompleteRuntime((value, error) -> {
+                if (Thread.holdsLock(parentMonitor) || Thread.holdsLock(childMonitor)) {
+                    callbacksUnderMonitor.incrementAndGet();
+                }
+                childReceipts.incrementAndGet();
+                settled.countDown();
+            });
+
+            Thread first = new Thread(parent::stop, "parent-stop-one");
+            Thread second = new Thread(parent::stop, "parent-stop-two");
+            first.start();
+            second.start();
+            first.join(5_000);
+            second.join(5_000);
+            assertFalse(first.isAlive());
+            assertFalse(second.isAlive());
+            assertTrue(settled.await(5, TimeUnit.SECONDS),
+                    "child and parent finalization receipts must both settle");
+            assertEquals(0, callbacksUnderMonitor.get(),
+                    "child/parent DONE callbacks must never hold either lifecycle monitor");
+            assertEquals(1, parentReceipts.get());
+            assertEquals(1, childReceipts.get());
+            assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(child.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
