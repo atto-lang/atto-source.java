@@ -153,10 +153,19 @@ final class RuntimePermissionsTest {
 
     @Test
     void checkModeArgumentDoesNotBecomeAPermissionGrant() {
+        // A CLI allow-pattern must not grant ENVIRONMENT when the enclosing
+        // isolate policy does not have that capability. Reject before guest
+        // execution rather than silently granting an environmental read.
+        SecurityException rejected = assertThrows(SecurityException.class,
+                () -> RuntimePermissions.fromApplicationArguments(
+                        new String[]{"--ores-permission-check=runtime",
+                                "--ores-permission-env-allow=PUBLIC_*"},
+                        IsolatePolicy.developer()));
+        assertTrue(rejected.getMessage().contains("ENVIRONMENT"));
         RuntimePermissions permissions = RuntimePermissions.fromApplicationArguments(
-                new String[]{"--ores-permission-check=runtime", "--ores-permission-env-allow=PUBLIC_*"},
+                new String[]{"--ores-permission-check=runtime"},
                 IsolatePolicy.developer());
-        assertTrue(permissions.allows(RuntimePermissions.Permission.ENV, "PUBLIC_NAME"));
+        assertFalse(permissions.allows(RuntimePermissions.Permission.ENV, "PUBLIC_NAME"));
         assertFalse(permissions.allows(RuntimePermissions.Permission.ENV, "SECRET"));
         assertFalse(permissions.allows(RuntimePermissions.Permission.WRITE, "/tmp/out"));
     }
