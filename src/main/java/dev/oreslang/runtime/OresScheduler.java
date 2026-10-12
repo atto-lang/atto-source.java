@@ -682,8 +682,10 @@ public final class OresScheduler implements AutoCloseable {
             // executing=false, announce quiescence and release actor memory
             // while this carrier is about to begin task.resume().
             if (!executing.compareAndSet(false, true)) {
-                failTerminal(new IllegalStateException(
-                        "OresScheduler task execution lease violation"));
+                // A stale/duplicate dispatch lost the physical lease. It
+                // does not own the current turn and MUST NOT fail, retire or
+                // publish any outcome for the legitimate running dispatch.
+                // Its afterTurn callback also receives ownsExecution=false.
                 return;
             }
             ownsExecution.set(true);
