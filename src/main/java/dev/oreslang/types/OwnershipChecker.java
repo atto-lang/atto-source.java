@@ -1095,6 +1095,20 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        // A critical handle_state callback must not retain its state loan
+        // while synchronous console output may wait for a host pipe/terminal.
+        // Check this explicit builtin before dispatch; arbitrary unknown
+        // callees need trusted effect summaries in a later interprocedural
+        // verifier, not an optimistic no_block assumption.
+        if (actorStateLoanDepth > 0
+                && call.callee() instanceof Ast.MemberExpr member
+                && (member.member().equals("print") || member.member().equals("println"))
+                && member.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("stdio")
+                && scope.lookup("stdio") == null) {
+            throw error("cannot perform potentially blocking stdio output while "
+                    + "a critical actor state loan is live");
+        }
         // The sealed handle_state intrinsic is the only lexical boundary
         // allowed to create a mutable actor-state loan. A plain |s| lambda
         // must NOT become mutable when used anywhere else. The actor state
