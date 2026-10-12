@@ -686,6 +686,23 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * A WRITE-containing static select must evaluate fresh payload descriptors
+     * on each visit, while retaining the actor-local FAIR cursor across visits.
+     * Unlike READ/DEFAULT sites, no payload-bearing plan is cached by ActorCell.
+     */
+    public ChannelRuntime.SelectPlan actorFreshStaticSelectPlan(
+            Object selectSite,
+            java.util.List<? extends ChannelRuntime.SelectCase> evaluated) {
+        Objects.requireNonNull(selectSite, "selectSite");
+        Objects.requireNonNull(evaluated, "evaluated");
+        requireCallerRuntimeAffinity("build actor-owned static select");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) throw new IllegalStateException(
+                "static select plan requires an active actor turn");
+        return cell.freshStaticSelectPlan(selectSite, evaluated);
+    }
+
+    /**
      * Package-private proof hook for the explicitly whitelisted immutable code
      * image attached to one actor. The actor never receives ambient access to
      * the process code store; only this exact handle is exposed through its
@@ -6215,6 +6232,11 @@ public final class ActorRuntime implements AutoCloseable {
                 new IdentityHashMap<>();
         private final IdentityHashMap<Object, ChannelRuntime.SelectPlan> readSelectPlans =
                 new IdentityHashMap<>();
+        // Source-site cursor is independent of registered operations and
+        // retained descriptors. WRITE plans may be ephemeral and must not
+        // rotate merely because source evaluation entered the select again.
+        private final IdentityHashMap<Object, java.util.concurrent.atomic.AtomicLong>
+                staticSelectPlanCursors = new IdentityHashMap<>();
         /** Settles only after the actor has fully crossed its TurnExecutor boundary. */
         private final OresFuture<Void> finalizedFuture = new OresFuture<>();
         /** Mailbox transport for ordinary user messages. */
@@ -6314,10 +6336,27 @@ public final class ActorRuntime implements AutoCloseable {
                 if (stopped.get() || finalized) throw terminated(ref);
                 ChannelRuntime.SelectPlan existing = readSelectPlans.get(selectSite);
                 ChannelRuntime.SelectPlan next = existing == null
-                        ? new ChannelRuntime.SelectPlan(evaluated)
+                        ? new ChannelRuntime.SelectPlan(
+                                evaluated,
+                                staticSelectPlanCursors.computeIfAbsent(
+                                        selectSite,
+                                        ignored -> new java.util.concurrent.atomic.AtomicLong()))
                         : existing.rebindReadOnly(evaluated);
                 if (existing != next) readSelectPlans.put(selectSite, next);
                 return next;
+            }
+        }
+
+        private ChannelRuntime.SelectPlan freshStaticSelectPlan(
+                Object selectSite,
+                java.util.List<? extends ChannelRuntime.SelectCase> evaluated) {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) throw terminated(ref);
+                return new ChannelRuntime.SelectPlan(
+                        evaluated,
+                        staticSelectPlanCursors.computeIfAbsent(
+                                selectSite,
+                                ignored -> new java.util.concurrent.atomic.AtomicLong()));
             }
         }
 
