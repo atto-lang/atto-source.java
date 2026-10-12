@@ -1323,6 +1323,65 @@ public final class ActorRuntime implements AutoCloseable {
             linearPipelines = new java.util.concurrent.ConcurrentHashMap<>();
     private final Object pipelineBindingLock = new Object();
 
+    /**
+     * Called only after physical actor finalization has unregistered an actor.
+     * Never stop another actor under a foreign actor's lifecycle monitor:
+     * shutdown propagates on an owned dispatcher after the finalizer exits.
+     *
+     * A normal sink/transform exit is allowed only after its outbound
+     * backwards DATA admission; an unsuccessful exit poisons the flow even
+     * if the backwards enqueue raced ahead of the failed finalizer.
+     */
+    private void pipelineActorTerminated(ActorCell<?> departed) {
+        LinearPipeline route = linearPipelines.get(departed.ref.id());
+        if (route == null) return;
+        boolean source = departed.ref.id().equals(route.source().id());
+        boolean transform = departed.ref.id().equals(route.transform().id());
+        int phase = route.phase().get();
+        Throwable failure = departed.ref.terminationCause.get();
+        boolean premature = failure != null
+                || (source ? phase != 6 : transform ? phase < 5 : phase < 4);
+        if (source) {
+            // The root's physical finalization marks the route terminal.
+            // Reclaim refs even if the siblings are still unwinding.
+            linearPipelines.remove(route.source().id(), route);
+            linearPipelines.remove(route.transform().id(), route);
+            linearPipelines.remove(route.sink().id(), route);
+        } else {
+            linearPipelines.remove(departed.ref.id(), route);
+        }
+        if (!premature || closed.get()) return;
+
+        // Do not revive the route after a successful source completion.
+        // For any earlier state, -1 is an irreversible admission failure.
+        while (true) {
+            int old = route.phase().get();
+            if (old == -1 || old == 6) return;
+            if (route.phase().compareAndSet(old, -1)) break;
+        }
+        IllegalStateException aborted = new IllegalStateException(
+                "pipeline stage terminated before the completed round trip: "
+                        + departed.ref.id(), failure);
+        try {
+            privateDispatcher.execute(() -> {
+                for (ActorRef<?> linked : List.of(
+                        route.source(), route.transform(), route.sink())) {
+                    if (linked.id().equals(departed.ref.id())) continue;
+                    ActorCell<?> other = actors.get(linked.id());
+                    if (other != null && !other.finalized) other.fail(aborted);
+                }
+            });
+        } catch (RejectedExecutionException unavailable) {
+            // Runtime shutdown closes all pending actor observers itself;
+            // no carrier thread may synchronously enter a sibling finalizer.
+            if (!closed.get()) {
+                throw new IllegalStateException(
+                        "pipeline cancellation dispatcher rejected terminal propagation",
+                        unavailable);
+            }
+        }
+    }
+
     @SuppressWarnings("unchecked")
     public void bindLinearPipeline(
             ActorRef<?> source, ActorRef<?> transform, ActorRef<?> sink) {
@@ -4228,6 +4287,7 @@ public final class ActorRuntime implements AutoCloseable {
             group.actorTerminated(cell.ref.id());
         }
         if (actors.remove(cell.ref.id(), cell)) {
+            pipelineActorTerminated(cell);
             int remaining = actorCount.decrementAndGet();
             if (remaining < 0) {
                 actorCount.incrementAndGet();
