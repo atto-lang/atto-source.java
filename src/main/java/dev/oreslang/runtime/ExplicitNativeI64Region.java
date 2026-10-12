@@ -223,9 +223,13 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         Arrays.fill(live, false);
         occupied = 0;
         try {
+            // A closed Arena without a refunded physical reservation is not
+            // successful actor teardown. Report quota/registry errors too.
             reservation.close();
-        } finally {
             onRetired.run();
+        } catch (RuntimeException | Error releaseFailure) {
+            onPhysicalCloseFailure.accept(releaseFailure);
+            throw releaseFailure;
         }
     }
 
