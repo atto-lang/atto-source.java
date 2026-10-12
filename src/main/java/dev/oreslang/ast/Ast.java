@@ -653,7 +653,16 @@ public final class Ast {
         }
     }
 
-    public record SwitchStmt(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody) implements Stmt {
+    /**
+     * The procedural modifier is explicit in the AST. It must not be inferred
+     * from the return type or a downstream pass's decision to ignore a value.
+     * Three-argument constructors preserve legacy switch AST compatibility.
+     */
+    public record SwitchStmt(Expr subject, List<SwitchCase> cases,
+                             List<Stmt> defaultBody, boolean procedural) implements Stmt {
+        public SwitchStmt(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody) {
+            this(subject, cases, defaultBody, false);
+        }
         public SwitchStmt {
             cases = List.copyOf(cases);
             defaultBody = List.copyOf(defaultBody);
