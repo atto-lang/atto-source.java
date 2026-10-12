@@ -142,6 +142,11 @@ public final class SealedActorState {
         requireOwner();
         if (serial == Long.MAX_VALUE) throw new IllegalStateException("actor loan serial exhausted");
         Access previous = current;
+        // A read grant must never be upgraded while it is live, even through
+        // indirect calls that evade source-level interprocedural inference.
+        if (previous != null && !previous.writable && writable) {
+            throw new SecurityException("cannot upgrade a live critical read loan to write");
+        }
         Access access = new Access(++serial, writable);
         current = access;
         try {
