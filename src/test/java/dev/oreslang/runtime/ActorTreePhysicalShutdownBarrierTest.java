@@ -58,41 +58,44 @@ final class ActorTreePhysicalShutdownBarrierTest {
         }
     }
 
-    /** The factory also has zero captured state across the guest boundary. */
+    private static final class CleanupTask
+            implements OresScheduler.CancellationAwareTask<Integer> {
+        @Override public boolean cleanupInProgress() {
+            return ACTIVE.get().cleaning.get();
+        }
+
+        @Override public void cancellationRequested(
+                OresScheduler.TaskCancelledException reason) { }
+
+        @Override public OresScheduler.Step<Integer> resume(
+                OresScheduler.Resume resumed) {
+            TreeState state = ACTIVE.get();
+            if (resumed.initial()) {
+                state.sourceArmed.countDown();
+                return OresScheduler.await(state.upstream);
+            }
+            if (state.cleaning.compareAndSet(false, true)) {
+                assertInstanceOf(OresScheduler.TaskCancelledException.class,
+                        resumed.failure());
+                state.cleanupRuns.incrementAndGet();
+                state.cleanupEntered.countDown();
+                return OresScheduler.await(state.cleanup);
+            }
+            assertNull(resumed.failure());
+            return OresScheduler.done(73);
+        }
+    }
+
+    /** Explicit static factory: its returned behavior captures no factory. */
     private static final class CleanupChildFactory
             implements ActorRuntime.BehaviorFactory<Integer> {
         @Override public ActorRuntime.Behavior<Integer> create(
                 ActorRuntime.ActorContext<Integer> ignored) {
             return (mail, ctx) -> {
-                TreeState state = ACTIVE.get();
                 try {
-                    ctx.runtime().startActorTask(
-                    new OresScheduler.CancellationAwareTask<Integer>() {
-                        @Override public boolean cleanupInProgress() {
-                            return state.cleaning.get();
-                        }
-
-                        @Override public void cancellationRequested(
-                                OresScheduler.TaskCancelledException reason) { }
-
-                        @Override public OresScheduler.Step<Integer> resume(
-                                OresScheduler.Resume resumed) {
-                            if (resumed.initial()) {
-                                state.sourceArmed.countDown();
-                                return OresScheduler.await(state.upstream);
-                            }
-                            if (state.cleaning.compareAndSet(false, true)) {
-                                assertInstanceOf(OresScheduler.TaskCancelledException.class,
-                                        resumed.failure());
-                                state.cleanupRuns.incrementAndGet();
-                                state.cleanupEntered.countDown();
-                                return OresScheduler.await(state.cleanup);
-                            }
-                            assertNull(resumed.failure());
-                            return OresScheduler.done(73);
-                        }
-                    });
+                    ctx.runtime().startActorTask(new CleanupTask());
                 } catch (Throwable failure) {
+                    TreeState state = ACTIVE.get();
                     state.failure.compareAndSet(null, failure);
                     state.sourceArmed.countDown();
                 }
