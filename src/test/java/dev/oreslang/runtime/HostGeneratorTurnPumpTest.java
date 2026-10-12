@@ -443,6 +443,89 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void typecheckedOresSourceYieldsThreeValuesAndCancelsFourthWithOneFinally()
+            throws Exception {
+        // This is source AST -> restricted generator frame -> certified
+        // scheduler-owned turns. No handwritten host-side yield callback
+        // and no AsyncRuntime/virtual-thread generator producer.
+        String source = """
+                async generator fnc numbers(pending: Future<int>): int {
+                  try {
+                    yield 11;
+                    yield 22;
+                    yield 33;
+                    yield await pending;
+                  } catch (err) {
+                  } finally {
+                    val int cleanup_marker = 1;
+                  }
+                  return;
+                }
+                """;
+        OresFuture<Integer> unresolved = new OresFuture<>();
+        GeneratorRuntime.SourceLowering frame =
+                GeneratorRuntime.SourceLowering.compile(
+                        source, "numbers", java.util.Map.of("pending", unresolved));
+        try (OresScheduler root = new OresScheduler(1)) {
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> true, root);
+            GeneratorRuntime.SchedulerBacked<Object> lowered =
+                    GeneratorRuntime.schedulerBacked(root, pump.token(), frame);
+            for (int expected : new int[]{11, 22, 33}) {
+                OresFuture<GeneratorRuntime.Step<Object>> next =
+                        pump.requestCertified(pump.token(), lowered.nextTurn());
+                assertTrue(pump.dispatchOne());
+                var yielded = next.get(5, TimeUnit.SECONDS);
+                assertFalse(yielded.done());
+                assertEquals(expected, ((Number) yielded.value()).intValue());
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!pump.isQuiescent() && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+                assertTrue(pump.isQuiescent(),
+                        "physical DONE must settle before next source yield");
+            }
+            assertEquals(0, frame.cleanupRuns(),
+                    "lexical finally must not run before fourth yield");
+            OresFuture<GeneratorRuntime.Step<Object>> pending =
+                    pump.requestCertified(pump.token(), lowered.nextTurn());
+            assertTrue(pump.dispatchOne());
+            long started = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!frame.awaitingSourceFuture() && System.nanoTime() < started) {
+                Thread.onSpinWait();
+            }
+            assertTrue(frame.awaitingSourceFuture(), "fourth source yield must await");
+            assertFalse(pending.isDone());
+            assertTrue(pending.cancel(false));
+            pump.seal();
+            root.close();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!pump.isQuiescent() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(pump.isQuiescent(),
+                    "cancellation must wait for authenticated physical DONE");
+            assertEquals(1, frame.cleanupRuns(), "source finally must run exactly once");
+            assertEquals(1, frame.cleanupBinding("cleanup_marker"));
+            assertFalse(unresolved.isDone(), "do not cancel an externally owned Future");
+            pump.close();
+        }
+    }
+
+    @Test
+    void restrictedOresSourceLoweringRejectsUnsupportedYieldBeforeGuestStart() {
+        String source = """
+                async generator fnc numbers(): int {
+                  yield 1 + 2;
+                  return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> GeneratorRuntime.SourceLowering.compile(
+                        source, "numbers", java.util.Map.of()));
+    }
+
+    @Test
     void certifiedSchedulerFrameYieldsThreeTypedValuesAndFinishes() throws Exception {
         try (OresScheduler root = new OresScheduler(1)) {
             HostGeneratorTurnPump pump = new HostGeneratorTurnPump(

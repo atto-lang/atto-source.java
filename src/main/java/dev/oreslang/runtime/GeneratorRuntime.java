@@ -1,11 +1,19 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
+
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -49,6 +57,12 @@ public final class GeneratorRuntime {
     @FunctionalInterface
     interface SchedulerFrame<T> {
         OresScheduler.Step<Step<T>> resume(OresScheduler.Resume input) throws Exception;
+
+        /** Cancellation is signaled by the scheduler; cleanup runs on its guest lane. */
+        default void cancellationRequested(OresScheduler.TaskCancelledException reason) { }
+
+        /** Lowered source cleanup may await without losing its task ownership. */
+        default boolean cleanupInProgress() { return false; }
     }
 
     /**
@@ -87,16 +101,34 @@ public final class GeneratorRuntime {
                 }
                 try {
                     HostGeneratorTurnPump.Turn<Step<T>> turn =
-                            root.startCertifiedGeneratorTurn(owner, input -> {
-                                if (terminal.get()) return OresScheduler.done(Step.doneStep());
-                                try {
-                                    return Objects.requireNonNull(frame.resume(input),
-                                            "generator frame returned no scheduler step");
-                                } catch (Exception | Error failure) {
-                                    terminal.set(true);
-                                    throw failure;
-                                }
-                            });
+                            root.startCertifiedGeneratorTurn(owner,
+                                    new OresScheduler.CancellationAwareTask<Step<T>>() {
+                                        @Override
+                                        public boolean cleanupInProgress() {
+                                            return frame.cleanupInProgress();
+                                        }
+
+                                        @Override
+                                        public void cancellationRequested(
+                                                OresScheduler.TaskCancelledException reason) {
+                                            frame.cancellationRequested(reason);
+                                        }
+
+                                        @Override
+                                        public OresScheduler.Step<Step<T>> resume(
+                                                OresScheduler.Resume input) throws Exception {
+                                            if (terminal.get()) {
+                                                return OresScheduler.done(Step.doneStep());
+                                            }
+                                            try {
+                                                return Objects.requireNonNull(frame.resume(input),
+                                                        "generator frame returned no scheduler step");
+                                            } catch (Exception | Error failure) {
+                                                terminal.set(true);
+                                                throw failure;
+                                            }
+                                        }
+                                    });
                     turn.result().whenCompleteRuntime((step, failure) -> {
                         if (failure != null || step != null && step.done()) {
                             terminal.set(true);
@@ -129,6 +161,170 @@ public final class GeneratorRuntime {
             OresScheduler root, HostGeneratorTurnPump.OwnerToken owner,
             SchedulerFrame<T> frame) {
         return new SchedulerBacked<>(root, owner, frame);
+    }
+
+    /**
+     * Restricted, fail-closed source-level generator lowering, staged for
+     * integration with the real evaluator's heap continuation machine.
+     * It compiles a typechecked .ores function body, not a handwritten
+     * Java producer. Only direct typed yield literals, yield-await of a
+     * named Future, bare return, and literal-binding lexical finally are
+     * admitted. All other constructs are rejected BEFORE guest dispatch.
+     *
+     * The ordinary interpreter and public host entrypoint remain unchanged.
+     */
+    static final class SourceLowering implements SchedulerFrame<Object> {
+        private record YieldOperation(Object literal, String awaitedName) { }
+
+        private final List<YieldOperation> operations;
+        private final List<Ast.BindingStmt> finallyBindings;
+        private final Map<String, Object> arguments;
+        private final Map<String, Object> cleanupValues = new LinkedHashMap<>();
+        private final AtomicInteger cleanupRuns = new AtomicInteger();
+        private final AtomicBoolean finalized = new AtomicBoolean();
+        private volatile boolean cancellationRequested;
+        private volatile boolean waitingOnFuture;
+        private int pc;
+
+        private SourceLowering(List<YieldOperation> operations,
+                List<Ast.BindingStmt> finallyBindings, Map<String, Object> arguments) {
+            this.operations = List.copyOf(operations);
+            this.finallyBindings = List.copyOf(finallyBindings);
+            this.arguments = Map.copyOf(arguments);
+        }
+
+        static SourceLowering compile(String source, String function, Map<String, ?> args) {
+            Ast.Program program = OresCompiler.parseAndTypeCheck(source);
+            Ast.FunctionDecl target = null;
+            for (Ast.ModuleDecl module : program.modules()) {
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.FunctionDecl found && found.name().equals(function)) {
+                        if (target != null) throw new IllegalArgumentException(
+                                "ambiguous generator function " + function);
+                        target = found;
+                    }
+                }
+            }
+            if (target == null || !target.async() || !target.generator()
+                    || target.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "source lowering requires a non-actor async generator function");
+            }
+            if (args.size() != target.parameters().size()) {
+                throw new IllegalArgumentException("generator argument count mismatch");
+            }
+            Map<String, Object> bindings = new LinkedHashMap<>();
+            for (Ast.Param param : target.parameters()) {
+                if (!args.containsKey(param.name()) || args.get(param.name()) == null) {
+                    throw new IllegalArgumentException(
+                            "missing non-null generator argument " + param.name());
+                }
+                bindings.put(param.name(), args.get(param.name()));
+            }
+
+            List<Ast.Stmt> body = new ArrayList<>();
+            List<Ast.BindingStmt> cleanup = new ArrayList<>();
+            boolean foundFinally = false;
+            for (Ast.Stmt stmt : target.body()) {
+                if (stmt instanceof Ast.TryStmt tried) {
+                    if (foundFinally || !tried.catchBody().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "staged generator lowering requires one try/finally without catch");
+                    }
+                    foundFinally = true;
+                    body.addAll(tried.body());
+                    for (Ast.Stmt fin : tried.finallyBody()) {
+                        if (!(fin instanceof Ast.BindingStmt binding)
+                                || !(binding.initializer() instanceof Ast.LiteralExpr)) {
+                            throw new IllegalArgumentException(
+                                    "staged generator finally supports literal bindings only");
+                        }
+                        cleanup.add(binding);
+                    }
+                } else {
+                    body.add(stmt);
+                }
+            }
+
+            List<YieldOperation> operations = new ArrayList<>();
+            boolean returned = false;
+            for (Ast.Stmt stmt : body) {
+                if (returned) throw new IllegalArgumentException(
+                        "statements following generator return are unsupported");
+                if (stmt instanceof Ast.ReturnStmt ret) {
+                    if (ret.value() != null) throw new IllegalArgumentException(
+                            "generator return cannot contain a value");
+                    returned = true;
+                } else if (stmt instanceof Ast.YieldStmt yielded && !yielded.delegated()) {
+                    if (yielded.value() instanceof Ast.LiteralExpr literal) {
+                        operations.add(new YieldOperation(literal.value(), null));
+                    } else if (yielded.value() instanceof Ast.AwaitExpr awaited
+                            && awaited.expression() instanceof Ast.NameExpr named
+                            && bindings.get(named.name()) instanceof OresFuture<?>) {
+                        operations.add(new YieldOperation(null, named.name()));
+                    } else {
+                        throw new IllegalArgumentException(
+                                "staged generator lowering does not support this yield expression");
+                    }
+                } else {
+                    throw new IllegalArgumentException(
+                            "staged generator lowering refuses unsupported source statement");
+                }
+            }
+            return new SourceLowering(operations, cleanup, bindings);
+        }
+
+        @Override
+        public void cancellationRequested(OresScheduler.TaskCancelledException reason) {
+            cancellationRequested = true;
+        }
+
+        @Override
+        public OresScheduler.Step<Step<Object>> resume(OresScheduler.Resume input) {
+            if (finalized.get()) return OresScheduler.done(Step.doneStep());
+            if (cancellationRequested
+                    || input.failure() instanceof OresScheduler.TaskCancelledException) {
+                finishFinally();
+                return OresScheduler.done(Step.doneStep());
+            }
+            if (waitingOnFuture) {
+                if (input.initial()) throw new IllegalStateException(
+                        "awaiting generator turn incorrectly restarted");
+                waitingOnFuture = false;
+                if (input.failure() != null) {
+                    finishFinally();
+                    if (input.failure() instanceof RuntimeException failure) throw failure;
+                    throw new IllegalStateException("generator await failed", input.failure());
+                }
+                return OresScheduler.done(Step.yielded(input.value()));
+            }
+            if (!input.initial()) {
+                throw new IllegalStateException("generator pull missing initial dispatch");
+            }
+            if (pc >= operations.size()) {
+                finishFinally();
+                return OresScheduler.done(Step.doneStep());
+            }
+            YieldOperation op = operations.get(pc++);
+            if (op.awaitedName() != null) {
+                waitingOnFuture = true;
+                return OresScheduler.await((OresFuture<?>) arguments.get(op.awaitedName()));
+            }
+            return OresScheduler.done(Step.yielded(op.literal()));
+        }
+
+        private void finishFinally() {
+            if (!finalized.compareAndSet(false, true)) return;
+            cleanupRuns.incrementAndGet();
+            for (Ast.BindingStmt binding : finallyBindings) {
+                cleanupValues.put(binding.name(),
+                        ((Ast.LiteralExpr) binding.initializer()).value());
+            }
+        }
+
+        int cleanupRuns() { return cleanupRuns.get(); }
+        Object cleanupBinding(String name) { return cleanupValues.get(name); }
+        boolean awaitingSourceFuture() { return waitingOnFuture; }
     }
 
     public static <T> Generator<T> generator(AsyncRuntime runtime, Producer<T> producer) {
