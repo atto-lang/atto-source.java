@@ -4350,17 +4350,19 @@ public final class TypeChecker {
         return switch (named.name()) {
             case "http" -> switch (name) {
                 case "handler" -> new Function(List.of(Primitive.STRING), new Named("HttpHandler", List.of()));
+                case "pool_handler" -> new Function(List.of(Primitive.STRING, Primitive.INT), new Named("HttpHandler", List.of()));
                 case "listen" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.INT, Primitive.INT), server);
                 case "claim" -> new Function(List.of(Primitive.STRING), exchange);
                 default -> null;
             };
             case "HttpHandler" -> switch (name) {
                 case "isolated" -> Primitive.BOOL;
+                case "workers_created", "workers_reused", "workers_alive" -> Primitive.INT;
                 case "dispatch" -> new Function(List.of(new Borrow(exchange, true)), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
             };
             case "HttpServer" -> switch (name) {
-                case "port", "active", "accepted", "rejected", "completed" -> Primitive.INT;
+                case "port", "active", "accepted", "rejected", "completed", "pooled_created", "pooled_reused" -> Primitive.INT;
                 case "accept" -> new Function(List.of(), new Named("Future", List.of(exchange)));
                 case "shutdown" -> new Function(List.of(Primitive.INT), voidFuture);
                 default -> throw new IllegalArgumentException("unknown HTTP server member " + name);
