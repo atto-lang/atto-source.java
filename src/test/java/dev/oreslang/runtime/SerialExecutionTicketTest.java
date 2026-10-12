@@ -121,4 +121,60 @@ final class SerialExecutionTicketTest {
         gate.close();
         assertFalse(unbound.mayEnqueue());
     }
+
+    @Test void lateQueuedCompletionAfterReceiveCloseIsBenignAcrossNextTurn() {
+        Object incarnation = new Object();
+        SerialActorAdmission gate = new SerialActorAdmission(3);
+        var first = gate.submit(MESSAGE).join();
+        var old = new SerialExecutionTicket(
+                "actor", incarnation, 1L, gate, first, () -> true);
+        first.suspend();
+        // The producer already queued a callback under the old authority.
+        assertTrue(old.mayEnqueue());
+        // But completion of the parent receive may be observed before the
+        // source task's terminal notification calls ticket.retire().
+        first.close();
+        var next = gate.submit(MESSAGE).join();
+        assertFalse(old.isRetired(), "exercise the lease-finished/ticket-live gap");
+        assertFalse(old.mayEnqueue());
+        assertThrows(SerialExecutionTicket.RetiredTaskException.class,
+                () -> old.requireAdmissible("actor", incarnation, next),
+                "queued old-lease callback must be silently discarded by the carrier");
+        assertThrows(SerialExecutionTicket.RetiredTaskException.class,
+                () -> old.requireRunnable("actor", incarnation, next));
+        var current = new SerialExecutionTicket(
+                "actor", incarnation, 2L, gate, next, () -> true);
+        current.requireRunnable("actor", incarnation, next);
+        next.close();
+        gate.close();
+    }
+
+    @Test void liveForeignHandlerRemainsFatalWhileStaleFinishedHandlerIsBenign() {
+        Object incarnation = new Object();
+        SerialActorAdmission firstGate = new SerialActorAdmission(2);
+        SerialActorAdmission otherGate = new SerialActorAdmission(2);
+        var first = firstGate.submit(MESSAGE).join();
+        var second = otherGate.submit(MESSAGE).join();
+        var ticket = new SerialExecutionTicket(
+                "actor", incarnation, 11L, firstGate, first, () -> true);
+        assertThrows(IllegalStateException.class,
+                () -> ticket.requireAdmissible("actor", incarnation, second));
+        try {
+            ticket.requireAdmissible("actor", incarnation, second);
+            fail("live foreign receive was accepted");
+        } catch (SerialExecutionTicket.RetiredTaskException benign) {
+            fail("foreign live receive may not masquerade as benign cancellation");
+        } catch (IllegalStateException expected) {
+            assertTrue(expected.getMessage().contains("different serial receive"));
+        }
+        first.close();
+        assertThrows(SerialExecutionTicket.RetiredTaskException.class,
+                () -> ticket.requireAdmissible("actor", incarnation, null));
+        assertThrows(IllegalStateException.class,
+                () -> ticket.requireAdmissible("actor", new Object(), null),
+                "actor restart remains an invalid authority before retire check");
+        second.close();
+        firstGate.close();
+        otherGate.close();
+    }
 }
