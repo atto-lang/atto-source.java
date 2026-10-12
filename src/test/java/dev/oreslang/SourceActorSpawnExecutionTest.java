@@ -16,15 +16,15 @@ final class SourceActorSpawnExecutionTest {
     void spawnRunsOnStartReceiveAndDoneAcrossActorKinds() throws Exception {
         String program = """
                 define actor SharedWorker as
-                  let int started;
+                  state { started: int = 0; }
 
-                  on_start(): void {
-                    self.started = 1;
+                  on_start(): void with state.write {
+                    using state.write(critical |s| -> { s.started = 1; });
                     return;
                   }
 
-                  receive(ActorMail<String> mail): void {
-                    if self.started != 1; do
+                  receive(ActorMail<String> mail): void with state.read {
+                    if using state.read(|s| -> s.started) != 1; do
                       return;
                     fi
                     if mail.value == "stop"; do
@@ -77,16 +77,14 @@ final class SourceActorSpawnExecutionTest {
     void sharedActorsReuseCodeWithoutSharingMutableActorState() throws Exception {
         String program = """
                 define actor Counter as
-                  let int count;
+                  state { count: int = 0; }
 
-                  on_start(): void {
-                    self.count = 0;
-                    return;
-                  }
-
-                  receive(ActorMail<String> mail): void {
-                    self.count = self.count + 1;
-                    self.send(self.count);
+                  receive(ActorMail<String> mail): void with state.read, state.write {
+                    val next = using state.write(critical |s| -> {
+                      s.count = s.count + 1;
+                      return s.count;
+                    });
+                    self.send(next);
                     self.end();
                     return;
                   }
@@ -122,7 +120,7 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
-    void readyFailsWhenOnStartLeavesActorStateUninitialized() throws Exception {
+    void legacyUninitializedActorFieldsFailClosedAtAdmission() throws Exception {
         String program = """
                 define actor Worker as
                   val int required;
@@ -149,7 +147,7 @@ final class SourceActorSpawnExecutionTest {
                         PolyglotException.class,
                         () -> run(program, "source-actor-startup-failure.ores"));
         assertTrue(
-                failure.getMessage().contains("did not initialize field 'required'"),
+                failure.getMessage().contains("one state") || failure.getMessage().contains("legacy fields"),
                 failure.getMessage());
     }
 
@@ -157,31 +155,26 @@ final class SourceActorSpawnExecutionTest {
     void suspendingReceiveResumesBeforeLaterUserMail() throws Exception {
         String program = """
                 define actor Worker as
-                  let int phase;
+                  state { phase: int = 0; }
 
-                  on_start(): void {
-                    self.phase = 0;
-                    return;
-                  }
-
-                  receive(ActorMail<String> mail): void {
+                  receive(ActorMail<String> mail): void with state.read, state.write {
                     if mail.value == "first"; do
-                      self.phase = 1;
+                      using state.write(critical |s| -> { s.phase = 1; });
                       self.send("before");
                       rt cooperate;
 
-                      if self.phase != 1; do
+                      if using state.read(|s| -> s.phase) != 1; do
                         self.send("interleaved");
                         return;
                       fi
 
-                      self.phase = 2;
+                      using state.write(critical |s| -> { s.phase = 2; });
                       self.send("after");
                       return;
                     fi
 
                     if mail.value == "second"; do
-                      if self.phase == 2; do
+                      if using state.read(|s| -> s.phase) == 2; do
                         self.send("second");
                       else
                         self.send("interleaved");
