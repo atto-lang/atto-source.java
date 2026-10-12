@@ -3015,66 +3015,67 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                ChannelRuntime.SelectSet set;
+                                ChannelRuntime.SelectPolicy policy;
                                 try {
-                                    ChannelRuntime.SelectSet set =
-                                            asSelectSet(cases);
-                                    ChannelRuntime.SelectPolicy policy =
-                                            runtimeSelectPolicy(
-                                                    selected.policy());
-                                    if (selected.mode()
-                                            == Ast.WaitMode.IMMEDIATE) {
-                                        java.util.Optional<
-                                                ChannelRuntime.SelectResult> result =
-                                                set.trySelect(policy);
-                                        continuation.accept(
-                                                t,
-                                                result.isPresent()
-                                                        ? new OptionValue(
-                                                                true,
-                                                                result.get())
-                                                        : new OptionValue(
-                                                                false,
-                                                                null),
-                                                null);
-                                        return;
-                                    }
-                                    OresFuture<
-                                            ChannelRuntime.SelectResult> future =
-                                            set.selectAsync(policy);
-                                    if (selected.mode()
-                                            == Ast.WaitMode.NONBLOCKING) {
-                                        continuation.accept(
-                                                t,
-                                                wrapFutureSome(future),
-                                                null);
-                                        return;
-                                    }
-                                    if (future.isDone()) {
-                                        continuation.accept(
-                                                t,
-                                                new OptionValue(
-                                                        true,
-                                                        future.join()),
-                                                null);
-                                        return;
-                                    }
-                                    t.suspend(
-                                            future,
-                                            (t2, value, failure2) ->
-                                                    continuation.accept(
-                                                            t2,
-                                                            failure2 == null
-                                                                    ? new OptionValue(
-                                                                            true,
-                                                                            value)
-                                                                    : null,
-                                                            failure2));
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(
-                                            t,
-                                            null,
-                                            failure2);
+                                    set = asSelectSet(cases);
+                                    policy = runtimeSelectPolicy(selected.policy());
+                                } catch (RuntimeException | Error conversionFailure) {
+                                    continuation.accept(t, null, conversionFailure);
+                                    return;
                                 }
+                                if (selected.mode() == Ast.WaitMode.IMMEDIATE) {
+                                    OptionValue immediate;
+                                    try {
+                                        java.util.Optional<ChannelRuntime.SelectResult> result =
+                                                set.trySelect(policy);
+                                        immediate = result.isPresent()
+                                                ? new OptionValue(true, result.get())
+                                                : new OptionValue(false, null);
+                                    } catch (RuntimeException | Error selectionFailure) {
+                                        continuation.accept(t, null, selectionFailure);
+                                        return;
+                                    }
+                                    continuation.accept(t, immediate, null);
+                                    return;
+                                }
+                                OresFuture<ChannelRuntime.SelectResult> future;
+                                try {
+                                    future = set.selectAsync(policy);
+                                } catch (RuntimeException | Error registrationFailure) {
+                                    continuation.accept(t, null, registrationFailure);
+                                    return;
+                                }
+                                if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                                    Object wrapped;
+                                    try {
+                                        wrapped = wrapFutureSome(future);
+                                    } catch (RuntimeException | Error wrappingFailure) {
+                                        continuation.accept(t, null, wrappingFailure);
+                                        return;
+                                    }
+                                    continuation.accept(t, wrapped, null);
+                                    return;
+                                }
+                                if (future.isDone()) {
+                                    OptionValue settled;
+                                    try {
+                                        settled = new OptionValue(true, future.join());
+                                    } catch (RuntimeException | Error completionFailure) {
+                                        continuation.accept(t, null, completionFailure);
+                                        return;
+                                    }
+                                    continuation.accept(t, settled, null);
+                                    return;
+                                }
+                                t.suspend(future,
+                                        (t2, value, failure2) ->
+                                                continuation.accept(
+                                                        t2,
+                                                        failure2 == null
+                                                                ? new OptionValue(true, value)
+                                                                : null,
+                                                        failure2));
                             });
                     return;
                 }
