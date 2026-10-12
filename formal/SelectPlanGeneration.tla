@@ -106,7 +106,7 @@ TypeOK ==
     /\ startCursor \in Arms
     /\ ready \subseteq Arms
     /\ registered \subseteq Arms
-    /\ winner \in Arms \cup {"None"}
+    /\ (winner \in Arms \/ winner = "None")
     /\ consumed \subseteq Arms
     /\ cancelled \in BOOLEAN
 
