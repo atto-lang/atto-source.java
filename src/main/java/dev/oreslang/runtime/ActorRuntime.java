@@ -6343,11 +6343,9 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor execution lease accounting violation for " + ref.id()
                                     + ": activeTurns=" + activeTurns);
                 }
-                if (!executionAuthority.leave(activeExecutionClaim, false)) {
-                    throw new IllegalStateException(
-                            "actor execution authority rejected stale release for " + ref.id());
-                }
-                activeExecutionClaim = null;
+                // Guest code has returned, but the carrier remains inside
+                // TurnExecutor until runBatch() crosses the context boundary.
+                // Keep the physical claim until that final exit.
                 activeTurns = 0;
                 if (stopped.get()) finalizeStopLocked();
                 lifecycleLock.notifyAll();
@@ -6602,7 +6600,20 @@ public final class ActorRuntime implements AutoCloseable {
                     // The actor remains logically scheduled until TurnExecutor
                     // returns. Truffle context exit belongs to that boundary.
                     synchronized (lifecycleLock) {
-                        if (carrierEntered) carrierActive = false;
+                        if (carrierEntered) {
+                            // The Truffle/host TurnExecutor has returned:
+                            // only NOW can the previous carrier relinquish
+                            // physical guest-entry authority.
+                            if (activeExecutionClaim != null) {
+                                if (!executionAuthority.leave(activeExecutionClaim, false)) {
+                                    throw new IllegalStateException(
+                                            "actor execution authority rejected stale carrier "
+                                                    + ref.id());
+                                }
+                                activeExecutionClaim = null;
+                            }
+                            carrierActive = false;
+                        }
                         if (scheduled.get()) scheduled.set(false);
                         if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                         reschedule = !stopped.get()
