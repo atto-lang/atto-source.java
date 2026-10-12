@@ -1,0 +1,33 @@
+name: AOT artifact manifest contract
+on:
+  push:
+    paths:
+      - 'contracts/v1/aot-artifact/**'
+      - '.github/workflows/aot-artifact-contract.yml'
+  pull_request:
+    paths:
+      - 'contracts/v1/aot-artifact/**'
+      - '.github/workflows/aot-artifact-contract.yml'
+permissions:
+  contents: read
+jobs:
+  structural-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate strict JSON Schema and adversarial fixtures
+        run: |
+          python -m pip install --disable-pip-version-check jsonschema==4.26.0
+          python contracts/v1/aot-artifact/test_contract.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Compile pinned TypeSpec declaration
+        working-directory: contracts/v1/aot-artifact
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npx tsp compile .
