@@ -37,6 +37,13 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
                              MessagePackCollectionCodec.Shape shape) { }
     private final Map<String, CaseCodec> byName;
     private final Map<String, CaseCodec> bySchema;
+    private final String closedDomainIdentity;
+
+    /** Compiler-issued nominal wire identity used to typecheck whole actor
+     * pipeline edges; guest payloads do not choose or modify this identity. */
+    public String closedDomainIdentity() {
+        return closedDomainIdentity;
+    }
 
     public TaggedMessageCodec(TaggedMessageContracts.Domain domain) {
         Objects.requireNonNull(domain);
@@ -50,6 +57,7 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         domain.cases().stream().map(TaggedMessageContracts.Case::qualifiedName)
                 .sorted().forEach(n -> fingerprint.append(n.length()).append(':').append(n).append(';'));
         String domainHash = digestHex(fingerprint.toString());
+        closedDomainIdentity = domainHash;
         for (TaggedMessageContracts.Case source : domain.cases()) {
             var tuple = source.payload() == null
                     ? MessagePackCollectionCodec.tuple(
