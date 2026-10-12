@@ -292,8 +292,8 @@ final class TaggedMessageContractTest {
                 """;
         String differentTag = """
                 define enum Signal as
-                    Data: int = 7
-                    Result: int = 2
+                    Data: int = 1
+                    Result: int = 7
                 end
                 """;
         String differentShape = """
