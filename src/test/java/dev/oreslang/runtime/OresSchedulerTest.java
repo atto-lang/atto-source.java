@@ -431,6 +431,101 @@ final class OresSchedulerTest {
         }
     }
 
+
+    /**
+     * Models a producer that claimed its first registration but had not yet
+     * invoked the callback when the task started waiting on a second Future.
+     * A detach alone cannot revoke an already-claimed registration.
+     */
+    @Test
+    void staleAlreadyClaimedCallbackCannotSatisfyAnotherAwait() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> first = new OresFuture<>();
+            OresFuture<Integer> second = new OresFuture<>();
+            AtomicInteger segments = new AtomicInteger();
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                int pc = segments.getAndIncrement();
+                if (pc == 0) return OresScheduler.await(first);
+                if (pc == 1) {
+                    assertEquals(7, resume.value());
+                    return OresScheduler.await(second);
+                }
+                assertEquals(2, pc, "a stale callback executed an extra task segment");
+                assertEquals(11, resume.value(),
+                        "an earlier await callback borrowed the new suspension");
+                return OresScheduler.done((Integer) resume.value());
+            });
+
+            awaitOneWaiter(first);
+            java.util.function.BiConsumer<Object, Throwable> stale =
+                    capturedWaiterCallback(first);
+            assertTrue(first.completeFromRuntime(7));
+            awaitOneWaiter(second);
+
+            // This is the exact race that detaching a registration does not
+            // exclude: its notification was already claimed before detachment.
+            stale.accept(99, null);
+            stale.accept(null, new IllegalStateException("stale producer failure"));
+            assertFalse(task.isDone(),
+                    "the second await must remain blocked by its own producer");
+            assertEquals(2, segments.get());
+
+            assertTrue(second.completeFromRuntime(11));
+            assertEquals(11, task.get(5, TimeUnit.SECONDS));
+            assertEquals(3, segments.get());
+        }
+    }
+
+    @Test
+    void staleAwaitCallbackCannotReenterAfterSchedulerCancellation() throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        OresScheduler scheduler = new OresScheduler(1);
+        AtomicInteger segments = new AtomicInteger();
+        try {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                if (segments.getAndIncrement() == 0) return OresScheduler.await(source);
+                throw new AssertionError("cancelled task resumed through stale producer");
+            });
+            awaitOneWaiter(source);
+            java.util.function.BiConsumer<Object, Throwable> stale =
+                    capturedWaiterCallback(source);
+            scheduler.close();
+            assertTrue(task.isCancelled());
+            stale.accept(19, null);
+            stale.accept(null, new IllegalStateException("late failure"));
+            assertEquals(1, segments.get());
+            assertEquals(0, source.pendingRuntimeWaiterCount());
+            assertFalse(source.isDone(), "cancellation cannot poison a shared producer");
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    private static void awaitOneWaiter(OresFuture<?> future) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (future.pendingRuntimeWaiterCount() != 1
+                && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertEquals(1, future.pendingRuntimeWaiterCount(),
+                "scheduler did not suspend on the expected Future");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static java.util.function.BiConsumer<Object, Throwable> capturedWaiterCallback(
+            OresFuture<?> future) throws Exception {
+        // Test-only forced delivery of a callback already claimed by the
+        // producer. Never expose this callback to guest code or host APIs.
+        var waitersField = OresFuture.class.getDeclaredField("waiters");
+        waitersField.setAccessible(true);
+        var waiters = (java.util.Queue<?>) waitersField.get(future);
+        Object registered = waiters.peek();
+        assertNotNull(registered);
+        var callbackField = registered.getClass().getDeclaredField("callback");
+        callbackField.setAccessible(true);
+        return (java.util.function.BiConsumer<Object, Throwable>) callbackField.get(registered);
+    }
+
     @Test
     void closingSchedulerDetachesSuspendedWaiterWithoutCancellingSharedFuture() throws Exception {
         OresFuture<Integer> shared = new OresFuture<>();
