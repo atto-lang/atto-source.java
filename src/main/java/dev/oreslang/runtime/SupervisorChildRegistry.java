@@ -484,6 +484,8 @@ public final class SupervisorChildRegistry {
         StopReceipt current = requireStopReceipt(permit);
         if (current.status() != StopReceiptStatus.PENDING)
             throw new IllegalStateException("STOP host effect already classified");
+        if (!invokedStops.contains(permit.child().logicalId()))
+            throw new IllegalStateException("STOP cannot be applied before host invocation claim");
         StopReceipt updated = new StopReceipt(permit, StopReceiptStatus.APPLIED);
         stopReceipts.put(permit.child().logicalId(), updated);
         recordStopTransition("stop.applied", requireCurrent(permit.child()), permit);
@@ -591,6 +593,8 @@ public final class SupervisorChildRegistry {
             return requireCurrent(permit.child());
         if (receipt.status() == StopReceiptStatus.UNCERTAIN)
             throw new IllegalStateException("uncertain STOP requires independent reconciliation");
+        if (!invokedStops.contains(permit.child().logicalId()))
+            throw new IllegalStateException("STOP host acknowledgment lacks invocation claim");
         Snapshot stopped = new Snapshot(permit.child(), permit.failedActor(),
                 permit.incarnation(), Phase.STOPPED);
         StopReceipt acknowledged = new StopReceipt(
