@@ -1364,8 +1364,7 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if ((cell.stopped.get() && !cell.endRequested)
-                        || cell.finalized) {
+                if (!cell.acceptsActorOutputLocked()) {
                     throw terminated(cell.ref);
                 }
                 if (cell.forceKillFenced) {
@@ -6321,6 +6320,16 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /** Caller must hold lifecycleLock. Both output reservation and
+         * actual commit enforce this same revocable actor authority. */
+        private boolean acceptsActorOutputLocked() {
+            return !finalized
+                    && !gracefulTeardownRevoked
+                    && !forceKillFenced
+                    && (!stopped.get() || endRequested
+                            || gracefulTeardownActive || finalCleanupActive);
+        }
+
         private void reserveOutput(long bytes) {
             if (bytes < 0) {
                 throw new IllegalArgumentException(
@@ -6333,7 +6342,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // self.end/self.endWithCleanup seals the mailbox immediately, but
                 // the current turn and its final cleanup retain the actor's output
                 // capability until finalization closes the stream.
-                if ((stopped.get() && !endRequested && !gracefulTeardownActive) || finalized) {
+                if (!acceptsActorOutputLocked()) {
                     throw terminated(ref);
                 }
 
