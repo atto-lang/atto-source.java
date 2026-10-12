@@ -478,6 +478,21 @@ public final class ChannelRuntime {
         private boolean decided;
         private boolean registered;
 
+        /**
+         * FAIR arbitration observes the cursor at the actual commit boundary,
+         * not only when this registration was created. Several pending waits
+         * may share a reusable SelectPlan; another wait may win and advance the
+         * cursor before this wait becomes ready. RANDOM deliberately retains
+         * the one-time shuffled order, and PRIORITY stays lexical.
+         *
+         * Called only under COORDINATOR during arbitration.
+         */
+        private int arbitrationIndex(int position) {
+            if (policy != SelectPolicy.FAIR) return order[position];
+            return (int) ((Math.floorMod(set.fairCursor.get(), set.cases.size())
+                    + (long) position) % set.cases.size());
+        }
+
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
             this.policy = policy;
@@ -671,7 +686,8 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int index : selection.order) {
+        for (int position = 0; position < selection.order.length; position++) {
+            int index = selection.arbitrationIndex(position);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -708,7 +724,8 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int index : selection.order) {
+        for (int position = 0; position < selection.order.length; position++) {
+            int index = selection.arbitrationIndex(position);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
