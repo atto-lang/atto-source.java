@@ -17,8 +17,21 @@ public final class GpuBufferFence implements AutoCloseable {
         }
     }
 
-    /** Ties one submission to a precise buffer generation and sequence. */
-    public record Ticket(long generation, long sequence) { }
+    /**
+     * Unforgeable, per-submission completion capability, not just two
+     * guessable integers. Keep the constructor inaccessible to guest code.
+     * Its object identity must match the precise in-flight submission.
+     */
+    public static final class Ticket {
+        private final long generation;
+        private final long sequence;
+        private Ticket(long generation, long sequence) {
+            this.generation = generation;
+            this.sequence = sequence;
+        }
+        public long generation() { return generation; }
+        public long sequence() { return sequence; }
+    }
 
     private static final AtomicLong NEXT_RANK = new AtomicLong();
     private static final class State {
@@ -28,6 +41,7 @@ public final class GpuBufferFence implements AutoCloseable {
         Status status = Status.IDLE;
         boolean backendQuiescent = true;
         long sequence;
+        Ticket activeTicket;
         State(Identity identity, long bytes) {
             rank = NEXT_RANK.incrementAndGet();
             if (rank <= 0) throw new IllegalStateException("GPU lock rank exhausted");
@@ -74,41 +88,48 @@ public final class GpuBufferFence implements AutoCloseable {
         }
     }
 
-    public synchronized Ticket beginCommand(Identity caller) {
+    synchronized Ticket beginCommand(Identity caller) {
         synchronized (state) {
         active();
         if (!state.identity.equals(caller)) throw new SecurityException("foreign device/tenant/generation");
         if (state.status != Status.IDLE) throw new IllegalStateException("device buffer not idle");
         if (state.sequence == Long.MAX_VALUE) throw new IllegalStateException("device fence sequence overflow");
+        var ticket = new Ticket(state.identity.allocationGeneration(), state.sequence + 1);
+        state.activeTicket = ticket;
+        ++state.sequence;
         state.backendQuiescent = false;
         state.status = Status.IN_FLIGHT;
-        return new Ticket(state.identity.allocationGeneration(), ++state.sequence);
+        return ticket;
     
         }
     }
 
+    /*
+     * These five package-private state-transition methods are trusted runtime
+     * implementation details. They MUST NOT be exposed via Oreslang guest
+     * interop or a public Java-facing API: a ticket alone cannot attest that
+     * the GPU command actually finished. A real provider must separately
+     * prove native device-event completion and handle release.
+     */
     /** Called ONLY after the device reports completion for this exact ticket. */
-    public synchronized void complete(Ticket ticket, boolean success) {
+    synchronized void complete(Ticket ticket, boolean success) {
         synchronized (state) {
         active();
-        if (state.status != Status.IN_FLIGHT || ticket == null
-                || ticket.generation() != state.identity.allocationGeneration()
-                || ticket.sequence() != state.sequence) {
+        if (state.status != Status.IN_FLIGHT || ticket != state.activeTicket) {
             throw new IllegalStateException("stale or mismatched device event");
         }
         state.status = success ? Status.IDLE : Status.POISONED;
         state.backendQuiescent = true;
+        state.activeTicket = null;
     
         }
     }
 
     /** Cancel requires device synchronization; do not reuse or free prematurely. */
-    public synchronized void cancelPending(Ticket ticket) {
+    synchronized void cancelPending(Ticket ticket) {
         synchronized (state) {
         active();
-        if (state.status != Status.IN_FLIGHT || ticket == null
-                || ticket.generation() != state.identity.allocationGeneration()
-                || ticket.sequence() != state.sequence) {
+        if (state.status != Status.IN_FLIGHT || ticket != state.activeTicket) {
             throw new IllegalStateException("stale cancellation");
         }
         state.status = Status.POISONED;
@@ -117,22 +138,21 @@ public final class GpuBufferFence implements AutoCloseable {
     }
 
     /** A cancelled kernel may still be running until its device fence completes. */
-    public synchronized void acknowledgeCancelledDeviceEvent(Ticket ticket, Identity caller) {
+    synchronized void acknowledgeCancelledDeviceEvent(Ticket ticket, Identity caller) {
         synchronized (state) {
         active();
-        if (!state.identity.equals(caller) || ticket == null
-                || ticket.generation() != state.identity.allocationGeneration()
-                || ticket.sequence() != state.sequence || state.status != Status.POISONED
-                || state.backendQuiescent) {
+        if (!state.identity.equals(caller) || ticket != state.activeTicket
+                || state.status != Status.POISONED || state.backendQuiescent) {
             throw new IllegalStateException("invalid cancelled-device completion");
         }
         state.backendQuiescent = true;
+        state.activeTicket = null;
     
         }
     }
 
     /** After backend confirms device quiescence and releases the opaque handle. */
-    public synchronized void retireAfterBackendRelease(Identity caller) {
+    synchronized void retireAfterBackendRelease(Identity caller) {
         synchronized (state) {
         active();
         if (!state.identity.equals(caller)) throw new SecurityException("foreign device/tenant/generation");
