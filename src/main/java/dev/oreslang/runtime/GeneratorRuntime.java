@@ -164,6 +164,39 @@ public final class GeneratorRuntime {
     }
 
     /**
+     * Package-private host-facing asynchronous iterator staging boundary.
+     * Calls from arbitrary host threads enqueue only; they NEVER dispatch or
+     * enter Truffle. An already physically entered, authorized root guest
+     * turn must independently call HostGeneratorTurnPump.dispatchOne().
+     *
+     * Do not export this as a Polyglot Value member until a context-owned
+     * wake path and global host/actor/async guest admission are certified.
+     */
+    static final class CertifiedHostIterator<T> {
+        private final HostGeneratorTurnPump pump;
+        private final SchedulerBacked<T> generator;
+
+        private CertifiedHostIterator(HostGeneratorTurnPump pump, SchedulerBacked<T> generator) {
+            this.pump = Objects.requireNonNull(pump, "pump");
+            this.generator = Objects.requireNonNull(generator, "generator");
+        }
+
+        /** Host admission only; result awaits certified physical exit. */
+        OresFuture<Step<T>> nextStep() {
+            return pump.requestCertified(pump.token(), generator.nextTurn());
+        }
+
+        boolean isTerminal() { return generator.isTerminal(); }
+    }
+
+    static <T> CertifiedHostIterator<T> certifiedHostIterator(
+            HostGeneratorTurnPump pump, OresScheduler root, SchedulerFrame<T> frame) {
+        Objects.requireNonNull(pump, "pump");
+        return new CertifiedHostIterator<>(
+                pump, schedulerBacked(root, pump.token(), frame));
+    }
+
+    /**
      * Restricted, fail-closed source-level generator lowering, staged for
      * integration with the real evaluator's heap continuation machine.
      * It compiles a typechecked .ores function body, not a handwritten
