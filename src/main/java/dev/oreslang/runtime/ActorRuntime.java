@@ -6106,6 +6106,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
+        /** Physical guest-entry authority, separate from scheduling affinity. */
+        private final ActorExecutionAuthority executionAuthority =
+                new ActorExecutionAuthority();
+        private ActorExecutionAuthority.Claim activeExecutionClaim;
         private boolean carrierActive;
         /**
          * Set when the currently executing actor envelope enqueues a source
@@ -6282,6 +6286,12 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor single-writer execution lease violation for " + ref.id()
                                     + ": activeTurns=" + activeTurns);
                 }
+                ActorExecutionAuthority.Claim claim = executionAuthority
+                        .enter(executionAuthority.generation(), Thread.currentThread().getId())
+                        .orElseThrow(() -> new IllegalStateException(
+                                "actor execution authority denied overlapping carrier for "
+                                        + ref.id()));
+                activeExecutionClaim = claim;
                 activeTurns = 1;
                 return true;
             }
@@ -6333,6 +6343,11 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor execution lease accounting violation for " + ref.id()
                                     + ": activeTurns=" + activeTurns);
                 }
+                if (!executionAuthority.leave(activeExecutionClaim, false)) {
+                    throw new IllegalStateException(
+                            "actor execution authority rejected stale release for " + ref.id());
+                }
+                activeExecutionClaim = null;
                 activeTurns = 0;
                 if (stopped.get()) finalizeStopLocked();
                 lifecycleLock.notifyAll();
@@ -6348,6 +6363,13 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()) return;
+            // Physical carrier and guest-context exit have both completed.
+            // A stopped actor cannot be reported finalized while a prior
+            // execution authority remains live, regardless of Future state.
+            if (!executionAuthority.acknowledgeRetired(executionAuthority.generation())) {
+                throw new IllegalStateException(
+                        "actor finalized without quiescent execution authority: " + ref.id());
+            }
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
@@ -6842,6 +6864,7 @@ public final class ActorRuntime implements AutoCloseable {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
                 stopped.set(true);
+                executionAuthority.requestStop(executionAuthority.generation());
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
