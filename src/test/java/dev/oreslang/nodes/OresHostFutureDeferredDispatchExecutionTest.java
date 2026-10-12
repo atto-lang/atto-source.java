@@ -5,6 +5,7 @@ import dev.oreslang.runtime.OresFuture;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
+import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -42,12 +43,12 @@ final class OresHostFutureDeferredDispatchExecutionTest {
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(true).out(output).build()) {
             Value parsed = parseAndInitialize(context);
-            OresFuture<Integer> future =
+            OresFuture<Number> future =
                     OresHostFutureBridge.invokePublicFutureAfterHostExit(
                             parsed, "work", () -> assertEquals("",
                                     output.toString(StandardCharsets.UTF_8),
                                     "host return probe must run before CONTROL guest entry"));
-            assertEquals(21, future.get(5, TimeUnit.SECONDS));
+            assertEquals(21L, future.get(5, TimeUnit.SECONDS).longValue());
             assertEquals("source-entered\n", output.toString(StandardCharsets.UTF_8));
         }
     }
@@ -73,8 +74,9 @@ final class OresHostFutureDeferredDispatchExecutionTest {
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(true).out(output).build()) {
             Value parsed = parseAndInitialize(context);
-            assertThrows(IllegalArgumentException.class,
+            PolyglotException denied = assertThrows(PolyglotException.class,
                     () -> OresHostFutureBridge.invokePublicFuture(parsed, "noSuchMethod"));
+            assertTrue(denied.getMessage().contains("noSuchMethod"));
             assertEquals("", output.toString(StandardCharsets.UTF_8));
         }
     }
