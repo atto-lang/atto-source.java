@@ -90,16 +90,25 @@ final class SourceLoopSoftPreemptionTest {
                 define actor Worker as
                   state { count: int = 0; }
 
-                  receive(ActorMail<String> mail): void with state.read, state.write {
+                  tick(): void with state.read, state.write {
+                    using state.write(critical |s| -> { s.count = s.count + 1; });
+                    return;
+                  }
+
+                  count(): int with state.read {
+                    return using state.read(|s| -> s.count);
+                  }
+
+                  receive(ActorMail<String> mail): void {
                     if mail.value == "first"; do
                       for (let i = 0; i < 4000; i = i + 1) do
-                        using state.write(critical |s| -> { s.count = s.count + 1; });
+                        self.tick();
                       done
-                      self.send(using state.read(|s| -> s.count));
+                      self.send(self.count());
                       return;
                     fi
                     if mail.value == "second"; do
-                      self.send(using state.read(|s| -> s.count) + 1);
+                      self.send(self.count() + 1);
                       self.end();
                     fi
                     return;

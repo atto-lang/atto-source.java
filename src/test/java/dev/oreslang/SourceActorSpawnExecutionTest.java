@@ -23,8 +23,12 @@ final class SourceActorSpawnExecutionTest {
                     return;
                   }
 
-                  receive(ActorMail<String> mail): void with state.read {
-                    if using state.read(|s| -> s.started) != 1; do
+                  started(): int with state.read {
+                    return using state.read(|s| -> s.started);
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    if self.started() != 1; do
                       return;
                     fi
                     if mail.value == "stop"; do
@@ -79,12 +83,15 @@ final class SourceActorSpawnExecutionTest {
                 define actor Counter as
                   state { count: int = 0; }
 
-                  receive(ActorMail<String> mail): void with state.read, state.write {
-                    val next = using state.write(critical |s| -> {
+                  increment(): int with state.read, state.write {
+                    return using state.write(critical |s| -> {
                       s.count = s.count + 1;
                       return s.count;
                     });
-                    self.send(next);
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    self.send(self.increment());
                     self.end();
                     return;
                   }
@@ -157,24 +164,33 @@ final class SourceActorSpawnExecutionTest {
                 define actor Worker as
                   state { phase: int = 0; }
 
-                  receive(ActorMail<String> mail): void with state.read, state.write {
+                  phase_get(): int with state.read {
+                    return using state.read(|s| -> s.phase);
+                  }
+
+                  phase_set(int value): void with state.write {
+                    using state.write(critical |s| -> { s.phase = value; });
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
                     if mail.value == "first"; do
-                      using state.write(critical |s| -> { s.phase = 1; });
+                      self.phase_set(1);
                       self.send("before");
                       rt cooperate;
 
-                      if using state.read(|s| -> s.phase) != 1; do
+                      if self.phase_get() != 1; do
                         self.send("interleaved");
                         return;
                       fi
 
-                      using state.write(critical |s| -> { s.phase = 2; });
+                      self.phase_set(2);
                       self.send("after");
                       return;
                     fi
 
                     if mail.value == "second"; do
-                      if using state.read(|s| -> s.phase) == 2; do
+                      if self.phase_get() == 2; do
                         self.send("second");
                       else
                         self.send("interleaved");

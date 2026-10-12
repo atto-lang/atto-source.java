@@ -933,7 +933,7 @@ final class ParserTest {
                       state { items: Array<int> = [1, 2, 3]; }
 
                       pub fnc leak(): Array<int> with state.read {
-                        return using state.read(|s| -> s.items);
+                        return using state.read(|s| -> s);
                       }
                     }
                     """));
