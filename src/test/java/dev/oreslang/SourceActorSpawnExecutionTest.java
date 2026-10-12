@@ -421,6 +421,36 @@ final class SourceActorSpawnExecutionTest {
                 run(program, "actor-pipeline-bidirectional.ores"));
     }
 
+    @Test
+    void compiledPipelineRejectsDuplicateExternalIngress() throws Exception {
+        String source = java.nio.file.Files.readString(
+                java.nio.file.Path.of("examples/actor-pipeline-bidirectional.ores"));
+        String invalid = source.replace(
+                "source.send(Signal.Data(5));",
+                "source.send(Signal.Data(5));\n    source.send(Signal.Data(5));");
+        assertNotEquals(source, invalid);
+        org.graalvm.polyglot.PolyglotException rejected = assertThrows(
+                org.graalvm.polyglot.PolyglotException.class,
+                () -> run(invalid, "actor-pipeline-duplicate-ingress.ores"));
+        assertTrue(rejected.getMessage().contains("pipeline single-flow phase violation"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void compiledPipelineRejectsDirectMiddleStageIngress() throws Exception {
+        String source = java.nio.file.Files.readString(
+                java.nio.file.Path.of("examples/actor-pipeline-bidirectional.ores"));
+        String invalid = source.replace(
+                "source.send(Signal.Data(5));",
+                "transform.send(Signal.Data(5));");
+        assertNotEquals(source, invalid);
+        org.graalvm.polyglot.PolyglotException rejected = assertThrows(
+                org.graalvm.polyglot.PolyglotException.class,
+                () -> run(invalid, "actor-pipeline-forged-middle-ingress.ores"));
+        assertTrue(rejected.getMessage().contains("scheduler-authorized directional DATA"),
+                rejected.getMessage());
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source =
