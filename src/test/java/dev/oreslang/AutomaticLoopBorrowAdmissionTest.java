@@ -79,13 +79,10 @@ final class AutomaticLoopBorrowAdmissionTest {
                 """);
         return cases.entrySet().stream().map(entry -> DynamicTest.dynamicTest(
                 entry.getKey(), () -> {
-                    String source = """
-                            fnc bad(): void {
-                              val values = arr[[1], [2], [3]];
-                            """ + entry.getValue() + """
-                              return;
-                            }
-                            """;
+                    String collection = entry.getKey().startsWith("destructuring")
+                            ? "arr[[1], [2], [3]]" : "arr[1, 2, 3]";
+                    String source = "fnc bad(): void { val values = " + collection + ";\n"
+                            + entry.getValue() + " return;\n}";
                     var parsed = assertDoesNotThrow(() -> Parser.parse(source), entry.getKey());
                     var error = assertThrows(IllegalArgumentException.class,
                             () -> OwnershipChecker.check(parsed), entry.getKey());
@@ -108,13 +105,10 @@ final class AutomaticLoopBorrowAdmissionTest {
                 """);
         return cases.entrySet().stream().map(entry -> DynamicTest.dynamicTest(
                 entry.getKey(), () -> {
-                    String source = """
-                            fnc good(): void {
-                              val values = arr[[1], [2], [3]];
-                            """ + entry.getValue() + """
-                              return;
-                            }
-                            """;
+                    String collection = entry.getKey().startsWith("destructuring")
+                            ? "arr[[1], [2], [3]]" : "arr[1, 2, 3]";
+                    String source = "fnc good(): void { val values = " + collection + ";\n"
+                            + entry.getValue() + " return;\n}";
                     var parsed = assertDoesNotThrow(() -> Parser.parse(source), entry.getKey());
                     assertDoesNotThrow(() -> OwnershipChecker.check(parsed), entry.getKey());
                 }));
