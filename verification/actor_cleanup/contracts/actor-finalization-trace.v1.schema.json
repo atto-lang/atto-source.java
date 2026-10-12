@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oreslang.dev/schemas/actor-finalization-trace.v1.schema.json",
+  "title": "Oreslang actor physical finalization trace event",
+  "description": "Host-owned conformance event contract. Schema verifies event shape; ordering invariants are specified separately by ActorTwoPhaseFinalization.tla.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "actorId",
+    "incarnation",
+    "sequence",
+    "event"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "actorId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "incarnation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "event": {
+      "enum": [
+        "stop_committed",
+        "shutdown_effects_started",
+        "shutdown_effects_settled",
+        "carrier_quiesced",
+        "child_physical_barrier",
+        "finalization_claimed",
+        "scheduler_closed",
+        "resources_released",
+        "physical_termination_published"
+      ]
+    },
+    "parentActorId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "terminationCause": {
+      "enum": [
+        "graceful",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "pendingChildren": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "pendingShutdownEffects": {
+      "type": "boolean"
+    },
+    "carrierActive": {
+      "type": "boolean"
+    },
+    "finalizationEpoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "taskTicketId": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
