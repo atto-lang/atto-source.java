@@ -197,6 +197,49 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void unrequestedAdmissionCannotBecomeAnInfiniteWait() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var ticket = gate.newTicket(CriticalRwGate.Mode.READ);
+        var failure = assertThrows(IllegalStateException.class, ticket::admission);
+        assertTrue(failure.getMessage().contains("not requested"));
+        ticket.close();
+        assertTrue(ticket.admission().isDone(), "closed ticket must be terminal");
+    }
+
+    @Test
+    void completionBindingIsSingleOwnerAndCancelsQueuedTickets() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var owner = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        var waiter = gate.newTicket(CriticalRwGate.Mode.READ);
+        owner.enterAsync();
+        OresFuture<Void> pending = waiter.enterAsync();
+        OresFuture<Void> taskCompletion = new OresFuture<>();
+        waiter.releaseOnCompletion(taskCompletion);
+        var duplicate = assertThrows(IllegalStateException.class,
+                () -> waiter.releaseOnCompletion(new OresFuture<>()));
+        assertTrue(duplicate.getMessage().contains("already bound"));
+        assertTrue(taskCompletion.cancel(false));
+        assertTrue(pending.isDone(), "owner cancellation must settle admission Future");
+        assertFalse(waiter.isHeld());
+        assertEquals(0, gate.queuedCount());
+        owner.close();
+        assertEquals(0, gate.activeReaderCount());
+        assertFalse(gate.hasWriter());
+    }
+
+    @Test
+    void alreadySettledCompletionReleasesGrantAndCannotBeAttachedAgain() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+        reader.enterAsync();
+        reader.releaseOnCompletion(OresFuture.completed(null));
+        assertFalse(reader.isHeld());
+        assertThrows(IllegalStateException.class,
+                () -> reader.releaseOnCompletion(new OresFuture<>()));
+        assertEquals(0, gate.activeReaderCount());
+    }
+
+    @Test
     void taskCompletionReleasesPermitEvenWhenTaskFails() {
         CriticalRwGate gate = new CriticalRwGate();
         var writer = gate.newTicket(CriticalRwGate.Mode.WRITE);
