@@ -928,18 +928,28 @@ public final class ActorRuntime implements AutoCloseable {
         private void releasePhysicalNative(long bytes) {
             if (bytes == 0) return;
             synchronized (memoryBudgetLock) {
-                long remainingNative = retainedNativeBytes.addAndGet(-bytes);
-                long remainingHeap = usedBytes.addAndGet(-bytes);
-                if (remainingNative < 0 || remainingHeap < 0) {
-                    retainedNativeBytes.addAndGet(bytes);
-                    usedBytes.addAndGet(bytes);
-                    throw new IllegalStateException("actor native budget accounting underflow");
+                // Validate all three accounting domains before publishing ANY
+                // decrement. An aggregate-accounting error must not advertise
+                // zero actor-native bytes or unblock physical get_done().
+                long nativeBytes = retainedNativeBytes.get();
+                long actorBytes = usedBytes.get();
+                long aggregateBytes = privateMemoryBytes.get();
+                if (bytes > nativeBytes || bytes > actorBytes || bytes > aggregateBytes) {
+                    throw new IllegalStateException(
+                            "actor native budget accounting underflow: owner=" + owner
+                                    + " release=" + bytes
+                                    + " retained=" + nativeBytes
+                                    + " actorUsed=" + actorBytes
+                                    + " runtimeUsed=" + aggregateBytes);
                 }
-                releasePrivateRuntimeBytes(bytes, owner);
+                // All writes are guarded by memoryBudgetLock. No callbacks or
+                // guest code execute between validation and publication.
+                privateMemoryBytes.set(aggregateBytes - bytes);
+                retainedNativeBytes.set(nativeBytes - bytes);
+                usedBytes.set(actorBytes - bytes);
             }
-            // Do not wake the actor from a partial quota decrement.
-            // Native region onRetired() runs only AFTER physical arena close,
-            // reservation refund and registry removal, and owns the wakeup.
+            // No wakeup on quota decrement. Only the fully retired native
+            // region's post-refund registry-removal callback wakes the actor.
         }
 
         private synchronized void release(long bytes) {
