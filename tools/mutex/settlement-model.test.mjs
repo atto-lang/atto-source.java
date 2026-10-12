@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 // Bounded abstraction of a SINGLE queued SharedMutex waiter and one holder.
 // This does not inspect Java state; it checks the intended publication order.
-const initial=()=>({phase:"QUEUED",edge:true,visible:false,outcome:null,owner:"holder"});
+const initial=()=>({phase:"QUEUED",edge:true,admitted:true,settles:0,visible:false,outcome:null,owner:"holder"});
 const actions=["timeout","cancel","holder_release","publish_handoff","waiter_release"];
 function transition(s,action){
  const n={...s};
@@ -11,7 +11,7 @@ function transition(s,action){
   case "timeout":
   case "cancel":
    if(s.phase==="QUEUED"){
-    n.phase="TERMINAL";n.edge=false;n.visible=true;n.outcome=action;
+    n.phase="TERMINAL";n.edge=false;n.admitted=false;n.settles++;n.visible=true;n.outcome=action;
    }
    break;
   case "holder_release":
@@ -21,7 +21,7 @@ function transition(s,action){
    break;
   case "publish_handoff":
    if(s.phase==="CLAIMED"&&s.owner==="transfer"){
-    n.phase="AWARDED";n.edge=false;n.visible=true;n.outcome="success";n.owner="waiter";
+    n.phase="AWARDED";n.edge=false;n.admitted=false;n.settles++;n.visible=true;n.outcome="success";n.owner="waiter";
    }
    break;
   case "waiter_release":
@@ -34,6 +34,9 @@ function transition(s,action){
 }
 function invariant(s){
  assert.equal(!(s.visible&&s.edge),true,"Future visible while WAITING_ON edge exists");
+ assert.equal(!(s.visible&&s.admitted),true,"Future visible before waiter quota settlement");
+ assert.ok(s.settles<=1,"quota double-released");
+ if(s.visible)assert.equal(s.settles,1,"visible Future must have exactly one settlement");
  if(s.phase==="CLAIMED"){
   assert.equal(s.visible,false,"dequeue cannot publish incomplete physical handoff");
   assert.equal(s.owner,"transfer");
@@ -62,4 +65,9 @@ test("enumerate all bounded timeout/cancel/dequeue/publication permutations",()=
 test("invariant detects the historical publish-before-unlink defect",()=>{
  const bad={...initial(),phase:"TERMINAL",visible:true,outcome:"timeout"};
  assert.throws(()=>invariant(bad),/Future visible while WAITING_ON/);
+});
+
+test("invariant detects publication while quota is still charged",()=>{
+ const bad={...initial(),phase:"TERMINAL",visible:true,edge:false,admitted:true,outcome:"cancel"};
+ assert.throws(()=>invariant(bad),/quota settlement/);
 });
