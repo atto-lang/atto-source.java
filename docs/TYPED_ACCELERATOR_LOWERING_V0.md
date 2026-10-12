@@ -66,9 +66,17 @@ present the **same ticket instance** issued for the in-flight command, not
 merely matching numerical generation and sequence values. This prevents
 cross-buffer ticket forgery and replay but is **not** backend authentication:
 code holding a genuine ticket could still falsely report device completion.
-The ledger and its mutating methods must remain trusted runtime/provider
-internals, not guest-visible APIs, until a separate verified completion
-capability and provider-side fence proof exist.
+The ledger's backend lifecycle transitions (`beginCommand`, `complete`,
+`cancelPending`, `acknowledgeCancelledDeviceEvent`, and
+`retireAfterBackendRelease`) are package-private trusted-runtime operations,
+not guest-visible Java API methods. Positive lifecycle tests run in that
+runtime package; an API regression checks the operations remain non-public.
+Package visibility alone is **not** a security boundary against arbitrary
+host-Java code, reflection, or malicious same-package classes: the Oreslang
+guest interop must still deny these classes, and the backend must use a
+trusted provider/device-event proof before calling completion or retirement.
+A real provider is not implemented, so genuine-ticket holders inside the
+trusted runtime are not authenticated hardware completion witnesses.
 
 Lifecycle:
 
