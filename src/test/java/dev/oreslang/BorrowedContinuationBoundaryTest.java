@@ -102,7 +102,7 @@ final class BorrowedContinuationBoundaryTest {
     @Test
     void generatorCallCannotRetainCallSiteBorrow() {
         reject(BOX + """
-                gen* numbers(&Box box): Iterator<int> {
+                gen* fnc numbers(&Box box): Iterator<int> {
                   yield box.value;
                   return;
                 }
@@ -117,7 +117,7 @@ final class BorrowedContinuationBoundaryTest {
     @Test
     void generatorCannotYieldNewlyCreatedBorrow() {
         reject(BOX + """
-                gen* bad(): Iterator<&Box> {
+                gen* fnc bad(): Iterator<&Box> {
                   let Box box = new Box();
                   yield rt borrow box;
                   return;
@@ -128,7 +128,7 @@ final class BorrowedContinuationBoundaryTest {
     @Test
     void generatorMayYieldOwnedOrCopyableData() {
         assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(BOX + """
-                gen* good(): Iterator<int> {
+                gen* fnc good(): Iterator<int> {
                   let Box box = new Box();
                   yield box.value;
                   return;
