@@ -185,10 +185,23 @@ public final class OresHostFutureBridge {
 
     private OresHostFutureBridge() { }
 
-    @SuppressWarnings("unchecked")
     public static <T> OresFuture<T> invokePublicFuture(
             Value parsedSource, String function, Object... arguments) {
+        return invokePublicFutureAfterHostExit(
+                parsedSource, function, () -> { }, arguments);
+    }
+
+    /**
+     * Package-private deterministic rendezvous hook for real Polyglot tests.
+     * Runs AFTER parsedSource.execute returns but BEFORE pending CONTROL work
+     * is dispatched. Production callers use the public zero-hook overload.
+     */
+    @SuppressWarnings("unchecked")
+    static <T> OresFuture<T> invokePublicFutureAfterHostExit(
+            Value parsedSource, String function, Runnable afterHostExit,
+            Object... arguments) {
         Objects.requireNonNull(parsedSource, "parsedSource");
+        Objects.requireNonNull(afterHostExit, "afterHostExit");
         if (function == null || function.isBlank()) {
             throw new IllegalArgumentException("public async function name is required");
         }
@@ -214,6 +227,7 @@ public final class OresHostFutureBridge {
             // is intentionally unused; doing asHostObject() here would enter
             // the guest context again after the scheduler has started.
             parsedSource.execute(command);
+            afterHostExit.run();
             return (OresFuture<T>) slot.result();
         } catch (RuntimeException | Error hostFailure) {
             // Even after successful ticket publication, Polyglot may reject
