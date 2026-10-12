@@ -153,6 +153,42 @@ final class ActorStateBoundaryKeywordTest {
     }
 
     @Test
+    void linkedSealedStateNeverCrossesCompilationUnitBoundary() {
+        Ast.Program parent = Parser.parse("""
+                pub define actor Parent as
+                    state { secret: int = 42; }
+                end
+                """);
+        Ast.ClassDecl imported = (Ast.ClassDecl)
+                parent.modules().getFirst().declarations().getFirst();
+        Ast.Program consumer = Parser.parse("""
+                import class Parent from './parent';
+                define actor Child extends Parent as
+                end
+                """);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithImportedClasses(
+                        consumer, Map.of("Parent", imported), Map.of()));
+        assertTrue(failure.getMessage().contains("linked actor sealed state"),
+                failure.getMessage());
+    }
+
+    @Test
+    void annotationExpansionDoesNotEraseSealedActorState() {
+        Ast.Program parsed = Parser.parse("""
+                define actor Counter as
+                    state { value: int = 0; }
+                end
+                """);
+        Ast.Program expanded = dev.oreslang.ast.AnnotationExpander.expand(parsed);
+        Ast.ClassDecl klass = (Ast.ClassDecl)
+                expanded.modules().getFirst().declarations().getFirst();
+        assertNotNull(klass.actorState());
+        assertEquals("value", klass.actorState().fields().getFirst().name());
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(expanded));
+    }
+
+    @Test
     void unknownHyphenatedSpellingsCannotBecomeIdentifiers() {
         List<Token.Type> tokens = new Lexer(
                 "critical-reader critical-read-other nb-selectable foo-bar").scan()
