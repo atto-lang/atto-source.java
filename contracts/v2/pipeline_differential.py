@@ -23,7 +23,7 @@ LLVM_ADMISSIONS = (
     (1, 2, 1, 13),
     (0, 2, 1, 14),
 )
-JAVA_EVENT = re.compile(r"PIPE_(FORWARD|BACKWARD)_(SOURCE|TRANSFORM|SINK)_(-?[0-9]+)\\|")
+JAVA_EVENT = re.compile(r"PIPE_(FORWARD|BACKWARD)_(SOURCE|TRANSFORM|SINK)_(-?[0-9]+)\|")
 LLVM_EVENT = re.compile(r"^SOURCE_PIPELINE_ADMIT target=([0-9]+) direction=([0-9]+) variant=([0-9]+) value=(-?[0-9]+)$", re.M)
 LLVM_SUMMARY = "SOURCE_PIPELINE_ROUNDTRIP_PASS actors=3 typed=1 forward=2 backward=2 result=19"
 JAVA_FINAL = "JAVA_PIPELINE_RESULT_19"
@@ -49,7 +49,7 @@ def compare(java_output: str, llvm_error: str, java_head: str, llvm_head: str) -
     if llvm_error.count(LLVM_SUMMARY) != 1 or "SOURCE_PIPELINE_FAILURE" in llvm_error:
         raise ValueError("LLVM missing terminal completion or unexpected failure")
     finalizers = re.findall(
-        r"SOURCE_ACTOR_SPAWN_STOP_VERIFIED [^\\n]*processed=([0-9]+) last=(-?[0-9]+)",
+        r"SOURCE_ACTOR_SPAWN_STOP_VERIFIED [^\n]*processed=([0-9]+) last=(-?[0-9]+)",
         llvm_error)
     if sorted(int(row[0]) for row in finalizers) != [1, 2, 2]:
         raise ValueError("LLVM actor turn ownership/finalizer counts mismatch: " + repr(finalizers))
@@ -76,11 +76,11 @@ def compare(java_output: str, llvm_error: str, java_head: str, llvm_head: str) -
 def self_test() -> None:
     java = "".join(f"PIPE_{d.upper()}_{a.upper()}_{v}|" for d, a, v in JAVA_HOPS) + JAVA_FINAL
     llvm = "".join(
-        f"SOURCE_PIPELINE_ADMIT target={t} direction={d} variant={variant} value={v}\\n"
+        f"SOURCE_PIPELINE_ADMIT target={t} direction={d} variant={variant} value={v}\n"
         for t, d, variant, v in LLVM_ADMISSIONS)
-    llvm += LLVM_SUMMARY + "\\n"
+    llvm += LLVM_SUMMARY + "\n"
     llvm += "".join(
-        f"SOURCE_ACTOR_SPAWN_STOP_VERIFIED constructor_on_worker=1 released=1 processed={n} last=19\\n"
+        f"SOURCE_ACTOR_SPAWN_STOP_VERIFIED constructor_on_worker=1 released=1 processed={n} last=19\n"
         for n in (1, 2, 2))
     sha = "a" * 40
     assert compare(java, llvm, sha, sha)["status"] == "passed"
@@ -119,7 +119,7 @@ def main() -> None:
     report = compare(
         args.java_out.read_text(), args.llvm_err.read_text(),
         args.java_head, args.llvm_head)
-    args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\\n")
+    args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print("PIPELINE_JAVA_LLVM_DIFFERENTIAL_PASS actors=3 forward=2 backward=2 result=19")
 
 
