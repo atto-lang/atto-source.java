@@ -50,7 +50,15 @@ public final class DeclaredEffectVerifier {
         }
         boolean hasRequirements = annotations.stream()
                 .anyMatch(annotation -> annotation.name().equals("$requires$"));
-        if (with == null && !hasRequirements) return;
+        // A sealed actor-state loan cannot silently bypass a function
+        // effect contract by omitting 'with'. This is checked even when
+        // no 'requires' guarantee was declared.
+        if (with == null && !hasRequirements) {
+            if (containsStateLoan(body))
+                throw new IllegalArgumentException(name
+                        + " requires with state.read/write effect declaration");
+            return;
+        }
 
         FunctionEffects allowed = with == null ? null : FunctionEffects.ofNames(with.arguments().stream()
                 .map(Ast.TypeRef::name).toList());
@@ -80,6 +88,31 @@ public final class DeclaredEffectVerifier {
                         + " not permitted by its with signature");
             }
         }
+    }
+
+    private static boolean containsStateLoan(Object node) {
+        if (node == null) return false;
+        if (node instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.MemberExpr callee
+                && callee.receiver() instanceof Ast.NameExpr self
+                && self.name().equals("self") && callee.member().equals("handle_state"))
+            return true;
+        if (node instanceof Iterable<?> items) {
+            for (Object item : items)
+                if (containsStateLoan(item)) return true;
+            return false;
+        }
+        if (node instanceof java.lang.Record record
+                && node.getClass().getName().startsWith("dev.oreslang.ast.")) {
+            for (RecordComponent component : record.getClass().getRecordComponents()) {
+                try {
+                    if (containsStateLoan(component.getAccessor().invoke(record))) return true;
+                } catch (ReflectiveOperationException e) {
+                    throw new IllegalStateException("cannot inspect actor state effect declaration", e);
+                }
+            }
+        }
+        return false;
     }
 
     private static void collect(Object node, Set<FunctionEffects.Effect> effects,
