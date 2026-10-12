@@ -123,6 +123,23 @@ final class CriticalGateTest {
         }
     }
 
+    @Test void logicalOwnershipCannotBeBorrowedFromForeignCarrier() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        CriticalGate.Ticket ticket = gate.newTicket();
+        ticket.enterSync();
+        assertTrue(gate.heldByCurrentLogicalDomain());
+        AtomicBoolean foreignHeld = new AtomicBoolean(true);
+        Thread outsider = new Thread(
+                () -> foreignHeld.set(gate.heldByCurrentLogicalDomain()),
+                "foreign-actor-critical-carrier");
+        outsider.start();
+        outsider.join();
+        assertFalse(foreignHeld.get(),
+                "a foreign carrier must never impersonate critical owner");
+        ticket.close();
+        assertFalse(gate.heldByCurrentLogicalDomain());
+    }
+
     @Test void gatesAreIndependentAndDoNotShareAStaticProcessLock() {
         CriticalGate a = new CriticalGate(), b = new CriticalGate();
         var first = a.newTicket();

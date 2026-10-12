@@ -1106,6 +1106,40 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        // Sealed actor-state intrinsic: this inline callback receives an
+        // exclusive *lexical* mutable view, not a normal function argument.
+        // Giving an ordinary inferred parameter a read-only scope would make
+        // every legal s.count = ... mutation fail, while treating it as owned
+        // would permit moving the entire persistent state out of the actor.
+        if (call.callee() instanceof Ast.MemberExpr member
+                && member.member().equals("handle_state")
+                && member.receiver() instanceof Ast.NameExpr receiver
+                && receiver.name().equals("self")) {
+            VarState actorSelf = scope.lookup("self");
+            if (actorSelf == null || !isActorConfinedBorrow(actorSelf)) {
+                throw error("self.handle_state requires an actor-owned execution lease");
+            }
+            Ast.TypeRef actorType = actorSelf.type.isBorrow()
+                    ? actorSelf.type.borrowedTarget() : actorSelf.type;
+            Ast.ClassDecl actor = findClass(actorType.name());
+            Ast.FieldDecl state = ActorStateContract.stateField(actor);
+            if (state == null) throw error("self.handle_state requires a sealed actor state schema");
+            if (call.typeArgumentsPresent() || call.arguments().size() != 1
+                    || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)
+                    || lambda.parameters().size() != 1) {
+                throw error("self.handle_state requires one inline single-parameter callback");
+            }
+            Ast.Param named = lambda.parameters().getFirst();
+            Ast.TypeRef accessType = Ast.TypeRef.borrowed(ActorStateContract.keySchema(state), true);
+            Ast.Param exclusive = new Ast.Param(accessType, named.name(), false, false);
+            Ast.LambdaExpr scoped = new Ast.LambdaExpr(
+                    List.of(exclusive), lambda.expressionBody(), lambda.blockBody());
+            // The callback is invoked inline by the future runtime lowering;
+            // its captured 'self' is the same actor incarnation and may not
+            // be sent to an unrelated worker or retained by a future.
+            checkLambda(scoped, scope, null, true);
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+        }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);

@@ -446,13 +446,31 @@ public final class OresEvalRootNode extends RootNode {
                                 + " does not match declaration kind " + expectedKind);
             }
 
+            // Compiler-generated state is never an ordinary, aliasable
+            // object field. Allocate a bounded actor-incarnation FFM scalar
+            // region before on_start, and bind the source object's logical
+            // critical gate to that region. Unsupported reference/map schema
+            // shapes fail closed before any guest initializer runs.
+            Ast.FieldDecl sealedSchema =
+                    dev.oreslang.types.ActorStateContract.stateField(klass);
+            SourceScalarState nativeState = null;
+            if (sealedSchema != null) {
+                nativeState = initializeNativeActorState(
+                        sealedSchema, actorContext);
+            }
             List<Ast.FieldDecl> classFields =
-                    effectiveFields(klass, new LinkedHashSet<>());
+                    effectiveFields(klass, new LinkedHashSet<>()).stream()
+                            .filter(field -> !dev.oreslang.types.ActorStateContract.isStateField(field))
+                            .toList();
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             for (Ast.FieldDecl field : classFields) {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
             }
             OresObject object = new OresObject(this, klass, fields);
+            if (nativeState != null) {
+                object.nativeState = nativeState;
+                object.criticalGate = nativeState.arena.criticalGate();
+            }
 
             // Field initializers are actor-local state construction. They run
             // only after ActorRuntime has installed this actor's execution
@@ -497,6 +515,80 @@ public final class OresEvalRootNode extends RootNode {
                     actorContext.self().id(),
                     actorTypeName,
                     object);
+        }
+
+        /**
+         * The first executable sealed-state backend supports only fixed
+         * scalar i64/bool keys. All bytes are allocated in the actor's
+         * deterministic, generation-checked FFM persistent region. Java
+         * metadata stores only compiler key names and opaque Slot handles.
+         */
+        private SourceScalarState initializeNativeActorState(
+                Ast.FieldDecl schema,
+                ActorRuntime.ActorContext<Object> context) {
+            Ast.TypeRef keys = dev.oreslang.types.ActorStateContract.keySchema(schema);
+            if (!keys.isRecordType() || keys.recordMembers().isEmpty()) {
+                throw new IllegalStateException(
+                        "native actor state requires at least one fixed scalar key");
+            }
+            if (schema.type().name().equals("$actor_state_map$")
+                    || schema.type().name().equals("Map")) {
+                throw new IllegalStateException(
+                        "dynamic Map actor state requires scoped element lowering; "
+                        + "raw JVM Map projection forbidden");
+            }
+            for (Map.Entry<String, Ast.TypeRef> key : keys.recordMembers().entrySet()) {
+                if (!key.getValue().arguments().isEmpty()
+                        || !List.of("int", "bool", "boolean").contains(key.getValue().name())) {
+                    throw new IllegalStateException(
+                            "native actor state key '" + key.getKey()
+                            + "' requires scalar i64/bool lowering; class/Map references forbidden");
+                }
+            }
+            LinkedHashMap<String, Ast.Expr> defaults = new LinkedHashMap<>();
+            if (schema.initializer() instanceof Ast.ObjectExpr object) {
+                for (Ast.ObjectField entry : object.fields()) {
+                    defaults.put(entry.name(), entry.value());
+                }
+            }
+            // Validate all initializers before acquiring native resources.
+            LinkedHashMap<String, Long> initial = new LinkedHashMap<>();
+            for (Map.Entry<String, Ast.TypeRef> key : keys.recordMembers().entrySet()) {
+                Ast.Expr expression = defaults.get(key.getKey());
+                Object literal = expression == null ? null
+                        : expression instanceof Ast.LiteralExpr value ? value.value() : null;
+                if (expression != null && literal == null) {
+                    throw new IllegalStateException(
+                            "native actor state initializer '" + key.getKey()
+                            + "' must be a literal to keep startup bounded and side-effect free");
+                }
+                boolean bool = List.of("bool", "boolean").contains(key.getValue().name());
+                if (literal != null && !(bool ? literal instanceof Boolean : literal instanceof Number)) {
+                    throw new IllegalStateException(
+                            "native actor state initializer '" + key.getKey()
+                            + "' has incompatible scalar type");
+                }
+                initial.put(key.getKey(), literal == null ? 0L
+                        : bool ? ((Boolean) literal ? 1L : 0L)
+                        : ((Number) literal).longValue());
+            }
+            dev.oreslang.runtime.ActorArena arena =
+                    context.actorOwnedMemory().orElseThrow(
+                            () -> new IllegalStateException("actor-owned native memory unavailable"))
+                            .newActorArena(initial.size(), 1);
+            try {
+                LinkedHashMap<String, dev.oreslang.runtime.ExplicitNativeI64Region.Slot> slots =
+                        new LinkedHashMap<>();
+                for (Map.Entry<String, Long> entry : initial.entrySet()) {
+                    slots.put(entry.getKey(), arena.allocatePersistent(entry.getValue()));
+                }
+                return new SourceScalarState(context.self().id(), arena,
+                        Map.copyOf(slots), Map.copyOf(keys.recordMembers()));
+            } catch (RuntimeException | Error error) {
+                try { arena.close(); }
+                catch (RuntimeException cleanup) { error.addSuppressed(cleanup); }
+                throw error;
+            }
         }
 
         @Override
@@ -4199,6 +4291,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (target instanceof Ast.MemberExpr member) {
                 Object receiver = eval(member.receiver(), env);
+                if (receiver instanceof StateAccessView view) {
+                    return view.set(member.member(), value);
+                }
                 if (receiver instanceof OresObject object) {
                     OwnedField targetField =
                             object.owner.findField(
@@ -5345,6 +5440,65 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            if (call.callee() instanceof Ast.MemberExpr sealed
+                    && sealed.member().equals("handle_state")
+                    && sealed.receiver() instanceof Ast.NameExpr self
+                    && self.name().equals("self")) {
+                Object owner = env.lookup("self");
+                if (!(owner instanceof OresObject actor)
+                        || actor.klass.actorKind() == Ast.ActorKind.NONE
+                        || actor.nativeState == null) {
+                    throw new IllegalStateException(
+                            "sealed self.handle_state requires an initialized actor native arena");
+                }
+                if (call.arguments().size() != 1
+                        || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)
+                        || lambda.parameters().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "sealed self.handle_state requires one inline callback");
+                }
+                // The compiler admits only a non-escaping, non-suspending
+                // callback. Invoke it before invalidating the borrowed view;
+                // never return the view, native slots or segment to guest code.
+                return invokableInvocation(ignored -> {
+                    SourceScalarState state = actor.nativeState;
+                    // The authority check belongs to state.begin(), after
+                    // acquiring (or reusing) the logical ticket.
+                    CriticalGate gate = actor.criticalGate;
+                    CriticalGate.Ticket ticket = gate.heldByCurrentLogicalDomain()
+                            ? null : gate.newTicket();
+                    if (ticket != null) {
+                        try { ticket.enterSync(); }
+                        catch (RuntimeException | Error failure) {
+                            ticket.close();
+                            throw failure;
+                        }
+                    }
+                    StateAccessView view = null;
+                    try {
+                        view = state.begin();
+                        Object callback = eval(lambda, env);
+                        if (!(callback instanceof Invokable invocation)) {
+                            throw new IllegalStateException(
+                                    "sealed state callback was not lowered as callable");
+                        }
+                        Object result = invoke(invokableInvocation(invocation, List.of(view)));
+                        if (result instanceof StateAccessView
+                                || result instanceof Map<?, ?>
+                                || result instanceof OresObject) {
+                            throw new IllegalStateException(
+                                    "actor state callback cannot return an escaping reference");
+                        }
+                        return result;
+                    } finally {
+                        try {
+                            if (view != null) state.finish(view);
+                        } finally {
+                            if (ticket != null) ticket.close();
+                        }
+                    }
+                }, List.of());
+            }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
@@ -5733,6 +5887,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
+                    if (receiver instanceof StateAccessView view) {
+                        return view.set(target.member(), value);
+                    }
                     if (receiver instanceof OresMutex.Guard<?> guard) receiver = guard.value();
                     if (receiver instanceof OresObject object) {
                         if (!object.fields.containsKey(target.member())) {
@@ -6068,6 +6225,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof StateAccessView view) return view.get(name);
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -8705,6 +8863,108 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString() { return "infer struct" + fields; }
     }
 
+    /**
+     * Compiler-private physical storage and short-lived access capability.
+     * No native Slot, MemorySegment, arena or mutable Map is returned to guest.
+     * Persistent bytes survive turns, but this view cannot survive a callback
+     * or be used by a different logical owner after suspension.
+     */
+    private static final class SourceScalarState {
+        private final ActorRuntime.ActorId actorId;
+        private final dev.oreslang.runtime.ActorArena arena;
+        private final Map<String, dev.oreslang.runtime.ExplicitNativeI64Region.Slot> slots;
+        private final Map<String, Ast.TypeRef> types;
+        private StateAccessView active;
+
+        private SourceScalarState(ActorRuntime.ActorId actorId,
+                dev.oreslang.runtime.ActorArena arena,
+                Map<String, dev.oreslang.runtime.ExplicitNativeI64Region.Slot> slots,
+                Map<String, Ast.TypeRef> types) {
+            this.actorId = Objects.requireNonNull(actorId);
+            this.arena = Objects.requireNonNull(arena);
+            this.slots = Map.copyOf(slots);
+            this.types = Map.copyOf(types);
+        }
+
+        private void requireOwner() {
+            if (!actorId.equals(ActorRuntime.currentActorId().orElse(null))) {
+                throw new SecurityException(
+                        "actor StateAccess denied outside owning incarnation");
+            }
+            if (arena.closed()) {
+                throw new IllegalStateException("actor StateAccess belongs to retired arena");
+            }
+            if (!arena.criticalGate().heldByCurrentLogicalDomain()) {
+                throw new IllegalStateException(
+                        "actor StateAccess requires an admitted logical critical ticket");
+            }
+        }
+
+        private StateAccessView begin() {
+            requireOwner();
+            StateAccessView view = new StateAccessView(this, active);
+            active = view;
+            return view;
+        }
+
+        private void finish(StateAccessView view) {
+            // Revoke before restoring outer borrow even if callback threw.
+            view.live = false;
+            if (active != view) {
+                throw new IllegalStateException("actor StateAccess scope unwind out of order");
+            }
+            active = view.previous;
+        }
+
+        private Object get(StateAccessView view, String field) {
+            requireLive(view);
+            var slot = slots.get(field);
+            if (slot == null) throw new IllegalArgumentException("unknown actor state key '" + field + "'");
+            long bits = arena.readPersistent(slot);
+            Ast.TypeRef type = types.get(field);
+            return type.name().equals("bool") || type.name().equals("boolean")
+                    ? bits != 0L : bits;
+        }
+
+        private Object set(StateAccessView view, String field, Object value) {
+            requireLive(view);
+            var slot = slots.get(field);
+            if (slot == null) throw new IllegalArgumentException("unknown actor state key '" + field + "'");
+            Ast.TypeRef type = types.get(field);
+            boolean bool = type.name().equals("bool") || type.name().equals("boolean");
+            if (bool && !(value instanceof Boolean) || !bool && !(value instanceof Number)) {
+                throw new IllegalArgumentException(
+                        "actor state key '" + field + "' requires " + (bool ? "bool" : "int"));
+            }
+            long bits = bool ? ((Boolean) value ? 1L : 0L) : ((Number) value).longValue();
+            arena.writePersistent(slot, bits);
+            return value;
+        }
+
+        private void requireLive(StateAccessView view) {
+            requireOwner();
+            if (active != view || !view.live) {
+                throw new IllegalStateException(
+                        "actor state loan expired or fenced by nested critical scope");
+            }
+        }
+    }
+
+    private static final class StateAccessView {
+        private final SourceScalarState state;
+        private final StateAccessView previous;
+        private boolean live = true;
+
+        private StateAccessView(SourceScalarState state, StateAccessView previous) {
+            this.state = state;
+            this.previous = previous;
+        }
+
+        private Object get(String field) { return state.get(this, field); }
+        private Object set(String field, Object value) { return state.set(this, field, value); }
+        @Override public String toString() { return "<scoped actor StateAccess>"; }
+    }
+
     private record SourceActorState(
             ActorRuntime.ActorId ownerActorId,
             String actorTypeName,
@@ -8721,7 +8981,8 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private static final class OresObject implements OresMutex.SharedState {
-        private final CriticalGate criticalGate = OresMutex.criticalGate();
+        private CriticalGate criticalGate = OresMutex.criticalGate();
+        private SourceScalarState nativeState;
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;

@@ -466,6 +466,95 @@ public final class ActorRuntime implements AutoCloseable {
                 : CarrierBackend.JVM_THREAD_POOL;
     }
 
+    /**
+     * A semantic heap domain is not a physical garbage-collection domain.
+     * All three actor kinds currently allocate guest objects on the parent
+     * Truffle context's managed heap. Their actor-specific quotas and optional
+     * direct-memory regions cannot stop JVM-wide GC from pausing the host.
+     *
+     * Once an actual per-actor Native Image isolate or worker process exists,
+     * this supervisor-visible status must be backed by an observed backend
+     * identity and tested with real independent GC, not inferred from kind.
+     */
+    public record ActorHeapStatus(
+            ActorKind kind,
+            boolean actorOwnedMemorySlice,
+            boolean canAllocateOwnerCheckedDirectMemory,
+            boolean independentOfParentContextHeap,
+            boolean independentlyCollectable) {
+        public ActorHeapStatus {
+            Objects.requireNonNull(kind, "kind");
+            if (independentlyCollectable && !independentOfParentContextHeap) {
+                throw new IllegalArgumentException(
+                        "independent actor GC requires a physically independent heap");
+            }
+        }
+    }
+
+    /** Supervisor-only truth about this actor's *current* physical heap. */
+    public ActorHeapStatus heapStatusFor(ActorRef<?> ref) {
+        requireSupervisorContext("inspect actor heap isolation");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to another runtime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) {
+            throw new IllegalStateException("actor was not found or has finalized");
+        }
+        // Do not confuse a heap quota, a ByteBuffer, or an untrusted
+        // dispatcher with a separate GC heap.
+        boolean actorRegion = cell.memorySlice != null;
+        return new ActorHeapStatus(
+                cell.kind, actorRegion, actorRegion, false, false);
+    }
+
+    /**
+     * Physical placement requirements are not satisfied by an actor-local
+     * Java quota/direct ByteBuffer merely because its ActorId is distinct.
+     * A future native/Graal/process router must make placement decisions
+     * before dispatch and provide independently verified backend evidence.
+     */
+    public enum ActorHeapBacking {
+        OWNER_CHECKED_REGION,
+        DETERMINISTIC_NATIVE_ARENA,
+        INDEPENDENT_GRAAL_ISOLATE,
+        ISOLATED_PROCESS
+    }
+
+    /** Supervisor-side placement admission for the current JVM bootstrap. */
+    public void requireActorHeapBacking(ActorRef<?> ref, ActorHeapBacking backing) {
+        Objects.requireNonNull(backing, "backing");
+        ActorHeapStatus status = heapStatusFor(ref);
+        if (backing == ActorHeapBacking.OWNER_CHECKED_REGION) {
+            if (!status.actorOwnedMemorySlice()) {
+                throw new IllegalStateException("actor has no owner-checked region");
+            }
+            return;
+        }
+        // Neither an actor's Java object graph nor ByteBuffer cleaner is a
+        // deterministic native allocator. The pooled UNTRUSTED Engine is
+        // not itself proof that this actor was actually dispatched to it.
+        throw new IllegalStateException("actor heap backing " + backing
+                + " is not implemented by the bootstrap ActorRuntime: "
+                + "native reclamation and physical isolate placement require "
+                + "verified backend routing");
+    }
+
+    /**
+     * Fail closed when callers need per-actor GC isolation. This is not
+     * implemented by the shared JVM-backed ActorRuntime; launch the actor in a
+     * proven independent isolate/process instead of silently weakening policy.
+     */
+    public void requireIndependentGcHeap(ActorRef<?> ref) {
+        if (!heapStatusFor(ref).independentlyCollectable()) {
+            throw new IllegalStateException(
+                    "actor requires an independent physical GC heap; "
+                    + "the current JVM ActorRuntime provides only actor-local "
+                    + "ownership/quota boundaries, not an independent collector");
+        }
+    }
+
     /** Placement is not a separate-heap guarantee. CPU -1 means no hard binding. */
     public record ActorPlacement(int lane, int cpu, String affinity) { }
 
@@ -588,19 +677,25 @@ public final class ActorRuntime implements AutoCloseable {
     public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
 
     /**
-     * Logical actor-confined memory slice for one private actor.
+     * Actor-confined memory slice for one actor (PRIVATE, SHARED, or UNTRUSTED).
      *
      * This is independent of carrier threads. Mailbox payloads and persistent
-     * actor-state allocations share one budget. The current JVM backend uses
-     * accounting plus alias isolation; a native/polyglot-isolate backend can map
-     * this same contract to a physically separate heap/arena.
+     * actor-state allocations share one budget. SHARED actors have their own
+     * private mutable region plus separately controlled shared memory. These
+     * regions are not independent JVM GC heaps.
      */
     public final class ActorMemorySlice implements AutoCloseable {
         private final ActorId owner;
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
+        /** Native FFM allocations still physically live, even after actor exit. */
+        private final AtomicLong retainedNativeBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
+        private final Set<ActorOwnedGraphArena<?>> ownedGraphs = ConcurrentHashMap.newKeySet();
+        private final Set<ActorOwnedI64Region> ownedI64Regions = ConcurrentHashMap.newKeySet();
+        private final Set<ExplicitNativeI64Region> explicitNativeI64Regions = ConcurrentHashMap.newKeySet();
+        private final Set<ActorArena> actorArenas = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -619,8 +714,10 @@ public final class ActorRuntime implements AutoCloseable {
          * live and close it when that allocation dies.
          */
         public MemoryReservation reserveHeap(long bytes) {
-            requireCurrentOwner();
-            return reserve(bytes, "private actor heap");
+            ActorCell<?> cell = requireCurrentOwner();
+            synchronized (cell.lifecycleLock) {
+                return reserve(bytes, "actor-owned heap");
+            }
         }
 
         /**
@@ -630,27 +727,175 @@ public final class ActorRuntime implements AutoCloseable {
          * region while actors remain multiplexed over carrier threads.
          */
         public PrivateMemoryBlock allocatePrivateBytes(int bytes) {
+            ActorCell<?> cell = requireCurrentOwner();
+            if (bytes < 0) throw new IllegalArgumentException("actor memory block size cannot be negative");
+            synchronized (cell.lifecycleLock) {
+                MemoryReservation reservation = reserve(bytes, "actor-owned direct heap");
+                try {
+                    PrivateMemoryBlock block = new PrivateMemoryBlock(this, reservation, bytes);
+                    blocks.add(block);
+                    return block;
+                } catch (RuntimeException | Error failure) {
+                    reservation.close();
+                    throw failure;
+                }
+            }
+        }
+
+        /**
+         * Create one actor-owned graph lifetime domain. Self-links and cycles
+         * are allowed because edges never own payloads. Unlike a JVM heap
+         * collector, node close is explicit and actor finalization retires
+         * the graph. The Java payload/wrapper objects remain host-managed.
+         *
+         * Source lowering must prove values and borrows do not escape.
+         */
+        public <T extends AutoCloseable> ActorOwnedGraphArena<T> newGraphArena(
+                int maxNodes, int maxEdgesPerNode) {
+            ActorCell<?> cell = requireCurrentOwner();
+            synchronized (cell.lifecycleLock) {
+                if (sliceClosed.get()) throw new IllegalStateException("actor heap is retired");
+                long metadataBytes = ActorOwnedGraphArena.estimatedMetadataBytes(
+                        maxNodes, maxEdgesPerNode);
+                MemoryReservation reservation = reserve(metadataBytes, "actor-owned graph metadata");
+                try {
+                    ActorOwnedGraphArena<T> graph = new ActorOwnedGraphArena<>(
+                            maxNodes, maxEdgesPerNode, this::requireCurrentOwner,
+                            retired -> {
+                                ownedGraphs.remove(retired);
+                                reservation.close();
+                            });
+                    ownedGraphs.add(graph);
+                    return graph;
+                } catch (RuntimeException | Error failure) {
+                    reservation.close();
+                    throw failure;
+                }
+            }
+        }
+
+        /**
+         * Experimental typed actor-local i64 layout. This is a logical
+         * storage ABI, not Graal/HotSpot GC suppression. The LLVM compiler
+         * has a strict GC-free native lowering for this scalar layout.
+         */
+        public ActorOwnedI64Region newI64Region(int slots) {
+            ActorCell<?> cell = requireCurrentOwner();
+            if (slots < 1 || slots > Integer.MAX_VALUE / Long.BYTES) {
+                throw new IllegalArgumentException("bounded i64 slot count required");
+            }
+            synchronized (cell.lifecycleLock) {
+                if (sliceClosed.get()) throw new IllegalStateException("actor heap is retired");
+                PrivateMemoryBlock block = allocatePrivateBytes(
+                        Math.multiplyExact(slots, Long.BYTES));
+                try {
+                    AtomicReference<ActorOwnedI64Region> registered = new AtomicReference<>();
+                    ActorOwnedI64Region region = new ActorOwnedI64Region(block, slots,
+                            this::requireCurrentOwner,
+                            () -> ownedI64Regions.remove(registered.get()));
+                    registered.set(region);
+                    ownedI64Regions.add(region);
+                    return region;
+                } catch (RuntimeException | Error failure) {
+                    block.close();
+                    throw failure;
+                }
+            }
+        }
+
+        /**
+         * Opt-in physical native actor-owned storage (Java 25 Foreign Memory).
+         * The segment is bounded by this actor's memory quota and cannot
+         * escape to another actor. This is NOT a separate Java GC heap.
+         */
+        /**
+         * Fixed scalar object layout admitted under the current ActorId.
+         * All fields live in an FFM native region owned by this actor, and
+         * the declaration order determines stable compiler field indices.
+         */
+        public ActorNativeI64Record newNativeI64Record(
+                String typeName, List<ActorNativeI64Record.Field> fields) {
             requireCurrentOwner();
-            if (bytes < 0) throw new IllegalArgumentException("private memory block size cannot be negative");
-            MemoryReservation reservation = reserve(bytes, "private actor direct heap");
-            try {
-                PrivateMemoryBlock block = new PrivateMemoryBlock(this, reservation, bytes);
-                blocks.add(block);
-                return block;
-            } catch (RuntimeException | Error failure) {
-                reservation.close();
-                throw failure;
+            return ActorNativeI64Record.allocate(this, typeName, fields);
+        }
+
+        /**
+         * Host-level ActorArena for explicitly bounded persistent i64 state
+         * and reusable turn-local scratch. Uses real FFM memory and keeps
+         * actor quota charged until any outstanding native loan releases.
+         * ScratchTurn must close before an await/cooperate suspension.
+         */
+        public ActorArena newActorArena(int persistentSlots, int scratchSlots) {
+            requireCurrentOwner();
+            ActorArena arena = ActorArena.open(this, persistentSlots, scratchSlots);
+            actorArenas.add(arena);
+            return arena;
+        }
+
+        /** Zero-allocation admission for hot native arena reads and writes. */
+        void requireOwnerActive() {
+            ActorCell<?> cell = requireCurrentOwner();
+            if (sliceClosed.get() || cell.stopped.get()) {
+                throw new IllegalStateException("actor native arena owner has retired");
+            }
+        }
+
+        void unregisterArena(ActorArena arena) {
+            actorArenas.remove(arena);
+        }
+
+        /** Reject a scratch scope escaping a synchronous message or yield. */
+        private void assertScratchTurnsClosed() {
+            for (ActorArena arena : actorArenas) {
+                if (arena.hasActiveScratchTurn()) {
+                    throw new IllegalStateException(
+                            "actor scratch arena scope escaped a mailbox/continuation boundary; "
+                            + "close ScratchTurn before returning or awaiting");
+                }
+            }
+        }
+
+        public ExplicitNativeI64Region newExplicitNativeI64Region(int slots) {
+            ActorCell<?> cell = requireCurrentOwner();
+            if (slots < 1 || slots > 65536) {
+                throw new IllegalArgumentException("native actor i64 slots must be 1..65536");
+            }
+            synchronized (cell.lifecycleLock) {
+                if (sliceClosed.get()) throw new IllegalStateException("actor heap retired");
+                MemoryReservation reservation = reserve(Math.multiplyExact((long) slots, 8),
+                        "actor-owned FFM i64 region", true);
+                try {
+                    AtomicReference<ExplicitNativeI64Region> registered = new AtomicReference<>();
+                    ExplicitNativeI64Region region = new ExplicitNativeI64Region(slots,
+                            reservation, this::requireCurrentOwner,
+                            () -> explicitNativeI64Regions.remove(registered.get()));
+                    registered.set(region);
+                    explicitNativeI64Regions.add(region);
+                    return region;
+                } catch (RuntimeException | Error failed) {
+                    reservation.close();
+                    throw failed;
+                }
             }
         }
 
         private MemoryReservation reserveMailbox(Object isolatedMessage) {
-            return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox");
+            ActorCell<?> cell = actors.get(owner);
+            if (cell == null) throw new IllegalStateException("actor has no live heap");
+            synchronized (cell.lifecycleLock) {
+                return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox");
+            }
         }
 
         private synchronized MemoryReservation reserve(long bytes, String purpose) {
+            return reserve(bytes, purpose, false);
+        }
+
+        private synchronized MemoryReservation reserve(
+                long bytes, String purpose, boolean retainPhysicalNativeBytes) {
             if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
             if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
-            if (bytes == 0) return new MemoryReservation(this, 0);
+            if (bytes == 0) return new MemoryReservation(this, 0, false);
 
             long current = usedBytes.get();
             long next;
@@ -659,21 +904,49 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (ArithmeticException overflow) {
                 throw new IllegalStateException(purpose + " accounting overflow");
             }
-            if (next > limitBytes) {
-                throw new IllegalStateException(purpose + " limit exceeded for " + owner
-                        + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
+            ActorCell<?> cell = actors.get(owner);
+            long mailboxBytes = cell == null ? 0 : cell.sharedMailboxBytes.get();
+            long outstandingOutput = cell == null ? 0 : cell.outputBytes.get();
+            if (next > limitBytes || mailboxBytes > limitBytes - next
+                    || outstandingOutput > limitBytes - next - mailboxBytes) {
+                throw new IllegalStateException(purpose + " actor limit exceeded for " + owner
+                        + ": requested=" + bytes + " used=" + current
+                        + " mailbox=" + mailboxBytes + " output=" + outstandingOutput
+                        + " limit=" + limitBytes);
             }
 
             reservePrivateRuntimeBytes(bytes, owner, purpose);
-            usedBytes.set(next);
-            return new MemoryReservation(this, bytes);
+            // A retired actor must not refund native bytes that a pending
+            // FFM loan still physically pins. Atomic add cannot overwrite a
+            // concurrent completion-thread release.
+            usedBytes.addAndGet(bytes);
+            if (retainPhysicalNativeBytes) retainedNativeBytes.addAndGet(bytes);
+            return new MemoryReservation(this, bytes, retainPhysicalNativeBytes);
         }
 
-        private void requireCurrentOwner() {
+        private ActorCell<?> requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || !isPrivateKind(cell.kind) || !cell.ref.id().equals(owner)) {
+            if (cell == null || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
-                        "private actor memory slice may only be reserved by its owning actor");
+                        "actor memory slice may only be reserved by its owning actor");
+            }
+            return cell;
+        }
+
+        /** Native loan completion may occur on a different carrier after
+         * this actor's memory slice has closed. Keep the aggregate budget
+         * charged until FFM physical close actually succeeds. */
+        private void releasePhysicalNative(long bytes) {
+            if (bytes == 0) return;
+            synchronized (memoryBudgetLock) {
+                long remainingNative = retainedNativeBytes.addAndGet(-bytes);
+                long remainingHeap = usedBytes.addAndGet(-bytes);
+                if (remainingNative < 0 || remainingHeap < 0) {
+                    retainedNativeBytes.addAndGet(bytes);
+                    usedBytes.addAndGet(bytes);
+                    throw new IllegalStateException("actor native budget accounting underflow");
+                }
+                releasePrivateRuntimeBytes(bytes, owner);
             }
         }
 
@@ -695,10 +968,35 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public synchronized void close() {
             if (!sliceClosed.compareAndSet(false, true)) return;
+            // Graph retirement comes before releasing actor quota. An
+            // outstanding host/native lease defers payload destruction until
+            // the final lease closes. Actor access is fenced immediately.
+            for (ActorOwnedGraphArena<?> graph : List.copyOf(ownedGraphs)) {
+                graph.retireFromActor();
+            }
+            ownedGraphs.clear();
+            for (ActorOwnedI64Region region : List.copyOf(ownedI64Regions)) {
+                region.retireFromActor();
+            }
+            ownedI64Regions.clear();
+            // Native FFM scopes close while the actor is quiescent; the host
+            // wrapper may remain managed but physical guest bytes are freed.
+            for (ExplicitNativeI64Region region : List.copyOf(explicitNativeI64Regions)) {
+                region.retireFromActor();
+            }
+            explicitNativeI64Regions.clear();
             for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
             blocks.clear();
-            long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+            synchronized (memoryBudgetLock) {
+                long bytes = usedBytes.get();
+                long pinned = retainedNativeBytes.get();
+                if (pinned > bytes) {
+                    throw new IllegalStateException("physically pinned native memory exceeds actor accounting");
+                }
+                usedBytes.set(pinned);
+                long released = bytes - pinned;
+                if (released != 0) releasePrivateRuntimeBytes(released, owner);
+            }
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -707,10 +1005,11 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Owner-checked direct memory owned by exactly one private actor.
+     * Owner-checked direct memory owned by exactly one actor of any kind.
      *
-     * No mutable buffer reference escapes this wrapper. Closing the block or
-     * terminating the actor overwrites the entire region before invalidation.
+     * No mutable buffer reference escapes this wrapper. A SHARED actor's own
+     * private region is separate from explicitly synchronized shared cells.
+     * Closing the block or actor zeroes and invalidates this backing buffer.
      */
     public final class PrivateMemoryBlock implements AutoCloseable {
         private final ActorMemorySlice slice;
@@ -826,9 +1125,12 @@ public final class ActorRuntime implements AutoCloseable {
         private final long bytes;
         private final AtomicBoolean released = new AtomicBoolean();
 
-        private MemoryReservation(ActorMemorySlice slice, long bytes) {
+        private final boolean physicalNative;
+
+        private MemoryReservation(ActorMemorySlice slice, long bytes, boolean physicalNative) {
             this.slice = Objects.requireNonNull(slice);
             this.bytes = bytes;
+            this.physicalNative = physicalNative;
         }
 
         public ActorId owner() { return slice.owner(); }
@@ -836,7 +1138,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public void close() {
-            if (released.compareAndSet(false, true)) slice.release(bytes);
+            if (released.compareAndSet(false, true)) {
+                if (physicalNative) slice.releasePhysicalNative(bytes);
+                else slice.release(bytes);
+            }
         }
     }
 
@@ -1197,6 +1502,11 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+
+        /** Actor-owned mutable region, available to every actor kind. */
+        default Optional<ActorMemorySlice> actorOwnedMemory() {
+            return privateMemory();
+        }
 
         /**
          * Current admitted mailbox envelope, present only while onMessage is
@@ -5720,9 +6030,7 @@ public final class ActorRuntime implements AutoCloseable {
                     ref.id(), outputChannel);
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
-            this.memorySlice = isPrivateKind(kind)
-                    ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
-                    : null;
+            this.memorySlice = new ActorMemorySlice(ref.id(), policy.maxHeapBytes());
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
@@ -6015,11 +6323,9 @@ public final class ActorRuntime implements AutoCloseable {
 
                 long actorAvailable = isPrivateKind(kind)
                         ? Math.max(0L, memorySlice.remainingBytes() - current)
-                        : Math.max(
-                                0L,
-                                policy.maxHeapBytes()
-                                        - sharedMailboxBytes.get()
-                                        - current);
+                        : Math.max(0L, Math.max(0L,
+                                policy.maxHeapBytes() - memorySlice.usedBytes())
+                                - sharedMailboxBytes.get() - current);
                 if (bytes > actorAvailable) {
                     throw new IllegalStateException(
                             "actor output memory limit exceeded for "
@@ -6062,9 +6368,15 @@ public final class ActorRuntime implements AutoCloseable {
                 } catch (ArithmeticException overflow) {
                     throw new IllegalStateException("shared actor mailbox memory accounting overflow");
                 }
-                if (next > policy.maxHeapBytes()) {
+                long actorLimit = policy.maxHeapBytes();
+                long ownedState = memorySlice.usedBytes();
+                long outstandingOutput = outputBytes.get();
+                if (next > actorLimit || ownedState > actorLimit - next
+                        || outstandingOutput > actorLimit - next - ownedState) {
                     throw new IllegalStateException("shared actor mailbox memory limit exceeded for " + ref.id()
-                            + ": requested=" + bytes + " used=" + current + " limit=" + policy.maxHeapBytes());
+                            + ": requested=" + bytes + " used=" + current
+                            + " actorState=" + ownedState + " output=" + outstandingOutput
+                            + " limit=" + actorLimit);
                 }
                 reserveSharedRuntimeBytes(bytes, "shared actor mailbox");
                 sharedMailboxBytes.set(next);
@@ -6184,7 +6496,10 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public IsolatePolicy policy() { return policy; }
                     @Override public ActorKind kind() { return kind; }
                     @Override public Optional<ActorMemorySlice> privateMemory() {
-                        return Optional.ofNullable(memorySlice);
+                        return isPrivateKind(kind) ? Optional.of(memorySlice) : Optional.empty();
+                    }
+                    @Override public Optional<ActorMemorySlice> actorOwnedMemory() {
+                        return Optional.of(memorySlice);
                     }
                     @Override public Optional<ActorInboxMail<M>> currentMail() {
                         return Optional.ofNullable(activeMail);
@@ -6298,6 +6613,9 @@ public final class ActorRuntime implements AutoCloseable {
                                 if (!sourceReceiveSuspended) activeMail = null;
                             }
                         }
+                        // Both synchronous messages and cooperative continuation
+                        // segments must leave ephemeral native memory before yield.
+                        memorySlice.assertScratchTurnsClosed();
                         if (codeExecutor == null
                                 && isPrivateKind(kind)
                                 && !trustedFactory) {

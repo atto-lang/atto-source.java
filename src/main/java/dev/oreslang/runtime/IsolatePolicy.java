@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -100,6 +101,24 @@ public record IsolatePolicy(
                 true);
     }
 
+    /**
+     * Group CONTEXT baseline for many untrusted actors sharing one Graal
+     * isolate. The context's sandbox.MaxCPUTime is a CUMULATIVE lifetime
+     * budget, not the per-actor turn budget. Individual spawned UNTRUSTED
+     * actors still receive the untrustedActor() 250 ms baseline.
+     *
+     * The supervisor must rotate long-lived group contexts before exhausting
+     * this budget, safely fencing and draining pending tasks and I/O first.
+     */
+    public static IsolatePolicy untrustedActorGroup() {
+        return new IsolatePolicy(
+                Set.of(),
+                128L * 1024 * 1024,
+                4096,
+                Duration.ofHours(12),
+                true);
+    }
+
     /** Restricted local/test baseline. Java interop/FFI/native/reflection/process spawning remain denied. */
     public static IsolatePolicy developer() {
         return new IsolatePolicy(
@@ -164,7 +183,39 @@ public record IsolatePolicy(
             Set<String> allowedHostClasses,
             RuntimePermissions permissions,
             PermissionCheckMode permissionCheckMode) {
-        NativeBuildMode.requireCompatible(profile);
+        return restrictedContextBuilderWithEngine(
+                profile, allowedHostClasses, permissions, permissionCheckMode, null);
+    }
+
+    /**
+     * Group-level untrusted context running within ONE supervisor-owned engine
+     * and polyglot isolate, instead of creating a Graal isolate per actor.
+     * Package-private so callers cannot pass an arbitrary, non-isolated Engine.
+     *
+     * Guest JIT capability belongs to the isolated engine. In particular an
+     * AOT-only supervisor executable may own a distinct JIT-capable isolate.
+     */
+    Context.Builder sharedUntrustedIsolateContextBuilder(
+            ExecutionProfile guestProfile, org.graalvm.polyglot.Engine sharedEngine) {
+        if (!adversarial) throw new SecurityException("shared untrusted isolate requires adversarial policy");
+        if (!guestProfile.guestJitAllowed()) {
+            throw new IllegalArgumentException("untrusted isolate guest must permit JIT compilation");
+        }
+        return restrictedContextBuilderWithEngine(
+                guestProfile, Set.of(), RuntimePermissions.fromCapabilities(capabilities),
+                PermissionCheckMode.COMPILE, Objects.requireNonNull(sharedEngine, "sharedEngine"));
+    }
+
+    private Context.Builder restrictedContextBuilderWithEngine(
+            ExecutionProfile profile,
+            Set<String> allowedHostClasses,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            org.graalvm.polyglot.Engine sharedEngine) {
+        // The normal context must match the native HOST image mode. A separate
+        // guest engine can include its own JIT inside its own isolate, even if
+        // the host was compiled AOT-only.
+        if (sharedEngine == null) NativeBuildMode.requireCompatible(profile);
         Set<String> hostClasses = Set.copyOf(allowedHostClasses);
         if (!hostClasses.isEmpty()) {
             require(Capability.JAVA_INTEROP, "Java host imports");
@@ -219,14 +270,20 @@ public record IsolatePolicy(
             long guestHeap = Math.max(8L * 1024 * 1024, maxHeapBytes * 3 / 4);
             long maxOutput = allows(Capability.STDOUT) ? 1024L * 1024 : 0L;
             builder.sandbox(SandboxPolicy.UNTRUSTED)
-                    .spawnIsolate(true)
-                    .option("engine.MaxIsolateMemory", bytes(maxHeapBytes))
                     .option("sandbox.MaxHeapMemory", bytes(guestHeap))
                     .option("sandbox.MaxCPUTime", duration(maxWallTime))
                     .option("sandbox.MaxASTDepth", "256")
                     .option("sandbox.MaxThreads", "1")
                     .option("sandbox.MaxOutputStreamSize", bytes(maxOutput))
                     .option("sandbox.MaxErrorStreamSize", "64KB");
+            if (sharedEngine == null) {
+                builder.spawnIsolate(true)
+                        .option("engine.MaxIsolateMemory", bytes(maxHeapBytes));
+            } else {
+                // The supervisor owns this engine; every group context uses
+                // the same physical isolate heap and GC/JIT compiler.
+                builder.engine(sharedEngine);
+            }
         }
 
         return builder;

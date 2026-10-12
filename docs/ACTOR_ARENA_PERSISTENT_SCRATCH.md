@@ -1,0 +1,86 @@
+# ActorArena runtime substrate: persistent slabs and turn-local scratch
+
+The first host-only `ActorArena` bridge deliberately exposes no native
+pointer or actor turn capability to guest source. It is **not** automatic
+Oreslang `ActorArena()` lowering, a production scheduler, or a complete
+class/struct allocator.
+
+## LLVM native
+`ActorArena.h/.c` preallocates two distinct regions at actor incarnation
+creation:
+
+- Persistent: bounded fixed-size slots stored in a preallocated native slab.
+  Allocation scans the slot bitmap/metadata, never calls malloc per object,
+  uses generation-checked actor-domain handles, and survives carrier migration.
+- Scratch: bounded bump cursor with power-of-two logical offset alignment
+  (1..64), reset and zeroized at the end of each admitted mailbox turn.
+  Scratch handles bind to the current epoch and cannot be used after yield.
+
+Persistent borrows carry unique loan nonces; writes/drop are denied until all
+loans return. Retire revokes guest operations and fresh admissions immediately.
+An already admitted turn can still leave. Physical free requires the last
+turn **and** all persistent loans to finish. The trusted supervisor must
+fence timers/wakers/FFI callbacks before the final destroy call.
+
+The arena is a **separate native ABI** from `ActorOwnedI64Heap`: the runtime
+does not yet route compiler-emitted actor-class fields into generic slots,
+and no source-level `spawn`, `await`, `ActorGroup`, or FFI lifecycle
+integration is claimed.
+
+## Java/GraalVM
+`ActorRuntime.ActorMemorySlice.newActorArena(persistentSlots, scratchSlots)`
+returns an owner-checked `ActorArena`, currently **i64 scalar-only**.
+It provisions two bounded FFM native regions charged against the same
+actor and runtime budgets. Persistent slots survive turns. Each
+`beginTurn()` returns an explicit `ScratchTurn` for scratch scalar
+allocation, reads, and writes; closing it drops/zeroizes those slots in
+reverse order and rejects old generations during subsequent turns.
+No scratch loan is exposed.
+
+Persistent loans may span turns but cannot be dereferenced off-actor.
+A retained loan prevents physical FFM release and global native quota
+reimbursement after actor shutdown. Java wrappers and scheduler objects
+remain JVM-managed; the Java runtime is not zero-GC.
+
+`ScratchTurn` currently relies on the handler closing its scope before
+`await`/cooperate. Compiler-inserted scope unwinding on suspension,
+cancellation, exceptions and FFI is a future compiler/scheduler task.
+
+## Required next gates
+1. Typed field layouts for arbitrary structs/classes and compiler-generated
+   arena allocation, without exposing capabilities.
+2. Actor supervision, cancellation, timers, and asynchronous I/O quiescence.
+3. Differential Java/LLVM ownership and stale-handle tests; more extensive
+   fuzz/property tests and native sanitizers.
+4. Physical AOT/isolate execution and full integration performance tests.
+ 
+## Hardened Java hot path and mailbox scopes
+FFM scalar slot reads and writes now use adapted primitive MethodHandle
+`invokeExact` dispatch rather than reflection that allocates varargs and boxes
+primitive longs. Actor owner admission is a direct check rather than repeated
+zero-byte MemoryReservation construction. The actor mailbox loop now checks
+that no ScratchTurn remains open at the end of each synchronous message or
+cooperative continuation segment. If a scope escaped, the actor fails
+closed; termination still retires FFM regions.
+
+Each ScratchTurn still creates a Java wrapper and transient slot handles, and
+its bookkeeping uses managed collections. Therefore *near-zero JVM allocation*
+is an architectural target, not a measured result. Future lowering should use
+primitive handles or specialized inline/native scratch cursors to remove
+remaining per-allocation wrapper allocations; use JFR for proof.
+The `ExplicitNativeI64Region` slot allocator also now uses a preallocated
+free-slot stack. Allocation/drop select a slot in O(1) without linear scans
+or any new allocator metadata; native data allocation is performed only when
+the region opens, while Java `Slot` handle wrappers are still created on
+allocate. The regression suite stresses 8,192 allocate/drop/reuse cycles
+and verifies generation monotonicity and immediate stale-handle rejection.
+ 
+## Allocation measurement (non-certifying)
+`ActorArenaAllocationProbeTest` uses HotSpot/GraalVM per-thread allocation
+accounting (`com.sun.management.ThreadMXBean`) for 250,000 *paired*
+native scalar read/write operations after 50,000 warmups, on a real admitted
+actor carrier. It records Java heap bytes per operation pair. The result
+excludes actor startup, wrapper creation, native arena admission, message
+envelopes, FFM region shutdown, and JIT compilation not completed during
+warmup; it is only a targeted allocation regression signal. Use JFR/GC logs,
+native RSS and end-to-end latency benchmarks before claiming near-zero GC.
