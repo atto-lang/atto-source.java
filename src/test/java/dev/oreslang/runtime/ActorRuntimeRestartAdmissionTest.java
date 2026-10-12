@@ -74,6 +74,15 @@ final class ActorRuntimeRestartAdmissionTest {
     void groupCloseCancelsUnpublishedPhysicalActorBeforeItCanInitialize() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> failed = runtime.spawnPrivate(
+                    (ActorRuntime.BehaviorFactory<Integer>) context ->
+                            (value, turn) -> { throw new IllegalStateException("planned"); });
+            group.manageWorker(failed);
+            var first = group.supervisedWorkerSnapshot(failed);
+            failed.send(1);
+            assertTrue(failed.awaitTermination(5, TimeUnit.SECONDS));
+            waitForFinalized(group, first.child());
+            var permit = group.reserveFinalizedRestart(first.child(), failed.id(), 1);
             java.util.concurrent.atomic.AtomicInteger initialized =
                     new java.util.concurrent.atomic.AtomicInteger();
             ActorRuntime.ActorRef<Integer> hidden = group.spawnUnpublishedRestartCandidate(
@@ -91,6 +100,9 @@ final class ActorRuntimeRestartAdmissionTest {
             assertEquals(0, initialized.get(),
                     "a cancelled hidden actor ran its guest initializer");
             assertFalse(runtime.isAlive(hidden));
+            assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                    group.abortCleanedUnpublishedRestart(permit, hidden).phase(),
+                    "post-close cleanup retains exact reservation ownership");
         }
     }
 
