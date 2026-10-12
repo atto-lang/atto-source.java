@@ -316,6 +316,98 @@ final class TrapOptionSemanticsTest {
         assertEquals("3:7", run(source));
     }
 
+
+    @Test
+    void trapDoesNotSwallowResultUnwrapPanic() throws Exception {
+        String source = """
+                trap fnc panics(): int {
+                  val Result<int, String> invalid = Err("missing");
+                  return invalid.unwrap();
+                }
+                pub fnc main(): void {
+                  val Option<int> ignored = panics();
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException thrown = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(thrown.getMessage().contains("Result::unwrap"));
+    }
+
+    @Test
+    void trapDoesNotTurnUnclassifiedHostRuntimeFaultIntoNone() throws Exception {
+        // Modulo by zero emits a Java ArithmeticException, not an Ores throw.
+        // Future typed guest Throw<E> admission must not reclassify this fault.
+        String source = """
+                trap fnc invalid(): int {
+                  return 1 % 0;
+                }
+                pub fnc main(): void {
+                  val Option<int> ignored = invalid();
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertThrows(PolyglotException.class, () -> run(source));
+    }
+
+    @Test
+    void ordinaryCatchCannotSwallowUnclassifiedHostFault() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  try {
+                    val int unused = 1 % 0;
+                  } catch (err) {
+                    stdio.stdout.write("swallowed");
+                  } finally {
+                    stdio.stdout.write("cleanup");
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertThrows(PolyglotException.class, () -> run(source));
+    }
+
+    @Test
+    void ordinaryCatchStillHandlesExplicitRuntimeCastFailure() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                pub fnc main(): void {
+                  val Animal animal = new Cat();
+                  try {
+                    val Dog dog = animal as Dog;
+                    stdio.stdout.write("unexpected");
+                  } catch (err) {
+                    stdio.stdout.write("caught");
+                  } finally {
+                    stdio.stdout.write(":cleanup");
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("caught:cleanup", run(source));
+    }
+
+    @Test
+    void expressionTrapIsNotSilentlyAcceptedBeforeItsEffectLoweringExists() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc invalid(): void {
+                  val maybe = trap Some(3).unwrap();
+                  return;
+                }
+                """));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "trap-option.ores")
