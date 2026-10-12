@@ -18,6 +18,7 @@ final class HostFutureAdmissionGate {
     private boolean closing;
     private boolean hostClaimsSealed;
     private boolean physicalExitUnproven;
+    private boolean physicalEntryUnproven;
 
     synchronized void begin() {
         if (closing || hostClaimsSealed) throw new IllegalStateException(
@@ -67,6 +68,13 @@ final class HostFutureAdmissionGate {
             }
             if (closing) throw new java.util.concurrent.RejectedExecutionException(
                     "guest turn rejected after context disposal admission");
+            // An inline scheduler callback on the host's own thread must
+            // NOT bypass the exclusive scoped Future handoff. Reentrant
+            // guest entry under Value.execute is not a fresh guest lease.
+            if (hostOwner == Thread.currentThread()) {
+                throw new IllegalStateException(
+                        "guest turn cannot reserve during its own host Future scope");
+            }
             guestTurnReservations++;
             Thread owner = Thread.currentThread();
             final boolean[] released = {false};
@@ -113,10 +121,18 @@ final class HostFutureAdmissionGate {
      */
     synchronized void requirePhysicalQuiescence() {
         if (hostOwner != null || depth != 0 || guestTurnReservations != 0
-                || physicalExitUnproven) {
+                || physicalExitUnproven || physicalEntryUnproven) {
             throw new IllegalStateException(
-                    "unfinished Truffle context entry or unproven physical guest leave");
+                    "unfinished Truffle context entry or unproven physical guest enter/leave");
         }
+    }
+
+    /** A failed TruffleContext.enter cannot certify that no guest state was entered. */
+    synchronized void quarantineUnknownPhysicalEntry() {
+        physicalEntryUnproven = true;
+        hostClaimsSealed = true;
+        closing = true;
+        notifyAll();
     }
 
     /** A failed TruffleContext.leave is NOT a successful physical exit. */
@@ -125,6 +141,10 @@ final class HostFutureAdmissionGate {
         hostClaimsSealed = true;
         closing = true;
         notifyAll();
+    }
+
+    synchronized boolean physicalEntryUnproven() {
+        return physicalEntryUnproven;
     }
 
     synchronized boolean physicalExitUnproven() {
