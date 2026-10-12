@@ -50,6 +50,31 @@ class RuntimePermissionsExplicitPolicyTest {
         assertFalse(reconstructed.allows(RuntimePermissions.Permission.NET, "127.0.0.1:7778"));
     }
 
+    @Test void deterministicScopedPermissionRoundTripsNeverWidenGrants() {
+        java.util.Random random = new java.util.Random(20261011L);
+        for (int index = 0; index < 100; index++) {
+            RuntimePermissions policy = RuntimePermissions.denyAll();
+            String net = "127.0.0.1:" + (10000 + index);
+            String folder = root.resolve("scope" + index).toString();
+            if (random.nextBoolean())
+                policy = policy.withAllowed(RuntimePermissions.Permission.NET, net);
+            if (random.nextBoolean())
+                policy = policy.withAllowed(RuntimePermissions.Permission.READ, folder);
+            RuntimePermissions restored = RuntimePermissions.fromApplicationArguments(
+                    policy.applicationArguments(), powerfulPolicy());
+            for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
+                for (String resource : new String[] {
+                        root.toString(), folder, net, "127.0.0.1:80"
+                }) {
+                    assertEquals(policy.allows(permission, resource),
+                            restored.allows(permission, resource),
+                            "round trip cannot widen permission at " + index
+                                    + " / " + permission + " / " + resource);
+                }
+            }
+        }
+    }
+
     @Test void malformedExplicitMarkerFailsClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> RuntimePermissions.fromApplicationArguments(
