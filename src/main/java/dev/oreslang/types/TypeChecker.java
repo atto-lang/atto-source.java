@@ -867,6 +867,13 @@ public final class TypeChecker {
     }
 
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        if (klass.actorKind() != Ast.ActorKind.NONE && klass.pipeTransformSpec() == null
+                && klass.methods().stream().anyMatch(method ->
+                        method.name().equals("receive_forward")
+                        || method.name().equals("receive_backward"))) {
+            throw new IllegalArgumentException(
+                    "directional receive hooks require compiler-authenticated transform pipe actor role");
+        }
         // Role signatures parse, but Java's live mailbox still dispatches
         // only receive(ActorMail<T>). Treating receive_forward/backward as
         // ordinary methods would silently drop guest DATA. Reject before
