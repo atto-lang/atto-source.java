@@ -194,7 +194,7 @@ public final class OresEvalRootNode extends RootNode {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
-            this.messageTypes = dev.oreslang.types.TaggedMessageContracts.verify(program);
+            this.messageTypes = dev.oreslang.types.TaggedMessageContracts.forTypes(program);
             indexImports();
             indexDeclarations();
         }
