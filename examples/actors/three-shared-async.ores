@@ -1,0 +1,27 @@
+actor fnc worker(int id): int {
+  return id * 10;
+}
+
+async fnc launch(int id): int {
+  val spawned = spawn worker(id);
+  return await spawned.result;
+}
+
+async fnc launchNested(int id): Future<int> {
+  val spawned = spawn worker(id);
+  return spawned.result;
+}
+
+pub routine main(): void {
+  val Future<int> first = launch(1);
+  val Future<int> second = launch(2);
+  val Future<int> third = launch(3);
+  stdio.println(await first);
+  stdio.println(await second);
+  stdio.println(await third);
+
+  val Future<Future<int>> outer = launchNested(4);
+  val Future<int> inner = await outer;
+  stdio.println(await inner);
+  return;
+}

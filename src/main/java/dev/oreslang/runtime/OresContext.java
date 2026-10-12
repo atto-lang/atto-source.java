@@ -24,6 +24,7 @@ public final class OresContext implements AutoCloseable {
     private final PrintWriter output;
     private final OresVM vm;
     private final ActorRuntime actors;
+    private final OresScheduler asyncScheduler;
     private final RuntimeGarbageCollector garbageCollector;
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
@@ -51,6 +52,7 @@ public final class OresContext implements AutoCloseable {
                 this::executeActorTurn,
                 generationLeaseFactory,
                 runtimePlacement);
+        this.asyncScheduler = OresScheduler.runtimeOwned("ores-context-async-" + contextId, vm.rootScheduler().parallelism(), vm::dispatchAsyncRoot);
         this.garbageCollector = new RuntimeGarbageCollector();
         this.actors.installActorExitHookFromKernel(
                 garbageCollector::retireActorDomain);
@@ -65,6 +67,22 @@ public final class OresContext implements AutoCloseable {
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
     public ActorRuntime actors() { return actors; }
+    public <T> OresFuture<T> startAsync(OresScheduler.Task<T> task) {
+        if (ActorRuntime.inActorExecution() || ActorRuntime.inMailmanExecution() || isolatePolicy.adversarial())
+            throw new SecurityException("source async tasks currently require a trusted root context");
+        long deadline = System.nanoTime() + isolatePolicy.maxWallTime().toNanos();
+        return asyncScheduler.start(resume -> {
+            java.util.concurrent.atomic.AtomicReference<OresScheduler.Step<T>> step = new java.util.concurrent.atomic.AtomicReference<>();
+            return actors.executeAsyncRootFromKernel(deadline, task, () -> {
+                executeActorTurn(() -> {
+                    try { step.set(task.resume(resume)); }
+                    catch (RuntimeException | Error failure) { throw failure; }
+                    catch (Exception failure) { throw new java.util.concurrent.CompletionException(failure); }
+                });
+                return step.get();
+            });
+        });
+    }
     public <T> T executeEnteredRootFromKernel(java.util.function.Supplier<T> task) {
         return actors.executeEnteredRootFromKernel(task);
     }
@@ -189,6 +207,7 @@ public final class OresContext implements AutoCloseable {
     @Override
     public void close() {
         try {
+            asyncScheduler.close();
             actors.closeFromSupervisor();
         } finally {
             synchronized (this) {
