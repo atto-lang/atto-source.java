@@ -128,13 +128,19 @@ public final class MixedJavaCompiler {
             if (entry.getValue().size() != 1) continue;
             Ast.FunctionDecl fn = entry.getValue().getFirst();
             if (!javaIdentifier(fn.name()) || fn.name().equals("call")) continue;
-            // Native async callables and explicit Future<T> returns expose
-            // runtime-owned Futures to Java. Do not generate a synchronous int
-            // facade for an async Oreslang function returning int.
-            String returnType = !fn.generator()
-                    && (fn.async() || (fn.returnType() != null && "Future".equals(fn.returnType().name())))
-                    ? "dev.oreslang.runtime.OresFuture<?>"
-                    : javaReturnType(fn.returnType(), importedJavaTypes);
+            // A generator's declared return type is its YIELDED ELEMENT,
+            // not the Java method's return type. Expose the actual pull-driven
+            // handle, never cast the generator to an int/String or a Future.
+            // Async functions and explicit Future<T> returns use a separate
+            // scoped host Future handoff; generators are not Future producers.
+            String returnType = fn.generator()
+                    ? fn.async()
+                        ? "dev.oreslang.runtime.GeneratorRuntime.AsyncGenerator<?>"
+                        : "dev.oreslang.runtime.GeneratorRuntime.Generator<?>"
+                    : (fn.async() || (fn.returnType() != null
+                            && "Future".equals(fn.returnType().name())))
+                        ? "dev.oreslang.runtime.OresFuture<?>"
+                        : javaReturnType(fn.returnType(), importedJavaTypes);
             out.append("  public static ").append(returnType).append(' ').append(fn.name()).append('(');
             for (int i = 0; i < fn.parameters().size(); i++) {
                 if (i > 0) out.append(", ");

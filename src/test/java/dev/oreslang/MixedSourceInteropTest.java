@@ -269,6 +269,44 @@ final class MixedSourceInteropTest {
     }
 
     @Test
+    void javaMixedFacadeExposesSynchronousAndAsyncGeneratorHandles() throws Exception {
+        Path source = temp.resolve("GeneratorFacade.java");
+        Files.writeString(source, """
+                public final class GeneratorFacade {
+                  public static void main(String[] args) throws Exception {
+                    try (dev.oreslang.runtime.GeneratorRuntime.Generator<?> values = Ores.values()) {
+                      var step = values.nextStep();
+                      if (step.done() || ((Number) step.value()).intValue() != 7) {
+                        throw new AssertionError("sync generator yielded wrong value");
+                      }
+                    }
+                    try (dev.oreslang.runtime.GeneratorRuntime.AsyncGenerator<?> values = Ores.stream()) {
+                      var step = values.nextStep().get(5, java.util.concurrent.TimeUnit.SECONDS);
+                      if (step.done() || ((Number) step.value()).intValue() != 8) {
+                        throw new AssertionError("async generator yielded wrong value");
+                      }
+                    }
+                    Ores.report();
+                  }
+                  ores {
+                    pub generator fnc values(): int { yield 7; return; }
+                    pub async generator fnc stream(): int { yield 8; return; }
+                    pub fnc report(): void {
+                      stdio.println("generator-java-facade-ok");
+                      return;
+                    }
+                  }
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        assertDoesNotThrow(() -> LinkedProgramRunner.run(
+                source, trustedMixedPolicy(), ExecutionProfile.serverJit(),
+                Set.of(), out, new ByteArrayOutputStream()));
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains(
+                "generator-java-facade-ok"));
+    }
+
+    @Test
     void mixedJavaSourceRequiresSeparateTrustedCapability() throws Exception {
         Path source = temp.resolve("capability.ores");
         Files.writeString(source, """
