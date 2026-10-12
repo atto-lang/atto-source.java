@@ -15,6 +15,18 @@ import java.util.Objects;
 public final class DopGpuAdmission {
     private DopGpuAdmission() {}
 
+    /** Trusted-provider descriptor: shape identity is NOT inferred from byte count. */
+    public record DeviceBuffer(DataOrientedLayout.Plan layout, GpuBufferFence fence) {
+        public DeviceBuffer {
+            Objects.requireNonNull(layout, "device DOP layout");
+            Objects.requireNonNull(fence, "device fence");
+            if (layout.rows() == 0 || layout.byteLength() == 0
+                    || fence.snapshot().byteLength() != layout.byteLength()) {
+                throw new IllegalArgumentException("device allocation and DOP layout disagree");
+            }
+        }
+    }
+
     public record Binding(
             DataOrientedLayout.Plan layout,
             DopKernelIR.OpenClArtifact artifact,
@@ -24,12 +36,12 @@ public final class DopGpuAdmission {
             long totalReservedBytes) { }
 
     public static Binding preflight(DopKernelIR.Kernel kernel, DopKernelIR.GpuTarget target,
-                                    GpuBufferFence input, GpuBufferFence output) {
+                                    DeviceBuffer input, DeviceBuffer output) {
         Objects.requireNonNull(kernel, "kernel");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(output, "output");
-        if (input == output) {
+        if (input == output || input.fence() == output.fence()) {
             throw new IllegalArgumentException("DOP GPU input/output device owners must be distinct");
         }
 
@@ -41,11 +53,14 @@ public final class DopGpuAdmission {
         if (shape.rows() == 0 || bytes == 0 || bytes != artifact.requiredBytes()) {
             throw new IllegalArgumentException("DOP GPU requires nonempty exact layout");
         }
+        if (!shape.equals(input.layout()) || !shape.equals(output.layout())) {
+            throw new IllegalArgumentException("DOP GPU kernel and device buffers require identical layouts");
+        }
         // Account separately allocated input and output; overflow is rejection.
         long total = Math.multiplyExact(bytes, 2L);
 
-        var src = input.snapshot();
-        var dst = output.snapshot();
+        var src = input.fence().snapshot();
+        var dst = output.fence().snapshot();
         if (src.status() != GpuBufferFence.Status.IDLE
                 || dst.status() != GpuBufferFence.Status.IDLE) {
             throw new IllegalStateException("DOP GPU device buffer is not idle");
