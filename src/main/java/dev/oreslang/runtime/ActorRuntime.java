@@ -6066,6 +6066,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** Guarded by lifecycleLock; only actual source tasks retain this lane. */
         /** Producer completions can schedule() without lifecycleLock. */
         private volatile boolean sourceCleanupDraining;
+        /** Guarded by lifecycleLock: physical done must await cursor retire waiters. */
+        private boolean cursorRetirementPending;
         /** Actor single-writer lease only; safepoints still charge fuel. */
         private boolean sourceCleanupTurn;
         /** True while one source receive owns actor state across suspension. */
@@ -6313,6 +6315,7 @@ public final class ActorRuntime implements AutoCloseable {
             // fully crossed back out of the TurnExecutor boundary. For
             // Truffle-backed runtimes that boundary owns context enter/leave.
             if (finalized
+                    || cursorRetirementPending
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
@@ -6337,12 +6340,13 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             drainMailboxReservations();
-            // Retire first so a post-shutdown channel callback cannot spend
-            // this actor's cursor credit or resurrect retained source state.
-            for (ChannelRuntime.FairCursor cursor : staticSelectCursors.values()) {
-                cursor.retire();
+            // Source cursors were already fenced/detached at stop admission,
+            // with their Future waiters delivered after leaving lifecycleLock.
+            // The pending guard above prevents a physical DONE before that.
+            if (!staticSelectCursors.isEmpty()) {
+                throw new IllegalStateException(
+                        "actor finalized before its source select cursors were fenced");
             }
-            staticSelectCursors.clear();
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
@@ -6888,10 +6892,25 @@ public final class ActorRuntime implements AutoCloseable {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             boolean queuedOwnedCleanup;
+            ArrayList<Runnable> retiredSelectNotifications = new ArrayList<>();
+            boolean ownsRetirement = false;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
+                }
+                // The first stop owns cursor fencing. Coordinator publication
+                // is atomic while we hold lifecycleLock, but the detached
+                // Futures' runtime waiters MUST run after leaving this monitor.
+                // Concurrent stop callers neither fence twice nor clear the
+                // physical-DONE barrier prematurely.
+                if (!stopped.get()) {
+                    cursorRetirementPending = true;
+                    ownsRetirement = true;
+                    for (ChannelRuntime.FairCursor cursor : staticSelectCursors.values()) {
+                        retiredSelectNotifications.add(cursor.fenceRetirement());
+                    }
+                    staticSelectCursors.clear();
                 }
                 stopped.set(true);
                 if (cause == null) mailbox.close();
@@ -6913,6 +6932,22 @@ public final class ActorRuntime implements AutoCloseable {
                 queuedOwnedCleanup = sourceCleanupDraining && !sourceTaskMailbox.isEmpty();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
+            }
+
+            if (ownsRetirement) {
+                try {
+                    for (Runnable notification : retiredSelectNotifications) {
+                        notification.run();
+                    }
+                } finally {
+                    // Keep DONE hidden until every cursor-owned pending select
+                    // has published terminal cancellation to its waiters.
+                    synchronized (lifecycleLock) {
+                        cursorRetirementPending = false;
+                        if (stopped.get()) finalizeStopLocked();
+                        lifecycleLock.notifyAll();
+                    }
+                }
             }
 
             // Cancellation must be admitted before waking queued source
