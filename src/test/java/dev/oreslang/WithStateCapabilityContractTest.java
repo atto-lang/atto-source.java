@@ -65,6 +65,31 @@ final class WithStateCapabilityContractTest {
                 ActorStateContract.verify(Parser.parse(
                     "define actor A as let v: int = 0; end")));
     }
+    @Test void statelessActorMethodsStillReceiveSealedStateVerification() {
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(
+                "define actor Stateless as ping(): int { return 1; } end")));
+        assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(Parser.parse(
+                "define actor Stateless as handle_state(): int { return 1; } end")));
+        assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(Parser.parse(
+                "define actor Stateless as ping(): int { return self.state.v; } end")));
+        assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(Parser.parse(
+                "define actor Stateless as ping(): int with state.read { "
+                + "return self.handle_state(|s| -> { return s.v; }); } end")));
+    }
+
+    @Test void runtimeCooperateCannotSuspendAnActiveStateLoan() {
+        for (String callback : new String[] {
+                "self.handle_state(|s| -> { rt cooperate; return s.v; })",
+                "using state.read(|s| -> { rt cooperate; return s.v; })",
+                "self.handle_state(critical |s| -> { rt cooperate; s.v = 1; return s.v; })",
+                "using state.write(critical |s| -> { rt cooperate; s.v = 1; return s.v; })"
+        }) {
+            String code = actor("with state.read, state.write, suspend", callback);
+            assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(Parser.parse(code)), callback);
+        }
+    }
+
     @Test void sealedCallbackEffectsFollowLoweringAndCannotBeForged() {
         Ast.Program p = Parser.parse(actor("with state.read",
                 "using state.read(|s| -> { return s.v; })"));
