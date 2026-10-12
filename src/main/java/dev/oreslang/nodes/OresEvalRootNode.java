@@ -915,7 +915,8 @@ public final class OresEvalRootNode extends RootNode {
          * current continuation is stored here and OresScheduler.Task returns
          * Await to unwind the carrier completely.
          */
-        private final class SourceTask implements OresScheduler.Task<Object> {
+        private final class SourceTask implements OresScheduler.Task<Object>,
+                OresScheduler.GuestCleanupObligation {
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             private static final int LOOP_SAFEPOINT_INTERVAL = 32;
@@ -941,6 +942,25 @@ public final class OresEvalRootNode extends RootNode {
 
             private SourceValueCont awaitingContinuation;
             private OresScheduler.Step<Object> nextStep;
+            // Registered lexical cleanup remains owned by this heap task
+            // across cooperate/await, never by its transient carrier thread.
+            private final java.util.concurrent.atomic.AtomicInteger pendingGuestCleanup =
+                    new java.util.concurrent.atomic.AtomicInteger();
+
+            @Override
+            public boolean hasPendingGuestCleanup() {
+                return pendingGuestCleanup.get() > 0;
+            }
+
+            private void registerGuestCleanup() {
+                pendingGuestCleanup.incrementAndGet();
+            }
+
+            private void settleGuestCleanup() {
+                if (pendingGuestCleanup.decrementAndGet() < 0) {
+                    throw new IllegalStateException("source lexical cleanup accounting underflow");
+                }
+            }
 
             private SourceTask(
                     Ast.FunctionDecl function,
@@ -1758,6 +1778,7 @@ public final class OresEvalRootNode extends RootNode {
                             new IdentityHashMap<>()))) {
                 try {
                     executeStatement(stmt, env, defers, false);
+                    if (stmt instanceof Ast.DeferStmt) task.registerGuestCleanup();
                 } catch (ReturnSignal returned) {
                     finishBlock(
                             task,
@@ -1875,6 +1896,9 @@ public final class OresEvalRootNode extends RootNode {
                     defer,
                     env,
                     (ignored, ignoredValue, failure) -> {
+                        // The defer remains registered while its expression
+                        // itself is suspended. Only settlement retires it.
+                        task.settleGuestCleanup();
                         if (failure != null) {
                             runOneDefer(
                                     task,
@@ -2047,6 +2071,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (stmt instanceof Ast.DeferStmt defer) {
                     defers.push(defer.expression());
+                    task.registerGuestCleanup();
                     continuation.accept(task, SourceFlow.normal());
                     return;
                 }
@@ -2151,6 +2176,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (stmt instanceof Ast.TryStmt attempted) {
+                    // A finally is an already-registered lexical obligation
+                    // while the try/catch body is suspended.
+                    task.registerGuestCleanup();
                     runBlock(
                             task,
                             attempted.body(),
@@ -2172,19 +2200,23 @@ public final class OresEvalRootNode extends RootNode {
                                                             t2,
                                                             attempted.finallyBody(),
                                                             env,
-                                                            (t3, finallyFlow) ->
-                                                                    continuation.accept(
-                                                                            t3,
-                                                                            sourceFinally(catchFlow, finallyFlow))));
+                                                            (t3, finallyFlow) -> {
+                                                                t3.settleGuestCleanup();
+                                                                continuation.accept(
+                                                                        t3,
+                                                                        sourceFinally(catchFlow, finallyFlow));
+                                                            }));
                                 } else {
                                     runBlock(
                                             t,
                                             attempted.finallyBody(),
                                             env,
-                                            (t2, finallyFlow) ->
-                                                    continuation.accept(
-                                                            t2,
-                                                            sourceFinally(flow, finallyFlow)));
+                                            (t2, finallyFlow) -> {
+                                                t2.settleGuestCleanup();
+                                                continuation.accept(
+                                                        t2,
+                                                        sourceFinally(flow, finallyFlow));
+                                            });
                                 }
                             });
                     return;
