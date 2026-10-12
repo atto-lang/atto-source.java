@@ -24,7 +24,7 @@ final class SerialActorTypedMatchIntegrationTest {
             define serial actor Counter as
                 state { count: int = 0; }
 
-                async produce_value(): int {
+                static async fnc produce_value(): int {
                     stdio.println("producer");
                     rt cooperate;
                     return 7;
@@ -38,7 +38,7 @@ final class SerialActorTypedMatchIntegrationTest {
                 }
 
                 suspends receive(ActorMail<String> mail): void {
-                    const answer: int = match<ret=int> await self.produce_value() over {
+                    const answer: int = match<ret=int> await Counter.produce_value() over {
                         on 7 {
                             defer stdio.println("first");
                             defer stdio.println("last");
