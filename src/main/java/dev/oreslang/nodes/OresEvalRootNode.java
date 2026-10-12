@@ -5673,12 +5673,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object constructVariant(
                 dev.oreslang.types.TaggedMessageContracts.Case c, Object payload) {
-            if (c.sourcePayload() == null && payload != null) {
-                throw new IllegalArgumentException("payloadless enum case cannot carry data");
-            }
-            if (c.sourcePayload() != null && payload == null) {
-                throw new IllegalArgumentException("enum case requires payload");
-            }
+            // Validate nominal inner values at the runtime boundary too:
+            // compiler checks do not authenticate forged host TaggedValues.
+            dev.oreslang.types.NominalEnumValueGuards.requirePayload(
+                    messageTypes, c, payload);
             return new dev.oreslang.runtime.TaggedMessageCodec.TaggedValue(
                     c.owner(), c.name(), c.tag(), payload);
         }

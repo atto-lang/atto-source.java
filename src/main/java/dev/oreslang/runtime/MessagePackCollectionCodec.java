@@ -36,10 +36,13 @@ public final class MessagePackCollectionCodec {
     public static final int MAX_DEPTH = 64;
     public static final int MAX_ELEMENTS = 100_000;
     public static final int MAX_SCHEMA_ID_BYTES = 256;
+    // Bound the canonical descriptor independently of the encoded payload.
+    // Nested enums may list thousands of declared cases with long names.
+    public static final int MAX_DESCRIPTOR_BYTES = 1_048_576;
 
     private MessagePackCollectionCodec() { }
 
-    public sealed interface Shape permits Scalar, Sequence { }
+    public sealed interface Shape permits Scalar, Sequence, NestedEnum { }
 
     /**
      * Immutable trusted actor mailbox codec declaration, constructed by
@@ -94,6 +97,58 @@ public final class MessagePackCollectionCodec {
         }
     }
 
+    /**
+     * Closed nominal enum as a nested value in a compiler-bound MessagePack
+     * shape. Definitions are a finite DAG; recursive/boxed schemas are NOT
+     * admitted by the compiler. No wire bytes can supply these descriptors.
+     */
+    /**
+     * Nominal wire identifiers are an ASCII-only v2 ABI. Without this check
+     * shapeDigest()'s US-ASCII conversion replaces non-ASCII characters,
+     * allowing different source names to bind to the same digest.
+     * Non-ASCII local identifiers may be valid language values but require a
+     * new, explicitly versioned UTF-8 wire grammar before transport.
+     */
+    static void requireCanonicalEnumWireName(String name) {
+        if (name == null || name.isEmpty() || name.length() > 256
+                || !((name.charAt(0) >= 'A' && name.charAt(0) <= 'Z')
+                     || (name.charAt(0) >= 'a' && name.charAt(0) <= 'z')
+                     || name.charAt(0) == '_')) {
+            throw new IllegalArgumentException("nested enum wire name must be an ASCII identifier");
+        }
+        for (int i = 1; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                    || (c >= '0' && c <= '9') || c == '_')) {
+                throw new IllegalArgumentException("nested enum wire name must be an ASCII identifier");
+            }
+        }
+    }
+
+    public record EnumCaseShape(String name, int tag, Shape payload) {
+        public EnumCaseShape {
+            requireCanonicalEnumWireName(name);
+            if (tag < 1)
+                throw new IllegalArgumentException("invalid nested enum case tag");
+        }
+    }
+
+    public record NestedEnum(String name, List<EnumCaseShape> cases) implements Shape {
+        public NestedEnum {
+            requireCanonicalEnumWireName(name);
+            if (cases == null || cases.isEmpty() || cases.size() > 4096)
+                throw new IllegalArgumentException("invalid nested enum shape");
+            cases = List.copyOf(cases);
+            var names = new java.util.HashSet<String>();
+            int lastTag = 0;
+            for (EnumCaseShape c : cases) {
+                if (!names.add(c.name()) || c.tag() <= lastTag)
+                    throw new IllegalArgumentException("unordered/duplicate nested enum case");
+                lastTag = c.tag();
+            }
+        }
+    }
+
     public static Scalar bool() { return new Scalar(ScalarKind.BOOL); }
     public static Scalar int64() { return new Scalar(ScalarKind.INT64); }
     public static Scalar float64() { return new Scalar(ScalarKind.FLOAT64); }
@@ -132,6 +187,30 @@ public final class MessagePackCollectionCodec {
         writer.binaryDigest(descriptorHash);
         writer.value(shape, value, 0);
         return writer.result();
+    }
+
+    /**
+     * Strict, bounded first-stage header parsing for closed actor codecs.
+     * It reads only the wire version and caller schema ID, never selects a
+     * schema from the incoming bytes. Callers must look it up in a trusted
+     * compiler-bound table and then invoke decode(...) to verify the full
+     * shape digest, canonical payload and absence of trailing bytes.
+     */
+    public static String envelopeSchemaId(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (bytes.length > MAX_BYTES) {
+            throw new IllegalArgumentException("message exceeds maximum byte size");
+        }
+        Reader reader = new Reader(bytes);
+        if (reader.arrayHeader() != 4) {
+            throw new IllegalArgumentException("invalid message envelope arity");
+        }
+        if (reader.signedInt() != VERSION) {
+            throw new IllegalArgumentException("unsupported message format version");
+        }
+        String schema = reader.string();
+        checkSchemaId(schema);
+        return schema;
     }
 
     public static Object decode(String schemaId, Shape shape, byte[] bytes) {
@@ -177,6 +256,9 @@ public final class MessagePackCollectionCodec {
         Objects.requireNonNull(shape, "shape");
         StringBuilder descriptor = new StringBuilder("oreslang.actor.shape.v2/");
         appendShape(descriptor, shape, 0, new int[]{0});
+        if (descriptor.length() > MAX_DESCRIPTOR_BYTES) {
+            throw new IllegalArgumentException("codec shape descriptor exceeds byte quota");
+        }
         try {
             return MessageDigest.getInstance("SHA-256")
                     .digest(descriptor.toString().getBytes(StandardCharsets.US_ASCII));
@@ -189,6 +271,9 @@ public final class MessagePackCollectionCodec {
         if (depth > MAX_DEPTH || ++nodes[0] > MAX_NODES) {
             throw new IllegalArgumentException("codec shape exceeds maximum depth/node budget");
         }
+        if (out.length() > MAX_DESCRIPTOR_BYTES) {
+            throw new IllegalArgumentException("codec shape descriptor exceeds byte quota");
+        }
         if (shape instanceof Scalar scalar) {
             out.append(switch (scalar.kind()) {
                 case BOOL -> 'B';
@@ -196,6 +281,25 @@ public final class MessagePackCollectionCodec {
                 case FLOAT64 -> 'F';
                 case STRING -> 'S';
             });
+            return;
+        }
+        if (shape instanceof NestedEnum nested) {
+            // Length delimiters and stable case tags avoid ambiguity between
+            // different enum constructors with identical payload shapes.
+            out.append("E(").append(nested.name().length()).append(':')
+                    .append(nested.name()).append(")[");
+            for (EnumCaseShape item : nested.cases()) {
+                out.append(item.tag()).append(':')
+                        .append(item.name().length()).append(':')
+                        .append(item.name()).append('=');
+                if (item.payload() == null) out.append('N');
+                else appendShape(out, item.payload(), depth + 1, nodes);
+                out.append(';');
+                if (out.length() > MAX_DESCRIPTOR_BYTES) {
+                    throw new IllegalArgumentException("codec shape descriptor exceeds byte quota");
+                }
+            }
+            out.append(']');
             return;
         }
         Sequence seq = (Sequence) shape;
@@ -316,6 +420,42 @@ public final class MessagePackCollectionCodec {
                         if (!(value instanceof String s)) throw new IllegalArgumentException("expected string");
                         string(s);
                     }
+                }
+                return;
+            }
+
+            if (shape instanceof NestedEnum nested) {
+                if (!(value instanceof TaggedMessageCodec.TaggedValue tagged)
+                        || !nested.name().equals(tagged.enumName()))
+                    throw new IllegalArgumentException("nested enum nominal owner mismatch");
+                EnumCaseShape selected = null;
+                for (EnumCaseShape member : nested.cases()) {
+                    if (member.tag() == tagged.tag() && member.name().equals(tagged.variant())) {
+                        selected = member;
+                        break;
+                    }
+                }
+                if (selected == null)
+                    throw new IllegalArgumentException("unknown nested enum tag/variant");
+                if (visiting.put(value, Boolean.TRUE) != null)
+                    throw new IllegalArgumentException("cyclic nested enum value");
+                try {
+                    if (selected.payload() == null) {
+                        if (tagged.payload() != null)
+                            throw new IllegalArgumentException("nullary nested enum carries payload");
+                        arrayHeader(2);
+                        string(nested.name());
+                        signedInt(tagged.tag());
+                    } else {
+                        if (tagged.payload() == null)
+                            throw new IllegalArgumentException("nested enum payload is missing");
+                        arrayHeader(3);
+                        string(nested.name());
+                        signedInt(tagged.tag());
+                        value(selected.payload(), tagged.payload(), depth + 1);
+                    }
+                } finally {
+                    visiting.remove(value);
                 }
                 return;
             }
@@ -477,6 +617,28 @@ public final class MessagePackCollectionCodec {
                     }
                     case STRING -> string();
                 };
+            }
+            if (shape instanceof NestedEnum nested) {
+                int n = arrayHeader();
+                if (n != 2 && n != 3)
+                    throw new IllegalArgumentException("nested enum tuple must have two or three slots");
+                String owner = string();
+                if (!nested.name().equals(owner))
+                    throw new IllegalArgumentException("nested enum owner mismatch");
+                long tag = signedInt();
+                EnumCaseShape selected = null;
+                for (EnumCaseShape member : nested.cases()) {
+                    if (member.tag() == tag) {
+                        selected = member;
+                        break;
+                    }
+                }
+                if (selected == null || (selected.payload() == null ? 2 : 3) != n)
+                    throw new IllegalArgumentException("unknown nested enum tag or wrong payload arity");
+                Object payload = selected.payload() == null
+                        ? null : value(selected.payload(), depth + 1);
+                return new TaggedMessageCodec.TaggedValue(
+                        nested.name(), selected.name(), selected.tag(), payload);
             }
             Sequence seq = (Sequence) shape;
             int n = arrayHeader();

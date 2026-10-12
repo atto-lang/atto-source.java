@@ -4482,11 +4482,13 @@ public final class ActorRuntime implements AutoCloseable {
             binaryFrame = schema.encode(message);
             message = (M) schema.decode(binaryFrame);
             if (message instanceof TaggedMessageCodec.TaggedValue tagged) {
-                // The trusted tagged decoder already checks the nominal
-                // identity, tag and recursive payload shape. Only its data
-                // payload is exposed to legacy host quota/ownership walks;
-                // the mailbox retains the typed frame, never this object.
-                message = (M) tagged.payload();
+                // The closed codec has already validated every nominal
+                // owner, tag, and nested payload. Project the whole decoded
+                // tagged value into immutable data-only lists for the legacy
+                // capability/quota walkers; the mailbox retains the owned
+                // binary frame and reconstructs nominal values on its lane.
+                // Never treat arbitrary host TaggedValue as Sendable here.
+                message = (M) TaggedMessageCodec.preflightProjection(tagged);
             }
         }
         validateMessageGraph(message);
