@@ -94,6 +94,13 @@ public final class AnnotationExpander {
     }
 
     private static Ast.ModuleDecl expandModule(Ast.ModuleDecl module) {
+        // Modules retain arbitrary metadata, but @FromJson is not ordinary
+        // metadata: it promises generated field accessors. Do not silently
+        // ignore an effectful annotation on an unsupported target.
+        if (hasAnnotation(module.annotations(), FROM_JSON)) {
+            throw new IllegalArgumentException(
+                    "@FromJson is only valid on class fields, not module '" + module.name() + "'");
+        }
         List<Ast.Decl> declarations = new ArrayList<>(module.declarations().size());
         for (Ast.Decl declaration : module.declarations()) {
             if (declaration instanceof Ast.ClassDecl klass) {
