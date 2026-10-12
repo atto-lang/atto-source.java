@@ -12,12 +12,24 @@ if ! command -v java >/dev/null 2>&1; then
   exit 2
 fi
 
-echo "ActorGroup source verification"
-if command -v git >/dev/null 2>&1; then
-  git rev-parse HEAD
-  if [[ -n "$(git status --porcelain)" ]]; then
-    echo "WARNING: working tree is modified; record the exact tested files" >&2
-  fi
+# A merge gate must prove the exact checked-out tree, not a partial or
+# locally modified mirror. Callers may pin a PR HEAD with this environment
+# variable; unexpected commits fail before touching the compiler.
+if ! command -v git >/dev/null 2>&1 || ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "ActorGroup promotion requires a Git checkout" >&2
+  exit 2
+fi
+actual_sha="$(git rev-parse HEAD)"
+echo "ActorGroup exact-source checkout: $actual_sha"
+if [[ -n "${ORESLANG_ACTORGROUP_EXPECTED_SHA:-}" &&
+      "$actual_sha" != "$ORESLANG_ACTORGROUP_EXPECTED_SHA" ]]; then
+  echo "Wrong revision: expected $ORESLANG_ACTORGROUP_EXPECTED_SHA, got $actual_sha" >&2
+  exit 2
+fi
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Dirty working tree: refusing to certify an uncommitted source state" >&2
+  git status --short >&2
+  exit 2
 fi
 
 # Fail closed if an explicitly required regression class is removed or renamed.
