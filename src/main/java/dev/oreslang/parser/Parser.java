@@ -3508,7 +3508,7 @@ public final class Parser {
     // the opt-in declaration marker 'method other_name(...)'.
     private boolean matchExplicitMethodMarker() {
         if (!isContextualIdentifier("method")) return false;
-        if (!checkNext(IDENT) && !checkNext(LBRACKET)) return false;
+        if (!checkNext(IDENT) && !checkNext(LBRACKET) && !checkNext(STATIC)) return false;
         advance();
         return true;
     }
