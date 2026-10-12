@@ -247,12 +247,14 @@ and one of **256 process-wide timed-admission reservations** before admission.
 Admission is fail-closed when either limit is full, preventing a single actor
 from monopolizing all process-wide notifier capacity. A rejected task does
 not receive a new quota or enter the scheduler. Actor-local reservations
-are held through the winning Future's subscriber notification drain,
-even after the physical guest and logical cohort have retired. The global
-reservation is held until **both** physical task quiescence and the Future's
-synchronous subscriber notification drain have completed. Visible
-cancellation or Future settlement alone cannot recycle either reservation
-while a host callback remains blocked.
+are held until **both** physical guest/quota retirement and the winning
+Future's synchronous subscriber notification drain finish. The global
+reservation follows the same dual-retirement fence. Visible cancellation
+or Future settlement alone cannot recycle either reservation while a guest
+carrier or host callback remains active. Cancellation hooks revoke internal
+task authority before notifying even blocked synchronous subscribers;
+late subscribers registered during revocation are queued for the subsequent
+notification pass rather than running early or blocking the hook.
 
 Deadline task revocation runs on dedicated host timer workers; potentially
 blocking actor retirement and synchronous Future notifications run on a
