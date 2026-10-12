@@ -113,11 +113,13 @@ class ActorIngressConcurrencyTest {
             CountDownLatch start = new CountDownLatch(1);
             CountDownLatch release = new CountDownLatch(1);
             AtomicInteger admitted = new AtomicInteger();
+            CountDownLatch admissionsAttempted = new CountDownLatch(50);
             List<Future<?>> futures = new ArrayList<>();
             for (int i = 0; i < 50; i++) {
                 futures.add(workers.submit(() -> {
                     start.await();
                     var conn = budget.tryOpenConnection(66);
+                    admissionsAttempted.countDown();
                     if (conn == null) return null;
                     admitted.incrementAndGet();
                     try (conn) {
@@ -135,11 +137,17 @@ class ActorIngressConcurrencyTest {
                 }));
             }
             start.countDown();
-            // Hold admitted connections until all workers have tried admission.
-            for (int retry = 0; retry < 200 && admitted.get() < 3; retry++) Thread.sleep(2);
-            assertEquals(3, admitted.get());
-            assertEquals(3, budget.activeConnections());
-            release.countDown();
+            // All competing attempts must have reached the admission gate.
+            // Don't depend on an arbitrary sleep interval or scheduler speed.
+            try {
+                assertTrue(admissionsAttempted.await(5, TimeUnit.SECONDS),
+                        "all contenders must attempt admission before checking quotas");
+                assertEquals(3, admitted.get());
+                assertEquals(3, budget.activeConnections());
+            } finally {
+                // Avoid stranding the winning workers if an assertion fails.
+                release.countDown();
+            }
             for (var future : futures) future.get(5, TimeUnit.SECONDS);
             assertEquals(0, budget.activeConnections());
         }
