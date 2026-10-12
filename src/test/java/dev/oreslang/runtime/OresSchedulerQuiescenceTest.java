@@ -525,6 +525,78 @@ final class OresSchedulerQuiescenceTest {
         }
     }
 
+
+    @Test
+    void wallDeadlineFailsNeverSettlingAwaitWithoutAnotherCarrierTurn()
+            throws Exception {
+        OresFuture<Integer> never = new OresFuture<>();
+        CountDownLatch retired = new CountDownLatch(1);
+        AtomicInteger guestTurns = new AtomicInteger();
+        IllegalStateException deadlineFailure = new IllegalStateException("logical wall deadline");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> result = scheduler.startWithWallDeadline(resume -> {
+                guestTurns.incrementAndGet();
+                return OresScheduler.await(never);
+            }, retired::countDown, TimeUnit.MILLISECONDS.toNanos(160), deadlineFailure);
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (never.pendingRuntimeWaiterCount() != 1 && System.nanoTime() < until) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, never.pendingRuntimeWaiterCount(),
+                    "await must be registered before the logical timeout");
+            java.util.concurrent.ExecutionException failed =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> result.get(3, TimeUnit.SECONDS));
+            assertTrue(failed.getCause() == deadlineFailure,
+                    "deadline must retain its typed runtime failure");
+            assertTrue(retired.await(2, TimeUnit.SECONDS));
+            assertEquals(0, never.pendingRuntimeWaiterCount(),
+                    "an expired task cannot remain retained by an unresolved Future");
+            assertEquals(1, guestTurns.get(),
+                    "the timeout must not enter an additional guest carrier turn");
+        }
+    }
+
+    @Test
+    void wallDeadlineCannotReleaseGuestResourcesWhileCarrierStillExecuting()
+            throws Exception {
+        CountDownLatch insideGuest = new CountDownLatch(1);
+        CountDownLatch releaseGuest = new CountDownLatch(1);
+        CountDownLatch retired = new CountDownLatch(1);
+        IllegalStateException deadlineFailure = new IllegalStateException("elapsed");
+        AtomicInteger retirements = new AtomicInteger();
+        OresScheduler scheduler = new OresScheduler(1);
+        try {
+            OresFuture<Integer> result = scheduler.startWithWallDeadline(resume -> {
+                insideGuest.countDown();
+                assertTrue(releaseGuest.await(3, TimeUnit.SECONDS));
+                return OresScheduler.done(99);
+            }, () -> {
+                retirements.incrementAndGet();
+                retired.countDown();
+            }, TimeUnit.MILLISECONDS.toNanos(70), deadlineFailure);
+            assertTrue(insideGuest.await(2, TimeUnit.SECONDS));
+            Thread.sleep(140);
+            assertFalse(result.isDone(),
+                    "terminal publication must wait for the guest turn to unwind");
+            assertEquals(0, retirements.get(),
+                    "deadline must not reclaim memory beneath the live guest");
+            releaseGuest.countDown();
+            assertTrue(retired.await(3, TimeUnit.SECONDS));
+            java.util.concurrent.ExecutionException failed =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> result.get(3, TimeUnit.SECONDS));
+            assertTrue(failed.getCause() == deadlineFailure);
+            assertEquals(1, retirements.get(),
+                    "physical quiescence must release owned resources exactly once");
+        } finally {
+            releaseGuest.countDown();
+            scheduler.close();
+        }
+    }
+
     @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
