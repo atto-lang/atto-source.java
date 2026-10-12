@@ -1986,7 +1986,8 @@ public final class OresEvalRootNode extends RootNode {
                             attempted.body(),
                             env,
                             (t, flow) -> {
-                                if (flow.kind() == SourceFlowKind.THROW) {
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && flow.failure() instanceof OresCastError) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
@@ -2004,10 +2005,7 @@ public final class OresEvalRootNode extends RootNode {
                                                             (t3, finallyFlow) ->
                                                                     continuation.accept(
                                                                             t3,
-                                                                            finallyFlow.kind()
-                                                                                            != SourceFlowKind.NORMAL
-                                                                                    ? finallyFlow
-                                                                                    : catchFlow)));
+                                                                            preferFinallyFlow(catchFlow, finallyFlow))));
                                 } else {
                                     runBlock(
                                             t,
@@ -2016,10 +2014,7 @@ public final class OresEvalRootNode extends RootNode {
                                             (t2, finallyFlow) ->
                                                     continuation.accept(
                                                             t2,
-                                                            finallyFlow.kind()
-                                                                            != SourceFlowKind.NORMAL
-                                                                    ? finallyFlow
-                                                                    : flow));
+                                                            preferFinallyFlow(flow, finallyFlow)));
                                 }
                             });
                     return;
@@ -4594,6 +4589,15 @@ public final class OresEvalRootNode extends RootNode {
             return 3;
         }
 
+        private static SourceFlow preferFinallyFlow(SourceFlow pending, SourceFlow cleanup) {
+            if (cleanup.kind() == SourceFlowKind.NORMAL) return pending;
+            if (cleanup.failure() != null) {
+                return SourceFlow.throwing(preferFailure(pending.failure(), cleanup.failure()));
+            }
+            // Unsupported nonlocal cleanup control cannot erase an exception.
+            return pending.failure() != null ? pending : cleanup;
+        }
+
         private static Throwable preferFailure(Throwable existing, Throwable incoming) {
             Objects.requireNonNull(incoming, "incoming failure");
             if (existing == null || existing == incoming) return incoming;
@@ -4849,17 +4853,37 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.TryStmt tried) {
                 // A call under catch/finally is not a proper tail call: the
                 // caller still owns exception/cleanup semantics after the call.
-                try { executeBlock(tried.body(), env, true); }
-                catch (TailCallSignal signal) { throw signal; }
-                catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
-                catch (OresCastError ordinaryFailure) {
-                    // Catch only admitted guest-recoverable failures. Cancellation,
-                    // security and host/internal invariant failures must escape,
-                    // including through finally.
-                    Env catchEnv = new Env(env);
-                    catchEnv.define(tried.errorName(), ordinaryFailure, Ast.BindingKind.VAL);
-                    executeBlock(tried.catchBody(), catchEnv, true);
-                } finally { executeBlock(tried.finallyBody(), env, true); }
+                Throwable pendingFailure = null;
+                try {
+                    try {
+                        executeBlock(tried.body(), env, true);
+                    } catch (OresCastError ordinaryFailure) {
+                        // Only admitted guest ordinary errors are catchable.
+                        Env catchEnv = new Env(env);
+                        catchEnv.define(tried.errorName(), ordinaryFailure, Ast.BindingKind.VAL);
+                        executeBlock(tried.catchBody(), catchEnv, true);
+                    }
+                } catch (TailCallSignal signal) {
+                    throw signal;
+                } catch (ReturnSignal | BreakSignal | ContinueSignal signal) {
+                    throw signal;
+                } catch (RuntimeException | Error failure) {
+                    pendingFailure = failure;
+                    throw failure;
+                } finally {
+                    try {
+                        executeBlock(tried.finallyBody(), env, true);
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        Throwable primary = preferFailure(pendingFailure, cleanupFailure);
+                        if (primary != pendingFailure) {
+                            if (primary instanceof RuntimeException runtimeFailure) {
+                                throw runtimeFailure;
+                            }
+                            throw (Error) primary;
+                        }
+                        // Java naturally rethrows the retained in-flight failure.
+                    }
+                }
                 return;
             }
             if (stmt instanceof Ast.ForOfDestructureStmt loop) {
