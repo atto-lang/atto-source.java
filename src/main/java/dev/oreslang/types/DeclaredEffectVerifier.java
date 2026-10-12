@@ -22,7 +22,8 @@ public final class DeclaredEffectVerifier {
                     check(function.name(), function.annotations(), function.body(), false);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.MethodDecl method : klass.methods()) {
-                        if (method.isStatic() && containsStateLoan(method.body())) {
+                        if (klass.actorKind() != Ast.ActorKind.NONE
+                                && method.isStatic() && containsStateLoan(method.body())) {
                             throw new IllegalArgumentException(
                                     "static actor method cannot acquire a sealed instance state loan");
                         }
