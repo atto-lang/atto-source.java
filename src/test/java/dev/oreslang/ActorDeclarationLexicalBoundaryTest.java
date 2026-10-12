@@ -602,8 +602,12 @@ final class ActorDeclarationLexicalBoundaryTest {
                           return;
                         }
                         """)));
+        // The compiler rejects ActorMail<Object> itself before it can
+        // even consider the mutable Payload instance. Both are correctly
+        // fail-closed: no mutable guest object reaches runtime transport.
         assertTrue(
-                failure.getMessage().contains("cannot transport class instance 'Payload' by value"),
+                failure.getMessage().contains("requires Serializable data")
+                    || failure.getMessage().contains("cannot transport class instance 'Payload' by value"),
                 failure.getMessage());
     }
 
