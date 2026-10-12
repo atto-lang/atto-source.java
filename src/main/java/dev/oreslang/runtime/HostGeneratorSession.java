@@ -50,9 +50,14 @@ final class HostGeneratorSession implements AutoCloseable {
             // from a host thread or execute guest callbacks while holding
             // the pump's monitor. In a Polyglot context the root executor
             // must enter the real context before this predicate passes.
-            root.startSync(() -> {
+            OresFuture<Void> dispatched = root.startSync(() -> {
                 owned.dispatchOne();
                 return null;
+            });
+            // If guest-entry authorization itself fails, do not strand
+            // a host request whose scheduler dispatch future is private.
+            dispatched.whenCompleteRuntime((ignored, failure) -> {
+                if (failure != null) owned.seal();
             });
         };
         HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
