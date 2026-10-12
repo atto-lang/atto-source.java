@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -58,9 +59,12 @@ final class ChannelRuntimeTest {
             assertTrue(buffered.tryRead().isEmpty());
         }
         buffered.close();
-        assertThrows(ChannelRuntime.ChannelClosedException.class,
-                () -> buffered.tryWrite(1));
-        assertThrows(ChannelRuntime.ChannelClosedException.class, buffered::tryRead);
+        assertInstanceOf(ChannelRuntime.ChannelClosedException.class,
+                assertThrows(java.util.concurrent.CompletionException.class,
+                        () -> buffered.tryWrite(1)).getCause());
+        assertInstanceOf(ChannelRuntime.ChannelClosedException.class,
+                assertThrows(java.util.concurrent.CompletionException.class,
+                        buffered::tryRead).getCause());
 
         ChannelRuntime.Channel<Integer> rendezvous = new ChannelRuntime.Channel<>(0);
         assertFalse(rendezvous.tryWrite(17));
