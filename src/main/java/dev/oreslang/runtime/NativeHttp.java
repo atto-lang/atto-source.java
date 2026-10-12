@@ -23,10 +23,25 @@ public final class NativeHttp implements AutoCloseable {
     // Explicit source-side ownership of submitted HTTP operations; a completed
     // Future or closed socket alone cannot prove that a response writer exited.
     private final ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
-    // Fault-injection is package-private and disabled by default. The test
-    // consumes precisely one rejected ABORT dispatch without disrupting writes.
-    static final java.util.concurrent.atomic.AtomicBoolean REJECT_NEXT_ABORT_FOR_TEST =
-            new java.util.concurrent.atomic.AtomicBoolean();
+    // The test hook is bound to the NEXT context constructed on the calling
+    // thread, then owned by that NativeHttp instance. No process-wide abort
+    // flag or unrelated context can consume a concurrent test's injection.
+    private static final ThreadLocal<CompletableFuture<Void>> NEXT_TEST_ABORT =
+            new ThreadLocal<>();
+    private final CompletableFuture<Void> testAbortRejection;
+    private final java.util.concurrent.atomic.AtomicBoolean rejectAbortOnce;
+
+    static CompletableFuture<Void> rejectFirstAbortInNextContextForTest() {
+        if (NEXT_TEST_ABORT.get() != null)
+            throw new IllegalStateException("next HTTP context already has a fault hook");
+        CompletableFuture<Void> observed = new CompletableFuture<>();
+        NEXT_TEST_ABORT.set(observed);
+        return observed;
+    }
+
+    static void clearNextContextFaultForTest() {
+        NEXT_TEST_ABORT.remove();
+    }
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
     });
@@ -40,6 +55,10 @@ public final class NativeHttp implements AutoCloseable {
 
     public NativeHttp(OresContext context) {
         this.context = Objects.requireNonNull(context);
+        this.testAbortRejection = NEXT_TEST_ABORT.get();
+        this.rejectAbortOnce = new java.util.concurrent.atomic.AtomicBoolean(
+                testAbortRejection != null);
+        NEXT_TEST_ABORT.remove();
         timers.setRemoveOnCancelPolicy(true);
         timers.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
     }
@@ -324,7 +343,8 @@ public final class NativeHttp implements AutoCloseable {
             if (actor != null && !alreadyClosed) actor.cancel();
             if (alreadyClosed) { release(); return; }
             try {
-                if (REJECT_NEXT_ABORT_FOR_TEST.compareAndSet(true, false)) {
+                if (rejectAbortOnce.compareAndSet(true, false)) {
+                    testAbortRejection.complete(null);
                     throw new RejectedExecutionException("injected HTTP abort rejection");
                 }
                 io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } });
