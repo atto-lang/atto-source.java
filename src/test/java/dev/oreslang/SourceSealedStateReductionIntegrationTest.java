@@ -11,6 +11,60 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Executable integration proof: state loans end before source-loop handoff. */
 @Timeout(25)
 final class SourceSealedStateReductionIntegrationTest {
+    @Test void directInlineSealedStateCallRunsInSuspendableReceiveWithoutLoanEscape()
+            throws Exception {
+        String guest = """
+            define actor Worker as
+              state { count: int = 0; }
+
+              receive(ActorMail<String> mail): void {
+                if mail.value == "first"; do
+                  for (let i = 0; i < 2048; i = i + 1) do
+                    self.handle_state(critical |s| -> {
+                      s.count = s.count + 1;
+                    });
+                  done
+                  self.send(self.handle_state(critical |s| -> s.count));
+                  return;
+                fi
+                if mail.value == "second"; do
+                  self.send(self.handle_state(critical |s| -> s.count) + 1);
+                  self.end();
+                fi
+                return;
+              }
+            end
+
+            pub async routine main(): void {
+              val worker = spawn Worker();
+              await worker.ready;
+              worker.send("first");
+              worker.send("second");
+              val first = (await worker.outputs.next()).value.unwrap();
+              val second = (await worker.outputs.next()).value.unwrap();
+              stdio.stdout.write(first.value);
+              stdio.stdout.write("|");
+              stdio.stdout.write(second.value);
+              await worker.done;
+              stdio.stdout.write("|");
+              stdio.stdout.write(process.descriptor.source_loop_cooperates);
+              return;
+            }
+            """;
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(bytes).build()) {
+            context.eval(Source.newBuilder(
+                    OresLanguage.ID, guest, "inline-sealed-state-preemption.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        String output = bytes.toString(StandardCharsets.UTF_8);
+        assertTrue(output.startsWith("2048|2049|"), output);
+        long cooperates = Long.parseLong(output.substring("2048|2049|".length()));
+        assertTrue(cooperates > 0,
+                "direct critical callbacks must retire before source-task carrier handoff");
+    }
+
     @Test void sealedActorStateSurvivesPreemptionWithoutMailOvertakingOrReplay() throws Exception {
         String guest = """
             define actor Worker as
