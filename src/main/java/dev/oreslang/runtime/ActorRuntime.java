@@ -6323,7 +6323,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** Caller must hold lifecycleLock. Both output reservation and
          * actual commit enforce this same revocable actor authority. */
         private boolean acceptsActorOutputLocked() {
-            return !finalized
+            return !closed.get()
+                    && !finalized
                     && !gracefulTeardownRevoked
                     && !forceKillFenced
                     && (!stopped.get() || endRequested
