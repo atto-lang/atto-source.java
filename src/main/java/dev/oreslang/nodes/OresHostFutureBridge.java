@@ -5,6 +5,7 @@ import org.graalvm.polyglot.Value;
 
 import java.util.ArrayDeque;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * Host-only public async invocation handoff.
@@ -24,6 +25,9 @@ public final class OresHostFutureBridge {
 
     private static final class Slot {
         private final String function;
+        // This nonce is never passed to the guest callable. It binds one
+        // public control invocation to the host's current capture scope.
+        private final String nonce = UUID.randomUUID().toString();
         private OresFuture<?> future;
 
         private Slot(String function) {
@@ -53,10 +57,11 @@ public final class OresHostFutureBridge {
         Slot slot = new Slot(function);
         slots.push(slot);
         try {
-            Object[] command = new Object[arguments.length + 2];
+            Object[] command = new Object[arguments.length + 3];
             command[0] = OresEvalRootNode.INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND;
             command[1] = function;
-            System.arraycopy(arguments, 0, command, 2, arguments.length);
+            command[2] = slot.nonce;
+            System.arraycopy(arguments, 0, command, 3, arguments.length);
             // Do not inspect the returned Value. Its primitive acknowledgment
             // is intentionally unused; doing asHostObject() here would enter
             // the guest context again after the scheduler has started.
@@ -81,10 +86,11 @@ public final class OresHostFutureBridge {
      * Reject forged bridged control commands before any asynchronous work is
      * started. A missing host receiver must not create an orphaned producer.
      */
-    static void requireActiveScope(String function) {
+    static void requireActiveScope(String function, String nonce) {
         ArrayDeque<Slot> slots = CAPTURES.get();
         if (slots == null || slots.isEmpty()
-                || !slots.peek().function.equals(function)) {
+                || !slots.peek().function.equals(function)
+                || !slots.peek().nonce.equals(nonce)) {
             throw new SecurityException(
                     "host Future handoff requires a matching scoped invocation");
         }
@@ -94,12 +100,12 @@ public final class OresHostFutureBridge {
     }
 
     /** Called only by the root node's dedicated bridged invoke command. */
-    static boolean publish(String function, OresFuture<?> future) {
+    static boolean publish(String function, String nonce, OresFuture<?> future) {
         Objects.requireNonNull(future, "future");
         ArrayDeque<Slot> slots = CAPTURES.get();
         if (slots == null || slots.isEmpty()) return false;
         Slot slot = slots.peek();
-        if (!slot.function.equals(function)) {
+        if (!slot.function.equals(function) || !slot.nonce.equals(nonce)) {
             throw new IllegalStateException(
                     "host Future result does not belong to current public invocation");
         }
