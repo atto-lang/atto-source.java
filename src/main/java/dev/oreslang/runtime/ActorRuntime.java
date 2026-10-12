@@ -1294,6 +1294,113 @@ public final class ActorRuntime implements AutoCloseable {
      * This is the lowering target for actor-local `self.end()`; it carries no
      * authority to stop siblings or unrelated actors.
      */
+    /**
+     * One compiler-bound linear pipeline, limited to one inbound route per
+     * actor. No graph branching or arbitrary source-provided ActorIds.
+     * The existing ActorRef send path performs binary nominal codec admission,
+     * bounded mailbox reservations, and actor-generation fencing.
+     */
+    private record LinearPipeline(
+            ActorRef<Object> source,
+            ActorRef<Object> transform,
+            ActorRef<Object> sink,
+            String nominalIdentity) { }
+
+    private final java.util.concurrent.ConcurrentHashMap<ActorId, LinearPipeline>
+            linearPipelines = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Object pipelineBindingLock = new Object();
+
+    @SuppressWarnings("unchecked")
+    public void bindLinearPipeline(
+            ActorRef<?> source, ActorRef<?> transform, ActorRef<?> sink) {
+        Objects.requireNonNull(source);
+        Objects.requireNonNull(transform);
+        Objects.requireNonNull(sink);
+        requireCallerRuntimeAffinity("bind linear actor pipeline");
+        if (currentActor.get() != null || closed.get()) {
+            throw new IllegalStateException(
+                    "pipeline binding requires the trusted non-actor root turn");
+        }
+        if (!source.ownedBy(this) || !transform.ownedBy(this) || !sink.ownedBy(this)
+                || source.id().equals(transform.id()) || source.id().equals(sink.id())
+                || transform.id().equals(sink.id())) {
+            throw new SecurityException("pipeline requires distinct same-runtime actor references");
+        }
+        ActorRef<?>[] refs = {source, transform, sink};
+        String identity = null;
+        synchronized (pipelineBindingLock) {
+            for (ActorRef<?> ref : refs) {
+                ActorCell<?> cell = actors.get(ref.id());
+                if (cell == null || cell.stopped.get() || cell.finalized
+                        || cell.mailboxSchema == null
+                        || !(cell.mailboxSchema instanceof TaggedMessageCodec tagged)
+                        || cell.codeExecutor == null) {
+                    throw new IllegalStateException(
+                            "pipeline requires three live compiler-owned nominal actor mailboxes");
+                }
+                if (identity == null) identity = tagged.closedDomainIdentity();
+                else if (!identity.equals(tagged.closedDomainIdentity())) {
+                    throw new IllegalArgumentException(
+                            "pipeline actors must share the exact closed nominal message domain");
+                }
+                if (linearPipelines.containsKey(ref.id())) {
+                    throw new IllegalStateException("actor already bound to a pipeline");
+                }
+            }
+            LinearPipeline route = new LinearPipeline(
+                    (ActorRef<Object>) source, (ActorRef<Object>) transform,
+                    (ActorRef<Object>) sink, identity);
+            for (ActorRef<?> ref : refs) linearPipelines.put(ref.id(), route);
+        }
+    }
+
+    /** Scheduler-issued actor-turn authority only. No user-selected target,
+     * no direct call to a sibling's guest handler and no implicit response. */
+    public void routeCurrentPipeline(Object value, boolean downstream) {
+        requireCallerRuntimeAffinity(
+                downstream ? "self.forward pipeline" : "self.backward pipeline");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || cell.activeMail == null) {
+            throw new SecurityException(
+                    "directional actor routing requires an admitted DATA receive turn");
+        }
+        LinearPipeline route = linearPipelines.get(cell.ref.id());
+        if (route == null || cell.stopped.get() || cell.finalized || closed.get()) {
+            throw new IllegalStateException("no live pipeline route for current actor");
+        }
+        ActorId owner = cell.ref.id();
+        ActorId sender = cell.activeMail.sender().orElse(null);
+        ActorRef<Object> target;
+        if (owner.equals(route.source().id())) {
+            if (!downstream || sender != null) {
+                // A source receiving a backward reply may consume or finalize
+                // it, but may not implicitly restart the same flow.
+                throw new SecurityException("pipeline source has no authorized route in this turn");
+            }
+            target = route.transform();
+        } else if (owner.equals(route.transform().id())) {
+            if (downstream) {
+                if (!route.source().id().equals(sender))
+                    throw new SecurityException("forward requires the actual upstream sender");
+                target = route.sink();
+            } else {
+                if (!route.sink().id().equals(sender))
+                    throw new SecurityException("backward requires the actual downstream sender");
+                target = route.source();
+            }
+        } else if (owner.equals(route.sink().id())) {
+            if (downstream || !route.transform().id().equals(sender)) {
+                throw new SecurityException("sink may only reply to its actual upstream ingress");
+            }
+            target = route.transform();
+        } else {
+            throw new SecurityException("actor is not a member of its pipeline");
+        }
+        // This delegates to the same native/JVM bounded actor DATA mailbox as
+        // every explicit ActorRef.send; binary codec checks the target contract.
+        send(target, value);
+    }
+
     public void endCurrentActor() {
         requireCallerRuntimeAffinity("end current actor");
         ActorCell<?> cell = currentActor.get();
