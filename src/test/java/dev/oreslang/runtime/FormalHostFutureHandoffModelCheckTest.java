@@ -409,4 +409,101 @@ final class FormalHostFutureHandoffModelCheckTest {
                 true, false, false, true, false, 0, 1);
         assertThrows(AssertionError.class, () -> leaseRetryInvariant(unsafe));
     }
+
+    /**
+     * Bounded executor model: downstream submission is not physical entry.
+     * An inline executor can run and then throw; only CAS-revoked, unstarted
+     * runnables may return to the admission FIFO. An uncertain in-flight exit
+     * poisons admission instead of manufacturing successful DONE.
+     */
+    private enum ExecutorEvent {
+        SUBMIT, EXECUTE, REPORT_REJECTION, INLINE_EXECUTOR_THROWS,
+        PHYSICAL_DONE, UNPROVEN_EXIT, RETRY
+    }
+    private record ExecutorState(boolean queued, boolean submitted,
+            boolean started, boolean done, boolean poisoned, int guestStarts) {
+        static ExecutorState initial() {
+            return new ExecutorState(true, false, false, false, false, 0);
+        }
+    }
+    private static ExecutorState executorStep(ExecutorState s, ExecutorEvent e) {
+        boolean queued = s.queued, submitted = s.submitted;
+        boolean started = s.started, done = s.done, poisoned = s.poisoned;
+        int starts = s.guestStarts;
+        switch (e) {
+            case SUBMIT, RETRY -> {
+                if (queued && !poisoned) {
+                    queued = false;
+                    submitted = true;
+                }
+            }
+            case EXECUTE -> {
+                if (submitted && !started && !poisoned) {
+                    started = true;
+                    starts++;
+                }
+            }
+            case REPORT_REJECTION, INLINE_EXECUTOR_THROWS -> {
+                if (submitted && !started) {
+                    // The stale executor runnable has been CAS-revoked.
+                    submitted = false;
+                    queued = true;
+                } else if (submitted && started && !done) {
+                    // A throw racing a live guest turn is NOT an exit receipt.
+                    poisoned = true;
+                }
+                // If the guest already completed, its effects are committed:
+                // an executor's later throw must never requeue it.
+            }
+            case PHYSICAL_DONE -> {
+                if (started) done = true;
+            }
+            case UNPROVEN_EXIT -> {
+                if (started && !done) poisoned = true;
+            }
+        }
+        return new ExecutorState(queued, submitted, started, done, poisoned, starts);
+    }
+    private static void executorInvariant(ExecutorState s) {
+        assertTrue(s.guestStarts >= 0 && s.guestStarts <= 1,
+                "physical guest body executed more than once");
+        assertFalse(s.started && s.queued,
+                "already-executed guest body requeued after executor failure");
+        if (s.poisoned) assertFalse(s.queued,
+                "unknown physical exit released a reusable guest turn");
+    }
+    @Test
+    void boundedInlineExecutorFailureCannotReplayPhysicalGuestEffects() {
+        Set<ExecutorState> visited = new HashSet<>();
+        ArrayDeque<ExecutorState> frontier = new ArrayDeque<>();
+        visited.add(ExecutorState.initial());
+        frontier.addLast(ExecutorState.initial());
+        boolean sawInlineAfterDone = false, sawRetry = false, sawPoison = false;
+        while (!frontier.isEmpty()) {
+            ExecutorState s = frontier.removeFirst();
+            executorInvariant(s);
+            sawPoison |= s.poisoned;
+            sawRetry |= s.submitted && !s.started;
+            for (ExecutorEvent event : ExecutorEvent.values()) {
+                ExecutorState next = executorStep(s, event);
+                executorInvariant(next);
+                if (event == ExecutorEvent.INLINE_EXECUTOR_THROWS && s.done) {
+                    sawInlineAfterDone = true;
+                    assertEquals(s, next,
+                            "executor failed after physical completion: never replay");
+                }
+                if (s.poisoned && event == ExecutorEvent.RETRY) {
+                    assertEquals(s, next, "poisoned entry cannot be retried");
+                }
+                if (visited.add(next)) frontier.addLast(next);
+            }
+        }
+        assertTrue(sawInlineAfterDone && sawRetry && sawPoison);
+    }
+    @Test
+    void unsafeInlineFailureReplayViolatesExecutorOwnershipInvariant() {
+        ExecutorState unsafe = new ExecutorState(true, false,
+                true, true, false, 2);
+        assertThrows(AssertionError.class, () -> executorInvariant(unsafe));
+    }
 }
