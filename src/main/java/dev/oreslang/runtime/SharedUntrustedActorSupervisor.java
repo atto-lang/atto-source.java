@@ -220,9 +220,28 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
             return remote.done();
         }
 
+        /**
+         * Cooperative guest cancellation. This requires entry to the
+         * serialized guest Context and is NOT a preemption mechanism.
+         * For hostile or noncooperating guest turns, use forceCancel().
+         */
         public boolean cancel() {
             requireActive();
             return remote.cancel();
+        }
+
+        /**
+         * Supervisor priority revocation: physically close only this actor's
+         * guest Context without entering its guest-execution monitor.
+         * Sibling Contexts and the shared Engine remain alive.
+         *
+         * A successful return means Context.close(true) was confirmed.
+         * Failure leaves the actor revoked and its slot permanently reserved.
+         */
+        public boolean forceCancel() {
+            if (!revoked.compareAndSet(false, true)) return false;
+            closeFence.awaitConfirmedClose("force-cancelled untrusted actor");
+            return true;
         }
 
         @Override public void close() {
