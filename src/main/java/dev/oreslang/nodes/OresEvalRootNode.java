@@ -54,6 +54,8 @@ public final class OresEvalRootNode extends RootNode {
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND =
             "__ores_internal_invoke_public_future_bridge__";
+    public static final String INVOKE_PUBLIC_GENERATOR_BRIDGE_COMMAND =
+            "__ores_internal_invoke_public_generator_bridge__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
 
     private final Ast.Program program;
@@ -118,6 +120,19 @@ public final class OresEvalRootNode extends RootNode {
             OresHostFutureBridge.requireActiveScope(functionName, nonce, context, this);
         }
 
+        boolean generatorBridgeCommand = arguments.length > 0
+                && INVOKE_PUBLIC_GENERATOR_BRIDGE_COMMAND.equals(arguments[0]);
+        if (generatorBridgeCommand) {
+            if (arguments.length != 3
+                    || !(arguments[1] instanceof String functionName)
+                    || !(arguments[2] instanceof String nonce)) {
+                throw new SecurityException("invalid scoped host generator command");
+            }
+            // Consume the ticket before linking or lowering source code.
+            OresHostGeneratorBridge.requireActiveScope(
+                    functionName, nonce, context, this);
+        }
+
         // A malformed reserved host command must not fall through to guest
         // main or trigger evaluator initialization as a side effect.
         if (arguments.length > 0
@@ -136,6 +151,10 @@ public final class OresEvalRootNode extends RootNode {
                         && arguments[1] instanceof String)
                     || (futureBridgeCommand
                         && arguments.length >= 3
+                        && arguments[1] instanceof String
+                        && arguments[2] instanceof String)
+                    || (generatorBridgeCommand
+                        && arguments.length == 3
                         && arguments[1] instanceof String
                         && arguments[2] instanceof String);
             if (!wellFormed) {
@@ -162,10 +181,20 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (arguments.length >= 2
                 && (INVOKE_PUBLIC_COMMAND.equals(arguments[0])
-                    || INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0]))
+                    || INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0])
+                    || INVOKE_PUBLIC_GENERATOR_BRIDGE_COMMAND.equals(arguments[0]))
                 && arguments[1] instanceof String functionName) {
             boolean bridged = futureBridgeCommand;
             current.link();
+            if (generatorBridgeCommand) {
+                // Restricted source AST already passed compiler/typecheck.
+                // Hand over a Java-only handle without constructing the
+                // legacy virtual-thread producer or returning a guest Value.
+                OresHostGeneratorBridge.publish(functionName,
+                        (String) arguments[2], context, this,
+                        context.prepareExperimentalSourceGenerator(program, functionName));
+                return 0;
+            }
             Object result = current.invokePublic(
                     functionName,
                     java.util.Arrays.copyOfRange(
