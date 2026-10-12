@@ -71,10 +71,11 @@ public final class NativeHttp implements AutoCloseable {
     }
 
     /** A bounded number of persistent actor identities, independent of HTTP admission capacity. */
-    public Handler poolHandler(ActorRuntime.ActorCodeExecutor code, String type,
+    public synchronized Handler poolHandler(ActorRuntime.ActorCodeExecutor code, String type,
                                ActorRuntime.ActorKind kind, int workers) {
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP handlers are registered by the supervisor");
         if (kind == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("untrusted HTTP handlers are not supported");
+        if (closed) throw new IllegalStateException("HTTP runtime closed");
         if (workers < 1 || workers > 10000) throw new IllegalArgumentException("pool workers must be 1..10000");
         Handler handler = new Handler(code, type, kind, workers);
         pooledHandlers.add(handler);
@@ -136,9 +137,11 @@ public final class NativeHttp implements AutoCloseable {
                 }
                 actor.send(exchange.moveToPooled(actor));
             } catch (RuntimeException failure) {
-                if (actor != null) actor.cancel();
-                // The slot must never point to a failed actor.
-                workers.set(slot, null);
+                // A dispatch failure belongs to this exchange. In particular,
+                // never cancel an existing pooled worker that may have other
+                // outstanding request lifetimes on its single-flight lane.
+                if (fresh && actor != null) actor.cancel();
+                if (fresh || actor == null || !context.actors().isAlive(actor)) workers.set(slot, null);
                 exchange.state.abort(500);
             }
         }
@@ -373,10 +376,16 @@ public final class NativeHttp implements AutoCloseable {
                 terminal = true;
             }
             // Never perform socket I/O or actor cancellation while holding the ownership monitor.
-            if (actor != null && !alreadyClosed) actor.cancel();
+            // A pooled actor is shared by many exchange lifetimes. Only abort the
+            // failed exchange; worker termination is owned by pool shutdown.
+            if (actor != null && !pooled && !alreadyClosed) actor.cancel();
             if (alreadyClosed) { release(); return; }
             try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException closed) { release(); }
+            catch (RejectedExecutionException closed) {
+                // I/O executor shutdown must not strand admission forever.
+                try { raw.close(); }
+                finally { synchronized (this) { transportClosed = true; } release(); }
+            }
         }
         void finish() {
             synchronized (this) { if (terminal) return; terminal = true; }
