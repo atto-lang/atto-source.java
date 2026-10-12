@@ -114,6 +114,20 @@ final class TransformPipeActorRoleTest {
     }
 
     @Test
+    void usingReadWriteCannotBypassUnimplementedJavaStateLoans() {
+        String state = "state { value: int = 0; }\n";
+        String read = FORWARD.replace("return;",
+                "const next = using state.read(|state| -> { return state.value; }); return;");
+        String write = FORWARD.replace("return;",
+                "const next = using state.write(critical |state| -> { "
+                + "state.value = 1; return state.value; }); return;");
+        assertRejected(HEADER + state + read + BACKWARD + "end",
+                "using state.read/write requires Java scoped actor-state");
+        assertRejected(HEADER + state + write + BACKWARD + "end",
+                "using state.read/write requires Java scoped actor-state");
+    }
+
+    @Test
     void javaGuestRuntimeRemainsExplicitlyFailClosed() {
         IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse(
