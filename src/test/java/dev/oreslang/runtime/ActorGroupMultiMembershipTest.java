@@ -525,7 +525,12 @@ final class ActorGroupMultiMembershipTest {
                                 try {
                                     runtime.createActorGroup();
                                 } catch (IllegalStateException alreadyStopping) {
-                                    // Valid outcome when termination wins.
+                                    // Only creator retirement is expected. Never
+                                    // silently swallow quota or runtime defects.
+                                    if (alreadyStopping.getMessage() == null
+                                            || !alreadyStopping.getMessage().contains("group creator")) {
+                                        throw alreadyStopping;
+                                    }
                                 }
                             } catch (Throwable failure) {
                                 unexpected.compareAndSet(null, failure);
