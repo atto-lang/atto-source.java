@@ -105,6 +105,19 @@ public final class Parser {
                     rootDeclarations.add(parseProxyActor(modifiers.visibility));
                     continue;
                 }
+                if (matchContextualIdentifier("transform")) {
+                    consumeContextualIdentifier("pipe", "transform must be followed by 'pipe actor'");
+                    consume(ACTOR, "transform pipe must modify an actor");
+                    rejectCallableStructuralAnnotation(annotations, "transform pipe actor declarations");
+                    if (modifiers.async || modifiers.generator || modifiers.structural
+                            || modifiers.nonLexical || modifiers.trapped
+                            || modifiers.isStatic || modifiers.isAbstract
+                            || modifiers.shared || modifiers.untrusted)
+                        throw error(previous(), "transform pipe actor accepts only visibility modifiers");
+                    rootDeclarations.add(parseActorClass(
+                            Ast.ActorKind.SHARED, modifiers.visibility, null, false, true));
+                    continue;
+                }
                 Ast.ClassDecl configuredActor = parseProtocolActorHeader(modifiers, annotations);
                 if (configuredActor != null) {
                     rootDeclarations.add(configuredActor);
@@ -755,8 +768,36 @@ public final class Parser {
     private Ast.ClassDecl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility,
             Ast.ActorConcurrencySpec policy, boolean declaredSerial) {
+        return parseActorClass(actorKind, visibility, policy, declaredSerial, false);
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility,
+            Ast.ActorConcurrencySpec policy, boolean declaredSerial, boolean transformPipe) {
         String name = consume(IDENT, "expected actor name").lexeme();
-        List<String> generics = parseGenericParameters();
+        Ast.ActorPipeTransformSpec pipeRole = null;
+        List<String> generics;
+        if (transformPipe) {
+            consume(LT, "transform pipe actor requires forward_messages and backward_messages");
+            String forward = null;
+            String backward = null;
+            for (int i = 0; i < 2; i++) {
+                String key = consume(IDENT, "expected directional domain key").lexeme();
+                consume(EQUAL, "directional domain requires '='");
+                String domain = consume(IDENT, "expected nominal message domain").lexeme();
+                if (key.equals("forward_messages") && forward == null) forward = domain;
+                else if (key.equals("backward_messages") && backward == null) backward = domain;
+                else throw error(previous(),
+                        "transform pipe actor requires distinct forward_messages and backward_messages");
+                if (i == 0) consume(COMMA, "transform pipe actor requires two directional domains");
+            }
+            consume(GT, "expected '>' after transform pipe domains");
+            if (forward == null || backward == null)
+                throw error(previous(),
+                        "transform pipe actor requires both forward_messages and backward_messages");
+            pipeRole = new Ast.ActorPipeTransformSpec(forward, backward);
+            generics = List.of();
+        } else generics = parseGenericParameters();
 
         // This is a builtin actor superclass, not a class reference. The
         // runtime supplies its final lifecycle and exclusive scheduling
@@ -870,9 +911,44 @@ public final class Parser {
                 : new Ast.ActorConcurrencySpec(
                         policy == null ? "actor" : policy.protocol(),
                         requestConcurrency, messageConcurrency);
+        if (transformPipe) validateTransformPipeHandlerContract(name, pipeRole, methods);
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces,
-                fields, null, methods, null, configured, builtinBase);
+                fields, null, methods, null, configured, builtinBase, pipeRole);
+    }
+
+    private void validateTransformPipeHandlerContract(
+            String actorName, Ast.ActorPipeTransformSpec contract,
+            List<Ast.MethodDecl> methods) {
+        int forwardCount = 0, backwardCount = 0;
+        for (Ast.MethodDecl method : methods) {
+            final String expected;
+            if (method.name().equals("receive_forward")) {
+                forwardCount++;
+                expected = contract.forwardMessages();
+            } else if (method.name().equals("receive_backward")) {
+                backwardCount++;
+                expected = contract.backwardMessages();
+            } else if (method.name().equals("receive"))
+                throw error(previous(), "transform pipe actor rejects ordinary receive");
+            else continue;
+            if (method.isStatic() || method.async() || method.isAbstract()
+                    || method.visibility() == Ast.Visibility.PUBLIC
+                    || !method.genericParameters().isEmpty()
+                    || method.explicitReceiverType() != null
+                    || method.parameters().size() != 1
+                    || !method.parameters().get(0).type().name().equals(expected)
+                    || !method.parameters().get(0).type().arguments().isEmpty()
+                    || !method.returnType().name().equals("void")
+                    || !method.returnType().arguments().isEmpty())
+                throw error(previous(), "transform pipe actor '" + actorName
+                        + "' method '" + method.name()
+                        + "' must be an instance void handler taking exactly one "
+                        + expected + " parameter");
+        }
+        if (forwardCount != 1 || backwardCount != 1)
+            throw error(previous(),
+                    "transform pipe actor requires exactly one receive_forward and receive_backward");
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
