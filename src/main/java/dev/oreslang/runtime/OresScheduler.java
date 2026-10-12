@@ -551,7 +551,8 @@ public final class OresScheduler implements AutoCloseable {
 
         private void armWallDeadline(long delayNanos, Throwable failure) {
             ScheduledFuture<?> timer = WALL_DEADLINES.schedule(
-                    () -> failTerminal(failure), delayNanos, TimeUnit.NANOSECONDS);
+                    () -> expireFromWallDeadline(failure),
+                    delayNanos, TimeUnit.NANOSECONDS);
             if (!wallDeadline.compareAndSet(null, timer)) {
                 timer.cancel(false);
                 throw new IllegalStateException("task wall deadline already armed");
@@ -809,6 +810,36 @@ public final class OresScheduler implements AutoCloseable {
             terminalOutcome.set(new TerminalSuccess<>(value));
             // afterCarrierTurn() publishes only after the carrier has fully
             // unwound runBound(...).
+        }
+
+        /**
+         * A host deadline must not depend on a runnable guest continuation.
+         * Revoke task authority and retire only quiescent resources on the
+         * timer worker; Future subscribers are invoked on a separate virtual
+         * host notifier because they are synchronous and can block forever.
+         * An executing carrier still owns terminal publication after unwind.
+         */
+        private void expireFromWallDeadline(Throwable failure) {
+            Objects.requireNonNull(failure, "failure");
+            detachActiveAwaitRegistration();
+            int observed;
+            do {
+                observed = phase.get();
+                if (observed == TERMINAL) return;
+            } while (!phase.compareAndSet(observed, TERMINAL));
+            pendingResume.set(null);
+            terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
+            if (!executing.get()) {
+                try {
+                    retireWhenQuiescent();
+                } finally {
+                    // Never run a potentially blocking synchronous Future
+                    // subscriber on a shared deadline-enforcement worker.
+                    // Guest code is not executed by this host notifier.
+                    Thread.ofVirtual().name("ores-source-wall-expiry-notify")
+                            .start(this::publishTerminalIfReady);
+                }
+            }
         }
 
         private void failTerminal(Throwable failure) {
