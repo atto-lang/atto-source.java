@@ -143,7 +143,8 @@ public final class OresContext implements AutoCloseable {
                     new HostGeneratorTurnPump.OwnerToken(contextId, contextIncarnation),
                     () -> generatorRootTurnAuthorized(
                             vm.isRootSchedulerCurrent(),
-                            Boolean.TRUE.equals(rootGuestEntryScope.get())));
+                            Boolean.TRUE.equals(rootGuestEntryScope.get())),
+                    physicalGuestExits);
         } catch (RuntimeException | Error failure) {
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
@@ -447,7 +448,9 @@ public final class OresContext implements AutoCloseable {
         try {
             previous = truffleContext.enter(null);
             entered = true;
-            physicalEntry = physicalGuestExits.enteredAfterTruffleEnter();
+            if (physicalGuestExits.trackingEnabled()) {
+                physicalEntry = physicalGuestExits.enteredAfterTruffleEnter();
+            }
             turn.run();
         } finally {
             try {
