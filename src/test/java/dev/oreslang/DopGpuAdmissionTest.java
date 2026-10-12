@@ -92,6 +92,19 @@ final class DopGpuAdmissionTest {
     }
 
     @Test
+    void twoDeviceReservationsMustFitSigned64BitAbi() {
+        // This is metadata admission; the test never allocates huge memory.
+        long rows = Long.MAX_VALUE / 8L + 1L;
+        var plan = new DataOrientedLayout.Plan(DataOrientedLayout.Kind.AOS,
+                rows, 1, 4, 4, 1);
+        var input = buffer(plan, "tenant", "gpu", 123);
+        var output = buffer(plan, "tenant", "gpu", 124);
+        assertThrows(ArithmeticException.class, () -> DopGpuAdmission.preflight(
+                kernel(plan), new DopKernelIR.GpuTarget(64, Long.MAX_VALUE,
+                        Long.MAX_VALUE, true), input, output));
+    }
+
+    @Test
     void emptyDopPlansAreLegalOnHostButNeverDeviceLaunches() {
         var empty = new DataOrientedLayout.Plan(DataOrientedLayout.Kind.SOA, 0, 1, 4, 8, 1);
         assertEquals(0, empty.byteLength());
