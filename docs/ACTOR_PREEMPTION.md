@@ -242,11 +242,21 @@ carrier is executing, retires its quota slot without another actor turn.
 An active guest turn may have its completion suppressed immediately but
 **must exit its physical carrier before its memory/quota can be released**.
 
-Deadline notifications are dispatched from a separate host virtual thread,
-not from the shared timer worker: a blocking synchronous Future subscriber
-must not stall timeouts of other actors. Timer registrations are cancelled
-on task retirement and cancelled/finalized tasks cannot receive a second
-deadline result. A late nested child cannot mint a fresh wall budget.
+Timed source tasks now acquire one of **256 process-wide timed-admission
+reservations** before admission. The admission is fail-closed when those
+slots are full; a rejected task does not receive a budget or enter the
+actor's scheduler. A reservation is held until **both** physical task
+quiescence and the winning Future's synchronous subscriber notification
+drain have completed. Cancellation or visible Future settlement alone cannot
+recycle a reservation while a host callback remains blocked.
+
+Deadline task revocation runs on dedicated host timer workers; potentially
+blocking actor retirement and synchronous Future notifications run on a
+separate host virtual finalizer, bounded by those reservations. One actor's
+blocked terminal subscriber or lifecycle lock cannot consume a shared timer
+worker. Timer registrations are cancelled on task retirement and
+cancelled/finalized tasks cannot receive a second deadline result.
+A late nested child cannot mint a fresh wall budget.
 
 This is cooperative/structured cancellation, **not** forcible termination of
 unsafepointed FFI, native host calls or hung Java guest threads. An external
