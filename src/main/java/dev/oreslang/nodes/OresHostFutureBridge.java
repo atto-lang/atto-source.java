@@ -1,9 +1,11 @@
 package dev.oreslang.nodes;
 
 import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresScheduler;
 import org.graalvm.polyglot.Value;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -43,6 +45,8 @@ public final class OresHostFutureBridge {
         private Object ownerContext;
         private Object ownerRoot;
         private OresFuture<?> future;
+        private final ArrayList<OresScheduler.DeferredStart<?>> deferredStarts =
+                new ArrayList<>();
 
         Slot(String function) {
             this.function = Objects.requireNonNull(function, "function");
@@ -90,18 +94,45 @@ public final class OresHostFutureBridge {
             state = State.PUBLISHED;
         }
 
+        void stageSourceStart(OresScheduler.DeferredStart<?> deferred) {
+            requireOwnerThread();
+            if (state != State.CLAIMED) {
+                throw new SecurityException(
+                        "source start requires a claimed host Future invocation");
+            }
+            deferredStarts.add(Objects.requireNonNull(deferred, "deferred"));
+        }
+
         OresFuture<?> result() {
             requireOwnerThread();
             if (state != State.PUBLISHED || future == null) {
                 throw new IllegalStateException(
                         "Oreslang public async call did not publish its Future");
             }
-            // Handoff is one-use as well as claim/publication: a second reader
-            // cannot extract the same result, and the slot no longer retains
-            // the Future once the caller has taken responsibility for it.
+            // The Polyglot execute entry has already returned at this point.
+            // Starting CONTROL work earlier would race the original host exit.
             OresFuture<?> delivered = future;
             future = null;
             state = State.DELIVERED;
+            try {
+                for (OresScheduler.DeferredStart<?> deferred : deferredStarts) {
+                    deferred.dispatchAfterHostReturn();
+                }
+                deferredStarts.clear();
+            } catch (RuntimeException | Error failure) {
+                for (OresScheduler.DeferredStart<?> deferred : deferredStarts) {
+                    try { deferred.abandonBeforeDispatch(); }
+                    catch (RuntimeException | Error cleanup) {
+                        if (failure != cleanup) failure.addSuppressed(cleanup);
+                    }
+                }
+                deferredStarts.clear();
+                try { delivered.cancel(false); }
+                catch (RuntimeException | Error cleanup) {
+                    if (failure != cleanup) failure.addSuppressed(cleanup);
+                }
+                throw failure;
+            }
             return delivered;
         }
 
@@ -115,6 +146,18 @@ public final class OresHostFutureBridge {
         void cancelUnreturnedOnHostFailure(Throwable hostFailure) {
             requireOwnerThread();
             Objects.requireNonNull(hostFailure, "hostFailure");
+            // A guest dispatch registered during the bridged call may exist
+            // even when linking or publication later fails. Such a producer
+            // must never be left logically live without a physical carrier.
+            for (OresScheduler.DeferredStart<?> deferred : deferredStarts) {
+                try { deferred.abandonBeforeDispatch(); }
+                catch (RuntimeException | Error cancellationFailure) {
+                    if (cancellationFailure != hostFailure) {
+                        hostFailure.addSuppressed(cancellationFailure);
+                    }
+                }
+            }
+            deferredStarts.clear();
             if (state != State.PUBLISHED || future == null) return;
             try {
                 future.cancel(false);
@@ -127,6 +170,12 @@ public final class OresHostFutureBridge {
 
         void close() {
             requireOwnerThread();
+            // Also protect scope corruption and callers abandoning a claimed
+            // scope without taking a published Future.
+            for (OresScheduler.DeferredStart<?> deferred : deferredStarts) {
+                deferred.abandonBeforeDispatch();
+            }
+            deferredStarts.clear();
             state = State.CLOSED;
             ownerContext = null;
             ownerRoot = null;
@@ -197,6 +246,37 @@ public final class OresHostFutureBridge {
                     "host Future handoff requires a matching scoped invocation");
         }
         slots.peek().claim(function, nonce, context, root);
+    }
+
+    /**
+     * The only source scheduler dispatch gate used by a scoped host Future
+     * invocation. Work is registered inside the guest call but its physical
+     * CONTROL carrier cannot start until Value.execute has returned.
+     * Ordinary guest/actor calls do not inherit this host-specific deferral.
+     */
+    public static <T> OresFuture<T> startSourceTask(
+            OresScheduler scheduler, OresScheduler.Task<T> task) {
+        Objects.requireNonNull(scheduler, "scheduler");
+        Objects.requireNonNull(task, "task");
+        ArrayDeque<Slot> slots = CAPTURES.get();
+        if (slots == null || slots.isEmpty()) return scheduler.start(task);
+        Slot slot = slots.peek();
+        slot.requireOwnerThread();
+        if (slot.state != Slot.State.CLAIMED) {
+            throw new SecurityException(
+                    "host Future source start requires an active claimed scope");
+        }
+        OresScheduler.DeferredStart<T> deferred = scheduler.prepareDeferred(task);
+        try {
+            slot.stageSourceStart(deferred);
+        } catch (RuntimeException | Error failure) {
+            try { deferred.abandonBeforeDispatch(); }
+            catch (RuntimeException | Error cleanup) {
+                if (failure != cleanup) failure.addSuppressed(cleanup);
+            }
+            throw failure;
+        }
+        return deferred.future();
     }
 
     /** Called only by the same root and context that claimed the ticket. */
