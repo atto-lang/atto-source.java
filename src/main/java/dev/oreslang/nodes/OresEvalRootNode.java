@@ -83,6 +83,21 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
+        // Bridge messages are host control messages, never guest main calls.
+        // Reject missing/malformed nonce before linking or scheduling a task.
+        // In particular, an incomplete internal command must not fall through
+        // to the backward-compatible executeMain entrypoint.
+        boolean futureBridgeCommand = arguments.length > 0
+                && INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0]);
+        if (futureBridgeCommand) {
+            if (arguments.length < 3
+                    || !(arguments[1] instanceof String functionName)
+                    || !(arguments[2] instanceof String nonce)) {
+                throw new SecurityException("invalid scoped host Future handoff command");
+            }
+            OresHostFutureBridge.requireActiveScope(functionName, nonce);
+        }
+
         Evaluator current = evaluator(context);
         if (isControl(arguments, LINK_ONLY_COMMAND)) {
             current.link();
@@ -103,19 +118,17 @@ public final class OresEvalRootNode extends RootNode {
                 && (INVOKE_PUBLIC_COMMAND.equals(arguments[0])
                     || INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0]))
                 && arguments[1] instanceof String functionName) {
-            boolean bridged = INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0]);
-            // Authenticate the host capture *before* invoking guest code.
-            // A caller who guesses the internal command cannot orphan a task.
-            if (bridged) OresHostFutureBridge.requireActiveScope(functionName);
+            boolean bridged = futureBridgeCommand;
             current.link();
             Object result = current.invokePublic(
-                    functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+                    functionName, java.util.Arrays.copyOfRange(
+                            arguments, bridged ? 3 : 2, arguments.length));
             if (bridged) {
                 if (!(result instanceof OresFuture<?> future)) {
                     throw new IllegalArgumentException(
                             "host Future handoff requires an async public function: " + functionName);
                 }
-                if (!OresHostFutureBridge.publish(functionName, future)) {
+                if (!OresHostFutureBridge.publish(functionName, (String) arguments[2], future)) {
                     throw new SecurityException(
                             "host Future handoff requires an active scoped invocation");
                 }
