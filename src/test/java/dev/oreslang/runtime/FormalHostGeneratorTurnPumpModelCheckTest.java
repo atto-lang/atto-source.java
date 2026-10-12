@@ -242,6 +242,111 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         invariant(state);
     }
 
+    /**
+     * A second bounded abstraction for certificate authority. Synthetic,
+     * foreign and replayed physical receipts cannot open another guest turn
+     * or authorize context retirement. Identity verification and CAS
+     * redemption are exercised concretely by HostGeneratorTurnPumpTest.
+     */
+    private enum ProofEvent {
+        ISSUE, CLAIM, REPLAY, WRONG_CONTEXT, FOREIGN_ISSUER,
+        PHYSICAL_EXIT, CANCEL_PUBLIC, SEAL, RETRY_CLOSE
+    }
+
+    private record ProofState(boolean issued, boolean claimed, boolean exited,
+            boolean poisoned, boolean sealed, boolean retired, int claims) {
+        static ProofState initial() {
+            return new ProofState(false, false, false, false, false, false, 0);
+        }
+    }
+
+    private static ProofState proofStep(ProofState s, ProofEvent e) {
+        if (s.retired) return s;
+        boolean issued = s.issued, claimed = s.claimed, exited = s.exited;
+        boolean poisoned = s.poisoned, sealed = s.sealed, retired = false;
+        int claims = s.claims;
+        switch (e) {
+            case ISSUE -> {
+                if (!issued && !sealed) issued = true;
+            }
+            case CLAIM -> {
+                if (issued && !claimed && !sealed) {
+                    claimed = true;
+                    claims++;
+                }
+            }
+            case REPLAY -> {
+                if (claimed) {
+                    // Invalid second claim must not mint a new physical lease.
+                    poisoned = true;
+                    sealed = true;
+                }
+            }
+            case WRONG_CONTEXT, FOREIGN_ISSUER -> {
+                if (issued && !sealed) {
+                    poisoned = true;
+                    sealed = true;
+                }
+            }
+            case PHYSICAL_EXIT -> {
+                if (claimed) exited = true;
+            }
+            case CANCEL_PUBLIC -> {
+                // Cancellation is not proof of TruffleContext.leave.
+            }
+            case SEAL -> sealed = true;
+            case RETRY_CLOSE -> {
+                if (sealed && (!claimed || exited) && !poisoned) retired = true;
+            }
+        }
+        return new ProofState(
+                issued, claimed, exited, poisoned, sealed, retired, claims);
+    }
+
+    private static void invariantProof(ProofState s) {
+        assertTrue(s.claims >= 0 && s.claims <= 1,
+                "one physical receipt authorized multiple generator pulls");
+        if (s.retired) {
+            assertTrue(s.sealed && !s.poisoned && (!s.claimed || s.exited),
+                    "retirement occurred without verified physical DONE");
+        }
+        if (s.poisoned) {
+            assertTrue(s.sealed && !s.retired,
+                    "forged, foreign or replayed receipt escaped quarantine");
+        }
+    }
+
+    @Test
+    void allBoundedPhysicalCertificateEventsPreserveOneUseRetirementSafety() {
+        Set<ProofState> visited = new HashSet<>();
+        ArrayDeque<ProofState> frontier = new ArrayDeque<>();
+        visited.add(ProofState.initial());
+        frontier.add(ProofState.initial());
+        boolean sawReplay = false, sawForeign = false, sawRetired = false;
+        while (!frontier.isEmpty()) {
+            ProofState current = frontier.removeFirst();
+            invariantProof(current);
+            sawReplay |= current.claimed && current.poisoned;
+            sawForeign |= current.issued && !current.claimed && current.poisoned;
+            sawRetired |= current.retired;
+            for (ProofEvent event : ProofEvent.values()) {
+                ProofState next = proofStep(current, event);
+                invariantProof(next);
+                if (visited.add(next)) frontier.addLast(next);
+            }
+        }
+        assertTrue(visited.size() >= 12, "physical receipt model lost race states");
+        assertTrue(sawReplay && sawForeign && sawRetired,
+                "physical receipt model missed replay, foreign and retirement paths");
+    }
+
+    @Test
+    void deliberatelyUnsafeReceiptReplayIsRejectedByProofInvariant() {
+        ProofState unsafe = new ProofState(true, true, true, false, true, false, 2);
+        assertThrows(AssertionError.class, () -> invariantProof(unsafe),
+                "model mutation should expose an unsafe second receipt redemption");
+    }
+
     @Test
     void publicCancellationNeverReleasesThePhysicalExitBarrier() {
         State state = State.initial();
