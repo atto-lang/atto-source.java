@@ -841,7 +841,11 @@ public final class ChannelRuntime {
         if (selection.decided) return;
 
         selection.decided = true;
-        selection.set.selected(result.index(), selection.policy);
+        // DEFAULT is an observation of no readiness, not a committed I/O
+        // operation. It must not spend another arm's FAIR rotation credit.
+        if (result.operation() != SelectOperation.DEFAULT) {
+            selection.set.selected(result.index(), selection.policy);
+        }
         unregisterLocked(selection);
         completions.add(() ->
                 selection.future.completeFromRuntime(result));
