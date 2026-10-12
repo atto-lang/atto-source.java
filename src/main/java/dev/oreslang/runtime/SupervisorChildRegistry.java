@@ -86,7 +86,7 @@ public final class SupervisorChildRegistry {
      */
     record Transition(long sequence, String operation, Snapshot state,
                              UUID restartPermit, long stopTurn,
-                             ActorRuntime.ActorId replacement) {}
+                             ActorRuntime.ActorId replacement, UUID stopPermit) {}
     private static final int MAX_TRANSITIONS = 100_000;
     private final List<Transition> transitions = new ArrayList<>();
     private boolean traceComplete = true;
@@ -102,6 +102,18 @@ public final class SupervisorChildRegistry {
 
     private void recordTransition(String operation, Snapshot state, UUID permit,
                                   long stopTurn, ActorRuntime.ActorId candidate) {
+        recordTransition(operation, state, permit, stopTurn, candidate, null);
+    }
+
+    private void recordStopTransition(String operation, Snapshot state,
+                                      StopReservation permit) {
+        recordTransition(operation, state, null, permit.turnGeneration(),
+                null, permit.nonce());
+    }
+
+    private void recordTransition(String operation, Snapshot state, UUID permit,
+                                  long stopTurn, ActorRuntime.ActorId candidate,
+                                  UUID stopPermit) {
         if (!traceComplete) return;
         if (transitions.size() >= MAX_TRANSITIONS) {
             traceComplete = false;
@@ -110,7 +122,7 @@ public final class SupervisorChildRegistry {
         // Auditing must never run user code or disturb an already committed state.
         try {
             transitions.add(new Transition(transitions.size() + 1L,
-                    operation, state, permit, stopTurn, candidate));
+                    operation, state, permit, stopTurn, candidate, stopPermit));
         } catch (Throwable failure) {
             traceComplete = false;
         }
@@ -421,8 +433,7 @@ public final class SupervisorChildRegistry {
             children.put(child.logicalId(), finalized);
             throw admissionFailure;
         }
-        recordTransition("stop.reserve", stopping, null,
-                reservation.turnGeneration(), null);
+        recordStopTransition("stop.reserve", stopping, reservation);
         return reservation;
     }
 
@@ -453,8 +464,7 @@ public final class SupervisorChildRegistry {
             throw new IllegalStateException("STOP host effect already classified");
         StopReceipt updated = new StopReceipt(permit, StopReceiptStatus.APPLIED);
         stopReceipts.put(permit.child().logicalId(), updated);
-        recordTransition("stop.applied", requireCurrent(permit.child()),
-                null, permit.turnGeneration(), null);
+        recordStopTransition("stop.applied", requireCurrent(permit.child()), permit);
         return updated;
     }
 
@@ -471,8 +481,7 @@ public final class SupervisorChildRegistry {
         if (current.status() == StopReceiptStatus.UNCERTAIN) return current;
         StopReceipt updated = new StopReceipt(permit, StopReceiptStatus.UNCERTAIN);
         stopReceipts.put(permit.child().logicalId(), updated);
-        recordTransition("stop.uncertain", requireCurrent(permit.child()),
-                null, permit.turnGeneration(), null);
+        recordStopTransition("stop.uncertain", requireCurrent(permit.child()), permit);
         return updated;
     }
 
@@ -489,8 +498,7 @@ public final class SupervisorChildRegistry {
         children.put(permit.child().logicalId(), stopped);
         stopReceipts.put(permit.child().logicalId(), acknowledged);
         stopReservations.remove(permit.child().logicalId());
-        recordTransition("stop.ack-applied", stopped, null,
-                permit.turnGeneration(), null);
+        recordStopTransition("stop.ack-applied", stopped, permit);
         return stopped;
     }
 
@@ -523,8 +531,7 @@ public final class SupervisorChildRegistry {
         children.put(permit.child().logicalId(), stopped);
         stopReceipts.put(permit.child().logicalId(), acknowledged);
         stopReservations.remove(permit.child().logicalId());
-        recordTransition("stop.ack-reconciled", stopped, null,
-                permit.turnGeneration(), null);
+        recordStopTransition("stop.ack-reconciled", stopped, permit);
         return stopped;
     }
 
@@ -569,8 +576,7 @@ public final class SupervisorChildRegistry {
         children.put(permit.child().logicalId(), stopped);
         stopReceipts.put(permit.child().logicalId(), acknowledged);
         stopReservations.remove(permit.child().logicalId());
-        recordTransition("stop.ack-host", stopped, null,
-                permit.turnGeneration(), null);
+        recordStopTransition("stop.ack-host", stopped, permit);
         return stopped;
     }
 
