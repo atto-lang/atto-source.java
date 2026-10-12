@@ -22,6 +22,8 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    // Only an actor instance method may acquire the sealed lexical state loan.
+    private boolean insideActorInstanceMethod;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -727,7 +729,13 @@ public final class Parser {
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
             }
-            methods.add(parseMethod(annotations, mods));
+            boolean previousScope = insideActorInstanceMethod;
+            insideActorInstanceMethod = !mods.isStatic;
+            try {
+                methods.add(parseMethod(annotations, mods));
+            } finally {
+                insideActorInstanceMethod = previousScope;
+            }
         }
 
         consume(terminator, braceStyle
@@ -793,7 +801,7 @@ public final class Parser {
      */
     private List<Ast.Annotation> parseSignatureEffects(List<Ast.Annotation> annotations) {
         List<Ast.Annotation> result = new ArrayList<>(annotations);
-        if (matchContextualIdentifier("with") || match(USING)) {
+        if (match(WITH) || match(USING)) {
             // `with` is the canonical effect-bound signature spelling. The
             // historical signature `using` is accepted only during migration;
             // `using state.read/write(...)` in expressions is a scoped loan.
@@ -3077,7 +3085,7 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, SPAWN, STOP, DONE, AWAIT, ASYNC, NLEX, TRAP, NB, SELECT, READCH, WRITECH, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, EQ, NEQ, IS, WHEN, CASE, DEFAULT, FIRST, CB, UNTRUSTED, TYPE, TYPES, TYPEOF,
+                    NEW, SPAWN, STOP, DONE, AWAIT, ASYNC, NLEX, TRAP, WITH, NB, SELECT, READCH, WRITECH, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, EQ, NEQ, IS, WHEN, CASE, DEFAULT, FIRST, CB, UNTRUSTED, TYPE, TYPES, TYPEOF,
                     INTERFACE, TRAIT, STRUCT, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
@@ -3101,6 +3109,10 @@ public final class Parser {
         // handle_state intrinsic so escape/borrow/effect verification applies.
         if (match(USING)) {
             Token usingToken = previous();
+            if (!insideActorInstanceMethod) {
+                throw error(usingToken,
+                        "using state capabilities requires an actor instance method");
+            }
             Token namespace = consume(IDENT, "using requires the actor state namespace");
             if (!namespace.lexeme().equals("state")) {
                 throw error(namespace, "using currently supports only state.read/write scoped capabilities");
