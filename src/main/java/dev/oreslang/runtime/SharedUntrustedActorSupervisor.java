@@ -150,19 +150,7 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
         private final UntrustedJitCodeUnit code;
         private final UntrustedJitCodeUnit.RemoteUntrustedActor remote;
         private final AtomicBoolean revoked = new AtomicBoolean();
-        private final VerifiedCloseFence closeFence = new VerifiedCloseFence(() -> {
-            try {
-                // No group monitor is held here: Context.close(true) must
-                // interrupt a malicious running guest rather than deadlock.
-                group.close();
-                // Only confirmed physical Context retirement releases capacity.
-                synchronized (lifecycle) { active.remove(this); }
-            } finally {
-                // Even when guest teardown fails, every old actor proxy stays
-                // revoked. Its occupied slot prevents over-admission.
-                code.fenceAfterContextClose();
-            }
-        });
+        private final VerifiedCloseFence closeFence;
 
         private Actor(SharedUntrustedIsolatePool.Group group,
                       UntrustedJitCodeUnit code,
@@ -170,6 +158,16 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
             this.group = group;
             this.code = code;
             this.remote = remote;
+            this.closeFence = new VerifiedCloseFence(() -> {
+                try {
+                    // Physical revocation must not take guest execution monitor.
+                    this.group.close();
+                    synchronized (lifecycle) { active.remove(this); }
+                } finally {
+                    // Keep a failed close's slot reserved and every proxy fenced.
+                    this.code.fenceAfterContextClose();
+                }
+            });
         }
 
         public UUID identity() { return identity; }
