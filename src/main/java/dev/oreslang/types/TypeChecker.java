@@ -4903,6 +4903,22 @@ public final class TypeChecker {
         }
     }
 
+    private TaggedMessageContracts.Domain taggedDomainFor(Type subject) {
+        if (!(subject instanceof Named named)
+                || !named.arguments().isEmpty() || taggedMessages == null) return null;
+        TaggedMessageContracts.Domain found = taggedMessages.patterns().get(named.name());
+        if (found != null) return found;
+        var enumeration = taggedMessages.enums().get(named.name());
+        return enumeration == null ? null
+                : new TaggedMessageContracts.Domain(named.name(), enumeration.cases());
+    }
+
+    private boolean taggedCaseInDomain(
+            TaggedMessageContracts.Domain domain, String qualified) {
+        return domain.cases().stream()
+                .anyMatch(c -> c.qualifiedName().equals(qualified));
+    }
+
     private void checkPattern(
             Ast.Pattern pattern, Type subject, Env bindings, Set<String> generics, Type self) {
         if (pattern instanceof Ast.WildcardPattern) return;
@@ -4920,6 +4936,26 @@ public final class TypeChecker {
         if (pattern instanceof Ast.TypePattern typed) {
             requireRuntimeReifiableType(typed.type(), "type pattern");
             Type target = deref(resolve(typed.type(), generics, self));
+            // A closed ActorMail<Pattern> value is a tagged sum, not an
+            // unrelated nominal class. Case arms narrow to the encoded
+            // payload, matching interpreter patternMatches(TypePattern).
+            if (target instanceof Named variant && variant.arguments().isEmpty()) {
+                TaggedMessageContracts.Case matched = taggedCaseOrNull(variant.name());
+                TaggedMessageContracts.Domain domain = taggedDomainFor(subject);
+                if (matched != null && domain != null) {
+                    if (!taggedCaseInDomain(domain, variant.name())) {
+                        throw new IllegalArgumentException(
+                                "tagged case outside closed match domain: " + variant.name());
+                    }
+                    if (typed.binding() != null) {
+                        Type payloadType = matched.sourcePayload() == null
+                                ? new Named(variant.name(), List.of())
+                                : resolve(matched.sourcePayload(), generics, self);
+                        bindings.define(typed.binding(), payloadType, Ast.BindingKind.VAL);
+                    }
+                    return;
+                }
+            }
             if (!typesMayOverlap(subject, target)) {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
             }
@@ -5221,6 +5257,23 @@ public final class TypeChecker {
                     && patternCoversType(arm.pattern(), subject, generics, self)) {
                 return true;
             }
+        }
+
+        // Closed nominal message patterns have a finite compiler-owned
+        // alternative set. Prove coverage by exact case identity, not by
+        // structural payload shape (distinct cases may share the same shape).
+        TaggedMessageContracts.Domain taggedDomain = taggedDomainFor(subject);
+        if (taggedDomain != null) {
+            Set<String> accepted = new HashSet<>();
+            for (Ast.MatchArm arm : arms) {
+                if (arm.guard() != null || !(arm.pattern() instanceof Ast.TypePattern typed))
+                    continue;
+                TaggedMessageContracts.Case checked = taggedCaseOrNull(typed.type().name());
+                if (checked != null && taggedCaseInDomain(taggedDomain, checked.qualifiedName()))
+                    accepted.add(checked.qualifiedName());
+            }
+            return taggedDomain.cases().stream()
+                    .allMatch(item -> accepted.contains(item.qualifiedName()));
         }
 
         // Finite unions are exhaustively covered when every alternative is
