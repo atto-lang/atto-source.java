@@ -6247,24 +6247,47 @@ public final class ActorRuntime implements AutoCloseable {
             if (scheduler != null) {
                 try {
                     scheduler.close();
-                } catch (RuntimeException ignored) {
-                    // Actor teardown remains authoritative; source scheduler
-                    // cancellation is best-effort after the actor has finalized.
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable closeFailure) {
+                    // Closing a source scheduler may leave work or native
+                    // captures outstanding. Do not report successful done.
+                    recordFinalizationFailure(closeFailure);
                 }
             }
-            drainMailboxReservations();
+            try {
+                drainMailboxReservations();
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                throw fatal;
+            } catch (Throwable drainFailure) {
+                recordFinalizationFailure(drainFailure);
+            }
             staticSelectCursors.clear();
             codeActorState = null;
-            Throwable terminalOutput = ref.terminationCause.get();
-            outputStream.close(terminalOutput);
-            if (memorySlice != null) memorySlice.close();
+            try {
+                outputStream.close(ref.terminationCause.get());
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                throw fatal;
+            } catch (Throwable outputFailure) {
+                recordFinalizationFailure(outputFailure);
+            }
+            if (memorySlice != null) {
+                try {
+                    memorySlice.close();
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable memoryFailure) {
+                    recordFinalizationFailure(memoryFailure);
+                }
+            }
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
                 throw fatal;
-            } catch (Throwable ignored) {
-                // Actor termination must still complete. Runtime cleanup hooks
-                // are best-effort and retryable by the process collector.
+            } catch (Throwable exitFailure) {
+                // A failed trusted exit hook may leave an isolate resource
+                // reachable. Its failure must be observable from actor.done.
+                recordFinalizationFailure(exitFailure);
             }
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
