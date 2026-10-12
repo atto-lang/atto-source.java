@@ -33,6 +33,10 @@ public final class OresContext implements AutoCloseable {
     // real VM root turn may dispatch them; the current virtual-thread generator
     // producer is not yet allowed through this admission boundary.
     private final HostGeneratorTurnPump hostGeneratorTurns;
+    // A scheduler-current ThreadLocal by itself cannot prove a physical
+    // Truffle guest entry. Scope this marker inside executeGuestTurn after
+    // TruffleContext.enter succeeds and always clear it on leave.
+    private final ThreadLocal<Boolean> rootGuestEntryScope = new ThreadLocal<>();
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
     private final AsyncRuntime asyncRuntime;
@@ -130,7 +134,8 @@ public final class OresContext implements AutoCloseable {
             this.asyncRuntime = async;
             this.garbageCollector = gc;
             this.hostGeneratorTurns = new HostGeneratorTurnPump(
-                    contextId, vm::isRootSchedulerCurrent);
+                    contextId, () -> vm.isRootSchedulerCurrent()
+                            && Boolean.TRUE.equals(rootGuestEntryScope.get()));
         } catch (RuntimeException | Error failure) {
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
@@ -388,7 +393,18 @@ public final class OresContext implements AutoCloseable {
     }
 
     private void executeRootTurn(Runnable turn) {
-        executeGuestTurn(turn, isolatePolicy.adversarial());
+        executeGuestTurn(() -> {
+            // Scoped only after a successful physical guest Context.enter.
+            // An actor/async carrier cannot manufacture this root-turn token.
+            Boolean prior = rootGuestEntryScope.get();
+            rootGuestEntryScope.set(Boolean.TRUE);
+            try {
+                turn.run();
+            } finally {
+                if (prior == null) rootGuestEntryScope.remove();
+                else rootGuestEntryScope.set(prior);
+            }
+        }, isolatePolicy.adversarial());
     }
 
     private void executeActorTurn(Runnable turn) {
