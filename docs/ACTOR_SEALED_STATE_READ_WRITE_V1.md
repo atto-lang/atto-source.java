@@ -156,3 +156,17 @@ or source-level `state {}` lowering.
 For security, future exact-source copies of this private code MUST target
 private repositories only. See private LLVM security issue #256 regarding
 the earlier public CI mirror history and administrator purge follow-up.
+
+
+## Security re-audit: inherited static intrinsic shadowing
+
+The Java semantic pass checks every method kind in the actor's entire
+inheritance graph, including **static methods in imported linked parent ASTs**.
+A syntactically valid source import cannot smuggle a synthetic
+`handle_state` override into the actor runtime namespace.
+
+Private exact-source Java 21 parser, ownership and type-checker compilation,
+including this imported-parent negative regression, passed in
+https://github.com/agent-pontifex/agent-pontifex-daemon/actions/runs/38317005320.
+These checks do not enable positive `state { ... }` lowering or substitute
+for whole-application GraalVM and actor scheduler execution tests.
