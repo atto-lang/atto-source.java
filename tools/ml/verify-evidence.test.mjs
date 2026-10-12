@@ -34,3 +34,37 @@ test("reject imprecise large counters",()=>assert.throws(()=>verifyMlEvidence({.
 test("reject fractional host RAM",()=>assert.throws(()=>verifyMlEvidence({...receipt(),hardware:{...receipt().hardware,ram_bytes:1.5}}),/positive safe integer/));
 test("reject unbounded hardware descriptor",()=>assert.throws(()=>verifyMlEvidence({...receipt(),hardware:{...receipt().hardware,cpu:"x".repeat(257)}}),/too long/));
 test("reject impossible zero measured throughput",()=>assert.throws(()=>verifyMlEvidence({...receipt(),measurements:{...receipt().measurements,throughput_per_sec:0}}),/zero measured throughput/));
+
+test("reject receipt getters that can swap evidence after validation",()=>{
+ const r=receipt();
+ Object.defineProperty(r,"source_sha",{enumerable:true,get(){return "a".repeat(40);}});
+ assert.throws(()=>verifyMlEvidence(r),/accessor/);
+});
+test("reject nested metric getters",()=>{
+ const r=receipt();
+ Object.defineProperty(r.measurements,"p99_ms",{enumerable:true,get(){return 3;}});
+ assert.throws(()=>verifyMlEvidence(r),/accessor/);
+});
+test("reject nonplain and inherited receipt objects",()=>{
+ const r=Object.assign(Object.create({trusted:true}),receipt());
+ assert.throws(()=>verifyMlEvidence(r),/plain JSON/);
+});
+test("reject nonenumerable and symbolic authority metadata",()=>{
+ const r=receipt();
+ Object.defineProperty(r,"secret",{value:true});
+ assert.throws(()=>verifyMlEvidence(r),/exactly/);
+ const s=receipt();s[Symbol("hidden")]=true;
+ assert.throws(()=>verifyMlEvidence(s),/exactly/);
+});
+test("reject negative zero latency counters",()=>{
+ const r=receipt();r.measurements.p50_ms=-0;
+ assert.throws(()=>verifyMlEvidence(r),/nonnegative finite/);
+});
+test("reject multiline hardware evidence spoofing",()=>{
+ const r=receipt();r.hardware.cpu="Xeon\nClaim: Verified";
+ assert.throws(()=>verifyMlEvidence(r),/invalid characters/);
+});
+test("reject noncanonical traversal in claimed CI URL",()=>{
+ const r=receipt();r.execution.ci_url="https://github.com/org/../actions/runs/123";
+ assert.throws(()=>verifyMlEvidence(r),/canonical CI run proof/);
+});
