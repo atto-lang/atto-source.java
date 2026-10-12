@@ -352,7 +352,7 @@ public final class OresScheduler implements AutoCloseable {
      * Never use Future settlement alone to reclaim guest-owned resources.
      */
     <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
-        return startAdmitted(task, onQuiescent, null, 0L);
+        return startAdmitted(task, onQuiescent, null, 0L, () -> { });
     }
 
     /**
@@ -364,20 +364,32 @@ public final class OresScheduler implements AutoCloseable {
             Task<T> task, Runnable onQuiescent, long remainingNanos,
             Throwable deadlineFailure) {
         Objects.requireNonNull(deadlineFailure, "deadlineFailure");
+        return startWithWallDeadline(task, onQuiescent, remainingNanos,
+                deadlineFailure, () -> { });
+    }
+
+    /** Called only after the winning Future's terminal callbacks have drained. */
+    <T> OresFuture<T> startWithWallDeadline(
+            Task<T> task, Runnable onQuiescent, long remainingNanos,
+            Throwable deadlineFailure, Runnable onNotificationDrained) {
+        Objects.requireNonNull(deadlineFailure, "deadlineFailure");
+        Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
         return startAdmitted(task, onQuiescent, deadlineFailure,
-                Math.max(0L, remainingNanos));
+                Math.max(0L, remainingNanos), onNotificationDrained);
     }
 
     private <T> OresFuture<T> startAdmitted(
             Task<T> task, Runnable onQuiescent,
-            Throwable deadlineFailure, long remainingNanos) {
+            Throwable deadlineFailure, long remainingNanos,
+            Runnable onNotificationDrained) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(onQuiescent, "onQuiescent");
+        Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
         // Linearize open-check + live-set registration with close(), but do
         // NOT hold the lock while handing work to an arbitrary executor.
         // Shutdown must still cancel this task if enqueue blocks or rejects.
         TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent,
-                deadlineFailure != null);
+                deadlineFailure != null, onNotificationDrained);
         synchronized (taskAdmissionLock) {
             ensureOpen();
             if (deadlineFailure != null) {
@@ -566,6 +578,7 @@ public final class OresScheduler implements AutoCloseable {
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
         private final boolean timedAdmission;
+        private final Runnable onNotificationDrained;
         private final AtomicBoolean deadlineSlotReserved = new AtomicBoolean();
         private final AtomicBoolean deadlineSlotReleased = new AtomicBoolean();
         private final AtomicBoolean deadlineNotificationDrained = new AtomicBoolean();
@@ -575,10 +588,11 @@ public final class OresScheduler implements AutoCloseable {
         private volatile ActorTurnWatchdog.Lease watchdogLease;
 
         private TaskRunner(Task<T> task, Runnable onQuiescent,
-                boolean timedAdmission) {
+                boolean timedAdmission, Runnable onNotificationDrained) {
             this.task = task;
             this.onQuiescent = onQuiescent;
             this.timedAdmission = timedAdmission;
+            this.onNotificationDrained = onNotificationDrained;
             this.completion = new OresFuture<>(
                     this::cancelFromFuture, this::notificationDrained);
         }
@@ -590,8 +604,15 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void notificationDrained() {
-            deadlineNotificationDrained.set(true);
-            releaseDeadlineSlotIfRetired();
+            try {
+                // Logical actor-level admission remains reserved through the
+                // Future's synchronous subscriber drain, independently of the
+                // physical task quota's earlier quiescence callback.
+                onNotificationDrained.run();
+            } finally {
+                deadlineNotificationDrained.set(true);
+                releaseDeadlineSlotIfRetired();
+            }
         }
 
         private void releaseDeadlineSlotIfRetired() {
