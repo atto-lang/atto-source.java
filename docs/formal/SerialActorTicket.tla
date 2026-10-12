@@ -1,6 +1,8 @@
 -------------------------- MODULE SerialActorTicket --------------------------
 EXTENDS Naturals
 
+CONSTANT UnsafeAdmission
+
 \* Finite-state safety abstraction of a single scheduler-issued ticket
 \* and its actor receive.  It does not model implementation-level locking,
 \* scheduler carrier execution, or fairness/liveness.
@@ -25,12 +27,16 @@ Init ==
 
 \* Issued authority is the original actor incarnation/receive.  A
 \* repeated lexical frame number or scheduler task ID cannot reissue it.
-Authorized ==
+HonestAuthorization ==
     /\ ~retired
     /\ ~cancelled
     /\ ~receiveClosed
     /\ epoch = 1
     /\ lease = 1
+
+\* Test-only mutation of the admission decision. Invariants always use
+\* HonestAuthorization, so this mutation cannot weaken the property.
+AdmissionDecision == IF UnsafeAdmission THEN TRUE ELSE HonestAuthorization
 
 Await ==
     /\ phase = "running"
@@ -51,9 +57,9 @@ DuplicateCompletion ==
 
 DrainQueued ==
     /\ phase = "queued"
-    /\ phase' = IF Authorized THEN "resumed" ELSE "unwinding"
-    /\ retired' = IF Authorized THEN retired ELSE TRUE
-    /\ cancelled' = IF Authorized THEN cancelled ELSE TRUE
+    /\ phase' = IF AdmissionDecision THEN "resumed" ELSE "unwinding"
+    /\ retired' = IF AdmissionDecision THEN retired ELSE TRUE
+    /\ cancelled' = IF AdmissionDecision THEN cancelled ELSE TRUE
     /\ UNCHANGED <<epoch, lease, receiveClosed,
                    cleanups, publications>>
 
@@ -66,14 +72,15 @@ SourceFinishes ==
 CancelTask ==
     /\ phase # "settled"
     /\ ~cancelled
-    /\ phase' = "unwinding"
+    /\ phase' = IF phase = "queued" THEN "queued" ELSE "unwinding"
     /\ retired' = TRUE
     /\ cancelled' = TRUE
     /\ UNCHANGED <<epoch, lease, receiveClosed, cleanups, publications>>
 
 CloseReceive ==
     /\ ~receiveClosed
-    /\ phase' = IF phase = "settled" THEN "settled" ELSE "unwinding"
+    /\ phase' = IF phase = "settled" THEN "settled"
+                  ELSE IF phase = "queued" THEN "queued" ELSE "unwinding"
     /\ retired' = TRUE
     /\ cancelled' = TRUE
     /\ receiveClosed' = TRUE
@@ -82,7 +89,8 @@ CloseReceive ==
 RestartActor ==
     /\ epoch = 1
     /\ epoch' = 2
-    /\ phase' = IF phase = "settled" THEN "settled" ELSE "unwinding"
+    /\ phase' = IF phase = "settled" THEN "settled"
+                  ELSE IF phase = "queued" THEN "queued" ELSE "unwinding"
     /\ retired' = TRUE
     /\ cancelled' = TRUE
     /\ receiveClosed' = TRUE
@@ -99,7 +107,7 @@ PublishOrDiscard ==
     /\ phase = "unwinding"
     /\ cleanups = 1
     /\ phase' = "settled"
-    /\ publications' = IF Authorized THEN 1 ELSE 0
+    /\ publications' = IF HonestAuthorization THEN 1 ELSE 0
     /\ retired' = TRUE
     /\ UNCHANGED <<epoch, lease, cancelled, receiveClosed, cleanups>>
 
@@ -137,7 +145,7 @@ TypeOK ==
     /\ publications \in 0..1
 
 NoStaleGuestResume ==
-    phase = "resumed" => Authorized
+    phase = "resumed" => HonestAuthorization
 
 CleanupBeforePublication ==
     publications = 1 => cleanups = 1
