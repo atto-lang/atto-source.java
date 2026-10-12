@@ -38,6 +38,15 @@ for more than its JSON Schema admission layer.
 - `python test_contract.py`
 - `npm install --ignore-scripts` (versioned TypeSpec dependencies)
 - `npx tsp compile .`
+- `python test_typespec_parity.py ./tsp-output` (requires generated
+  JSON Schema from the pinned emitter; it compares positive and adversarial
+  admission cases to the normative schema)
+
+
+Ed25519 signatures use **canonical padded standard Base64** of exactly 64 bytes;
+the second significant character of the final quantum is restricted to
+`A`, `Q`, `g`, or `w` to avoid alternative encodings of the same bytes.
+Structural Base64 validation alone is **not** cryptographic verification.
 
 Hash fields are lowercase hexadecimal SHA-256 (exactly 64 characters).
 `compiler.git_commit` accepts 40- or 64-digit Git object hashes.
