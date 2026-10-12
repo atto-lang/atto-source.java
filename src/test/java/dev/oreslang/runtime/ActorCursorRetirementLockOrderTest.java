@@ -95,4 +95,58 @@ final class ActorCursorRetirementLockOrderTest {
             assertEquals(73, input.tryRead().orElseThrow());
         }
     }
+
+    @Test
+    void actorDoneWaitsForOrdinaryOwnedFutureCancellationCallbacks()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<OresFuture<Integer>> owned = new AtomicReference<>();
+            CountDownLatch armed = new CountDownLatch(1);
+            CountDownLatch waiterEntered = new CountDownLatch(1);
+            CountDownLatch releaseWaiter = new CountDownLatch(1);
+            AtomicBoolean waiterHeldMonitor = new AtomicBoolean(true);
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(() ->
+                    (message, context) -> {
+                        OresFuture<Integer> future = new OresFuture<>();
+                        runtime.ownCurrentActorFuture(future);
+                        owned.set(future);
+                        armed.countDown();
+                    });
+            actor.send("arm");
+            assertTrue(armed.await(5, TimeUnit.SECONDS));
+            Object monitor = lifecycleMonitor(runtime, actor.id());
+            OresFuture<Integer> future = owned.get();
+            assertNotNull(future);
+            future.whenCompleteRuntime((value, failure) -> {
+                waiterHeldMonitor.set(Thread.holdsLock(monitor));
+                waiterEntered.countDown();
+                try {
+                    if (!releaseWaiter.await(8, TimeUnit.SECONDS)) {
+                        throw new AssertionError("owned waiter release timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("owned waiter interrupted", interrupted);
+                }
+            });
+
+            Thread stopping = new Thread(actor::stop, "actor-stop-owned-future");
+            try {
+                stopping.start();
+                assertTrue(waiterEntered.await(5, TimeUnit.SECONDS),
+                        "ordinary actor-owned Future cancellation must notify waiters");
+                assertFalse(waiterHeldMonitor.get(),
+                        "owned Future waiter may not run under lifecycle monitor");
+                assertFalse(actor.done().isDone(),
+                        "physical actor DONE must wait until all owned waiters settle");
+            } finally {
+                releaseWaiter.countDown();
+                stopping.join(5_000);
+            }
+            assertFalse(stopping.isAlive());
+            assertTrue(future.isCancelled());
+            actor.done().get(5, TimeUnit.SECONDS);
+        }
+    }
 }
