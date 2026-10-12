@@ -155,7 +155,7 @@ final class StructuralTuplePatternMatchTest {
     }
 
     @Test
-    void listPatternsAndDefaultMatchArmsAreRejected() {
+    void listPatternsRemainRejectedButDefaultIsCanonical() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(List<int> values): int {
                   match values over
@@ -165,16 +165,13 @@ final class StructuralTuplePatternMatchTest {
                 }
                 """));
 
-        IllegalArgumentException defaultArm = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        fnc bad(bool value): int {
-                          match value over
-                            default -> { return 1; }
-                          end
-                        }
-                        """));
-        assertTrue(defaultArm.getMessage().contains("no default/else keyword"));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc classify(bool value): int {
+                  match value over
+                    default -> { return 1; }
+                  end
+                }
+                """)));
     }
 
     @Test
