@@ -6695,7 +6695,11 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     serialReceiveLease = null;
                 }
-                staticSelectCursors.clear();
+                try {
+                    staticSelectCursors.clear();
+                } catch (Throwable failure) {
+                    recordFinalizationFailure(failure);
+                }
                 if (retiringState != null) {
                     try {
                         if (!retiringState.ownerActorId().equals(ref.id())) {
@@ -7269,24 +7273,46 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void drainMailboxReservations() {
+            // Detach all queued envelopes under actor lifecycle ownership, but
+            // NEVER close an envelope or release runtime memory while holding
+            // lifecycleLock. Envelope close/release hooks may run callbacks.
+            //
+            // Both channels have already been closed by terminateTree. An
+            // in-flight carrier owns its local envelope separately and is
+            // tracked by activeTurns/carrierActive before finalization.
+            java.util.ArrayList<MessageEnvelope> drained = new java.util.ArrayList<>();
             synchronized (lifecycleLock) {
-                while (continuationMailbox.drainOne(continuation -> {
-                    releaseMailboxSlot(true);
-                    continuation.close();
-                })) {
-                    // Reclaim admitted control mail even after termination closes the channel.
+                while (continuationMailbox.drainOne(drained::add)) {
+                    // Detach all CONTROL entries without invoking their hooks.
+                }
+                while (mailbox.drainOne(drained::add)) {
+                    // Detach user envelopes under the same lifecycle barrier.
                 }
                 sourceHandoffRequested = false;
+                sourceReceiveSuspended = false;
+                activeMail = null;
             }
 
-            while (mailbox.drainOne(envelope -> {
-                releaseMailboxSlot(false);
-                envelope.close();
-            })) {
-                // Drain all committed user-message envelopes, including after close.
+            Throwable firstFailure = null;
+            for (MessageEnvelope envelope : drained) {
+                try {
+                    releaseMailboxSlot(envelope.isContinuation());
+                } catch (Throwable failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+                }
+                try {
+                    envelope.close();
+                } catch (Throwable failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+                }
             }
-            sourceReceiveSuspended = false;
-            activeMail = null;
+            if (firstFailure != null) {
+                if (firstFailure instanceof Error fatal) throw fatal;
+                if (firstFailure instanceof RuntimeException runtime) throw runtime;
+                throw new IllegalStateException("actor mailbox drain failed", firstFailure);
+            }
         }
 
         private void fail(Throwable failure) {
@@ -7336,7 +7362,6 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
-                drainMailboxReservations();
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
@@ -7344,6 +7369,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             try {
+                // Channel envelopes own potentially reentrant close hooks.
+                // Execute them after dropping the caller lifecycle monitor.
+                try {
+                    drainMailboxReservations();
+                } catch (Throwable failure) {
+                    recordFinalizationFailure(failure);
+                }
                 // A Future may run a synchronous host callback on cancellation.
                 // Neither these callbacks nor child stop may hold our monitor.
                 for (OresFuture<?> future : pending) {
