@@ -16,9 +16,10 @@ import java.util.concurrent.CancellationException;
  * successful Future is not permission to execute after STOP/cancellation:
  * the admitted continuation must check its ticket is still held.</p>
  *
- * <p>Coordination uses a short metadata monitor shared with other RW gates,
- * but NEVER waits for a permit or runs a guest turn under that monitor.
- * Waiters suspend on OresFuture and resume through OresScheduler.</p>
+ * <p>Each gate uses its own short metadata monitor, plus a small global
+ * identity registry for fail-closed nested logical-owner admission.
+ * Neither monitor waits for permits or runs guest code. Waiters suspend
+ * on OresFuture and resume through OresScheduler.</p>
  */
 public final class CriticalRwGate implements AutoCloseable {
     public static final int MAX_WAITERS = 8192;
@@ -27,7 +28,12 @@ public final class CriticalRwGate implements AutoCloseable {
 
     private enum State { NEW, QUEUED, GRANTED, CLOSED }
 
-    private static final Object COORDINATOR = new Object();
+    // Domain registration is brief and cross-gate. Queue state is protected
+    // by a distinct gate-local monitor: an unrelated tenant's gate must not
+    // contend on one process-global admission/queue monitor.
+    private static final Object DOMAIN_COORDINATOR = new Object();
+    private final Object coordinator = new Object();
+    public static final int MAX_ACTIVE_READERS = MAX_WAITERS;
 
     // A domain may request one RW ticket at a time. Until generalized
     // ordering/reentrancy is proven, nested critical acquisitions fail closed.
@@ -64,27 +70,32 @@ public final class CriticalRwGate implements AutoCloseable {
             Object caller = OresScheduler.currentTaskDomain();
             if (caller == null) caller = ActorRuntime.currentActorExecutionDomain();
             if (caller == null) caller = this; // independent detached host async request
-            synchronized (COORDINATOR) {
+            synchronized (coordinator) {
                 if (state != State.NEW) {
                     throw new IllegalStateException("RW ticket already requested or closed");
                 }
                 if (closed) throw new IllegalStateException("RW gate is closed");
-                Ticket prior = DOMAINS.get(caller);
-                if (prior != null) {
-                    if (prior.mode == Mode.READ && mode == Mode.WRITE) {
-                        throw new IllegalStateException(
-                                "read-to-write critical upgrade is forbidden");
-                    }
-                    throw new IllegalStateException(
-                            "nested critical RW acquisition requires verified reentrancy/lock ordering");
-                }
                 boolean canEnter = waiters.isEmpty() && writer == null
-                        && (mode == Mode.READ || readers.isEmpty());
+                        && (mode == Mode.READ
+                            ? readers.size() < MAX_ACTIVE_READERS : readers.isEmpty());
                 if (!canEnter && waiters.size() >= MAX_WAITERS) {
                     throw new IllegalStateException("RW gate wait queue is full");
                 }
+                // Strict lock order: gate-local coordinator before the small
+                // process-wide domain registry. Never acquire them in reverse.
+                synchronized (DOMAIN_COORDINATOR) {
+                    Ticket prior = DOMAINS.get(caller);
+                    if (prior != null) {
+                        if (prior.mode == Mode.READ && mode == Mode.WRITE) {
+                            throw new IllegalStateException(
+                                    "read-to-write critical upgrade is forbidden");
+                        }
+                        throw new IllegalStateException(
+                                "nested critical RW acquisition requires verified reentrancy/lock ordering");
+                    }
+                    DOMAINS.put(caller, this);
+                }
                 domain = caller;
-                DOMAINS.put(caller, this);
                 if (canEnter) {
                     grantLocked(this);
                     grantNow = true;
@@ -102,7 +113,7 @@ public final class CriticalRwGate implements AutoCloseable {
          * cannot be used as an await point: that would suspend forever.
          */
         public OresFuture<Void> admission() {
-            synchronized (COORDINATOR) {
+            synchronized (coordinator) {
                 if (state == State.NEW) {
                     throw new IllegalStateException("RW admission was not requested");
                 }
@@ -117,7 +128,7 @@ public final class CriticalRwGate implements AutoCloseable {
          */
         public void releaseOnCompletion(OresFuture<?> completion) {
             Objects.requireNonNull(completion, "completion");
-            synchronized (COORDINATOR) {
+            synchronized (coordinator) {
                 if (state == State.CLOSED) {
                     throw new IllegalStateException("cannot bind a released RW ticket");
                 }
@@ -132,7 +143,7 @@ public final class CriticalRwGate implements AutoCloseable {
         }
 
         public boolean isHeld() {
-            synchronized (COORDINATOR) {
+            synchronized (coordinator) {
                 return state == State.GRANTED && !closed;
             }
         }
@@ -140,11 +151,15 @@ public final class CriticalRwGate implements AutoCloseable {
         @Override
         public void close() {
             List<Ticket> wake = List.of();
-            synchronized (COORDINATOR) {
+            synchronized (coordinator) {
                 if (state == State.CLOSED) return;
                 State former = state;
                 state = State.CLOSED;
-                if (domain != null) DOMAINS.remove(domain, this);
+                if (domain != null) {
+                    synchronized (DOMAIN_COORDINATOR) {
+                        DOMAINS.remove(domain, this);
+                    }
+                }
                 if (former == State.QUEUED) {
                     waiters.remove(this);
                     // A cancelled queued writer may have been the only
@@ -169,13 +184,13 @@ public final class CriticalRwGate implements AutoCloseable {
 
     public Ticket newTicket(Mode mode) {
         Objects.requireNonNull(mode, "mode");
-        synchronized (COORDINATOR) {
+        synchronized (coordinator) {
             if (closed) throw new IllegalStateException("RW gate is closed");
         }
         return new Ticket(mode);
     }
 
-    /** Must be called under COORDINATOR with no active writer. */
+    /** Must be called under the gate-local coordinator with no active writer. */
     private void grantLocked(Ticket ticket) {
         ticket.state = State.GRANTED;
         if (ticket.mode == Mode.READ) {
@@ -201,7 +216,8 @@ public final class CriticalRwGate implements AutoCloseable {
             return List.of(next);
         }
         List<Ticket> wake = new ArrayList<>();
-        while (!waiters.isEmpty() && waiters.peekFirst().mode == Mode.READ) {
+        while (!waiters.isEmpty() && waiters.peekFirst().mode == Mode.READ
+                && readers.size() < MAX_ACTIVE_READERS) {
             Ticket next = waiters.removeFirst();
             grantLocked(next);
             wake.add(next);
@@ -217,22 +233,22 @@ public final class CriticalRwGate implements AutoCloseable {
     }
 
     public int queuedCount() {
-        synchronized (COORDINATOR) { return waiters.size(); }
+        synchronized (coordinator) { return waiters.size(); }
     }
 
     public int activeReaderCount() {
-        synchronized (COORDINATOR) { return readers.size(); }
+        synchronized (coordinator) { return readers.size(); }
     }
 
     public boolean hasWriter() {
-        synchronized (COORDINATOR) { return writer != null; }
+        synchronized (coordinator) { return writer != null; }
     }
 
     /** Revoke every outstanding grant, pending waiter and future resume. */
     @Override
     public void close() {
         List<Ticket> revoke = new ArrayList<>();
-        synchronized (COORDINATOR) {
+        synchronized (coordinator) {
             if (closed) return;
             closed = true;
             revoke.addAll(readers.keySet());
@@ -241,9 +257,11 @@ public final class CriticalRwGate implements AutoCloseable {
             readers.clear();
             writer = null;
             waiters.clear();
-            for (Ticket ticket : revoke) {
-                ticket.state = State.CLOSED;
-                if (ticket.domain != null) DOMAINS.remove(ticket.domain, ticket);
+            synchronized (DOMAIN_COORDINATOR) {
+                for (Ticket ticket : revoke) {
+                    ticket.state = State.CLOSED;
+                    if (ticket.domain != null) DOMAINS.remove(ticket.domain, ticket);
+                }
             }
         }
         for (Ticket ticket : revoke) {
