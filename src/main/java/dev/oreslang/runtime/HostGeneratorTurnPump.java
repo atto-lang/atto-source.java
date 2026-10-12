@@ -1,0 +1,286 @@
+package dev.oreslang.runtime;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.UUID;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.function.BooleanSupplier;
+
+/**
+ * Context-owned admission stage for externally requested generator turns.
+ *
+ * A caller may enqueue work from any host thread, but only a verified owner
+ * executing a real context-owned scheduler turn may call dispatchOne().
+ * There is deliberately NO executor here: enqueuing may never manufacture
+ * Truffle admission or start a virtual-thread generator producer.
+ *
+ * Each admitted operation has TWO completions: its public pull result and its
+ * physical guest-turn exit. An early Future cancellation/settlement does not
+ * free ownership or admit the next turn until the exit barrier also settles.
+ *
+ * This is a staging primitive, not a host async-generator implementation:
+ * the existing interpreter generator producer still uses virtual carriers.
+ * Do not wire that producer to this pump until it has continuation lowering.
+ */
+final class HostGeneratorTurnPump implements AutoCloseable {
+    record OwnerToken(UUID contextId, UUID incarnation) {
+        OwnerToken {
+            Objects.requireNonNull(contextId, "contextId");
+            Objects.requireNonNull(incarnation, "incarnation");
+        }
+    }
+
+    record Turn<T>(OresFuture<T> result, OresFuture<?> physicalExit) {
+        Turn {
+            Objects.requireNonNull(result, "result");
+            Objects.requireNonNull(physicalExit, "physicalExit");
+        }
+    }
+
+    @FunctionalInterface
+    interface Start<T> {
+        /** Nonblocking: enqueue/start the guest continuation on the owner. */
+        Turn<T> start();
+    }
+
+    private static final int DEFAULT_CAPACITY = 256;
+
+    private static final class Request<T> {
+        final Start<T> start;
+        final OresFuture<T> future;
+        Turn<T> turn;
+        boolean valueSettled;
+        boolean exited;
+        boolean finished;
+        T value;
+        Throwable failure;
+        Throwable exitFailure;
+
+        Request(HostGeneratorTurnPump owner, Start<T> start) {
+            this.start = start;
+            this.future = new OresFuture<>(() -> owner.cancel(this));
+        }
+    }
+
+    private final Object gate = new Object();
+    private final OwnerToken owner;
+    private final BooleanSupplier ownerTurnAuthorized;
+    private final Runnable signalOwner;
+    private final int capacity;
+    private final ArrayDeque<Request<?>> pending = new ArrayDeque<>();
+    private Request<?> active;
+    private boolean sealed;
+
+    HostGeneratorTurnPump(UUID contextId, BooleanSupplier ownerTurnAuthorized) {
+        this(contextId, ownerTurnAuthorized, () -> { }, DEFAULT_CAPACITY);
+    }
+
+    HostGeneratorTurnPump(UUID contextId, BooleanSupplier ownerTurnAuthorized,
+                          Runnable signalOwner, int capacity) {
+        this.owner = new OwnerToken(
+                Objects.requireNonNull(contextId, "contextId"), UUID.randomUUID());
+        this.ownerTurnAuthorized = Objects.requireNonNull(
+                ownerTurnAuthorized, "ownerTurnAuthorized");
+        this.signalOwner = Objects.requireNonNull(signalOwner, "signalOwner");
+        if (capacity < 1) throw new IllegalArgumentException("capacity must be positive");
+        this.capacity = capacity;
+    }
+
+    OwnerToken token() {
+        return owner;
+    }
+
+    <T> OresFuture<T> request(OwnerToken token, Start<T> start) {
+        Objects.requireNonNull(start, "start");
+        Request<T> request = new Request<>(this, start);
+        boolean wake;
+        synchronized (gate) {
+            if (!owner.equals(token)) {
+                throw new SecurityException("generator pull belongs to another context incarnation");
+            }
+            if (sealed) {
+                throw new RejectedExecutionException("generator context is closing");
+            }
+            if (pending.size() >= capacity) {
+                throw new RejectedExecutionException("generator host pull queue is full");
+            }
+            pending.addLast(request);
+            wake = active == null;
+        }
+        if (wake) signalOwner.run();
+        return request.future;
+    }
+
+    /**
+     * Called only from a scheduler-owned, physically entered guest turn.
+     * The start callback must enqueue a continuation, not block for yield,
+     * hold a guest entry lock, or create an independent virtual guest carrier.
+     */
+    boolean dispatchOne() {
+        if (!ownerTurnAuthorized.getAsBoolean()) {
+            throw new SecurityException(
+                    "generator dispatch requires an authorized context-owned guest turn");
+        }
+        Request<?> selected = null;
+        Throwable startFailure = null;
+        Turn<?> started = null;
+        synchronized (gate) {
+            if (sealed || active != null) return false;
+            while (!pending.isEmpty()) {
+                Request<?> candidate = pending.removeFirst();
+                if (!candidate.future.isDone()) {
+                    selected = candidate;
+                    break;
+                }
+            }
+            if (selected == null) return false;
+            active = selected;
+            // Admission and seal must be ordered atomically. Start is required
+            // to be nonblocking; never wait for guest execution under gate.
+            try {
+                started = selected.start.start();
+                if (started == null) {
+                    throw new IllegalStateException(
+                            "generator turn starter returned no physical-exit barrier");
+                }
+                selected.turn = castTurn(started);
+            } catch (RuntimeException | Error failure) {
+                selected.finished = true;
+                active = null;
+                startFailure = failure;
+            }
+        }
+        if (startFailure != null) {
+            failSelected(selected, startFailure);
+            signalIfReady();
+            return true;
+        }
+        attachCallbacks(selected);
+        if (selected.future.isCancelled()) started.result().cancel(false);
+        return true;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> Turn<T> castTurn(Turn<?> turn) {
+        return (Turn<T>) turn;
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> void attachCallbacks(Request<?> raw) {
+        Request<T> request = (Request<T>) raw;
+        Turn<T> turn = request.turn;
+        turn.result().whenCompleteRuntime((value, failure) ->
+                settleValue(request, value, failure));
+        turn.physicalExit().whenCompleteRuntime((ignored, failure) ->
+                settleExit(request, failure));
+    }
+
+    private <T> void settleValue(Request<T> request, T value, Throwable failure) {
+        synchronized (gate) {
+            if (request.finished || request.valueSettled) return;
+            request.valueSettled = true;
+            request.value = value;
+            request.failure = failure;
+        }
+        finishIfExited(request);
+    }
+
+    private void settleExit(Request<?> request, Throwable failure) {
+        synchronized (gate) {
+            if (request.finished || request.exited) return;
+            request.exited = true;
+            request.exitFailure = failure;
+        }
+        finishIfExited(request);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> void finishIfExited(Request<T> request) {
+        T value;
+        Throwable failure;
+        boolean wake;
+        synchronized (gate) {
+            if (request.finished || !request.valueSettled || !request.exited) return;
+            request.finished = true;
+            value = request.value;
+            failure = request.exitFailure != null ? request.exitFailure : request.failure;
+            if (active != request) {
+                throw new IllegalStateException("generator turn lost physical owner");
+            }
+            active = null;
+            wake = !sealed && !pending.isEmpty();
+        }
+        if (failure == null) request.future.completeFromRuntime(value);
+        else request.future.failFromRuntime(OresFuture.unwrap(failure));
+        if (wake) signalOwner.run();
+    }
+
+    private static void failSelected(Request<?> selected, Throwable failure) {
+        selected.future.failFromRuntime(failure);
+    }
+
+    private void signalIfReady() {
+        boolean wake;
+        synchronized (gate) {
+            wake = !sealed && active == null && !pending.isEmpty();
+        }
+        if (wake) signalOwner.run();
+    }
+
+    private void cancel(Request<?> request) {
+        Turn<?> running = null;
+        synchronized (gate) {
+            if (active == request) {
+                running = request.turn;
+            } else {
+                pending.remove(request);
+            }
+        }
+        if (running != null) {
+            // This settles the public result, not the physical-exit barrier.
+            running.result().cancel(false);
+        } else {
+            signalIfReady();
+        }
+    }
+
+    /** Fence new admissions before teardown; never wait under this monitor. */
+    void seal() {
+        List<Request<?>> rejected;
+        Turn<?> running;
+        synchronized (gate) {
+            if (sealed) return;
+            sealed = true;
+            rejected = new ArrayList<>(pending);
+            pending.clear();
+            running = active == null ? null : active.turn;
+        }
+        for (Request<?> request : rejected) request.future.cancel(false);
+        if (running != null) running.result().cancel(false);
+    }
+
+    boolean isQuiescent() {
+        synchronized (gate) {
+            return active == null && pending.isEmpty();
+        }
+    }
+
+    /**
+     * Close retries must not retire physical guest execution after cancellation
+     * merely because the public Future already reports isDone/isCancelled.
+     */
+    void requireQuiescent() {
+        if (!isQuiescent()) {
+            throw new IllegalStateException(
+                    "generator host turn still owns unfinished physical guest cleanup");
+        }
+    }
+
+    @Override
+    public void close() {
+        seal();
+        requireQuiescent();
+    }
+}

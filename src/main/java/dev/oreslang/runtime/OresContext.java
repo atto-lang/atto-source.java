@@ -29,6 +29,10 @@ public final class OresContext implements AutoCloseable {
     private final BufferedReader input;
     private final PrintWriter output;
     private final OresVM vm;
+    // Host pull requests are staged independently of guest execution. Only a
+    // real VM root turn may dispatch them; the current virtual-thread generator
+    // producer is not yet allowed through this admission boundary.
+    private final HostGeneratorTurnPump hostGeneratorTurns;
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
     private final AsyncRuntime asyncRuntime;
@@ -125,6 +129,8 @@ public final class OresContext implements AutoCloseable {
             this.actors = actors;
             this.asyncRuntime = async;
             this.garbageCollector = gc;
+            this.hostGeneratorTurns = new HostGeneratorTurnPump(
+                    contextId, vm::isRootSchedulerCurrent);
         } catch (RuntimeException | Error failure) {
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
@@ -372,6 +378,15 @@ public final class OresContext implements AutoCloseable {
         return task.join();
     }
 
+    /**
+     * Staging only: a future compiler-lowered generator continuation will
+     * dispatch this pump from a root guest turn. Never expose guest execution
+     * rights directly through a public host Future.
+     */
+    HostGeneratorTurnPump hostGeneratorTurns() {
+        return hostGeneratorTurns;
+    }
+
     private void executeRootTurn(Runnable turn) {
         executeGuestTurn(turn, isolatePolicy.adversarial());
     }
@@ -449,10 +464,16 @@ public final class OresContext implements AutoCloseable {
             }
             closeOwner = Thread.currentThread();
             try {
+                hostGeneratorTurns.seal();
                 // Actor-owned finalizers may still need the VM CONTROL scheduler,
                 // async workers, imported code, network or native I/O. Never
                 // retire those dependencies before actor quiescence is proven.
                 actors.close();
+                // A cancelled host pull does not release its physical guest
+                // turn lease until its explicit exit barrier has completed.
+                // Check before terminating its root CONTROL scheduler, so
+                // unfinished cleanup can still run on a retryable close.
+                hostGeneratorTurns.requireQuiescent();
                 vm.close();
                 // An async carrier may still own an entered Truffle context
                 // even after its Future was cancelled. Its executor shutdown
