@@ -893,6 +893,61 @@ final class OresSchedulerQuiescenceTest {
     }
 
     @Test
+    void lateCancelSubscriberCannotBypassInProgressInternalRevocation()
+            throws Exception {
+        CountDownLatch hookEntered = new CountDownLatch(1);
+        CountDownLatch releaseHook = new CountDownLatch(1);
+        CountDownLatch notified = new CountDownLatch(1);
+        AtomicInteger callbacks = new AtomicInteger();
+        OresFuture<Integer> future = new OresFuture<>(() -> {
+            hookEntered.countDown();
+            try {
+                assertTrue(releaseHook.await(3, TimeUnit.SECONDS));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        });
+        Thread cancelling = Thread.ofPlatform().start(() -> future.cancel(false));
+        try {
+            assertTrue(hookEntered.await(3, TimeUnit.SECONDS));
+            assertTrue(future.isCancelled(),
+                    "terminal cancellation is visible while revoker executes");
+            // Must neither invoke the callback early nor synchronously block
+            // its registering thread on a live cancellation hook.
+            future.whenCompleteRuntime((value, failure) -> {
+                callbacks.incrementAndGet();
+                notified.countDown();
+            });
+            assertEquals(0, callbacks.get(),
+                    "late waiter must not bypass the internal cancellation hook");
+        } finally {
+            releaseHook.countDown();
+            cancelling.join(3_000);
+            assertFalse(cancelling.isAlive(),
+                    "cancelling thread must complete its waiter drain");
+        }
+        assertTrue(notified.await(2, TimeUnit.SECONDS));
+        assertEquals(1, callbacks.get(),
+                "cancel hook race must never duplicate terminal notification");
+    }
+
+    @Test
+    void cancellationHookCanRegisterAnotherCallbackWithoutSelfDeadlock()
+            throws Exception {
+        java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>> holder =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicInteger callbackCount = new AtomicInteger();
+        OresFuture<Integer> future = new OresFuture<>(() ->
+                holder.get().whenCompleteRuntime((value, failure) ->
+                        callbackCount.incrementAndGet()));
+        holder.set(future);
+        assertTrue(future.cancel(false));
+        assertEquals(1, callbackCount.get(),
+                "hook-installed callback must drain exactly once after revocation");
+    }
+
+    @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
         AtomicInteger count = new AtomicInteger();
