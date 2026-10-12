@@ -36,6 +36,8 @@ final class HostSchedulerEntryGateTest {
             dispatcher.shutdown();
         }
         assertTrue(executed.await(5, TimeUnit.SECONDS));
+        assertTrue(dispatcher.awaitTermination(5, TimeUnit.SECONDS),
+                "a completion signal is not proof that the guest carrier left");
         assertNull(admissionError.get());
         gate.sealAdmission();
         assertTrue(gate.physicallyQuiescent());
