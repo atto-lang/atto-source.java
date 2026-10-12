@@ -196,12 +196,15 @@ public final class OresEvalRootNode extends RootNode {
                 // must not call Value.asHostObject() while guest work runs.
                 return 0;
             }
-            // Runtime Future/Channel handles are not valid raw Truffle interop
-            // results. Adapt only the explicit public embedder boundary:
-            // guest dispatch retains native Oreslang handles, and no arbitrary
-            // host object gains admission across an async guest task boundary.
+            // Runtime-owned Future, Channel and pull-driven Generator handles
+            // cannot be returned as raw Truffle guest results. Convert only
+            // at the explicit public embedder boundary to satisfy the Polyglot
+            // interop value contract. Generators remain lazy; no producer is
+            // dispatched until Java requests a pull from its typed handle.
             if (result instanceof OresFuture<?>
-                    || result instanceof ChannelRuntime.Channel<?>) {
+                    || result instanceof ChannelRuntime.Channel<?>
+                    || result instanceof GeneratorRuntime.Generator<?>
+                    || result instanceof GeneratorRuntime.AsyncGenerator<?>) {
                 return context.env().asGuestValue(result);
             }
             return result;
