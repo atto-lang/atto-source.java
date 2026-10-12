@@ -44,7 +44,7 @@ final class SerialHttpSoakTest {
         String guest = """
             define serial actor Counter as
               state { count: int = 0; }
-              pub increment(): int using state.read, state.write {
+              pub increment(): int with state.read, state.write {
                 return self.handle_state(|s| -> {
                   s.count = s.count + 1;
                   return s.count;
