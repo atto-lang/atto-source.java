@@ -22,7 +22,9 @@ define actor Source as
         match mail.value over
             on Signal.Data n -> {
                 self.count = self.count + n;
-                stdio.stdout.write("PIPE_FORWARD_SOURCE_5|");
+                stdio.stdout.write("PIPE_FORWARD_SOURCE_");
+                stdio.stdout.write(self.count);
+                stdio.stdout.write("|");
                 self.forward(Signal.Data(self.count));
             }
             on Signal.Result n -> {
@@ -49,12 +51,16 @@ define actor Transform as
         match mail.value over
             on Signal.Data n -> {
                 self.value = n * 2;
-                stdio.stdout.write("PIPE_FORWARD_TRANSFORM_10|");
+                stdio.stdout.write("PIPE_FORWARD_TRANSFORM_");
+                stdio.stdout.write(self.value);
+                stdio.stdout.write("|");
                 self.forward(Signal.Data(self.value));
             }
             on Signal.Result n -> {
                 self.value = n + 1;
-                stdio.stdout.write("PIPE_BACKWARD_TRANSFORM_14|");
+                stdio.stdout.write("PIPE_BACKWARD_TRANSFORM_");
+                stdio.stdout.write(self.value);
+                stdio.stdout.write("|");
                 self.backward(Signal.Result(self.value));
                 self.end();
             }
@@ -73,7 +79,9 @@ define actor Sink as
         match mail.value over
             on Signal.Data n -> {
                 self.value = n + 3;
-                stdio.stdout.write("PIPE_BACKWARD_SINK_13|");
+                stdio.stdout.write("PIPE_BACKWARD_SINK_");
+                stdio.stdout.write(self.value);
+                stdio.stdout.write("|");
                 self.backward(Signal.Result(self.value));
                 self.end();
             }
