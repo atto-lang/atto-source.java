@@ -9,6 +9,43 @@ import org.junit.jupiter.api.Test;
 
 final class OresVMTest {
     @Test
+    void contextRetirementSealsNewHostScopesWithoutDroppingAuthorizedTurns()
+            throws Exception {
+        var admitted = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        try (OresVM vm = OresVM.create(Runnable::run, admitted::add)) {
+            var lease = vm.beginHostHandoff();
+            var effects = new java.util.concurrent.atomic.AtomicInteger();
+            try {
+                OresFuture<Integer> source = vm.rootScheduler().start(resume -> {
+                    effects.incrementAndGet();
+                    return OresScheduler.done(91);
+                });
+                vm.sealHostHandoffAdmission();
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        java.util.concurrent.RejectedExecutionException.class,
+                        vm::beginHostHandoff,
+                        "closing context must not admit a new host scope");
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalStateException.class, vm::requireHostHandoffReleased);
+                assertEquals(0, effects.get());
+                lease.close();
+                var admittedTurn = admitted.poll(5, TimeUnit.SECONDS);
+                org.junit.jupiter.api.Assertions.assertNotNull(admittedTurn);
+                admittedTurn.run();
+                assertEquals(91, source.get(5, TimeUnit.SECONDS));
+                assertEquals(1, effects.get());
+                vm.requireHostHandoffReleased();
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        java.util.concurrent.RejectedExecutionException.class,
+                        vm::beginHostHandoff,
+                        "cleanup drain never reopens sealed admission");
+            } finally {
+                lease.close();
+            }
+        }
+    }
+
+    @Test
     void scopedHostEntryHoldsRootCarrierUntilAllNestedHandoffsExit() throws Exception {
         var admitted = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
         try (OresVM vm = OresVM.create(Runnable::run, admitted::add)) {

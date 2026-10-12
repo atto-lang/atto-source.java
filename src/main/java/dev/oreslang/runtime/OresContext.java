@@ -519,6 +519,7 @@ public final class OresContext implements AutoCloseable {
             closeOwner = Thread.currentThread();
             try {
                 hostGeneratorTurns.seal();
+                vm.sealHostHandoffAdmission();
                 // Actor-owned finalizers may still need the VM CONTROL scheduler,
                 // async workers, imported code, network or native I/O. Never
                 // retire those dependencies before actor quiescence is proven.

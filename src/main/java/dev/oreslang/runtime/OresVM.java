@@ -106,14 +106,25 @@ public final class OresVM implements AutoCloseable {
         private final ArrayDeque<Runnable> held = new ArrayDeque<>();
         private int hostScopes;
         private boolean draining;
+        // Close seals all new host entry BEFORE actor/CONTROL resources retire.
+        // Active scopes and already-queued cleanup still drain on retry.
+        private boolean sealed;
 
         private RootHandoffGate(Executor downstream) {
             this.downstream = Objects.requireNonNull(downstream, "downstream");
         }
 
         synchronized HostHandoffLease begin() {
+            if (sealed) {
+                throw new RejectedExecutionException(
+                        "root host handoff admission is sealed");
+            }
             hostScopes++;
             return new HostHandoffLease(this);
+        }
+
+        synchronized void seal() {
+            sealed = true;
         }
 
         synchronized int heldCount() { return held.size(); }
@@ -176,6 +187,8 @@ public final class OresVM implements AutoCloseable {
         }
         return rootHandoffGate.begin();
     }
+
+    void sealHostHandoffAdmission() { rootHandoffGate.seal(); }
 
     int queuedHostHandoffTurns() { return rootHandoffGate.heldCount(); }
 
@@ -269,6 +282,11 @@ public final class OresVM implements AutoCloseable {
         // new admission, but it must leave its carriers and continuation queue
         // intact so outstanding finally/defer awaits can resume. Retire only
         // after physical scheduler quiescence has been observed.
+        // Seal under the same gate monitor as beginHostHandoff(), so a
+        // concurrent host call cannot acquire a new guest admission lease
+        // after the close preflight and before scheduler retirement.
+        sealHostHandoffAdmission();
+        requireHostHandoffReleased();
         closed.set(true);
         startupState = StartupState.CLOSED;
         rootScheduler.close();
