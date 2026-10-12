@@ -26,10 +26,10 @@ final class BorrowedOperandSuspensionAuditTest {
             + CHANNEL + "val result = nb readch (rt borrow ch); return; }",
             false, "borrowed channel operand"),
         new Case("blocking writech temporary borrowed channel", "fnc bad(): void { "
-            + CHANNEL + "writech (rt borrow ch), 1; return; }",
+            + CHANNEL + "writech(rt borrow ch, 1); return; }",
             false, "borrowed channel operand"),
         new Case("nonblocking writech temporary borrowed channel", "fnc bad(): void { "
-            + CHANNEL + "nb writech (rt borrow ch), 1; return; }",
+            + CHANNEL + "nb writech(rt borrow ch, 1); return; }",
             false, "borrowed channel operand"),
         new Case("dynamic blocking select borrowed plan", "fnc bad(): void { "
             + CHANNEL + "val Array<SelectCase> cases = [SelectCase.read(ch)]; "
