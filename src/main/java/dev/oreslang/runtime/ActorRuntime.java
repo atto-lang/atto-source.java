@@ -1531,6 +1531,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         UntrustedLogicalQuota quota = inheritedQuota;
+        AtomicBoolean physicalQuiescenceConfirmed = new AtomicBoolean();
+        AtomicBoolean terminalSubscribersDrained = new AtomicBoolean();
         AtomicBoolean releasedTimedAdmission = new AtomicBoolean();
         Runnable releaseTimedAdmissionOnce = () -> {
             if (releasedTimedAdmission.compareAndSet(false, true)) {
@@ -1543,11 +1545,28 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
         };
+        Runnable releaseTimedWhenSafe = () -> {
+            if (physicalQuiescenceConfirmed.get()
+                    && terminalSubscribersDrained.get()) {
+                releaseTimedAdmissionOnce.run();
+            }
+        };
         AtomicBoolean released = new AtomicBoolean();
         Runnable retireOnce = () -> {
             if (released.compareAndSet(false, true)) {
-                releaseUntrustedSourceTask(cell, quota);
+                try {
+                    releaseUntrustedSourceTask(cell, quota);
+                } finally {
+                    // A completed Future is not proof that an untrusted
+                    // physical carrier has exited the actor boundary.
+                    physicalQuiescenceConfirmed.set(true);
+                    releaseTimedWhenSafe.run();
+                }
             }
+        };
+        Runnable notificationsDrained = () -> {
+            terminalSubscribersDrained.set(true);
+            releaseTimedWhenSafe.run();
         };
         OresFuture<T> future;
         try {
@@ -1574,7 +1593,7 @@ public final class ActorRuntime implements AutoCloseable {
                     new UntrustedActorQuotaExceededException(
                             UntrustedActorQuotaExceededException.Resource.WALL_TIME,
                             "untrusted logical task exceeded wall-time budget while suspended"),
-                    releaseTimedAdmissionOnce);
+                    notificationsDrained);
         } catch (RuntimeException | Error failure) {
             // No task was admitted. Release the pre-reserved quota slot.
             // The scheduler's own retirement callback also claims this
@@ -6424,7 +6443,7 @@ public final class ActorRuntime implements AutoCloseable {
         /** One live logical quota cohort per untrusted actor. Guarded by lifecycleLock. */
         private volatile UntrustedLogicalQuota activeUntrustedSourceQuota;
         private int activeUntrustedSourceTaskCount;
-        /** Timed admission persists until terminal callbacks drain. */
+        /** Timed admission persists until both guest quiescence and terminal drain. */
         private int activeUntrustedTimedAdmissions;
         private Behavior<M> behavior;
 
