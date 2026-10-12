@@ -3,6 +3,9 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -94,6 +97,46 @@ final class ActorSendContractTest {
             assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> barrier.get(5, TimeUnit.SECONDS));
             assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void pendingDrainsHavePerActorQuotaAndGracefulStopKeepsReservedSlot() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                entered.countDown();
+                if (!release.await(5, TimeUnit.SECONDS))
+                    throw new AssertionError("test actor timed out");
+            });
+            ref.send(1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            List<OresFuture<Void>> observers = new ArrayList<>();
+            for (int i = 0; i < 1_024; i++) {
+                OresFuture<Void> drain = ref.drain();
+                assertFalse(drain.isDone(), "actor has not processed its held message");
+                observers.add(drain);
+            }
+            ExecutionException exhausted = assertThrows(ExecutionException.class,
+                    () -> ref.drain().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.ActorResourceExhaustedException.class,
+                    exhausted.getCause());
+            assertEquals(ActorRuntime.SendError.Reason.RESOURCE_EXHAUSTED,
+                    ((ActorRuntime.ActorResourceExhaustedException) exhausted.getCause()).reason());
+
+            // Exhausted public observers must not strand the actor in SEALED.
+            OresFuture<Void> done = ref.gracefulStop();
+            assertSame(done, ref.gracefulStop(), "repeated gracefulStop reuses termination");
+            assertThrows(ActorRuntime.ActorSealedException.class, () -> ref.send(2));
+            release.countDown();
+            for (OresFuture<Void> observer : observers)
+                observer.get(5, TimeUnit.SECONDS);
+            done.get(5, TimeUnit.SECONDS);
+            assertFalse(ref.isAlive());
         } finally {
             release.countDown();
         }
