@@ -12,6 +12,7 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -80,6 +81,7 @@ public final class GeneratorRuntime {
         // defend its mutable program counter against an accidental second
         // internal start before the first physical guest turn exits.
         private final AtomicBoolean physicalTurnInFlight = new AtomicBoolean();
+        private final AtomicBoolean everStarted = new AtomicBoolean();
         private final AtomicBoolean unprovenPhysicalExit = new AtomicBoolean();
 
         private SchedulerBacked(OresScheduler root,
@@ -100,6 +102,9 @@ public final class GeneratorRuntime {
                             "generator frame already owns a physical guest turn");
                 }
                 try {
+                    // A partially launched start is conservatively treated as
+                    // owning source state until its physical DONE is proven.
+                    everStarted.set(true);
                     HostGeneratorTurnPump.Turn<Step<T>> turn =
                             root.startCertifiedGeneratorTurn(owner,
                                     new OresScheduler.CancellationAwareTask<Step<T>>() {
@@ -155,6 +160,76 @@ public final class GeneratorRuntime {
         }
 
         boolean isTerminal() { return terminal.get(); }
+        boolean everStarted() { return everStarted.get(); }
+    }
+
+    /**
+     * A Java-owned pull handle for the *staged*, compiler-lowered generator.
+     * nextStep merely queues a certified request; it never invokes Truffle,
+     * executes a user callback, or grants physical guest-entry authority on
+     * the host calling thread. The owning context must install its verified
+     * scheduler/guest-entry wake path before constructing this handle.
+     *
+     * This deliberately has no general public factory. In particular the
+     * existing interpreter-backed AsyncGenerator and public Polyglot command
+     * must NOT be rewired until the global host/guest entry gate is proven.
+     */
+    public static final class HostPullSession<T> implements AutoCloseable {
+        private final HostGeneratorTurnPump pump;
+        private final SchedulerBacked<T> frame;
+        private final AtomicBoolean sealed = new AtomicBoolean();
+
+        private HostPullSession(HostGeneratorTurnPump pump, SchedulerBacked<T> frame) {
+            this.pump = Objects.requireNonNull(pump, "pump");
+            this.frame = Objects.requireNonNull(frame, "frame");
+        }
+
+        /** Returns a Future immediately without entering a guest context. */
+        public OresFuture<Step<T>> nextStep() {
+            if (sealed.get()) {
+                throw new RejectedExecutionException("generator host session is sealed");
+            }
+            // Even a terminal frame goes through the authenticated physical
+            // turn path. An early public DONE must not bypass the exit barrier.
+            return pump.requestCertified(pump.token(), frame.nextTurn());
+        }
+
+        public boolean isTerminal() { return frame.isTerminal(); }
+
+        /** True only when the pump has no pending or uncertain guest work. */
+        boolean isPhysicallyQuiescent() { return pump.isQuiescent(); }
+
+        /**
+         * A close is NOT a substitute for running source finally. Seal first;
+         * then reject retirement of an incompletely exhausted frame even
+         * when the public Future already settled and no carrier is running.
+         * Repeated close attempts preserve this fail-closed behavior.
+         */
+        @Override
+        public void close() {
+            sealed.set(true);
+            pump.seal();
+            pump.requireQuiescent();
+            if (frame.everStarted() && !frame.isTerminal()) {
+                throw new IllegalStateException(
+                        "generator source cleanup is not proven: stage is not exhausted");
+            }
+        }
+    }
+
+    /** For verified owner-dispatch integration only, never arbitrary host dispatch. */
+    static <T> HostPullSession<T> stagedHostPullSession(
+            HostGeneratorTurnPump pump, OresScheduler root, SchedulerFrame<T> frame) {
+        return new HostPullSession<>(pump,
+                schedulerBacked(root, pump.token(), frame));
+    }
+
+    /** Compile a restricted, typechecked .ores generator for the staged host ABI. */
+    static HostPullSession<Object> stagedSourceHostPullSession(
+            HostGeneratorTurnPump pump, OresScheduler root,
+            String source, String function, Map<String, ?> arguments) {
+        SourceLowering lowered = SourceLowering.compile(source, function, arguments);
+        return stagedHostPullSession(pump, root, lowered);
     }
 
     static <T> SchedulerBacked<T> schedulerBacked(
