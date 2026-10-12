@@ -107,6 +107,10 @@ public final class DeclaredEffectVerifier {
                     && namespace.name().equals("stdio")
                     && (member.member().equals("println") || member.member().equals("print"))) {
                 effects.add(FunctionEffects.Effect.IO);
+                // Console writes are still synchronous. An IO effect alone is
+                // not proof of nonblocking execution: a full pipe, slow sink,
+                // or host terminal can stall the actor carrier.
+                effects.add(FunctionEffects.Effect.BLOCK);
                 collect(call.arguments(), effects, stateAccess, callableName, serial);
                 return;
             }
