@@ -365,4 +365,51 @@ final class SupervisorChildRegistryTest {
         }
     }
 
+
+    @Test
+    void restartAdmissionAndCleanupArePhysicallyFenced() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var failed = ActorRuntime.ActorId.create();
+        var child = registry.register(failed);
+        registry.finalized(child.child(), failed, 1);
+        var permit = registry.beginRestart(child.child(), failed, 1);
+        var candidate = ActorRuntime.ActorId.create();
+        registry.stageReplacement(permit, candidate);
+        assertThrows(IllegalStateException.class, () -> registry.abortRestart(permit));
+        assertThrows(IllegalStateException.class, () -> registry.replace(permit, candidate));
+        assertThrows(IllegalStateException.class, () ->
+                registry.acknowledgeReplacementCleanup(permit, candidate, () -> false));
+        assertEquals(SupervisorChildRegistry.Phase.RESTARTING,
+                registry.snapshot(child.child()).phase());
+        registry.acknowledgeReplacementAdmission(permit, candidate, () -> true);
+        assertThrows(IllegalStateException.class, () -> registry.abortRestart(permit));
+        registry.acknowledgeReplacementCleanup(permit, candidate, () -> true);
+        assertThrows(IllegalStateException.class, () -> registry.replace(permit, candidate));
+        registry.abortRestart(permit);
+        assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                registry.snapshot(child.child()).phase());
+        assertThrows(IllegalStateException.class, () -> registry.replace(permit, candidate));
+    }
+
+    @Test
+    void closedSupervisorRejectsLateReplacementPublication() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var failed = ActorRuntime.ActorId.create();
+        var child = registry.register(failed);
+        registry.finalized(child.child(), failed, 1);
+        var permit = registry.beginRestart(child.child(), failed, 1);
+        var candidate = ActorRuntime.ActorId.create();
+        registry.stageReplacement(permit, candidate);
+        registry.acknowledgeReplacementAdmission(permit, candidate, () -> true);
+        registry.closeRestartAdmission();
+        assertThrows(IllegalStateException.class, () -> registry.replace(permit, candidate));
+        assertThrows(IllegalStateException.class, () -> registry.abortRestart(permit));
+        registry.acknowledgeReplacementCleanup(permit, candidate, () -> true);
+        registry.abortRestart(permit);
+        assertThrows(IllegalStateException.class, () ->
+                registry.beginRestart(child.child(), failed, 1));
+    }
+
 }
