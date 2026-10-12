@@ -2767,6 +2767,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void closeFromRuntime() {
+            // Fence runtime-owned RESTART publication BEFORE group revocation
+            // and cancellation callbacks. This lock is independent from
+            // authorityLock: no foreign host callback is invoked under it.
+            childRegistry.closeRestartAdmission();
             List<ActorRef<?>> owned;
             synchronized (authorityLock) {
                 if (!groupClosed.compareAndSet(false, true)) return;
