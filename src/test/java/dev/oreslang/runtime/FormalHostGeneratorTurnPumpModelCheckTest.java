@@ -21,6 +21,7 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         SETTLE_RESULT, PHYSICAL_EXIT, CANCEL_PENDING, CANCEL_ACTIVE,
         SEAL_CONTEXT, STARTER_FAILED_NO_EXIT_RECEIPT,
         FAILED_EXIT_RECEIPT, FOREIGN_EXIT_RECEIPT, REPLAYED_EXIT_RECEIPT,
+        FOREIGN_LEDGER_SAME_IDENTITY,
         PUBLISH_AFTER_EXIT, RETRY_CLOSE
     }
 
@@ -67,7 +68,8 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
             case PHYSICAL_EXIT -> {
                 if (active) exited = true;
             }
-            case FOREIGN_EXIT_RECEIPT, REPLAYED_EXIT_RECEIPT -> {
+            case FOREIGN_EXIT_RECEIPT, REPLAYED_EXIT_RECEIPT,
+                 FOREIGN_LEDGER_SAME_IDENTITY -> {
                 // Neither a foreign incarnation nor a previously claimed
                 // physical DONE receipt may release active ownership.
             }
@@ -176,7 +178,8 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
                 if (event == Event.FOREIGN_DISPATCH
                         || event == Event.WRONG_INCARNATION
                         || event == Event.FOREIGN_EXIT_RECEIPT
-                        || event == Event.REPLAYED_EXIT_RECEIPT) {
+                        || event == Event.REPLAYED_EXIT_RECEIPT
+                        || event == Event.FOREIGN_LEDGER_SAME_IDENTITY) {
                     assertEquals(state, next,
                             "foreign identity unexpectedly acquired guest authority");
                 }
