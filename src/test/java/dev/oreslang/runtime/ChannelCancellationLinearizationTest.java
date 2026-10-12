@@ -178,4 +178,69 @@ final class ChannelCancellationLinearizationTest {
         assertTrue(channel.tryRead().isEmpty());
         assertEquals(0, retainedRegistrations(channel));
     }
+
+    @Test
+    void concurrentFairSelectsSnapshotCursorAtCoordinatorAdmission() throws Exception {
+        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(2);
+        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(2);
+        assertTrue(first.tryWrite(11));
+        assertTrue(first.tryWrite(12));
+        assertTrue(second.tryWrite(21));
+        assertTrue(second.tryWrite(22));
+
+        ChannelRuntime.SelectSet reusable = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(first), ChannelRuntime.read(second));
+        FutureTask<ChannelRuntime.SelectResult> one = new FutureTask<>(
+                () -> reusable.selectAsync(ChannelRuntime.SelectPolicy.FAIR).join());
+        FutureTask<ChannelRuntime.SelectResult> two = new FutureTask<>(
+                () -> reusable.selectAsync(ChannelRuntime.SelectPolicy.FAIR).join());
+
+        ReentrantLock lock = coordinator();
+        lock.lock();
+        try {
+            Thread firstCaller = start(one, "first-fair-admission");
+            awaitQueued(lock, firstCaller);
+            Thread secondCaller = start(two, "second-fair-admission");
+            awaitQueued(lock, secondCaller);
+        } finally {
+            lock.unlock();
+        }
+
+        assertEquals(0, one.get(5, TimeUnit.SECONDS).index(),
+                "first committed selection starts with arm zero");
+        assertEquals(1, two.get(5, TimeUnit.SECONDS).index(),
+                "second concurrent caller must see first's committed cursor");
+        assertEquals(12, first.tryRead().orElseThrow());
+        assertEquals(22, second.tryRead().orElseThrow());
+        assertEquals(0, retainedRegistrations(first));
+        assertEquals(0, retainedRegistrations(second));
+    }
+
+    @Test
+    void defaultArmDoesNotSpendFairnessCreditBeforeActualRead() {
+        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.SelectSet reusable = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(first),
+                ChannelRuntime.defaultCase(),
+                ChannelRuntime.read(second));
+
+        assertEquals(1, reusable.selectAsync(ChannelRuntime.SelectPolicy.FAIR)
+                .join().index(), "nothing ready must choose DEFAULT");
+        assertTrue(first.tryWrite(17));
+        assertTrue(second.tryWrite(27));
+        assertEquals(0, reusable.selectAsync(ChannelRuntime.SelectPolicy.FAIR)
+                .join().index(), "DEFAULT must not advance FAIR cursor");
+        assertEquals(27, second.tryRead().orElseThrow());
+        assertEquals(0, retainedRegistrationsUnchecked(first));
+        assertEquals(0, retainedRegistrationsUnchecked(second));
+    }
+
+    private static int retainedRegistrationsUnchecked(ChannelRuntime.Channel<?> channel) {
+        try {
+            return retainedRegistrations(channel);
+        } catch (ReflectiveOperationException reflectionFailure) {
+            throw new AssertionError(reflectionFailure);
+        }
+    }
 }
