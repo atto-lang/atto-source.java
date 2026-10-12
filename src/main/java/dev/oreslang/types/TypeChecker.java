@@ -95,6 +95,8 @@ public final class TypeChecker {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+        ActorStateContract.verify(program);
+        DeclaredEffectVerifier.verify(program);
         checker.validate(program);
         return new TypeCheckResult(program, checker.warnings);
     }
@@ -449,6 +451,43 @@ public final class TypeChecker {
                 Ast.BindingKind.CONST);
     }
 
+    /**
+     * Critical tickets fence access only until invocation completion. A
+     * borrowed result (including a nested borrow in a record/tuple/generic)
+     * would outlive the ticket. A suspendable critical callable must likewise
+     * not retain a borrowed parameter across its mandatory entry yield.
+     *
+     * This verifies declared surface types; OwnershipChecker separately
+     * verifies the actual call arguments and live lexical loans.
+     */
+    private static boolean containsCriticalBorrow(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        if (type.arguments().stream().anyMatch(TypeChecker::containsCriticalBorrow)) return true;
+        return type.isRecordType()
+                && type.recordMembers().values().stream().anyMatch(TypeChecker::containsCriticalBorrow);
+    }
+
+    private static void verifyCriticalSignature(
+            String name, boolean critical, boolean suspends, boolean async,
+            List<Ast.Param> parameters, Ast.TypeRef returns) {
+        if (!critical) return;
+        if (containsCriticalBorrow(returns)) {
+            throw new IllegalArgumentException(
+                    "critical callable '" + name
+                    + "' cannot return a borrowed reference beyond the critical ticket lifetime");
+        }
+        if (!suspends && !async) return;
+        for (Ast.Param param : parameters) {
+            if (param.structural() || containsCriticalBorrow(param.type())) {
+                throw new IllegalArgumentException(
+                        "suspending critical callable '" + name
+                        + "' must capture owned parameters before its mandatory suspension; "
+                        + "borrowed and structural parameters are not admitted");
+            }
+        }
+    }
+
     private void requireSuspendableCall(boolean suspends, String label) {
         if (suspends && !currentMaySuspend)
             throw new IllegalArgumentException(
@@ -456,6 +495,8 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        verifyCriticalSignature(module + "." + fn.name(), fn.critical(),
+                fn.suspends(), fn.async(), fn.parameters(), fn.returnType());
         if (fn.name().endsWith("_blocking") && !fn.suspends())
             throw new IllegalArgumentException(
                     "*_blocking function '" + fn.name() + "' must declare suspends");
@@ -911,6 +952,20 @@ public final class TypeChecker {
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
         for (Ast.FieldDecl field : klass.fields()) {
+            if (ActorStateContract.isStateField(field)) {
+                Ast.TypeRef keys = ActorStateContract.keySchema(field);
+                if (field.initializer() instanceof Ast.ObjectExpr defaults) {
+                    for (Ast.ObjectField entry : defaults.fields()) {
+                        Ast.TypeRef keyType = keys.recordMembers().get(entry.name());
+                        if (keyType == null) throw new IllegalArgumentException("unknown actor state key '" + entry.name() + "'");
+                        Type expected = resolve(keyType, classGenerics, null);
+                        Type actual = typeOf(entry.value(), new Env(null), classGenerics, null);
+                        requireAssignable(actual, expected,
+                                "actor state default '" + klass.name() + "." + entry.name() + "'");
+                    }
+                }
+                continue;
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
@@ -981,6 +1036,12 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && !method.isStatic() && method.name().equals("handle_state")) {
+                throw new IllegalArgumentException("handle_state is a sealed actor intrinsic");
+            }
+            verifyCriticalSignature(klass.name() + "." + method.name(), method.critical(),
+                    method.suspends(), method.async(), method.parameters(), method.returnType());
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && (method.name().equals("send")
@@ -1777,6 +1838,13 @@ public final class TypeChecker {
                 targetType = binding.type();
                 where = name.name();
             } else if (assignment.target() instanceof Ast.MemberExpr member) {
+                if (currentClassOwner != null
+                        && ActorStateContract.stateField(currentClassOwner) != null
+                        && member.member().equals("state")
+                        && member.receiver() instanceof Ast.NameExpr stateSelf
+                        && stateSelf.name().equals("self")) {
+                    throw new IllegalArgumentException("actor self.state is sealed and not assignable");
+                }
                 targetType = memberType(member, env, generics, self, true);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
@@ -1961,6 +2029,56 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr intrinsic
+                    && intrinsic.member().equals("handle_state")
+                    && intrinsic.receiver() instanceof Ast.NameExpr receiverName
+                    && receiverName.name().equals("self")
+                    && currentClassOwner != null
+                    && currentActorKind != Ast.ActorKind.NONE) {
+                Ast.FieldDecl state = ActorStateContract.stateField(currentClassOwner);
+                if (state == null) throw new IllegalArgumentException("self.handle_state requires actor state schema");
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1
+                        || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda))
+                    throw new IllegalArgumentException("self.handle_state requires one callback lambda");
+                Type schemaType = resolve(ActorStateContract.keySchema(state), generics, self);
+                // A state-update callback with no value-return path has
+                // unit result, not an inferred non-void result. Otherwise
+                // TypeChecker requires an unnecessary dummy return from every
+                // mutation-only handle_state block. Value-returning callbacks
+                // retain the normal definite-return requirement.
+                Type callbackReturn = lambda.expressionBody() != null
+                        || definitelyReturns(lambda.blockBody())
+                        ? Unknown.INSTANCE : Primitive.VOID;
+                validateLambdaAgainstExpected(lambda,
+                        new Function(List.of(schemaType), callbackReturn), env, generics, self);
+                // Derive a *Copy scalar* result from the callback's final
+                // return expression. Without this, a safe returned i64/bool
+                // becomes Unknown and cannot even cross a mailbox boundary.
+                // Never manufacture a return type for a StateAccess object,
+                // raw class, borrowed reference or projected mutable Map.
+                if (callbackReturn == Primitive.VOID) return Primitive.VOID;
+                Env scoped = new Env(env);
+                scoped.define(lambda.parameters().getFirst().name(), schemaType, Ast.BindingKind.LET);
+                Ast.Expr resultExpr = lambda.expressionBody();
+                if (resultExpr == null && lambda.blockBody() != null) {
+                    for (Ast.Stmt statement : lambda.blockBody()) {
+                        if (statement instanceof Ast.ReturnStmt returned) {
+                            resultExpr = returned.value();
+                        }
+                    }
+                }
+                if (resultExpr == null) {
+                    throw new IllegalArgumentException(
+                            "value-returning handle_state callback needs an explicit return");
+                }
+                Type result = typeOf(resultExpr, scoped, generics, self);
+                if (result != Primitive.INT && result != Primitive.BOOL) {
+                    throw new IllegalArgumentException(
+                            "native handle_state may return only a copied int or bool; "
+                            + "borrowed/reference state cannot escape callback");
+                }
+                return result;
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -2740,6 +2858,14 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (currentClassOwner != null
+                    && ActorStateContract.stateField(currentClassOwner) != null
+                    && member.member().equals("state")
+                    && member.receiver() instanceof Ast.NameExpr stateSelf
+                    && stateSelf.name().equals("self")) {
+                throw new IllegalArgumentException(
+                        "self.state is sealed; use self.handle_state callback");
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
