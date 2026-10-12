@@ -64,6 +64,71 @@ final class RootHandoffPhysicalEntryTest {
     }
 
     @Test
+    void settledFutureCannotReopenHostEntryUntilSchedulerCarrierPhysicallyExits()
+            throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch finishGuest = new CountDownLatch(1);
+        CountDownLatch terminalCallbackEntered = new CountDownLatch(1);
+        CountDownLatch unblockTerminalCallback = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> callbackFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try {
+            OresFuture<Integer> future = vm.rootScheduler().startSync(() -> {
+                started.countDown();
+                if (!finishGuest.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test did not release source guest turn");
+                }
+                return 51;
+            });
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            // Registration precedes result settlement. Settle() first publishes
+            // the Future's terminal state, then synchronously notifies runtime
+            // waiters. Block that callback so the physical root-gate runnable
+            // demonstrably has NOT returned despite a visible public result.
+            future.whenCompleteRuntime((value, failure) -> {
+                terminalCallbackEntered.countDown();
+                try {
+                    if (!unblockTerminalCallback.await(5, TimeUnit.SECONDS)) {
+                        callbackFailure.set(new AssertionError(
+                                "host did not release terminal callback"));
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    callbackFailure.set(interrupted);
+                }
+            });
+            finishGuest.countDown();
+            assertTrue(terminalCallbackEntered.await(5, TimeUnit.SECONDS),
+                    "Future settlement callback did not reach physical-exit rendezvous");
+            assertEquals(51, future.get(5, TimeUnit.SECONDS),
+                    "public Future is already terminal at this rendezvous");
+            assertThrows(RejectedExecutionException.class, vm::beginHostHandoff,
+                    "terminal Future must not be mistaken for physical root DONE");
+            unblockTerminalCallback.countDown();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            OresVM.HostHandoffLease admitted = null;
+            while (admitted == null) {
+                try {
+                    admitted = vm.beginHostHandoff();
+                } catch (RejectedExecutionException stillExiting) {
+                    assertTrue(System.nanoTime() < deadline,
+                            "root did not release guest-entry ownership after terminal callback");
+                    Thread.onSpinWait();
+                }
+            }
+            try (OresVM.HostHandoffLease host = admitted) {
+                assertThrows(IllegalStateException.class, vm::requireHostHandoffReleased);
+            }
+            assertNull(callbackFailure.get(), "runtime callback encountered an unexpected error");
+        } finally {
+            finishGuest.countDown();
+            unblockTerminalCallback.countDown();
+            vm.close();
+        }
+    }
+
+    @Test
     void foreignThreadCannotReleaseHostPhysicalEntryLease() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         OresVM.HostHandoffLease ownerLease = vm.beginHostHandoff();
