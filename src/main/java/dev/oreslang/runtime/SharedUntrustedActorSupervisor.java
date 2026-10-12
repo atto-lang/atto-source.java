@@ -158,7 +158,10 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
             throw failure;
         } finally {
             if (admission != null) admission.close();
-            synchronized (lifecycle) { pendingSpawns--; }
+            synchronized (lifecycle) {
+                pendingSpawns--;
+                lifecycle.notifyAll();
+            }
         }
     }
 
@@ -276,16 +279,34 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
         }
     }
 
-    @Override public void close() {
-        ArrayList<Actor> snapshot;
-        SharedUntrustedIsolatePool owned = null;
-        synchronized (lifecycle) {
-            if (closed) return;
-            closed = true;
-            snapshot = new ArrayList<>(active);
-            if (ownsPool) owned = pool;
-        }
+    private final VerifiedCloseFence supervisorCloseFence =
+            new VerifiedCloseFence(this::retireSupervisor);
 
+    @Override public void close() {
+        synchronized (lifecycle) { closed = true; }
+        supervisorCloseFence.awaitConfirmedClose("untrusted actor supervisor");
+    }
+
+    private void retireSupervisor() {
+        ArrayList<Actor> snapshot;
+        SharedUntrustedIsolatePool owned;
+        synchronized (lifecycle) {
+            // A pending spawn already reserved a slot and may be executing
+            // hostile initialization. Its deadline/revoker must settle before
+            // the supervisor may report fully closed, especially when this
+            // supervisor does not own its application's shared Engine.
+            while (pendingSpawns != 0) {
+                try {
+                    lifecycle.wait();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "untrusted supervisor has unfinished actor admissions");
+                }
+            }
+            snapshot = new ArrayList<>(active);
+            owned = ownsPool ? pool : null;
+        }
         RuntimeException failure = null;
         for (Actor actor : snapshot) {
             try { actor.close(); }
