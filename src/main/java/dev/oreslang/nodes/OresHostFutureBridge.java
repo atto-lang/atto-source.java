@@ -30,9 +30,13 @@ public final class OresHostFutureBridge {
      * again while the first call is still starting its task.
      */
     static final class Slot {
-        private enum State { OPEN, CLAIMED, PUBLISHED, CLOSED }
+        private enum State { OPEN, CLAIMED, PUBLISHED, DELIVERED, CLOSED }
 
         private final String function;
+        // A capture is usable only on the physical host thread that opened it.
+        // ThreadLocal is the first boundary; this explicit check also protects
+        // package-level ticket operations from accidental cross-thread sharing.
+        private final Thread ownerThread = Thread.currentThread();
         // Never supplied to the guest callable or exposed through a Value.
         private final String nonce = UUID.randomUUID().toString();
         private State state = State.OPEN;
@@ -44,11 +48,19 @@ public final class OresHostFutureBridge {
             this.function = Objects.requireNonNull(function, "function");
         }
 
+        private void requireOwnerThread() {
+            if (Thread.currentThread() != ownerThread) {
+                throw new SecurityException("host Future ticket belongs to another thread");
+            }
+        }
+
         String nonce() {
+            requireOwnerThread();
             return nonce;
         }
 
         void claim(String function, String nonce, Object context, Object root) {
+            requireOwnerThread();
             if (!this.function.equals(function) || !this.nonce.equals(nonce)) {
                 throw new SecurityException(
                         "host Future handoff requires a matching scoped invocation");
@@ -67,6 +79,7 @@ public final class OresHostFutureBridge {
 
         void publish(String function, String nonce, Object context, Object root,
                      OresFuture<?> result) {
+            requireOwnerThread();
             if (!this.function.equals(function) || !this.nonce.equals(nonce)
                     || state != State.CLAIMED
                     || ownerContext != context || ownerRoot != root) {
@@ -78,11 +91,18 @@ public final class OresHostFutureBridge {
         }
 
         OresFuture<?> result() {
+            requireOwnerThread();
             if (state != State.PUBLISHED || future == null) {
                 throw new IllegalStateException(
                         "Oreslang public async call did not publish its Future");
             }
-            return future;
+            // Handoff is one-use as well as claim/publication: a second reader
+            // cannot extract the same result, and the slot no longer retains
+            // the Future once the caller has taken responsibility for it.
+            OresFuture<?> delivered = future;
+            future = null;
+            state = State.DELIVERED;
+            return delivered;
         }
 
         /**
@@ -93,6 +113,7 @@ public final class OresHostFutureBridge {
          * not proof of physical cleanup completion.
          */
         void cancelUnreturnedOnHostFailure(Throwable hostFailure) {
+            requireOwnerThread();
             Objects.requireNonNull(hostFailure, "hostFailure");
             if (state != State.PUBLISHED || future == null) return;
             try {
@@ -105,6 +126,7 @@ public final class OresHostFutureBridge {
         }
 
         void close() {
+            requireOwnerThread();
             state = State.CLOSED;
             ownerContext = null;
             ownerRoot = null;
