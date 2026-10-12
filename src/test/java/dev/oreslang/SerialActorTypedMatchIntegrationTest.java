@@ -79,4 +79,26 @@ final class SerialActorTypedMatchIntegrationTest {
                 out.toString(StandardCharsets.UTF_8),
                 "the next message must not enter before awaited ARM_RESULT cleanup and publication");
     }
+    @Test
+    void shadowedActorTypeCannotAuthorizeAwaitedStaticMatchProducer() {
+        IllegalArgumentException rejection = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                    define serial actor Counter as
+                        static async fnc produce_value(): int {
+                            return 7;
+                        }
+                        suspends receive(ActorMail<String> mail): void {
+                            const Counter: int = 1;
+                            const answer: int = match<ret=int> await Counter.produce_value() over {
+                                default { return 42; }
+                            };
+                            stdio.println(answer);
+                            return;
+                        }
+                    end
+                    """));
+        assertNotNull(rejection.getMessage());
+    }
+
 }
