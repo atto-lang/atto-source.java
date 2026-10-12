@@ -491,11 +491,14 @@ public final class NativeHttp implements AutoCloseable {
                 try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
                 finally {
                     synchronized (this) { transportStopped = true; }
-                    for (State state : active) state.abort(503);
-                    retireQueuedSerialTransfers();
-                    synchronized (this) { retirementSweepComplete = true; }
-                    servers.remove(this);
-                    completeDrain();
+                    try {
+                        for (State state : active) state.abort(503);
+                        retireQueuedSerialTransfers();
+                    } finally {
+                        synchronized (this) { retirementSweepComplete = true; }
+                        servers.remove(this);
+                        completeDrain();
+                    }
                 }
             });
             return result;
@@ -541,10 +544,14 @@ public final class NativeHttp implements AutoCloseable {
         @Override public void close() {
             stopAccepting(); transport.stop(0);
             synchronized (this) { transportStopped = true; }
-            for (State state : active) state.abort(503);
-            retireQueuedSerialTransfers();
-            synchronized (this) { retirementSweepComplete = true; }
-            servers.remove(this); completeDrain();
+            try {
+                for (State state : active) state.abort(503);
+                retireQueuedSerialTransfers();
+            } finally {
+                synchronized (this) { retirementSweepComplete = true; }
+                servers.remove(this);
+                completeDrain();
+            }
         }
     }
 
