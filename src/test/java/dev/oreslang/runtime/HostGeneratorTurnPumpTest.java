@@ -394,6 +394,110 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void certifiedSchedulerFrameYieldsThreeTypedValuesAndFinishes() throws Exception {
+        try (OresScheduler root = new OresScheduler(1)) {
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> true, root);
+            AtomicInteger next = new AtomicInteger();
+            GeneratorRuntime.SchedulerBacked<Integer> frame =
+                    GeneratorRuntime.schedulerBacked(root, pump.token(), resume -> {
+                        assertTrue(resume.initial(), "each pull starts a new root task");
+                        int value = next.incrementAndGet();
+                        return OresScheduler.done(value <= 3
+                                ? GeneratorRuntime.Step.yielded(value)
+                                : GeneratorRuntime.Step.doneStep());
+                    });
+
+            for (int expected = 1; expected <= 3; expected++) {
+                OresFuture<GeneratorRuntime.Step<Integer>> pull =
+                        pump.requestCertified(pump.token(), frame.nextTurn());
+                assertTrue(pump.dispatchOne(), "owner must dispatch requested pull");
+                GeneratorRuntime.Step<Integer> step = pull.get(5, TimeUnit.SECONDS);
+                assertFalse(step.done());
+                assertEquals(expected, step.value());
+                assertTrue(pump.isQuiescent(),
+                        "public publication requires physical guest DONE");
+            }
+            OresFuture<GeneratorRuntime.Step<Integer>> finalPull =
+                    pump.requestCertified(pump.token(), frame.nextTurn());
+            assertTrue(pump.dispatchOne());
+            assertTrue(finalPull.get(5, TimeUnit.SECONDS).done());
+            assertTrue(frame.isTerminal());
+            pump.close();
+            assertEquals(4, next.get());
+        }
+    }
+
+    @Test
+    void certifiedPullRejectsSyntheticOrForeignSchedulerDoneProof() throws Exception {
+        try (OresScheduler root = new OresScheduler(1);
+             OresScheduler foreign = new OresScheduler(1)) {
+            HostGeneratorTurnPump synthetic = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> true, root);
+            OresFuture<Integer> fake = synthetic.requestCertified(synthetic.token(),
+                    () -> new HostGeneratorTurnPump.Turn<>(
+                            OresFuture.completed(3), OresFuture.completed(null)));
+            assertTrue(synthetic.dispatchOne());
+            assertInstanceOf(SecurityException.class,
+                    assertThrows(java.util.concurrent.ExecutionException.class,
+                            () -> fake.get(5, TimeUnit.SECONDS)).getCause());
+            assertThrows(IllegalStateException.class, synthetic::close,
+                    "untrusted physical receipt must poison the incarnation");
+
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> true, root);
+            OresFuture<Integer> pulled = pump.requestCertified(pump.token(),
+                    () -> foreign.startCertifiedGeneratorTurn(
+                            pump.token(), input -> OresScheduler.done(7)));
+            assertTrue(pump.dispatchOne());
+            assertInstanceOf(SecurityException.class,
+                    assertThrows(java.util.concurrent.ExecutionException.class,
+                            () -> pulled.get(5, TimeUnit.SECONDS)).getCause());
+            assertFalse(pump.isQuiescent(),
+                    "a foreign scheduler receipt cannot authorize retirement");
+            assertThrows(IllegalStateException.class, pump::close);
+        }
+    }
+
+    @Test
+    void cancelledCertifiedAwaitCannotStartAnotherPullBeforePhysicalDone()
+            throws Exception {
+        try (OresScheduler root = new OresScheduler(1)) {
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> true, root);
+            OresFuture<Integer> neverReady = new OresFuture<>();
+            CountDownLatch frameEntered = new CountDownLatch(1);
+            AtomicInteger secondStarts = new AtomicInteger();
+            OresFuture<Integer> first = pump.requestCertified(pump.token(),
+                    () -> root.startCertifiedGeneratorTurn(pump.token(), input -> {
+                        frameEntered.countDown();
+                        return OresScheduler.await(neverReady);
+                    }));
+            OresFuture<Integer> second = pump.requestCertified(pump.token(),
+                    () -> root.startCertifiedGeneratorTurn(pump.token(), input -> {
+                        secondStarts.incrementAndGet();
+                        return OresScheduler.done(8);
+                    }));
+            assertTrue(pump.dispatchOne());
+            assertTrue(frameEntered.await(5, TimeUnit.SECONDS));
+            assertFalse(pump.dispatchOne(),
+                    "the second pull cannot enter while the first owns its lease");
+            assertTrue(first.cancel(false));
+            pump.seal();
+            assertTrue(second.isCancelled());
+            assertEquals(0, secondStarts.get());
+            // The scheduler owns cancellation. Only its terminal after-carrier
+            // publication can release the certified physical exit receipt.
+            CountDownLatch physicallyDone = new CountDownLatch(1);
+            neverReady.whenCompleteRuntime((value, failure) -> physicallyDone.countDown());
+            root.close();
+            assertTrue(pump.isQuiescent(),
+                    "scheduler shutdown has physically drained cancelled tasks");
+            pump.close();
+        }
+    }
+
+    @Test
     void cancellationAndContextShutdownRaceCannotStartQueuedTurn() throws Exception {
         AtomicReference<Thread> ownerThread = new AtomicReference<>();
         HostGeneratorTurnPump pump = new HostGeneratorTurnPump(

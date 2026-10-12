@@ -40,6 +40,67 @@ public final class GeneratorRuntime {
         public static <T> Step<T> doneStep() { return new Step<>(true, null); }
     }
 
+    /**
+     * Compiler-lowering target for a heap-resident generator frame. A frame
+     * saves its own program counter and environment across pulls. It may
+     * suspend inside a pull using OresScheduler.await(), without parking a
+     * producer thread or running guest code from a Future completion callback.
+     */
+    @FunctionalInterface
+    interface SchedulerFrame<T> {
+        OresScheduler.Step<Step<T>> resume(OresScheduler.Resume input) throws Exception;
+    }
+
+    /**
+     * Staged bridge for compiler-lowered generator frames. Each pull becomes
+     * exactly one root-scheduler task; its physical DONE is certified after
+     * the last guest carrier exits. The host API is intentionally not wired
+     * to this path until source yield/finally lowering is complete.
+     */
+    static final class SchedulerBacked<T> {
+        private final OresScheduler root;
+        private final HostGeneratorTurnPump.OwnerToken owner;
+        private final SchedulerFrame<T> frame;
+        private final AtomicBoolean terminal = new AtomicBoolean();
+
+        private SchedulerBacked(OresScheduler root,
+                HostGeneratorTurnPump.OwnerToken owner, SchedulerFrame<T> frame) {
+            this.root = Objects.requireNonNull(root, "root");
+            this.owner = Objects.requireNonNull(owner, "owner");
+            this.frame = Objects.requireNonNull(frame, "frame");
+        }
+
+        HostGeneratorTurnPump.Start<Step<T>> nextTurn() {
+            return () -> {
+                HostGeneratorTurnPump.Turn<Step<T>> turn =
+                        root.startCertifiedGeneratorTurn(owner, input -> {
+                            if (terminal.get()) return OresScheduler.done(Step.doneStep());
+                            try {
+                                return Objects.requireNonNull(frame.resume(input),
+                                        "generator frame returned no scheduler step");
+                            } catch (Exception | Error failure) {
+                                terminal.set(true);
+                                throw failure;
+                            }
+                        });
+                turn.result().whenCompleteRuntime((step, failure) -> {
+                    if (failure != null || step != null && step.done()) {
+                        terminal.set(true);
+                    }
+                });
+                return turn;
+            };
+        }
+
+        boolean isTerminal() { return terminal.get(); }
+    }
+
+    static <T> SchedulerBacked<T> schedulerBacked(
+            OresScheduler root, HostGeneratorTurnPump.OwnerToken owner,
+            SchedulerFrame<T> frame) {
+        return new SchedulerBacked<>(root, owner, frame);
+    }
+
     public static <T> Generator<T> generator(AsyncRuntime runtime, Producer<T> producer) {
         return new Generator<>(new Engine<>(runtime, producer));
     }
