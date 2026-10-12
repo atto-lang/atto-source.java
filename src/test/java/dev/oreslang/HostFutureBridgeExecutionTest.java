@@ -133,6 +133,35 @@ final class HostFutureBridgeExecutionTest {
     }
 
     @Test
+    void malformedAndGuessedNonceCannotDispatchOrFallThroughToMain()
+            throws Exception {
+        ConcurrentOutput output = new ConcurrentOutput();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).out(output).build()) {
+            Value parsed = context.parse(Source.newBuilder(OresLanguage.ID,
+                    PROGRAM, "invalid-host-bridge.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+            parsed.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+
+            String command = OresEvalRootNode.INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND;
+            PolyglotException missing = assertThrows(PolyglotException.class,
+                    () -> parsed.execute(command));
+            assertTrue(missing.getMessage().contains(
+                    "invalid scoped host Future handoff command"));
+            PolyglotException malformed = assertThrows(PolyglotException.class,
+                    () -> parsed.execute(command, "work", 123));
+            assertTrue(malformed.getMessage().contains(
+                    "invalid scoped host Future handoff command"));
+            PolyglotException guessed = assertThrows(PolyglotException.class,
+                    () -> parsed.execute(command, "work", "stale-or-guessed-token"));
+            assertTrue(guessed.getMessage().contains(
+                    "matching scoped invocation"));
+            assertEquals("", output.toString(),
+                    "malformed or guessed bridge must not run guest work or main");
+        }
+    }
+
+    @Test
     void rejectingSyncFunctionDoesNotLeaveStaleHostCapture()
             throws Exception {
         try (Context context = Context.newBuilder(OresLanguage.ID)
