@@ -37,6 +37,17 @@ jobs:
           java-version: '25'
           distribution: graalvm
           cache: maven
+      - name: JVM guest-source preflight before expensive native-image build
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 90s mvn -B -ntp -DskipTests exec:java \
+            -Dexec.args="--mode=jit --platform=linux examples/native-await-finally.ores" \
+            | tee /tmp/ores-jvm-native-fixture.log
+          grep -x '42' /tmp/ores-jvm-native-fixture.log
+          grep -x 'ORES_NATIVE|defer' /tmp/ores-jvm-native-fixture.log
+          grep -x 'ORES_NATIVE|finally' /tmp/ores-jvm-native-fixture.log
+          ! grep -F 'ORES_NATIVE|unexpected-catch' /tmp/ores-jvm-native-fixture.log
       - name: Build native executable
         run: mvn -B -ntp -Pnative-${{ matrix.mode }} -DskipTests package
       - name: Verify actual Native Image build mode
@@ -66,6 +77,7 @@ jobs:
           grep -x '42' /tmp/native-source-cleanup.log
           grep -x 'ORES_NATIVE|defer' /tmp/native-source-cleanup.log
           grep -x 'ORES_NATIVE|finally' /tmp/native-source-cleanup.log
+          ! grep -F 'ORES_NATIVE|unexpected-catch' /tmp/native-source-cleanup.log
           awk '/^42$|^ORES_NATIVE\\|/ {print}' /tmp/native-source-cleanup.log \
             > /tmp/native-source-observed.txt
           printf '42\nORES_NATIVE|defer\nORES_NATIVE|finally\n' \
