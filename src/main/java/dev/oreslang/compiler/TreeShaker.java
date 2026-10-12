@@ -630,7 +630,8 @@ public final class TreeShaker {
                         binding.declaredType(),
                         binding.name(),
                         initializer,
-                        binding.mutableReferent()));
+                        binding.mutableReferent(),
+                        binding.inferredTypeName()));
             }
             if (statement instanceof Ast.DestructureStmt destructure) {
                 Ast.Expr initializer = rewriteExpression(destructure.initializer(), module, locals);

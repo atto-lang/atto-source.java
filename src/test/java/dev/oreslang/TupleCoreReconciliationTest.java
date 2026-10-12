@@ -139,7 +139,7 @@ final class TupleCoreReconciliationTest {
                           return;
                         }
                         """)));
-        assertTrue(bounds.getMessage().contains("out of bounds"), bounds.getMessage());
+        assertTrue(bounds.getMessage().contains("outside arity"), bounds.getMessage());
 
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
@@ -163,7 +163,7 @@ final class TupleCoreReconciliationTest {
     void fixedArrayRetainsItsSeparateMutableSemantics() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc main(): void {
-                  let slots: FixedArray[int, int] = [1, 2];
+                  let mut slots: FixedArray[int, int] = [1, 2];
                   slots[0] = 3;
                   return;
                 }
