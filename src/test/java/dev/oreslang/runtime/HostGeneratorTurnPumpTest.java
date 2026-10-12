@@ -449,12 +449,13 @@ final class HostGeneratorTurnPumpTest {
         // scheduler-owned turns. No handwritten host-side yield callback
         // and no AsyncRuntime/virtual-thread generator producer.
         String source = """
-                async generator fnc numbers(pending: Future<int>): int {
+                async fnc pending(): int { return 44; }
+                async generator fnc numbers(): int {
                   try {
                     yield 11;
                     yield 22;
                     yield 33;
-                    yield await pending;
+                    yield await pending();
                   } catch (err) {
                   } finally {
                     val int cleanup_marker = 1;

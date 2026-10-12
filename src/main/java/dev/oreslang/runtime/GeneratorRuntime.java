@@ -210,7 +210,7 @@ public final class GeneratorRuntime {
                 throw new IllegalArgumentException(
                         "source lowering requires a non-actor async generator function");
             }
-            if (args.size() != target.parameters().size()) {
+            if (args.size() < target.parameters().size()) {
                 throw new IllegalArgumentException("generator argument count mismatch");
             }
             Map<String, Object> bindings = new LinkedHashMap<>();
@@ -220,6 +220,29 @@ public final class GeneratorRuntime {
                             "missing non-null generator argument " + param.name());
                 }
                 bindings.put(param.name(), args.get(param.name()));
+            }
+            // The restricted lowering can bind a test-controlled pending
+            // result of an actual source-declared zero-argument async call.
+            // Unlike an async callable parameter, this Future is NOT passed
+            // across the language's ownership boundary as guest task data.
+            // Every injected test dependency must name a typechecked,
+            // non-generator async callable with no arguments.
+            for (Map.Entry<String, ?> external : args.entrySet()) {
+                if (bindings.containsKey(external.getKey())) continue;
+                boolean declared = false;
+                for (Ast.ModuleDecl module : program.modules()) {
+                    for (Ast.Decl decl : module.declarations()) {
+                        if (decl instanceof Ast.FunctionDecl async
+                                && async.name().equals(external.getKey())
+                                && async.async() && !async.generator()
+                                && async.parameters().isEmpty()) declared = true;
+                    }
+                }
+                if (!declared || !(external.getValue() instanceof OresFuture<?>)) {
+                    throw new IllegalArgumentException(
+                            "injected await dependency must be a declared zero-arg async function");
+                }
+                bindings.put(external.getKey(), external.getValue());
             }
 
             List<Ast.Stmt> body = new ArrayList<>();
@@ -259,7 +282,9 @@ public final class GeneratorRuntime {
                     if (yielded.value() instanceof Ast.LiteralExpr literal) {
                         operations.add(new YieldOperation(literal.value(), null));
                     } else if (yielded.value() instanceof Ast.AwaitExpr awaited
-                            && awaited.expression() instanceof Ast.NameExpr named
+                            && awaited.expression() instanceof Ast.CallExpr call
+                            && call.callee() instanceof Ast.NameExpr named
+                            && call.arguments().isEmpty()
                             && bindings.get(named.name()) instanceof OresFuture<?>) {
                         operations.add(new YieldOperation(null, named.name()));
                     } else {
