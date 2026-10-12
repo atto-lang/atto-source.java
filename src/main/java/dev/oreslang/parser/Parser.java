@@ -820,6 +820,10 @@ public final class Parser {
                     signature.type() == WITH ? "$with$" : "$using$",
                     names.stream().map(Ast.TypeRef::simple).toList()));
         }
+        if (check(WITH) || check(USING)) {
+            throw error(peek(),
+                    "duplicate function effect clause; declare one 'with' effect bound");
+        }
         if (matchContextualIdentifier("requires")) {
             List<String> names = new ArrayList<>();
             do {
