@@ -67,14 +67,13 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
-    void doMatchDiscardsIncompatibleBranchResultTypes() throws Exception {
-        assertEquals("done\n", run("""
+    void doMatchReturnMustMatchEnclosingCallableReturnType() {
+        assertThrows(IllegalArgumentException.class, () -> check("""
                 pub fnc main(): void {
                   do match true over
                     true -> { return 4; }
                     false -> { return "different"; }
                   end
-                  stdio.println("done");
                   return;
                 }
                 """));
@@ -161,14 +160,18 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
-    void doMatchDiscardsArmLocalResultAndContinues() throws Exception {
-        assertEquals("continued\n", run("""
-                pub fnc main(): void {
-                  do match Some(5) over
-                    Some(value) -> { return value + 10; }
-                    None -> { return 0; }
+    void doMatchReturnExitsEnclosingCallableRatherThanFallingThrough() throws Exception {
+        assertEquals("15\n0\n", run("""
+                fnc choose(bool flag): int {
+                  do match flag over
+                    true -> { return 15; }
+                    false -> { return 0; }
                   end
-                  stdio.println("continued");
+                  return 99;
+                }
+                pub fnc main(): void {
+                  stdio.println(choose(true));
+                  stdio.println(choose(false));
                   return;
                 }
                 """));
@@ -189,33 +192,38 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
-    void doMatchBareReturnIsArmLocalAndOptionalTerminatorAccepted() throws Exception {
-        assertEquals("continued\n", run("""
+    void doMatchBareReturnExitsVoidCallableWithOptionalTerminator() throws Exception {
+        assertEquals("before\n", run("""
                 pub fnc main(): void {
+                  stdio.println("before");
                   do match true over
                     true -> { return; }
                     false -> { return; }
                   end;
-                  stdio.println("continued");
+                  stdio.println("must-not-run");
                   return;
                 }
                 """));
     }
 
     @Test
-    void doMatchNestedDoMatchAndUnbracedCallbackRemainStatementOnly() throws Exception {
-        assertEquals("nested\ncontinued\n", run("""
-                pub fnc main(): void {
+    void nestedDoMatchPreservesProceduralReturnAndUnbracedCallbacks() throws Exception {
+        assertEquals("nested\n42\ncontinued\n", run("""
+                fnc choose(): int {
                   do match true over
                     true -> {
                       do match false over
-                        true -> { stdio.println("wrong"); }
+                        true -> { return 1; }
                         false -> { stdio.println("nested"); }
                       end;
                       return 42;
                     }
-                    false -> { stdio.println("wrong"); }
+                    false -> { return 0; }
                   end;
+                  return 99;
+                }
+                pub fnc main(): void {
+                  stdio.println(choose());
                   do match Some(3) over
                     Some(value) -> stdio.println("continued")
                     None -> stdio.println("wrong")
@@ -226,8 +234,8 @@ final class MatchOverSemanticsTest {
     }
 
     @Test
-    void doMatchRejectsNestedFunctionEscapesAndNonExhaustiveOptions() {
-        assertTrue(reject("""
+    void doMatchAllowsNestedFunctionReturnsButRejectsNonExhaustiveOptions() {
+        assertDoesNotThrow(() -> check("""
                 pub fnc main(): void {
                   do match true over
                     true -> {
@@ -239,7 +247,7 @@ final class MatchOverSemanticsTest {
                   end;
                   return;
                 }
-                """).getMessage().contains("nested returns"));
+                """));
         assertTrue(reject("""
                 fnc f(Option<Option<int>> value): void {
                   do match value over
@@ -262,6 +270,24 @@ final class MatchOverSemanticsTest {
                   return;
                 }
                 """).getMessage().contains("do match"));
+    }
+
+    @Test
+    void doSwitchIsProceduralAndReturnsFromEnclosingCallable() throws Exception {
+        assertEquals("42\n0\n", run("""
+                fnc choose(int n): int {
+                  do switch n
+                    case 1 -> { return 42; }
+                    default -> { return 0; }
+                  end;
+                  return 99;
+                }
+                pub fnc main(): void {
+                  stdio.println(choose(1));
+                  stdio.println(choose(2));
+                  return;
+                }
+                """));
     }
 
     @Test
