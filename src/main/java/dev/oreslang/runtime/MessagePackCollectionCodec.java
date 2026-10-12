@@ -109,7 +109,7 @@ public final class MessagePackCollectionCodec {
      * Non-ASCII local identifiers may be valid language values but require a
      * new, explicitly versioned UTF-8 wire grammar before transport.
      */
-    private static void requireCanonicalEnumWireName(String name) {
+    static void requireCanonicalEnumWireName(String name) {
         if (name == null || name.isEmpty() || name.length() > 256
                 || !((name.charAt(0) >= 'A' && name.charAt(0) <= 'Z')
                      || (name.charAt(0) >= 'a' && name.charAt(0) <= 'z')
