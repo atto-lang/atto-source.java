@@ -202,6 +202,32 @@ class NativeHttpTest {
         assertTrue(output.contains("POOLED_METRICS\n2\n20\n0"), output);
     }
 
+    @Test void independentTransportBacklogDoesNotConstrainExchangeAdmission() throws Exception {
+        String output = run("""
+            pub async routine main(): void {
+              val server = http.listen_with_limits("127.0.0.1", 0, 32, 20000, 1024, 5000);
+              stdio.println(server.port);
+              for (let int i = 0; i < 3; i = i + 1) {
+                val request = await server.accept();
+                await request.respond(200, "text/plain", "independent");
+              }
+              await server.shutdown(0);
+              stdio.println("LIMITS");
+              stdio.println(server.requested_backlog);
+              stdio.println(server.admission_capacity);
+              stdio.println(server.rejected);
+              return;
+            }
+            """, port -> {
+                for (int i = 0; i < 3; i++) {
+                    var response = request(port, "GET", "/", "");
+                    assertEquals(200, response.statusCode());
+                    assertEquals("independent", response.body());
+                }
+            });
+        assertTrue(output.contains("LIMITS\n32\n20000\n0"), output);
+    }
+
     @FunctionalInterface interface Client { void run(int port) throws Exception; }
     private static HttpResponse<String> request(int port, String method, String path, String body) throws Exception {
         try (HttpClient client = HttpClient.newHttpClient()) {
