@@ -1819,15 +1819,22 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
 
         ActorCell<?> cell = actors.get(target.actorId());
-        // Bind ownership to the exact actor incarnation BEFORE registering
-        // this Future as a pending operation. Otherwise a stale target can
-        // attach/cancel a producer Future in a replacement actor's lifecycle,
-        // even though CONTROL admission later rejects the callback itself.
-        if (cell == null
-                || !target.taskTicket.issuedFor(target.actorId(), cell.executionDomain)
-                || !target.taskTicket.mayEnqueue()
-                || !target.authority.mayQueue()
-                || !ownFuture(cell, future)) return;
+        if (cell == null) return;
+
+        // Stale-target validation and producer-Future ownership must be one
+        // actor-lifecycle transition. A separate precheck followed by
+        // ownFuture() would still allow stop/restart to intervene and cancel
+        // a producer that this actor had never legally owned.
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || cell.forceKillFenced
+                    || closed.get()
+                    || !target.taskTicket.issuedFor(target.actorId(), cell.executionDomain)
+                    || !target.taskTicket.mayEnqueue()
+                    || !target.authority.mayQueue()) return;
+            cell.pendingOperations.add(future);
+        }
+        future.whenCompleteRuntime(
+                (ignored, failure) -> cell.pendingOperations.remove(future));
 
         future.whenCompleteRuntime(
                 (value, failure) ->
