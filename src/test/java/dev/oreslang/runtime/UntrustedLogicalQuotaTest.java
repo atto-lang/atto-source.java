@@ -53,6 +53,29 @@ final class UntrustedLogicalQuotaTest {
             java.util.concurrent.CountDownLatch release) { }
     private static volatile BlockedCarrierProbe blockedCarrierProbe;
 
+    private record ActorSingleWriterProbe(
+            AtomicInteger executing,
+            AtomicInteger maxConcurrent,
+            java.util.List<OresFuture<Integer>> children,
+            AtomicReference<OresFuture<Integer>> root,
+            java.util.concurrent.CountDownLatch spawned,
+            java.util.concurrent.CountDownLatch messages) { }
+    private static volatile ActorSingleWriterProbe actorSingleWriterProbe;
+
+    /** Test only: assert that nested source work never overlaps actor messages. */
+    private static void enterSingleWriterProbe(ActorSingleWriterProbe probe) {
+        int entered = probe.executing().incrementAndGet();
+        probe.maxConcurrent().accumulateAndGet(entered, Math::max);
+        try {
+            Thread.sleep(2);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(interrupted);
+        } finally {
+            probe.executing().decrementAndGet();
+        }
+    }
+
     /** White-box count read under the runtime's lifecycle lock. */
     private static int actorTimedAdmissions(
             ActorRuntime runtime, ActorRuntime.ActorRef<?> actor) throws Exception {
@@ -558,6 +581,60 @@ final class UntrustedLogicalQuotaTest {
             blockedCarrierProbe = null;
         }
         assertEquals(originalGlobal, OresScheduler.availableWallDeadlineAdmissions());
+    }
+
+    @Test
+    void realActorMailboxSerializesNestedTasksCooperationAndOrdinaryMessages()
+            throws Exception {
+        ActorSingleWriterProbe probe = new ActorSingleWriterProbe(
+                new AtomicInteger(), new AtomicInteger(),
+                new java.util.concurrent.CopyOnWriteArrayList<>(),
+                new AtomicReference<>(),
+                new java.util.concurrent.CountDownLatch(1),
+                new java.util.concurrent.CountDownLatch(8));
+        actorSingleWriterProbe = probe;
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnUntrusted(context -> (message, turn) -> {
+                ActorSingleWriterProbe active = actorSingleWriterProbe;
+                enterSingleWriterProbe(active);
+                if (message.equals("start")) {
+                    active.root().set(turn.runtime().startActorTask(resume -> {
+                        enterSingleWriterProbe(active);
+                        for (int i = 0; i < 6; i++) {
+                            AtomicInteger turns = new AtomicInteger();
+                            active.children().add(turn.runtime().startActorTask(childResume -> {
+                                enterSingleWriterProbe(active);
+                                return turns.incrementAndGet() < 3
+                                        ? OresScheduler.<Integer>cooperate()
+                                        : OresScheduler.done(100);
+                            }));
+                        }
+                        active.spawned().countDown();
+                        return OresScheduler.done(1);
+                    }));
+                } else if (message.equals("ping")) {
+                    active.messages().countDown();
+                }
+            });
+            actor.send("start");
+            assertTrue(probe.spawned().await(3, TimeUnit.SECONDS),
+                    "root actor task must enqueue its nested source continuations");
+            for (int i = 0; i < 8; i++) actor.send("ping");
+            assertTrue(probe.messages().await(3, TimeUnit.SECONDS),
+                    "ordinary actor messages must run alongside source continuations");
+            assertEquals(1, probe.root().get().get(3, TimeUnit.SECONDS));
+            assertEquals(6, probe.children().size());
+            for (OresFuture<Integer> child : probe.children()) {
+                assertEquals(100, child.get(3, TimeUnit.SECONDS));
+            }
+            assertEquals(1, probe.maxConcurrent().get(),
+                    "actual actor dispatcher must never run two guest turns concurrently");
+            assertEquals(0, probe.executing().get());
+            actor.stop();
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        } finally {
+            actorSingleWriterProbe = null;
+        }
     }
 
     @Test
