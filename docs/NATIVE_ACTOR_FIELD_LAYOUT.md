@@ -13,6 +13,12 @@ The backing is the actor's `ExplicitNativeI64Region`, using Java 25
 FFM native memory with explicit physical `Arena.close()`.
 `ActorNativeI64Record.read(field)` checks the semantic actor owner
 through the existing native region guard and rejects foreign actors.
+The two-argument `Field(name, value)` constructor remains immutable by
+default. `Field(name, value, true)` opts into mutable native fields,
+which can be updated with `record.write(name, value)` only in the owner
+actor's admitted turn. Writes to immutable fields or native storage
+with outstanding loans are rejected, even when the actor is resumed
+on a new carrier thread.
 `borrow(field)` returns a host-managed loan that can survive a
 suspended actor turn but may not be dereferenced outside the owner turn.
 Actor retirement fences reads immediately; native bytes and

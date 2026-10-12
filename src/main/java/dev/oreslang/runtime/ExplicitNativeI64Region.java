@@ -1,6 +1,9 @@
 package dev.oreslang.runtime;
 
 import java.lang.reflect.InvocationTargetException;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
 import java.nio.ByteOrder;
 import java.util.Arrays;
@@ -72,12 +75,15 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     private final Object nativeArena;
     private final Object segment;
     private final Object longLayout;
-    private final Method getLong;
-    private final Method putLong;
+    private final MethodHandle getLong;
+    private final MethodHandle putLong;
     private final Method closeArena;
     private final boolean[] live;
     private final int[] slotLoans;
     private final long[] generations;
+    /** Preallocated O(1) allocator metadata; no search over occupied slots. */
+    private final int[] freeSlots;
+    private int freeCount;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean physicalClosed = new AtomicBoolean();
     private int loanCount;
@@ -95,7 +101,10 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         this.live = new boolean[slots];
         this.slotLoans = new int[slots];
         this.generations = new long[slots];
+        this.freeSlots = new int[slots];
+        this.freeCount = slots;
         Arrays.fill(generations, 1L);
+        for (int i = 0; i < slots; i++) freeSlots[i] = slots - i - 1;
         Object allocatedArena = null;
         try {
             // The class is deliberately unavailable on Java 21. Never
@@ -110,8 +119,17 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
                     .invoke(nativeLong, ByteOrder.LITTLE_ENDIAN);
             this.segment = arenaType.getMethod("allocate", long.class, long.class)
                     .invoke(allocatedArena, Math.multiplyExact((long) slots, 8L), 8L);
-            this.getLong = segmentType.getMethod("get", ofLongType, long.class);
-            this.putLong = segmentType.getMethod("set", ofLongType, long.class, long.class);
+            // Resolve/reshape signatures once. Method.invoke on every slot
+            // access creates a reflective Object[] and boxes long values;
+            // invokeExact keeps primitive i64 reads/writes allocation-free.
+            this.getLong = MethodHandles.publicLookup()
+                    .unreflect(segmentType.getMethod("get", ofLongType, long.class))
+                    .asType(MethodType.methodType(long.class,
+                            Object.class, Object.class, long.class));
+            this.putLong = MethodHandles.publicLookup()
+                    .unreflect(segmentType.getMethod("set", ofLongType, long.class, long.class))
+                    .asType(MethodType.methodType(void.class,
+                            Object.class, Object.class, long.class, long.class));
             this.closeArena = arenaType.getMethod("close");
             this.nativeArena = allocatedArena;
         } catch (ReflectiveOperationException | RuntimeException error) {
@@ -139,15 +157,20 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     public synchronized Slot allocate(long value) {
         requireActor.run();
         requireOpen();
-        for (int i = 0; i < live.length; i++) {
-            if (!live[i] && generations[i] != Long.MAX_VALUE) {
-                put(i, value);
-                live[i] = true;
-                occupied++;
-                return new Slot(identity, i, generations[i]);
-            }
+        if (freeCount == 0) {
+            throw new IllegalStateException("explicit actor-native heap capacity exhausted");
         }
-        throw new IllegalStateException("explicit actor-native heap capacity exhausted");
+        int index = freeSlots[freeCount - 1];
+        if (index < 0 || index >= live.length || live[index]
+                || generations[index] == Long.MAX_VALUE) {
+            throw new IllegalStateException("actor-native allocator free-list invariant violated");
+        }
+        // Commit only after native FFM write succeeds.
+        put(index, value);
+        freeCount--;
+        live[index] = true;
+        occupied++;
+        return new Slot(identity, index, generations[index]);
     }
 
     public synchronized long read(Slot slot) {
@@ -157,7 +180,13 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
 
     public synchronized void write(Slot slot, long value) {
         requireActor.run();
-        put(requireLive(slot), value);
+        int index = requireLive(slot);
+        // A live shared loan may cross await/FFI boundaries. Do not mutate
+        // underneath a pinned borrower; release all loans before writing.
+        if (slotLoans[index] != 0) {
+            throw new IllegalStateException("cannot mutate loaned actor-native storage");
+        }
+        put(index, value);
     }
 
     public synchronized Loan borrow(Slot slot) {
@@ -183,6 +212,10 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         put(index, 0L);
         generations[index]++;
         live[index] = false;
+        if (freeCount >= freeSlots.length) {
+            throw new IllegalStateException("actor-native allocator free-list overflow");
+        }
+        freeSlots[freeCount++] = index;
         occupied--;
     }
 
@@ -239,16 +272,20 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
 
     private long get(int index) {
         try {
-            return (long) getLong.invoke(segment, longLayout, (long) index * 8);
-        } catch (ReflectiveOperationException failure) {
+            return (long) getLong.invokeExact(segment, longLayout, (long) index * 8);
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Throwable failure) {
             throw new IllegalStateException("actor native slot read failed", failure);
         }
     }
 
     private void put(int index, long value) {
         try {
-            putLong.invoke(segment, longLayout, (long) index * 8, value);
-        } catch (ReflectiveOperationException failure) {
+            putLong.invokeExact(segment, longLayout, (long) index * 8, value);
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Throwable failure) {
             throw new IllegalStateException("actor native slot write failed", failure);
         }
     }
