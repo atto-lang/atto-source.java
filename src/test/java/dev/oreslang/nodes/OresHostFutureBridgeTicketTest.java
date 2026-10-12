@@ -1,8 +1,12 @@
 package dev.oreslang.nodes;
 
 import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresScheduler;
 import org.junit.jupiter.api.Test;
 import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
@@ -145,6 +149,68 @@ final class OresHostFutureBridgeTicketTest {
         assertSame(future, slot.result());
         assertThrows(IllegalStateException.class, slot::result);
         slot.close();
+    }
+
+    @Test
+    void stagedTaskLimitRejectsBeforeUnownedSchedulerRegistration() throws Exception {
+        try (var scheduler = new OresScheduler(1)) {
+            var slot = new OresHostFutureBridge.Slot("work");
+            Object context = new Object();
+            slot.claim("work", slot.nonce(), context, new Object());
+            var bodies = new AtomicInteger();
+            var prepared = new ArrayList<OresFuture<?>>();
+            for (int i = 0; i < OresHostFutureBridge.Slot.MAX_DEFERRED_SOURCE_STARTS; ++i) {
+                slot.requireCapacityForStaging();
+                var deferred = scheduler.prepareDeferred(resume -> {
+                    bodies.incrementAndGet();
+                    return OresScheduler.done(1);
+                });
+                slot.stageSourceStart(deferred);
+                prepared.add(deferred.future());
+            }
+            assertThrows(RejectedExecutionException.class, slot::requireCapacityForStaging,
+                    "overflow must be rejected before adding an unowned scheduler task");
+            // Closing the scope must drain ALL already-staged NEW tasks, with
+            // no physical guest entry or orphaned Future.
+            slot.close();
+            for (OresFuture<?> future : prepared) {
+                assertTrue(future.isDone(), "abandoned source task was not settled");
+                assertTrue(future.isCancelled(), "abandoned source task was resurrected");
+            }
+            assertEquals(0, bodies.get());
+            assertThrows(SecurityException.class, slot::requireCapacityForStaging);
+        }
+    }
+
+    @Test
+    void failedHostHandoffDrainsPreparedSourceTasksBeforeScopeClose() throws Exception {
+        try (var scheduler = new OresScheduler(1)) {
+            var slot = new OresHostFutureBridge.Slot("work");
+            Object context = new Object();
+            Object root = new Object();
+            slot.claim("work", slot.nonce(), context, root);
+            var bodies = new AtomicInteger();
+            var prepared = new ArrayList<OresFuture<?>>();
+            for (int i = 0; i < 3; ++i) {
+                slot.requireCapacityForStaging();
+                var deferred = scheduler.prepareDeferred(resume -> {
+                    bodies.incrementAndGet();
+                    return OresScheduler.done(10);
+                });
+                slot.stageSourceStart(deferred);
+                prepared.add(deferred.future());
+            }
+            IllegalStateException failure = new IllegalStateException("host return rejected");
+            slot.cancelUnreturnedOnHostFailure(failure);
+            assertEquals(0, failure.getSuppressed().length);
+            for (OresFuture<?> future : prepared) {
+                assertTrue(future.isDone());
+                assertTrue(future.isCancelled());
+            }
+            assertEquals(0, bodies.get());
+            slot.close();
+            assertEquals(0, bodies.get());
+        }
     }
 
     @Test
