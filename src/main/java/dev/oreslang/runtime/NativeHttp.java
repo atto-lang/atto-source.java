@@ -494,6 +494,11 @@ public final class NativeHttp implements AutoCloseable {
                     try {
                         for (State state : active) state.abort(503);
                         retireQueuedSerialTransfers();
+                    } catch (RuntimeException cleanupFailure) {
+                        // A failed mailbox-retirement sweep must not leave
+                        // server.shutdown() awaiting an impossible drain.
+                        result.failFromRuntime(cleanupFailure);
+                        throw cleanupFailure;
                     } finally {
                         synchronized (this) { retirementSweepComplete = true; }
                         servers.remove(this);
