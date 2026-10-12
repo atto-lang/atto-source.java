@@ -137,6 +137,17 @@ public final class OresContext implements AutoCloseable {
                     contextId, () -> generatorRootTurnAuthorized(
                             vm.isRootSchedulerCurrent(),
                             Boolean.TRUE.equals(rootGuestEntryScope.get())),
+                    () -> {
+                        // Host pulls only enqueue. A real root-scheduler carrier
+                        // subsequently enters Truffle and owns dispatch/start.
+                        OresFuture<Void> wake = vm.rootScheduler().startSync(() -> {
+                            hostGeneratorTurns.dispatchOne();
+                            return null;
+                        });
+                        wake.whenCompleteRuntime((ignored, failure) -> {
+                            if (failure != null) hostGeneratorTurns.seal();
+                        });
+                    },
                     vm.rootScheduler());
         } catch (RuntimeException | Error failure) {
             if (async != null) {
@@ -383,6 +394,83 @@ public final class OresContext implements AutoCloseable {
             }
         }
         return task.join();
+    }
+
+    /**
+     * Narrow experimental host-owned source generator adapter. The public
+     * Polyglot Value never exposes a guest iterator or raw Truffle object.
+     * Calls to nextStep enqueue certified work on this context's root pump.
+     * Disabled by default pending global root/actor/async entry refinement.
+     */
+    public static final class SourceHostGenerator implements AutoCloseable {
+        private final HostGeneratorTurnPump pump;
+        private final GeneratorRuntime.SchedulerBacked<Object> frame;
+        private final java.util.Set<OresFuture<GeneratorRuntime.Step<Object>>> pending =
+                java.util.concurrent.ConcurrentHashMap.newKeySet();
+        private final java.util.concurrent.atomic.AtomicBoolean closed =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
+        private SourceHostGenerator(HostGeneratorTurnPump pump,
+                                    GeneratorRuntime.SchedulerBacked<Object> frame) {
+            this.pump = pump;
+            this.frame = frame;
+        }
+
+        public OresFuture<GeneratorRuntime.Step<Object>> nextStep() {
+            if (closed.get()) {
+                throw new java.util.concurrent.RejectedExecutionException(
+                        "host generator handle has closed");
+            }
+            OresFuture<GeneratorRuntime.Step<Object>> future =
+                    pump.requestCertified(pump.token(), frame.nextTurn());
+            pending.add(future);
+            future.whenCompleteRuntime((value, failure) -> pending.remove(future));
+            // A concurrent close after admission revokes this pull too.
+            if (closed.get()) future.cancel(false);
+            return future;
+        }
+
+        @Override public void close() {
+            if (closed.compareAndSet(false, true)) {
+                for (OresFuture<GeneratorRuntime.Step<Object>> future : pending) {
+                    future.cancel(false);
+                }
+            }
+        }
+    }
+
+    public SourceHostGenerator prepareExperimentalSourceGenerator(
+            Ast.Program program, String function) {
+        if (!Boolean.getBoolean("ores.host.generator.experimental")) {
+            throw new SecurityException("host async generator bridge is disabled by default");
+        }
+        if (isolatePolicy.adversarial()) {
+            throw new SecurityException(
+                    "host async generator bridge is unavailable in adversarial contexts");
+        }
+        // Explicitly restricted to a public zero-argument async generator.
+        // All unsupported statements fail typechecked lowering before a pull.
+        boolean allowed = false;
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(function)
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        && fn.async() && fn.generator() && fn.parameters().isEmpty()
+                        && fn.actorKind() == Ast.ActorKind.NONE) {
+                    allowed = true;
+                }
+            }
+        }
+        if (!allowed) {
+            throw new IllegalArgumentException(
+                    "experimental host generator requires a public zero-arg async generator: "
+                    + function);
+        }
+        GeneratorRuntime.SourceLowering sourceFrame =
+                GeneratorRuntime.SourceLowering.compile(program, function, Map.of());
+        return new SourceHostGenerator(hostGeneratorTurns,
+                GeneratorRuntime.schedulerBacked(vm.rootScheduler(),
+                        hostGeneratorTurns.token(), sourceFrame));
     }
 
     /**
