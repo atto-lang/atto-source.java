@@ -180,6 +180,112 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void slowStarterCannotHoldCloseMonitorAndCancellationFencesItsExit() throws Exception {
+        // Starter is a potentially slow user-supplied bridge callback. The
+        // lifecycle owner must be able to seal and report incomplete cleanup
+        // before the callback supplies its exit barrier.
+        HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                UUID.randomUUID(), () -> true);
+        CountDownLatch starterEntered = new CountDownLatch(1);
+        CountDownLatch releaseStarter = new CountDownLatch(1);
+        AtomicReference<Throwable> ownerFailure = new AtomicReference<>();
+        OresFuture<Integer> guestResult = new OresFuture<>();
+        OresFuture<Void> physicalExit = new OresFuture<>();
+        OresFuture<Integer> request = pump.request(pump.token(), () -> {
+            starterEntered.countDown();
+            try {
+                if (!releaseStarter.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("starter did not receive release");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+            return new HostGeneratorTurnPump.Turn<>(guestResult, physicalExit);
+        });
+        Thread owner = Thread.ofPlatform().start(() -> {
+            try { pump.dispatchOne(); }
+            catch (Throwable failure) { ownerFailure.set(failure); }
+        });
+        try {
+            assertTrue(starterEntered.await(5, TimeUnit.SECONDS));
+            CountDownLatch closeFinished = new CountDownLatch(1);
+            AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+            Thread closer = Thread.ofPlatform().start(() -> {
+                try {
+                    pump.seal();
+                    assertThrows(IllegalStateException.class, pump::requireQuiescent);
+                } catch (Throwable failure) {
+                    closeFailure.set(failure);
+                } finally {
+                    closeFinished.countDown();
+                }
+            });
+            assertTrue(closeFinished.await(3, TimeUnit.SECONDS),
+                    "close blocked behind in-flight generator starter");
+            closer.join(3000);
+            assertNull(closeFailure.get(), String.valueOf(closeFailure.get()));
+            assertTrue(request.isCancelled(),
+                    "sealing a starting pull must cancel its host request");
+            assertThrows(IllegalStateException.class, pump::requireQuiescent);
+        } finally {
+            releaseStarter.countDown();
+            owner.join(5000);
+        }
+        assertFalse(owner.isAlive());
+        assertNull(ownerFailure.get(), String.valueOf(ownerFailure.get()));
+        assertTrue(guestResult.isCancelled(),
+                "cancellation before starter return must reach its guest result");
+        assertFalse(pump.isQuiescent(),
+                "cancelled result cannot stand in for physical exit");
+        physicalExit.completeFromRuntime(null);
+        assertDoesNotThrow(pump::requireQuiescent);
+    }
+
+    @Test
+    void reentrantStarterCanSealWithoutDeadlockAndWithoutEarlyRetirement() {
+        HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                UUID.randomUUID(), () -> true);
+        OresFuture<Integer> guestResult = new OresFuture<>();
+        OresFuture<Void> physicalExit = new OresFuture<>();
+        OresFuture<Integer> host = pump.request(pump.token(), () -> {
+            pump.seal(); // permitted concurrently with starter execution
+            assertThrows(IllegalStateException.class, pump::requireQuiescent);
+            return new HostGeneratorTurnPump.Turn<>(guestResult, physicalExit);
+        });
+        assertTrue(pump.dispatchOne());
+        assertTrue(host.isCancelled());
+        assertTrue(guestResult.isCancelled());
+        assertThrows(IllegalStateException.class, pump::requireQuiescent);
+        physicalExit.completeFromRuntime(null);
+        pump.close();
+    }
+
+    @Test
+    void starterFailurePoisonsQueueBeforeAnyFollowingDispatch() throws Exception {
+        HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                UUID.randomUUID(), () -> true);
+        AtomicInteger laterStarts = new AtomicInteger();
+        OresFuture<Integer> broken = pump.request(pump.token(), () -> {
+            throw new IllegalStateException("producer start failed after reservation");
+        });
+        OresFuture<Integer> later = pump.request(pump.token(), () -> {
+            laterStarts.incrementAndGet();
+            return new HostGeneratorTurnPump.Turn<>(
+                    OresFuture.completed(4), OresFuture.completed(null));
+        });
+        assertTrue(pump.dispatchOne());
+        assertInstanceOf(IllegalStateException.class,
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> broken.get(5, TimeUnit.SECONDS)).getCause());
+        assertTrue(later.isCancelled(),
+                "unknown partial startup cannot admit the next producer");
+        assertEquals(0, laterStarts.get());
+        assertFalse(pump.dispatchOne());
+        pump.close();
+    }
+
+    @Test
     void cancellationAndContextShutdownRaceCannotStartQueuedTurn() throws Exception {
         AtomicReference<Thread> ownerThread = new AtomicReference<>();
         HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
