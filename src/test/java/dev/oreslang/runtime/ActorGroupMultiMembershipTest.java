@@ -450,4 +450,58 @@ final class ActorGroupMultiMembershipTest {
         }
     }
 
+
+    @Test
+    void closingOneRoomRacingAdmissionCannotResurrectItOrRevokeAnotherRoom()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup stableRoom = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> connection =
+                    runtime.spawnSharedTrusted(factory -> (message, context) -> { });
+            stableRoom.join(connection, stableRoom.joinCapability());
+            for (int round = 0; round < 64; round++) {
+                ActorRuntime.ActorGroup closingRoom = runtime.createActorGroup();
+                ActorRuntime.ActorGroupJoinCapability permit = closingRoom.joinCapability();
+                CountDownLatch release = new CountDownLatch(1);
+                AtomicReference<Throwable> unexpected = new AtomicReference<>();
+                Thread joiner = new Thread(() -> {
+                    try {
+                        release.await();
+                        closingRoom.join(connection, permit);
+                    } catch (SecurityException | IllegalStateException expected) {
+                        // Either close revoked admission first, or join won.
+                    } catch (Throwable error) {
+                        unexpected.compareAndSet(null, error);
+                    }
+                });
+                Thread closer = new Thread(() -> {
+                    try {
+                        release.await();
+                        closingRoom.close();
+                    } catch (Throwable error) {
+                        unexpected.compareAndSet(null, error);
+                    }
+                });
+                joiner.start();
+                closer.start();
+                release.countDown();
+                joiner.join(5_000);
+                closer.join(5_000);
+                assertFalse(joiner.isAlive(), "joiner deadlocked with close");
+                assertFalse(closer.isAlive(), "closer deadlocked with join");
+                assertNull(unexpected.get(), "unexpected concurrent group admission failure");
+                assertTrue(closingRoom.closed(), "concurrently closed room reopened");
+                assertEquals(0, closingRoom.memberCount(), "closed room retained membership");
+                assertThrows(IllegalStateException.class,
+                        () -> closingRoom.join(connection, permit),
+                        "closed room admitted a stale permit");
+                assertTrue(stableRoom.contains(connection),
+                        "closing unrelated room revoked healthy membership");
+                assertTrue(connection.isAlive(), "cooperation room closed the socket owner");
+            }
+            stableRoom.close();
+            connection.stop();
+            assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
 }
