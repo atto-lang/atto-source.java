@@ -51,7 +51,9 @@ final class FormalSerialTicketCompletionModelCheckTest {
             assertTrue(s.publications() >= 0 && s.publications() <= 1);
             if (s.publications() != 0) {
                 assertEquals(1, s.cleanups(), "publication must follow cleanup");
-                assertFalse(s.cancelled(), "cancelled source must never publish");
+                // Cancellation/restart AFTER a legitimate publication cannot
+                // retroactively undo it. Prove publication-time authorization
+                // from edges, not from a later snapshot of cancelled state.
             }
             if (s.lease() == 2) {
                 assertTrue(s.receiveClosed());
@@ -66,6 +68,21 @@ final class FormalSerialTicketCompletionModelCheckTest {
                 assertEquals(1, s.lease());
             }
             if (s.terminal()) assertEquals(1, s.cleanups());
+        }
+        for (Edge edge : model.edges()) {
+            if (edge.to().publications() > edge.from().publications()) {
+                assertEquals(Action.PUBLISH_OR_DISCARD, edge.action());
+                assertEquals(1, edge.from().cleanups());
+                assertFalse(edge.from().retired());
+                assertFalse(edge.from().cancelled());
+                assertFalse(edge.from().receiveClosed());
+                assertEquals(1, edge.from().epoch());
+                assertEquals(1, edge.from().lease());
+            }
+            if (edge.from().publications() == 1) {
+                assertEquals(1, edge.to().publications(),
+                        "later stop/restart cannot retract already-published result");
+            }
         }
         assertEquals(model.states(), canReachTerminal(model),
                 "every modeled state has a path to cleanup and final settlement");
