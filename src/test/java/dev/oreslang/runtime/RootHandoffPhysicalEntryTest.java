@@ -37,19 +37,23 @@ final class RootHandoffPhysicalEntryTest {
             vm.requireHostHandoffReleased();
             release.countDown();
             assertEquals(7, turn.get(5, TimeUnit.SECONDS));
-            // Public Future completion may race with the final gate release.
+            // The public Future can settle immediately before the scheduler
+            // carrier exits the gated physical guest turn. A host lease is
+            // permitted ONLY after that physical turn releases its claim.
+            // Waiting on requireHostHandoffReleased() was incorrect: that API
+            // checks scoped host handoffs, not physically executing root turns.
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-            while (true) {
+            OresVM.HostHandoffLease admitted = null;
+            while (admitted == null) {
                 try {
-                    vm.requireHostHandoffReleased();
-                    break;
-                } catch (IllegalStateException stillRunning) {
+                    admitted = vm.beginHostHandoff();
+                } catch (RejectedExecutionException stillPhysicallyRunning) {
                     assertTrue(System.nanoTime() < deadline,
                             "root gate did not physically relinquish its entry");
                     Thread.onSpinWait();
                 }
             }
-            try (OresVM.HostHandoffLease host = vm.beginHostHandoff()) {
+            try (OresVM.HostHandoffLease host = admitted) {
                 assertThrows(IllegalStateException.class, vm::requireHostHandoffReleased);
             }
             vm.requireHostHandoffReleased();
