@@ -23,6 +23,18 @@ final class SharedUntrustedIsolatePoolTest {
     }
 
     @Test
+    void standaloneAdversarialContextCannotAllocateAnExtraIsolate() {
+        // This check runs without any Graal language-isolate artifact.
+        // It must fail BEFORE trying to load an image or a fallback runtime.
+        assertThrows(SecurityException.class, () ->
+                IsolatePolicy.untrustedActor()
+                        .restrictedContextBuilder(ExecutionProfile.serverJit()));
+        assertThrows(SecurityException.class, () ->
+                IsolatePolicy.strictFaas()
+                        .restrictedContextBuilder(ExecutionProfile.serverJit()));
+    }
+
+    @Test
     void sharedUntrustedPoolNeverAcceptsTrustedOrPrivilegedGroupPolicy() {
         long limit = 256L * 1024 * 1024;
         assertDoesNotThrow(() ->
