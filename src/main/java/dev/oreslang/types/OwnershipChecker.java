@@ -241,6 +241,13 @@ public final class OwnershipChecker {
     private boolean discardingSelectReturn;
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
+        if (stmt instanceof Ast.ArmReturnStmt result) {
+            // A scalar ARM_RESULT is a value transfer to its containing
+            // match, not a function exit, but has the same borrow-escape
+            // restrictions as a return from this lexical arm.
+            checkStatement(new Ast.ReturnStmt(result.value()), scope, returnType);
+            return;
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             checkBinding(binding, scope);
             return;
@@ -698,6 +705,32 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.ValueMatchExpr matched) {
+            // PR #661: a typed value match returns a COPY scalar. Traverse its
+            // subject, guard and selected arm result with independent pattern
+            // scopes so moved/borrowed/captured values cannot evade checks.
+            ValueInfo subject = checkExpr(matched.subject(), scope, false);
+            VarState source = matched.subject() instanceof Ast.NameExpr name
+                    ? scope.lookup(name.name()) : null;
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            for (Ast.MatchArm arm : matched.arms()) {
+                restoreState(base);
+                Scope armScope = new Scope(scope);
+                try {
+                    definePatternAliases(arm.pattern(), subject.type, source, armScope);
+                    if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
+                    // Sequential statement traversal detects invalid moves,
+                    // borrows, and borrow escapes across nested arm scopes.
+                    checkBlock(arm.body(), armScope, matched.returnContract());
+                } finally {
+                    armScope.close();
+                }
+                exits.add(stateSnapshot(scope));
+            }
+            mergeBranchState(base, exits);
+            return new ValueInfo(matched.returnContract(), ValueKind.COPY, null);
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
@@ -1161,6 +1194,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
+                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
@@ -1174,6 +1208,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
+                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(
                         call.arguments(),
                         signature.parameters(),
@@ -1273,6 +1308,7 @@ public final class OwnershipChecker {
                             call,
                             scope,
                             Map.of());
+                    if (staticFunction.suspends()) checkSuspensionBorrows(scope, "suspends call " + staticFunction.name());
                     checkArguments(
                             call.arguments(),
                             signature.parameters(),
@@ -1423,6 +1459,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
+                if (method.suspends()) checkSuspensionBorrows(scope, "suspends call " + method.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
@@ -1733,7 +1770,16 @@ public final class OwnershipChecker {
                 throw error("cannot mutably borrow infer struct value '" + owner.debugName
                         + "'; inferred structs are permanently readonly");
             }
-            if (!owner.mutable) throw error("cannot mutably borrow immutable owner '" + owner.debugName + "'");
+            if (owner.kind == ValueKind.IMM_BORROW)
+                throw error("cannot mutably reborrow a shared borrow '" + owner.debugName + "'");
+            // An incoming exclusive loan may be reborrowed for a call, even
+            // though its parameter binding itself cannot be reassigned.
+            // This does not grant mutability to an owned immutable binding
+            // or to any shared loan, and all live-loan conflict checks below
+            // still apply.
+            if (!owner.mutable && !(owner.origin == Origin.PARAM
+                    && owner.kind == ValueKind.MUT_BORROW))
+                throw error("cannot mutably borrow immutable owner '" + owner.debugName + "'");
             if (root.mutableBorrowed || root.immutableBorrows > 0) throw error("cannot mutably borrow '" + owner.debugName + "' while another borrow is active");
         } else if (root.mutableBorrowed) {
             throw error("cannot immutably borrow '" + owner.debugName + "' while a mutable borrow is active");
@@ -1897,6 +1943,8 @@ public final class OwnershipChecker {
                 }
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.ArmReturnStmt result) {
+                scanExpr(result.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.YieldStmt yielded) {
                 scanExpr(yielded.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
@@ -1987,6 +2035,20 @@ public final class OwnershipChecker {
     }
 
     private void scanExpr(Ast.Expr expr, Set<String> locals, Scope outer, String recursiveBinding, CaptureSet captures, boolean write) {
+        if (expr instanceof Ast.ValueMatchExpr matched) {
+            // Capture analysis must see every free scalar name used in a
+            // value-producing match inside a lambda, but pattern bindings
+            // remain arm-local and cannot be captured from the outer frame.
+            scanExpr(matched.subject(), locals, outer, recursiveBinding, captures, false);
+            for (Ast.MatchArm arm : matched.arms()) {
+                Set<String> armLocals = new HashSet<>(locals);
+                collectPatternBindingNames(arm.pattern(), armLocals);
+                if (arm.guard() != null)
+                    scanExpr(arm.guard(), armLocals, outer, recursiveBinding, captures, false);
+                scanStatements(arm.body(), armLocals, outer, recursiveBinding, captures);
+            }
+            return;
+        }
         if (expr instanceof Ast.NameExpr name) {
             if (name.name().equals(recursiveBinding)) return;
             if (!locals.contains(name.name())) {
