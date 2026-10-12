@@ -14,3 +14,10 @@ Receipts must name a real compiled Oreslang source execution mode and an immutab
 - Source-level Java/GraalVM, LLVM, portable and privileged host evidence with explicit unsupported status and independent reviews.
 
 Smoke: node --test tools/ml/verify-evidence.test.mjs. This is **not** a benchmark run. Do not copy private source to any public Actions repo.
+
+## Audit hardening (2026-10-12)
+
+- Receipts must be plain JSON records with own enumerable data properties only; reject getters, inherited prototypes, symbols and hidden fields at every modeled nested record boundary.
+- Reject noncanonical negative zero, non-finite/fractional integer measurements, misleading comma-spoofed properties, multiline hardware descriptors, and noncanonical GitHub Actions URL paths.
+- This remains format-only admission: even a syntactically valid GitHub Actions URL, SHA and `source_mirror_is_public: false` are **unverified self-assertions**. No trust decision may use this validator by itself.
+- 24/24 pure JavaScript checks passed under a V8 synchronous harness; no actual .ores benchmark or source-provenance attestation was run.
