@@ -25,7 +25,7 @@ final class HostGeneratorTurnPumpTest {
         final PhysicalGuestExitLedger.Receipt receipt;
 
         GuestExit(HostGeneratorTurnPump pump) {
-            ledger = new PhysicalGuestExitLedger(pump.token());
+            ledger = pump.physicalExitLedger();
             entry = ledger.enteredAfterTruffleEnter();
             receipt = entry.receipt();
         }
@@ -119,6 +119,37 @@ final class HostGeneratorTurnPumpTest {
         assertEquals(22, second.get(5, TimeUnit.SECONDS));
         assertEquals(1, secondStarts.get());
         pump.close();
+    }
+
+    @Test
+    void matchingIdentityCannotForgeANewLedgerReceipt() throws Exception {
+        HostGeneratorTurnPump pump = new HostGeneratorTurnPump(UUID.randomUUID(), () -> true);
+        // An identical pair of IDs is NOT the authority to mint physical DONE.
+        PhysicalGuestExitLedger impersonator = new PhysicalGuestExitLedger(pump.token());
+        var entry = impersonator.enteredAfterTruffleEnter();
+        impersonator.completedAfterTruffleLeave(entry, null);
+        OresFuture<Integer> publicResult = pump.request(pump.token(), () ->
+                new HostGeneratorTurnPump.Turn<>(OresFuture.completed(7), entry.receipt()));
+        assertTrue(pump.dispatchOne());
+        assertInstanceOf(SecurityException.class,
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> publicResult.get(5, TimeUnit.SECONDS)).getCause());
+        assertFalse(pump.isQuiescent(),
+                "foreign same-identity DONE may never establish quiescence");
+        assertThrows(IllegalStateException.class, pump::close);
+    }
+
+    @Test
+    void idlePumpDoesNotEnablePhysicalEntryTracking() {
+        HostGeneratorTurnPump pump = new HostGeneratorTurnPump(UUID.randomUUID(), () -> true);
+        assertFalse(pump.physicalExitLedger().trackingEnabled());
+        OresFuture<Integer> pending = pump.request(pump.token(), () ->
+                new HostGeneratorTurnPump.Turn<>(
+                        OresFuture.completed(1), completedExit(pump)));
+        assertTrue(pump.physicalExitLedger().trackingEnabled());
+        pump.seal();
+        assertTrue(pending.isCancelled());
+        assertTrue(pump.isQuiescent());
     }
 
     @Test
