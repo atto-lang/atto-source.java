@@ -576,6 +576,7 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.ForOfDestructureStmt loop) {
+            checkAutomaticLoopBackedgeLoans(scope);
             if (loop.asyncIteration()
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard() || scope.hasLiveBorrow())) {
                 throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
@@ -595,7 +596,9 @@ public final class OwnershipChecker {
                         kindOfType(bindingType),
                         Origin.LOCAL));
             }
+            checkAutomaticLoopBackedgeLoans(loopScope);
             checkLoopBlock(loop.body(), loopScope, returnType);
+            checkAutomaticLoopBackedgeLoans(loopScope);
             loopScope.close();
             rejectLoopMoves(before, scope);
             return;
