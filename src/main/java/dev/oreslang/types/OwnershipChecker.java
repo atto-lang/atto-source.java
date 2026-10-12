@@ -221,6 +221,26 @@ public final class OwnershipChecker {
         scope.close();
     }
 
+    /**
+     * SourceTask may synthesize a cooperative carrier handoff on a loop
+     * backedge even if no explicit await/cooperate is present in source.
+     * Until continuation lowering carries validated lifetime provenance,
+     * do not persist an ordinary lexical loan through that implicit yield.
+     * A loan allocated and retired inside one iteration is checked by that
+     * iteration's nested scope and is safe at the backedge.
+     *
+     * Runtime mutex/state critical sections are non-preemptible by design;
+     * their separate guards are enforced in the source scheduler.
+     */
+    private void checkAutomaticLoopBackedgeLoans(Scope loopScope) {
+        if (actorStateLoanDepth > 0 || mutexCriticalSectionDepth > 0
+                || loopScope.hasLiveMutexGuard()) return;
+        if (loopScope.hasLiveBorrow()) {
+            throw error("automatic loop cooperation cannot retain a live ordinary borrow across a backedge; "
+                    + "end the lexical loan before entering the loop or create it inside each iteration");
+        }
+    }
+
     private void checkLoopBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
         loopDepth++;
         try {
@@ -581,6 +601,7 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.ForOfStmt loop) {
+            checkAutomaticLoopBackedgeLoans(scope);
             if (loop.asyncIteration()
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard() || scope.hasLiveBorrow())) {
                 throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
@@ -596,6 +617,7 @@ public final class OwnershipChecker {
                     kindOfType(elementType),
                     Origin.LOCAL));
             checkLoopBlock(loop.body(), loopScope, returnType);
+            checkAutomaticLoopBackedgeLoans(loopScope);
             loopScope.close();
             rejectLoopMoves(before, scope);
             return;
@@ -604,16 +626,20 @@ public final class OwnershipChecker {
             Scope loopScope = new Scope(scope);
             if (loop.initializer() != null) checkStatement(loop.initializer(), loopScope, returnType);
             if (loop.condition() != null) checkExpr(loop.condition(), loopScope, false);
+            checkAutomaticLoopBackedgeLoans(loopScope);
             Map<VarState,Boolean> before = movedSnapshot(scope);
             checkLoopBlock(loop.body(), loopScope, returnType);
             if (loop.update() != null) checkExpr(loop.update(), loopScope, false);
+            checkAutomaticLoopBackedgeLoans(loopScope);
             rejectLoopMoves(before, scope);
             loopScope.close();
             return;
         }
         if (stmt instanceof Ast.LoopStmt loop) {
+            checkAutomaticLoopBackedgeLoans(scope);
             Map<VarState,Boolean> before = movedSnapshot(scope);
             checkLoopBlock(loop.body(), scope, returnType);
+            checkAutomaticLoopBackedgeLoans(scope);
             rejectLoopMoves(before, scope);
         }
     }
