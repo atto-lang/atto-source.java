@@ -4598,14 +4598,25 @@ public final class OresEvalRootNode extends RootNode {
             return pending.failure() != null ? pending : cleanup;
         }
 
+        private static final int MAX_CLEANUP_SUPPRESSED = 64;
+
+        private static void suppressCleanupFailure(Throwable primary, Throwable secondary) {
+            // An untrusted source may register many failing defers. Preserve the
+            // primary control channel without unbounded diagnostic allocations.
+            if (primary != secondary
+                    && primary.getSuppressed().length < MAX_CLEANUP_SUPPRESSED) {
+                primary.addSuppressed(secondary);
+            }
+        }
+
         private static Throwable preferFailure(Throwable existing, Throwable incoming) {
             Objects.requireNonNull(incoming, "incoming failure");
             if (existing == null || existing == incoming) return incoming;
             if (failurePriority(incoming) > failurePriority(existing)) {
-                incoming.addSuppressed(existing);
+                suppressCleanupFailure(incoming, existing);
                 return incoming;
             }
-            existing.addSuppressed(incoming);
+            suppressCleanupFailure(existing, incoming);
             return existing;
         }
 
