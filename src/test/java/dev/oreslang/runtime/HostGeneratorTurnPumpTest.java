@@ -592,6 +592,55 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void hostIteratorPreflightRejectsForeignRootWithoutQuarantiningOwner()
+            throws Exception {
+        try (OresScheduler owner = new OresScheduler(1);
+             OresScheduler foreign = new OresScheduler(1)) {
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> true, owner);
+            AtomicInteger resumes = new AtomicInteger();
+            GeneratorRuntime.SchedulerFrame<Integer> frame = input ->
+                    OresScheduler.done(GeneratorRuntime.Step.yielded(
+                            resumes.incrementAndGet()));
+
+            assertThrows(SecurityException.class, () ->
+                    GeneratorRuntime.certifiedHostIterator(pump, foreign, frame),
+                    "a foreign root must be rejected before any physical task exists");
+            assertThrows(SecurityException.class, () ->
+                    GeneratorRuntime.certifiedHostIterator(pump, null, frame));
+            assertTrue(pump.isQuiescent(),
+                    "invalid construction must not poison the owning context");
+            assertEquals(0, resumes.get());
+
+            var legitimate = GeneratorRuntime.certifiedHostIterator(pump, owner, frame);
+            var pull = legitimate.nextStep();
+            assertFalse(pull.isDone());
+            assertTrue(pump.dispatchOne());
+            assertEquals(1, pull.get(5, TimeUnit.SECONDS).value());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!pump.isQuiescent() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(pump.isQuiescent());
+            pump.close();
+        }
+    }
+
+    @Test
+    void hostIteratorRejectsClosedOwnerBeforeFirstPull() throws Exception {
+        OresScheduler root = new OresScheduler(1);
+        HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                UUID.randomUUID(), () -> true, root);
+        root.close();
+        assertThrows(RejectedExecutionException.class, () ->
+                GeneratorRuntime.certifiedHostIterator(pump, root, input ->
+                        OresScheduler.done(GeneratorRuntime.Step.yielded(5))));
+        assertTrue(pump.isQuiescent(),
+                "closed-root preflight cannot consume admission or poison the pump");
+        pump.close();
+    }
+
+    @Test
     void hostNextStepStagesRealTypedSourceWithoutEnteringGuestOnHostThread()
             throws Exception {
         String source = """
