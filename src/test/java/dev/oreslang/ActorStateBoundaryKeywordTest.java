@@ -8,6 +8,7 @@ import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -109,6 +110,32 @@ final class ActorStateBoundaryKeywordTest {
             assertTrue(failure.getMessage().contains("handle_state is sealed"),
                     failure.getMessage());
         }
+    }
+
+    @Test
+    void linkedActorCannotInheritSyntheticStaticHandleState() {
+        Ast.Program parentSource = Parser.parse("pub define actor Parent as end");
+        Ast.ClassDecl parsedParent = (Ast.ClassDecl)
+                parentSource.modules().getFirst().declarations().getFirst();
+        Ast.MethodDecl forgedStatic = new Ast.MethodDecl(
+                "handle_state", Ast.Visibility.PRIVATE, true,
+                false, false, null, List.of(), List.of(),
+                Ast.TypeRef.simple("void"), List.of(), List.of());
+        Ast.ClassDecl linkedActor = new Ast.ClassDecl(
+                parsedParent.name(), parsedParent.visibility(), parsedParent.isAbstract(),
+                parsedParent.actorKind(), parsedParent.genericParameters(),
+                parsedParent.parents(), parsedParent.interfaces(),
+                parsedParent.fields(), null, List.of(forgedStatic));
+        Ast.Program consumer = Parser.parse("""
+                import class Parent from './parent';
+                define actor Child extends Parent as
+                end
+                """);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithImportedClasses(
+                        consumer, Map.of("Parent", linkedActor), Map.of()));
+        assertTrue(failure.getMessage().contains("handle_state is sealed"),
+                failure.getMessage());
     }
 
     private static Ast.Program syntheticActor(
