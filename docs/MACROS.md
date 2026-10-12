@@ -152,7 +152,10 @@ gates complete, and never mirror private source to a public repository.
 The current `HotReloadManager.load(source)` and `load(CompiledUnit)` APIs
 stage **source**, not independently verified guest-AOT binaries. Accordingly,
 both they and the ordinary GraalVM `OresLanguage.parse()` path reject
-source containing any `macro_rules!` definition **before** macro expansion. Neither `@expand(aot)` nor `@expand(rebuildable)` overrides
+source containing any `macro_rules!` definition **before** macro expansion.
+They also reject `@FromJson` annotations before the annotation expander
+can synthesize accessors in a running guest. The restriction is lexical and
+comment/string aware; it does not confuse inert quoted text with an annotation. Neither `@expand(aot)` nor `@expand(rebuildable)` overrides
 this restriction. Macro-bearing code must be expanded and compiled offline; a
 future signed AOT-artifact loader will be required to admit new native generations.
 This rejects a previously permitted source hot-reload use case intentionally.
