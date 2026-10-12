@@ -434,6 +434,8 @@ final class ActorGroupMultiMembershipTest {
                             roomA.leaveCurrent();
                             assertThrows(SecurityException.class, stale::join,
                                     "revoked authority cannot bypass membership revocation");
+                            assertThrows(SecurityException.class, roomA::memberCount,
+                                    "leaving A must revoke A's observer authority");
                             assertTrue(roomB.contains(ctx.self()));
                         } catch (Throwable failure) {
                             problem.set(failure);
