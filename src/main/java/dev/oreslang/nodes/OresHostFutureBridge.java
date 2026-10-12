@@ -178,15 +178,44 @@ public final class OresHostFutureBridge {
         }
 
         void close() {
+            requireOwnerThread();
+            // Close is also the final abandonment barrier if the outer
+            // Polyglot call returned abnormally or a nested scope unwound.
+            // Never clear a claimed scope while leaving source tasks staged.
+            RuntimeException failure = null;
+            for (OresScheduler.DeferredStart<?> deferred : deferredStarts) {
+                try {
+                    deferred.abandonBeforeDispatch();
+                } catch (RuntimeException cleanup) {
+                    if (failure == null) failure = cleanup;
+                    else if (failure != cleanup) failure.addSuppressed(cleanup);
+                }
+            }
+            deferredStarts.clear();
+            OresFuture<?> orphan = state == State.PUBLISHED ? future : null;
             state = State.CLOSED;
             ownerContext = null;
             ownerRoot = null;
             future = null;
             OresVM.HostHandoffLease lease = entryLease;
             entryLease = null;
-            // Unlike publication in guest code, this happens only after the
-            // outer host Value.execute has physically completed.
-            if (lease != null) lease.close();
+            if (orphan != null) {
+                try {
+                    orphan.cancel(false);
+                } catch (RuntimeException cleanup) {
+                    if (failure == null) failure = cleanup;
+                    else if (failure != cleanup) failure.addSuppressed(cleanup);
+                }
+            }
+            // Release the real handoff lease even when cleanup fails; never
+            // allow a pending host admission lease to survive scope teardown.
+            try {
+                if (lease != null) lease.close();
+            } catch (RuntimeException cleanup) {
+                if (failure == null) failure = cleanup;
+                else if (failure != cleanup) failure.addSuppressed(cleanup);
+            }
+            if (failure != null) throw failure;
         }
     }
 
