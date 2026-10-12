@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresScheduler;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -46,7 +47,8 @@ final class ActorContinuationTeardownTest {
     void sourceAwaitProducerCompletingAfterStopCannotReenterOldActor() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
-            OresFuture<Integer> producer = new OresFuture<>();
+            CompletableFuture<Integer> producerStage = new CompletableFuture<>();
+            OresFuture<Integer> producer = OresFuture.from(producerStage);
             CountDownLatch suspended = new CountDownLatch(1);
             AtomicInteger segments = new AtomicInteger();
             AtomicInteger published = new AtomicInteger();
@@ -69,7 +71,7 @@ final class ActorContinuationTeardownTest {
             ref.stop();
             assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(1, segments.get());
-            assertTrue(producer.completeFromRuntime(7));
+            assertTrue(producerStage.complete(7));
             assertEquals(0, published.get(),
                     "the producer must not execute a guest callback on its own thread");
             assertEquals(1, segments.get(),
