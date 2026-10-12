@@ -2938,6 +2938,7 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            rejectActorStateMemberAccess(sumReceiver, member.member());
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
@@ -4394,6 +4395,19 @@ public final class TypeChecker {
         };
     }
 
+    /** Reserved actor state is not a nominal property, including on aliased receivers. */
+    private void rejectActorStateMemberAccess(Type receiver, String fieldName) {
+        if (!fieldName.equals("state")) return;
+        if (receiver instanceof Named named) {
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass != null && klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "actor state is sealed; neither '" + klass.name()
+                                + ".state' nor self.state is accessible; use handle_state");
+            }
+        }
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         return memberType(member, env, generics, self, false);
     }
@@ -4418,6 +4432,7 @@ public final class TypeChecker {
         }
         Type receiver = receiverDispatchType(
                 unwrapMutexGuard(deref(rawReceiver)));
+        rejectActorStateMemberAccess(receiver, member.member());
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
                     "cannot mutate a infer struct value; inferred structs are closed and readonly");
