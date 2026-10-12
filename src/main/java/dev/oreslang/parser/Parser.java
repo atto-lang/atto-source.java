@@ -912,6 +912,11 @@ public final class Parser {
                         policy == null ? "actor" : policy.protocol(),
                         requestConcurrency, messageConcurrency);
         if (transformPipe) validateTransformPipeHandlerContract(name, pipeRole, methods);
+        else if (methods.stream().anyMatch(method ->
+                method.name().equals("receive_forward")
+                || method.name().equals("receive_backward")))
+            throw error(previous(),
+                    "receive_forward/receive_backward require define transform pipe actor");
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces,
                 fields, null, methods, null, configured, builtinBase, pipeRole);
