@@ -3588,14 +3588,14 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (future.isDone()) {
+                Object settled;
                 try {
-                    continuation.accept(
-                            task,
-                            future.join(),
-                            null);
+                    settled = future.join();
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(task, null, failure);
+                    return;
                 }
+                continuation.accept(task, settled, null);
                 return;
             }
 
@@ -3642,22 +3642,18 @@ public final class OresEvalRootNode extends RootNode {
                                 == Ast.ChannelOperation.READ) {
                             if (operation.mode()
                                     == Ast.WaitMode.IMMEDIATE) {
+                                Object immediate;
                                 try {
                                     java.util.Optional<Object> result =
                                             channel.tryRead();
-                                    continuation.accept(
-                                            t,
-                                            result.isPresent()
-                                                    ? new OptionValue(
-                                                            true,
-                                                            result.get())
-                                                    : new OptionValue(
-                                                            false,
-                                                            null),
-                                            null);
+                                    immediate = result.isPresent()
+                                            ? new OptionValue(true, result.get())
+                                            : new OptionValue(false, null);
                                 } catch (RuntimeException | Error failure) {
                                     continuation.accept(t, null, failure);
+                                    return;
                                 }
+                                continuation.accept(t, immediate, null);
                                 return;
                             }
 
@@ -3677,14 +3673,14 @@ public final class OresEvalRootNode extends RootNode {
                             }
 
                             if (future.isDone()) {
+                                Object settled;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            future.join(),
-                                            null);
+                                    settled = future.join();
                                 } catch (RuntimeException | Error failure) {
                                     continuation.accept(t, null, failure);
+                                    return;
                                 }
+                                continuation.accept(t, settled, null);
                             } else {
                                 t.suspend(
                                         future,
@@ -3753,17 +3749,14 @@ public final class OresEvalRootNode extends RootNode {
 
                                     if (operation.mode()
                                             == Ast.WaitMode.IMMEDIATE) {
+                                        boolean written;
                                         try {
-                                            continuation.accept(
-                                                    t2,
-                                                    channel.tryWrite(value),
-                                                    null);
+                                            written = channel.tryWrite(value);
                                         } catch (RuntimeException | Error failure) {
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    failure);
+                                            continuation.accept(t2, null, failure);
+                                            return;
                                         }
+                                        continuation.accept(t2, written, null);
                                         return;
                                     }
 
@@ -3785,16 +3778,11 @@ public final class OresEvalRootNode extends RootNode {
                                     if (future.isDone()) {
                                         try {
                                             future.join();
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    null);
                                         } catch (RuntimeException | Error failure) {
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    failure);
+                                            continuation.accept(t2, null, failure);
+                                            return;
                                         }
+                                        continuation.accept(t2, null, null);
                                     } else {
                                         t2.suspend(
                                                 future,
@@ -3851,14 +3839,14 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
+                        Object transformed;
                         try {
-                            continuation.accept(
-                                    t,
-                                    applyRuntimeOwnership(runtime.operation(), value),
-                                    null);
+                            transformed = applyRuntimeOwnership(runtime.operation(), value);
                         } catch (RuntimeException | Error ownershipFailure) {
                             continuation.accept(t, null, ownershipFailure);
+                            return;
                         }
+                        continuation.accept(t, transformed, null);
                     });
         }
 
