@@ -507,7 +507,7 @@ final class HostGeneratorTurnPumpTest {
             assertTrue(pump.isQuiescent(),
                     "cancellation must wait for authenticated physical DONE");
             assertEquals(1, frame.cleanupRuns(), "source finally must run exactly once");
-            assertEquals(1, frame.cleanupBinding("cleanup_marker"));
+            assertEquals(1, ((Number) frame.cleanupBinding("cleanup_marker")).intValue());
             assertFalse(unresolved.isDone(), "do not cancel an externally owned Future");
             pump.close();
         }
