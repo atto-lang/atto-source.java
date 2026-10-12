@@ -685,10 +685,10 @@ final class LanguageHardeningTest {
     void strictFaasRejectsSharedActorDeclarationsAtAdmission() {
         Ast.Program sharedActor = TypeChecker.check(Parser.parse("""
                 shared actor Account {
-                  let balance = 100;
+                  state { balance: int = 100; }
 
-                  pub fnc current(): int {
-                    return self.balance;
+                  pub fnc current(): int with state.read {
+                    return using state.read(|s| -> s.balance);
                   }
                 }
                 """));
