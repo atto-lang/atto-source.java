@@ -118,6 +118,16 @@ final class SharedUntrustedIsolatePoolTest {
         }
     }
 
+    @Test
+    void closedUntrustedLoaderRejectsNewGenerationsBeforeIsolateAllocation() {
+        HotReloadManager loader = HotReloadManager.forUntrustedActors(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit());
+        loader.close();
+        assertThrows(IllegalStateException.class, () ->
+                loader.load("a.ores", "pub routine main(): void { return; }"));
+        loader.close(); // exactly-once close is idempotent
+    }
+
     /**
      * Run on a real GraalVM runner with an Oreslang language-isolate image.
      * It must NEVER pass by silently switching to the host JVM interpreter.
