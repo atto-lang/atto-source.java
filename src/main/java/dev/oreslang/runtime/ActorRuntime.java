@@ -216,6 +216,8 @@ public final class ActorRuntime implements AutoCloseable {
             int maxActors) {
         public static final long DEFAULT_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
         public static final long DEFAULT_MAX_MESSAGE_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+        public static final int DEFAULT_MIN_POOL_THREADS = 5;
+        public static final int DEFAULT_MAX_POOL_THREADS = 20;
 
         public DispatcherConfig {
             if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
@@ -294,31 +296,33 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
-         * Production defaults partition the hot CPU budget instead of giving
-         * every pool availableProcessors() workers. The untrusted domain gets
-         * the smallest slice; shared/root keeps at least two workers so a
-         * synchronous root awaiting a shared actor cannot consume its only
-         * carrier.
+         * Production defaults use three independent Erlang-style carrier
+         * bulkheads. Each domain starts with a small worker floor and may grow
+         * toward a bounded ceiling when runnable actor demand accumulates.
+         *
+         * The pools are intentionally not partitioned as permanent CPU owners:
+         * idle carriers are cheap and actors never own a carrier. The scheduler
+         * preserves the stronger invariant that one actor has at most one
+         * execution lease even when later turns migrate to another thread.
          */
         public static DispatcherConfig defaults() {
             return defaultsForProcessors(Runtime.getRuntime().availableProcessors());
         }
 
         public static DispatcherConfig defaultsForProcessors(int availableProcessors) {
-            int cpus = Math.max(1, availableProcessors);
-            int untrusted = Math.max(1, cpus / 8);
-            int remaining = Math.max(1, cpus - untrusted);
-            int shared = Math.max(2, (remaining + 1) / 2);
-            int isolated = Math.max(1, cpus - untrusted - shared);
-            int compensation = Math.max(1, Math.min(4, cpus / 4));
+            if (availableProcessors <= 0) {
+                throw new IllegalArgumentException("availableProcessors must be > 0");
+            }
+            int floor = DEFAULT_MIN_POOL_THREADS;
+            int elasticHeadroom = DEFAULT_MAX_POOL_THREADS - DEFAULT_MIN_POOL_THREADS;
             return new DispatcherConfig(
-                    isolated,
-                    shared,
-                    untrusted,
+                    floor,
+                    floor,
+                    floor,
                     64,
                     DEFAULT_MAX_BATCH_NANOS,
                     DEFAULT_MAX_MESSAGE_NANOS,
-                    compensation,
+                    elasticHeadroom,
                     16_384);
         }
 
@@ -351,6 +355,15 @@ public final class ActorRuntime implements AutoCloseable {
                 case SHARED -> sharedParallelism;
                 case UNTRUSTED -> untrustedParallelism;
             };
+        }
+
+        public int maxParallelismFor(ActorKind kind) {
+            int base = parallelismFor(kind);
+            try {
+                return Math.addExact(base, maxCompensatingThreads);
+            } catch (ArithmeticException overflow) {
+                return Integer.MAX_VALUE;
+            }
         }
     }
 
@@ -1396,6 +1409,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong sharedRejectedTurns;
     private final AtomicLong untrustedRejectedTurns;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
+    private final ThreadLocal<RootTask<?>> currentRootTask = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
 
     public ActorRuntime() {
@@ -1607,6 +1621,7 @@ public final class ActorRuntime implements AutoCloseable {
         private volatile Thread carrier;
         private volatile ScheduledFuture<?> deadlineFuture;
         private final AtomicBoolean compensationClaimed = new AtomicBoolean();
+        private final AtomicBoolean deadlineExpired = new AtomicBoolean();
         private volatile long deadlineNanos = Long.MAX_VALUE;
 
         private RootTask(Supplier<T> task) {
@@ -1619,6 +1634,7 @@ public final class ActorRuntime implements AutoCloseable {
             carrier = Thread.currentThread();
             ACTOR_CARRIER.set(Boolean.TRUE);
             CURRENT_ROOT_RUNTIME.set(ActorRuntime.this);
+            currentRootTask.set(this);
             deadlineNanos = rootDeadlineNanos();
             CURRENT_ROOT_DEADLINE_NANOS.set(deadlineNanos);
             armRootDeadline();
@@ -1645,6 +1661,7 @@ public final class ActorRuntime implements AutoCloseable {
                 Thread.interrupted();
                 carrier = null;
                 CURRENT_ROOT_DEADLINE_NANOS.remove();
+                currentRootTask.remove();
                 CURRENT_ROOT_RUNTIME.remove();
                 ACTOR_CARRIER.remove();
                 phase.set(FINISHED);
@@ -1680,15 +1697,23 @@ public final class ActorRuntime implements AutoCloseable {
             if (phase.get() != RUNNING) return;
             Thread running = carrier;
             if (running == null) return;
+            if (!deadlineExpired.compareAndSet(false, true)) return;
+
+            CancellationException timeout = new CancellationException(
+                    "root/main process exceeded max wall time "
+                            + policyCeiling.maxWallTime());
+            if (!completion.completeExceptionally(timeout)) {
+                // Normal completion or another terminal failure already won.
+                // Do not report a phantom overrun or interrupt a carrier that
+                // is merely unwinding after a completed root task.
+                return;
+            }
 
             sharedOverrunTurns.incrementAndGet();
             if (compensationClaimed.compareAndSet(false, true)
                     && !claimCompensatingThread(ActorKind.SHARED)) {
                 compensationClaimed.set(false);
             }
-            completion.completeExceptionally(new CancellationException(
-                    "root/main process exceeded max wall time "
-                            + policyCeiling.maxWallTime()));
             running.interrupt();
         }
 
@@ -2882,6 +2907,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         IsolatePolicy policy = defaultSpawnPolicy();
         AtomicReference<ActorRef<M>> spawnedRef = new AtomicReference<>();
+        AtomicReference<R> invocationResult = new AtomicReference<>();
+        AtomicReference<Throwable> invocationFailure = new AtomicReference<>();
+        AtomicBoolean invocationFinished = new AtomicBoolean();
         OresFuture<R> completion = new OresFuture<>(() -> {
             ActorRef<M> ref = spawnedRef.get();
             if (ref != null) requestStop(ref.id());
@@ -2894,21 +2922,27 @@ public final class ActorRuntime implements AutoCloseable {
                     try {
                         @SuppressWarnings("unchecked")
                         R frozen = (R) freeze(invocation.run(delivered, turnContext));
-                        completion.completeFromRuntime(frozen);
+                        invocationResult.set(frozen);
+                        invocationFinished.set(true);
                     } catch (VirtualMachineError fatal) {
-                        completion.failFromRuntime(fatal);
+                        invocationFailure.set(fatal);
+                        invocationFinished.set(true);
                         throw fatal;
                     } catch (ThreadDeath fatal) {
-                        completion.failFromRuntime(fatal);
+                        invocationFailure.set(fatal);
+                        invocationFinished.set(true);
                         throw fatal;
                     } catch (LinkageError fatal) {
-                        completion.failFromRuntime(fatal);
+                        invocationFailure.set(fatal);
+                        invocationFinished.set(true);
                         throw fatal;
                     } catch (Exception failure) {
-                        completion.failFromRuntime(failure);
+                        invocationFailure.set(failure);
+                        invocationFinished.set(true);
                         throw failure;
                     } catch (Error failure) {
-                        completion.failFromRuntime(failure);
+                        invocationFailure.set(failure);
+                        invocationFinished.set(true);
                         throw failure;
                     } finally {
                         turnContext.self().stop();
@@ -2924,12 +2958,32 @@ public final class ActorRuntime implements AutoCloseable {
         });
         ref.termination().whenComplete((normalTermination, terminationFailure) -> {
             if (completion.isDone()) return;
+
+            // A scheduler/control-plane failure is authoritative even if
+            // uncooperative guest code ignores interruption and returns later.
+            // Never turn a watchdog timeout into a successful spawn result.
             if (terminationFailure != null) {
                 completion.failFromRuntime(OresFuture.unwrap(terminationFailure));
-            } else {
-                completion.failFromRuntime(new CancellationException(
-                        "actor terminated before its callable completed"));
+                return;
             }
+
+            // Publish a callable result only after the one-shot actor turn has
+            // fully left guest execution and finalized. This makes awaiting
+            // spawn.result a safe lifecycle boundary for embedders: once it
+            // resumes, the child no longer owns the polyglot context on a
+            // carrier thread.
+            if (invocationFinished.get()) {
+                Throwable callFailure = invocationFailure.get();
+                if (callFailure != null) {
+                    completion.failFromRuntime(callFailure);
+                } else {
+                    completion.completeFromRuntime(invocationResult.get());
+                }
+                return;
+            }
+
+            completion.failFromRuntime(new CancellationException(
+                    "actor terminated before its callable completed"));
         });
 
         try {
@@ -3061,19 +3115,25 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void reserveActorSlot(ActorKind kind) {
         Objects.requireNonNull(kind);
+
+        // Fail the runtime-local admission first. Dedicated runtimes own their
+        // dispatcher group, so checking the group first obscures the actual
+        // contract with a misleading process-limit error. For process-shared
+        // runtimes, the group check below still enforces the process ceiling.
+        if (actorCount.get() >= dispatcherConfig.maxActors()) {
+            throw new IllegalStateException(
+                    "actor runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
+        }
+        if (kind == ActorKind.UNTRUSTED
+                && untrustedActorCount.get() >= dispatcherConfig.maxUntrustedActors()) {
+            throw new IllegalStateException(
+                    "untrusted actor limit exceeded: maximum "
+                            + dispatcherConfig.maxUntrustedActors());
+        }
+
         dispatcherGroup.reserveActor(kind);
         boolean localReserved = false;
         try {
-            if (actorCount.get() >= dispatcherConfig.maxActors()) {
-                throw new IllegalStateException(
-                        "actor runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
-            }
-            if (kind == ActorKind.UNTRUSTED
-                    && untrustedActorCount.get() >= dispatcherConfig.maxUntrustedActors()) {
-                throw new IllegalStateException(
-                        "untrusted actor limit exceeded: maximum "
-                                + dispatcherConfig.maxUntrustedActors());
-            }
             actorCount.incrementAndGet();
             actorCountFor(kind).incrementAndGet();
             localReserved = true;
@@ -3473,6 +3533,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (rootDeadline != null
                     && rootDeadline != Long.MAX_VALUE
                     && System.nanoTime() - rootDeadline >= 0) {
+                RootTask<?> rootTask = currentRootTask.get();
+                if (rootTask != null) rootTask.expireRootTask();
                 throw new CancellationException(
                         "root/main process exceeded max wall time "
                                 + policyCeiling.maxWallTime());
@@ -4476,7 +4538,18 @@ public final class ActorRuntime implements AutoCloseable {
     @Override
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
+        closeFromSupervisor();
+    }
 
+    /**
+     * Host lifecycle teardown path used by OresContext/Truffle disposal.
+     *
+     * Package-private on purpose: guest code may reach only the public
+     * AutoCloseable surface, which still enforces supervisor-only shutdown.
+     * Truffle disposal can occur while a root task is unwinding, so it must
+     * not be misclassified as a guest-initiated runtime close.
+     */
+    void closeFromSupervisor() {
         final boolean firstClose;
         final List<ActorCell<?>> snapshot;
         synchronized (runtimeLifecycleLock) {
@@ -4543,7 +4616,7 @@ public final class ActorRuntime implements AutoCloseable {
             // Do not tear shared state out from under guest code that failed to
             // quiesce. A later close() may retry after the offending turn exits.
             throw new IllegalStateException(
-                    "ActorRuntime close did not observe full guest termination: "
+                    "ActorRuntime close did not observe full actor termination: "
                             + stillRunning.size() + " actor(s), "
                             + activeRootTasks.get() + " root task(s) still running");
         }
@@ -4597,6 +4670,47 @@ public final class ActorRuntime implements AutoCloseable {
         };
     }
 
+    /**
+     * Grow a carrier pool when runnable actor turns are accumulating.
+     *
+     * ThreadPoolExecutor normally queues once its core size is reached, which
+     * would make a 5..20 pool behave like a fixed five-thread pool. Raising the
+     * core target one step at a time lets demand activate additional carriers
+     * while keeping the hard maximum bounded.
+     */
+    private void scaleDispatcherForDemand(ActorKind kind) {
+        ThreadPoolExecutor executor = dispatcherFor(kind);
+        synchronized (executor) {
+            int current = executor.getCorePoolSize();
+            int maximum = dispatcherConfig.maxParallelismFor(kind);
+            if (current >= maximum) return;
+            int queued = executor.getQueue().size();
+            // Do not spend the only watchdog headroom merely because one peer
+            // is queued behind one busy carrier. Grow elastically only after
+            // queued demand exceeds the currently provisioned carrier count;
+            // a genuinely stuck carrier is then detected by the watchdog,
+            // which can claim bounded compensation inside the same hard cap.
+            if (queued <= current) return;
+            executor.setCorePoolSize(current + 1);
+            executor.prestartCoreThread();
+        }
+    }
+
+    /**
+     * Return an elastic pool toward its configured floor after demand drains.
+     * Watchdog compensation claims form part of the temporary floor so a stuck
+     * carrier cannot be retired out from under its replacement.
+     */
+    private void relaxDispatcherAfterQuantum(ActorKind kind) {
+        ThreadPoolExecutor executor = dispatcherFor(kind);
+        synchronized (executor) {
+            if (!executor.getQueue().isEmpty()) return;
+            int floor = dispatcherConfig.parallelismFor(kind) + compensationCounter(kind).get();
+            int current = executor.getCorePoolSize();
+            if (current > floor) executor.setCorePoolSize(current - 1);
+        }
+    }
+
     private boolean claimCompensatingThread(ActorKind kind) {
         int limit = dispatcherConfig.maxCompensatingThreads();
         if (limit == 0) return false;
@@ -4609,9 +4723,12 @@ public final class ActorRuntime implements AutoCloseable {
             ThreadPoolExecutor executor = dispatcherFor(kind);
             synchronized (executor) {
                 int base = dispatcherConfig.parallelismFor(kind);
-                int target = Math.min(
-                        executor.getMaximumPoolSize(),
-                        Math.max(base, executor.getCorePoolSize()) + 1);
+                int currentCore = Math.max(base, executor.getCorePoolSize());
+                if (currentCore >= executor.getMaximumPoolSize()) {
+                    counter.decrementAndGet();
+                    return false;
+                }
+                int target = Math.min(executor.getMaximumPoolSize(), currentCore + 1);
                 executor.setCorePoolSize(target);
                 executor.prestartCoreThread();
             }
@@ -4690,6 +4807,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Duration hardLifetime;
         private final long deadlineNanos;
         private volatile Thread activeCarrier;
+        private final AtomicReference<Thread> executionLease = new AtomicReference<>();
         private volatile ScheduledFuture<?> lifetimeFuture;
         private volatile ScheduledFuture<?> messageDeadlineFuture;
         private final AtomicLong messageEpoch = new AtomicLong();
@@ -4912,18 +5030,25 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized) return false;
-                activeTurns++;
+                if (activeTurns != 0) {
+                    throw new IllegalStateException(
+                            "single-executor actor invariant violated for " + ref.id()
+                                    + ": activeTurns=" + activeTurns);
+                }
+                activeTurns = 1;
                 return true;
             }
         }
 
         private void endTurn() {
             synchronized (lifecycleLock) {
-                if (activeTurns <= 0) {
-                    throw new IllegalStateException("actor active-turn accounting underflow for " + ref.id());
+                if (activeTurns != 1) {
+                    throw new IllegalStateException(
+                            "actor active-turn accounting invariant violated for " + ref.id()
+                                    + ": activeTurns=" + activeTurns);
                 }
-                activeTurns--;
-                if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                activeTurns = 0;
+                if (stopped.get()) finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
         }
@@ -5032,6 +5157,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (!scheduled.compareAndSet(false, true)) return;
             try {
                 dispatcherFor(kind).execute(this::runBatch);
+                scaleDispatcherForDemand(kind);
             } catch (RejectedExecutionException rejected) {
                 rejectionCounter(kind).incrementAndGet();
                 scheduled.set(false);
@@ -5042,6 +5168,13 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void runBatch() {
             ACTOR_CARRIER.set(Boolean.TRUE);
+            Thread carrier = Thread.currentThread();
+            if (!executionLease.compareAndSet(null, carrier)) {
+                ACTOR_CARRIER.remove();
+                fail(new IllegalStateException(
+                        "single-executor actor lease violation for " + ref.id()));
+                return;
+            }
             boolean turnActive = beginTurn();
             long entryDeadline = 0L;
             try {
@@ -5051,7 +5184,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // guest callback. In adversarial contexts TurnExecutor may wait
                 // for a context-entry lock; that wait must still be bounded or
                 // one hostile turn can strand every untrusted carrier behind it.
-                activeCarrier = Thread.currentThread();
+                activeCarrier = carrier;
                 entryDeadline = armMessageDeadline("runtime context entry");
                 final long armedEntryDeadline = entryDeadline;
                 turnExecutor.execute(() -> {
@@ -5068,9 +5201,15 @@ public final class ActorRuntime implements AutoCloseable {
                 disarmMessageDeadline(entryDeadline);
                 activeCarrier = null;
                 if (turnActive) endTurn();
+                if (!executionLease.compareAndSet(carrier, null)) {
+                    fail(new IllegalStateException(
+                            "actor execution lease ownership changed unexpectedly for " + ref.id()));
+                }
                 scheduled.set(false);
                 if (!stopped.get() && !closed.get() && !mailbox.isEmpty()) {
                     schedule();
+                } else {
+                    relaxDispatcherAfterQuantum(kind);
                 }
                 ACTOR_CARRIER.remove();
             }
