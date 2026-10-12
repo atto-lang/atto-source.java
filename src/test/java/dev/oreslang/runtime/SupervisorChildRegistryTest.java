@@ -178,6 +178,11 @@ final class SupervisorChildRegistryTest {
                 registry.snapshot(first.child()).phase(),
                 "a forged acknowledgement must not release the reservation");
 
+        assertThrows(IllegalStateException.class, () -> registry.markStopApplied(stop),
+                "an uninvoked host effect cannot assert APPLIED");
+        assertThrows(IllegalStateException.class, () -> registry.acknowledgeHostStop(stop),
+                "a host acknowledgment cannot skip the original invocation");
+        registry.claimHostStopInvocation(stop);
         registry.markStopApplied(stop);
         assertThrows(IllegalStateException.class, () -> registry.markStopUncertain(stop),
                 "a verified host effect must never be downgraded to uncertain");
@@ -665,6 +670,43 @@ final class SupervisorChildRegistryTest {
                 registry.committedTransitions().stream()
                         .map(SupervisorChildRegistry.Transition::operation).toList());
     }
+    @Test
+    void hostAcknowledgmentRequiresClaimButIndependentReconciliationStillWorks() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var failed = ActorRuntime.ActorId.create();
+        var child = registry.register(failed);
+        registry.finalized(child.child(), failed, 1);
+        var receipt = registry.beginStop(child.child(), failed, 1, 82);
+        assertThrows(IllegalStateException.class,
+                () -> registry.acknowledgeHostStop(receipt));
+        assertThrows(IllegalStateException.class,
+                () -> registry.markStopApplied(receipt));
+        assertEquals(SupervisorChildRegistry.StopReceiptStatus.PENDING,
+                registry.stopReceipt(child.child()).status());
+        assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                registry.snapshot(child.child()).phase());
+        registry.claimHostStopInvocation(receipt);
+        assertEquals(SupervisorChildRegistry.Phase.STOPPED,
+                registry.acknowledgeHostStop(receipt).phase());
+        assertEquals(SupervisorChildRegistry.StopReceiptStatus.ACKNOWLEDGED,
+                registry.stopReceipt(child.child()).status());
+
+        var separate = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var physical = ActorRuntime.ActorId.create();
+        var logical = separate.register(physical);
+        separate.finalized(logical.child(), physical, 1);
+        var pending = separate.beginStop(logical.child(), physical, 1, 13);
+        separate.markStopUncertain(pending);
+        // A crash may prevent recording the invocation itself. Only an
+        // independently verified effect (outside this registry) may resolve it.
+        assertEquals(SupervisorChildRegistry.Phase.STOPPED,
+                separate.reconcileVerifiedStop(pending).phase());
+        assertEquals(SupervisorChildRegistry.StopReceiptStatus.ACKNOWLEDGED,
+                separate.stopReceipt(logical.child()).status());
+    }
+
     @Test
     void stopHostInvocationMustBeClaimedOnlyOnceForExactTurn() {
         var registry = new SupervisorChildRegistry(
