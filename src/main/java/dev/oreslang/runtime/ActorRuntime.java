@@ -1509,6 +1509,14 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new SecurityException(
                         "untrusted source-task quota belongs to a different actor or runtime");
             }
+            // Task creation is not itself a source loop backedge. Without a
+            // count cap, nested spawn can retain arbitrarily many queued
+            // tasks (and eventually overflow the signed reference counter)
+            // before hitting a fuel safepoint.
+            if (cell.activeUntrustedSourceTaskCount >= INTERNAL_CONTINUATION_SLOTS) {
+                throw new RejectedExecutionException(
+                        "untrusted actor logical source-task cohort is full");
+            }
             cell.activeUntrustedSourceTaskCount++;
         }
 
