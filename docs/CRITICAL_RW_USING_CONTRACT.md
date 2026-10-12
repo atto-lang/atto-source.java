@@ -1,18 +1,36 @@
-# Critical state access and using effects — pre-1.0 breaking contract
+# Oreslang actor state: with / using / critical (pre-1.0 normative contract)
 
-## Syntax
+## Three distinct responsibilities
+
+1. `with` on a function or actor method declares an upper bound on effects
+   (`state.read`, `state.write`, `io`, `suspend`, `block`, etc.).
+   It neither creates a borrow nor grants mutable access.
+2. `using` acquires a *lexically scoped* resource/state capability. The
+   expressions `using state.read(callback)` and
+   `using state.write(critical callback)` lower at compile time to the
+   actor-owned sealed `self.handle_state` intrinsic. This does not
+   create an ordinary guest-callable state function.
+3. `critical` controls exclusive admission. Inside state callbacks,
+   an unqualified `critical |s|` requests WRITE; an unmarked `|s|`
+   requests READ. `critical read |s|` and `critical write |s|` are
+   explicit equivalents. Ordinary non-state critical functions retain
+   their existing single-flight scheduler semantics.
 
 ```oreslang
 define actor Counter as
     state { v: int = 0; }
-    get(): int using state.read {
-        return self.handle_state(critical read |s| -> s.v);
+
+    get(): int with state.read {
+        return using state.read(|s| -> s.v);
     }
-    set(int x): void using state.write {
-        self.handle_state(critical write |s| -> { s.v = x; });
+
+    set(int x): void with state.write {
+        using state.write(critical |s| -> { s.v = x; });
+        return;
     }
-    increment(): int using state.read, state.write {
-        return self.handle_state(critical write |s| -> {
+
+    increment(): int with state.read, state.write {
+        return using state.write(critical |s| -> {
             s.v = s.v + 1;
             return s.v;
         });
@@ -20,53 +38,60 @@ define actor Counter as
 end
 ```
 
-### Normative invariants
+The equivalent sealed form remains:
+```oreslang
+get(): int with state.read {
+    return self.handle_state(critical read |s| -> s.v);
+}
+increment(): int with state.read, state.write {
+    return self.handle_state(critical write |s| -> {
+        s.v = s.v + 1;
+        return s.v;
+    });
+}
+```
 
-1. Unqualified `critical` is ordinary critical-section admission and does not grant
-   authority over an actor's sealed state.
-2. `self.handle_state` requires one inline lexical `critical read` or
-   `critical write` callback. Bare `critical |s|` and `|s|` are compile errors
-   even in `serial actor`.
-3. `critical read` grants read-only state access. Read projections may not be
-   assigned, moved out, captured, mutated through an alias, or passed to an
-   unknown potentially mutating state method. Read-to-write upgrades while a
-   read scope is active are rejected.
-4. `critical write` grants exclusive read/write access; reading produces the
-   `state.read` effect and writing produces the `state.write` effect. A pure
-   assignment needs `using state.write`, not automatically `state.read`.
-   Read-modify-write needs both.
-5. `using` is an upper bound on effects, never an authority grant or lock
-   primitive. `using state.read,state.write` **cannot** authorize a write in
-   `critical read`. Conversely `critical write` **cannot** override missing
-   `state.write` in an explicitly declared `using` upper bound.
-6. `critical` scheduling is orthogonal to `using`, `pure`, and
-   `requires no_block`. Do not silently infer `io`, `block`, `suspend`
-   or any effect solely because a critical mode appears.
-7. State capability is a lexical sealed non-sendable, non-escapable loan;
-   direct `self.state` is always forbidden. The current executable
-   synchronous source path prohibits suspension with live state loans.
-8. Each actor retains at most one executing native carrier at a time;
-   logical shared-reader admission is future scheduler work, not permission
-   for native parallel guest execution.
+## Admission invariants
 
-### Admission and conformance matrix
+- `with` is an effects-only declaration. A wide `with state.read,
+  state.write` row does not upgrade a READ capability to WRITE.
+- `using state.read` only admits a lexical read callback, and
+  `using state.write` requires a critical WRITE callback. The compiler
+  must enforce the same read/write permissions in both spellings.
+- A direct write incurs `state.write` only; a read incurs `state.read`.
+  A read-modify-write incurs both. These are checked transitively, and
+  unknown calls under an effect bound must fail closed.
+- A `using` declaration in a function signature is forbidden:
+  `fnc f() using state.read { ... }` is NOT an effects clause.
+- `self.state` never resolves as an actor instance member. The
+  callback loan cannot escape, be sent across actors, be stored in a
+  closure, or be used in a static actor method.
+- The current synchronous scalar-state runtime rejects suspension with a
+  live state loan. No OS mutex is held through a guest callback.
+- Reader compatibility is a *logical* scheduling property, not physical
+  simultaneous execution: at most one native carrier runs a given actor's
+  guest code at once. Shared reader leases and writer fairness still need
+  a scheduler proof before claiming parallel active reads.
 
-| Callback mode | Action | Required `using` if declared | Result |
-| --- | --- | --- | --- |
-| read | read field | state.read | accept |
-| read | write field | state.write | **reject** (no authority) |
-| read | write field | state.read, state.write | **reject** |
-| write | overwrite field without reading | state.write | accept |
-| write | read field | state.read | accept |
-| write | increment field | state.read, state.write | accept |
-| write | increment field | state.write | **reject** (missing read effect) |
-| unqualified critical | any state access | any | **reject** |
-| no critical mode | any state access | any | **reject** |
+## Compile-positive / compile-negative matrix
 
-The existing Java/Graal source evaluator and parser support only the
-synchronous scalar sealed-state subset on this implementation branch.
-General LLVM guest `state` lowering, nested compound state structures,
-suspendable state loans, cross-actor read-lease scheduling, full
-interprocedural effect inference, and formal concurrency verification
-remain separate release gates. Do not infer backend parity from shared
-documentation or host-only tests.
+| Source form | Effect declaration | Result |
+| --- | --- | --- |
+| `using state.read(\|s\| -> s.v)` | `with state.read` | accept |
+| `using state.write(critical \|s\| -> {s.v=1;})` | `with state.write` | accept |
+| `using state.write(critical \|s\| -> {s.v=s.v+1;})` | `with state.read, state.write` | accept |
+| READ callback assigning `s.v` | even with both effects | reject |
+| WRITE callback reading then assigning | with only state.write | reject |
+| `using state.write(\|s\| -> ...)` | with state.write | reject |
+| `using state.read(critical \|s\| -> ...)` | with state.read | reject |
+| `fnc f() using state.read` | none | reject |
+| `fnc f() with state.read` but no read | harmless upper bound | accept |
+| direct `self.state.v` | any | reject |
+
+## Backend / verification status
+
+Java/GraalVM: source parser, type/effect and ownership checks and a
+synchronous scalar runtime are being verified; this specification is not
+a claim of complete interprocedural, AOT or concurrent-reader support.
+LLVM: the native admission policy is testable, but compiled general
+`state { ... }` guest programs are still an explicit release gate.
