@@ -316,7 +316,8 @@ class NativeHttpTest {
                     port.complete(Integer.parseInt(printed.substring(0, newline).trim()));
             }
         };
-        NativeHttp.REJECT_NEXT_ABORT_FOR_TEST.set(false);
+        CompletableFuture<Void> injected =
+                NativeHttp.rejectFirstAbortInNextContextForTest();
         try (Context context = IsolatePolicy.developer()
                     .withCapabilities(IsolatePolicy.Capability.NETWORK)
                     .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of())
@@ -364,15 +365,14 @@ class NativeHttpTest {
             // Precisely one actor-completion abort dispatch is rejected.
             // The host close must drain all former I/O carriers before its
             // synchronous socket-close fallback and exchange release.
-            NativeHttp.REJECT_NEXT_ABORT_FOR_TEST.set(true);
             assertDoesNotThrow(() -> OresContextLifecycle.closeWhenQuiescent(context),
                     "host disposal must preflight while the outer Polyglot context is live");
-            assertFalse(NativeHttp.REJECT_NEXT_ABORT_FOR_TEST.get(),
-                    "the fault must have reached a real abort dispatch");
+            assertDoesNotThrow(() -> injected.get(5, TimeUnit.SECONDS),
+                    "only this HTTP runtime may consume its abort injection");
             assertTrue(output.toString(StandardCharsets.UTF_8).contains("stream-finalized"));
             client.get(8, TimeUnit.SECONDS);
         } finally {
-            NativeHttp.REJECT_NEXT_ABORT_FOR_TEST.set(false);
+            NativeHttp.clearNextContextFaultForTest();
         }
     }
 
