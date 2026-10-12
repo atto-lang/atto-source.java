@@ -197,25 +197,34 @@ final class FormalHostFutureHandoffModelCheckTest {
         invariant(s);
     }
     private enum PhysicalEvent {
-        HOST_BEGIN, ROOT_CLAIM, ROOT_DONE, HOST_EXIT, SEAL, CLOSE_CHECK
+        HOST_BEGIN, ROOT_CLAIM, FUTURE_SETTLED, ROOT_DONE, HOST_EXIT, SEAL, CLOSE_CHECK
     }
 
     private record PhysicalState(
-            boolean host, boolean root, boolean sealed, boolean retired) {
+            boolean host, boolean root, boolean futureSettled,
+            boolean sealed, boolean retired) {
         static PhysicalState initial() {
-            return new PhysicalState(false, false, false, false);
+            return new PhysicalState(false, false, false, false, false);
         }
     }
 
     private static PhysicalState physicalStep(PhysicalState s, PhysicalEvent event) {
-        boolean host = s.host, root = s.root;
+        boolean host = s.host, root = s.root, settled = s.futureSettled;
         boolean sealed = s.sealed, retired = s.retired;
         switch (event) {
             case HOST_BEGIN -> {
                 if (!sealed && !host && !root) host = true;
             }
             case ROOT_CLAIM -> {
-                if (!host && !root && !retired) root = true;
+                if (!host && !root && !retired) {
+                    root = true;
+                    settled = false;
+                }
+            }
+            case FUTURE_SETTLED -> {
+                // Result publication may precede guest-turn executor exit.
+                // It must NOT surrender the physical root-entry claim.
+                if (root) settled = true;
             }
             case ROOT_DONE -> root = false;
             case HOST_EXIT -> host = false;
@@ -224,7 +233,7 @@ final class FormalHostFutureHandoffModelCheckTest {
                 if (sealed && !host && !root) retired = true;
             }
         }
-        return new PhysicalState(host, root, sealed, retired);
+        return new PhysicalState(host, root, settled, sealed, retired);
     }
 
     private static void physicalInvariant(PhysicalState state) {
@@ -259,8 +268,27 @@ final class FormalHostFutureHandoffModelCheckTest {
     }
 
     @Test
+    void publicFutureSettlementIsNotPhysicalRootTurnRelease() {
+        PhysicalState state = physicalStep(PhysicalState.initial(),
+                PhysicalEvent.ROOT_CLAIM);
+        assertTrue(state.root);
+        state = physicalStep(state, PhysicalEvent.FUTURE_SETTLED);
+        assertTrue(state.futureSettled);
+        assertTrue(state.root, "Future settlement cannot imply guest exit");
+        state = physicalStep(state, PhysicalEvent.HOST_BEGIN);
+        assertFalse(state.host, "host entry must be rejected until physical root exit");
+        state = physicalStep(state, PhysicalEvent.SEAL);
+        state = physicalStep(state, PhysicalEvent.CLOSE_CHECK);
+        assertFalse(state.retired, "sealing is not a physical exit receipt");
+        state = physicalStep(state, PhysicalEvent.ROOT_DONE);
+        state = physicalStep(state, PhysicalEvent.CLOSE_CHECK);
+        assertTrue(state.retired);
+        physicalInvariant(state);
+    }
+
+    @Test
     void unsafeHostBeginAfterRootPhysicalClaimViolatesInvariant() {
-        PhysicalState invalid = new PhysicalState(true, true, false, false);
+        PhysicalState invalid = new PhysicalState(true, true, true, false, false);
         assertThrows(AssertionError.class, () -> physicalInvariant(invalid));
     }
 
