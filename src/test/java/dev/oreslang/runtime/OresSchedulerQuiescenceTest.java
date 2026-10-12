@@ -35,11 +35,23 @@ final class OresSchedulerQuiescenceTest {
                 assertTrue(result.isCancelled(), "Future is already settled");
                 assertEquals(0, retires.get(),
                         "guest resources cannot be retired while a carrier remains live");
+                java.lang.reflect.Field tasksField =
+                        OresScheduler.class.getDeclaredField("tasks");
+                tasksField.setAccessible(true);
+                java.util.Set<?> liveTasks =
+                        (java.util.Set<?>) tasksField.get(scheduler);
+                assertEquals(1, liveTasks.size(),
+                        "cancelled task must remain registered until carrier unwinds");
             } finally {
                 exitGuest.countDown();
             }
             assertTrue(retired.await(3, TimeUnit.SECONDS));
             assertEquals(1, retires.get());
+            java.lang.reflect.Field tasksField =
+                    OresScheduler.class.getDeclaredField("tasks");
+            tasksField.setAccessible(true);
+            assertTrue(((java.util.Set<?>) tasksField.get(scheduler)).isEmpty(),
+                    "quiescent task must be removed from scheduler live set");
         }
     }
 
