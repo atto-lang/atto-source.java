@@ -8,6 +8,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -47,6 +49,22 @@ public final class OresScheduler implements AutoCloseable {
     private static final ThreadLocal<ActorTurnWatchdog.Lease> CURRENT_WATCHDOG_LEASE =
             new ThreadLocal<>();
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
+    /**
+     * Host-owned wall-clock expiration. Separate from actor/scheduler carriers:
+     * an unresolved await cannot consume a new 250 ms budget on resumption.
+     * Timer callbacks never execute guest turns or interrupt active carriers.
+     */
+    private static final ScheduledThreadPoolExecutor WALL_DEADLINES = createWallDeadlineTimer();
+
+    private static ScheduledThreadPoolExecutor createWallDeadlineTimer() {
+        AtomicInteger threadId = new AtomicInteger();
+        ScheduledThreadPoolExecutor timer = new ScheduledThreadPoolExecutor(2,
+                runnable -> Thread.ofPlatform().daemon(true)
+                        .name("ores-source-wall-deadline-" + threadId.incrementAndGet())
+                        .unstarted(runnable));
+        timer.setRemoveOnCancelPolicy(true);
+        return timer;
+    }
 
     @FunctionalInterface
     interface TurnExecutor {
@@ -321,6 +339,25 @@ public final class OresScheduler implements AutoCloseable {
      * Never use Future settlement alone to reclaim guest-owned resources.
      */
     <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
+        return startAdmitted(task, onQuiescent, null, 0L);
+    }
+
+    /**
+     * Trusted runtime-only admission with an independently enforced remaining
+     * wall budget. Used for UNTRUSTED source continuations, including children
+     * sharing one logical quota. Do not expose this to guest code.
+     */
+    <T> OresFuture<T> startWithWallDeadline(
+            Task<T> task, Runnable onQuiescent, long remainingNanos,
+            Throwable deadlineFailure) {
+        Objects.requireNonNull(deadlineFailure, "deadlineFailure");
+        return startAdmitted(task, onQuiescent, deadlineFailure,
+                Math.max(0L, remainingNanos));
+    }
+
+    private <T> OresFuture<T> startAdmitted(
+            Task<T> task, Runnable onQuiescent,
+            Throwable deadlineFailure, long remainingNanos) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(onQuiescent, "onQuiescent");
         // Linearize open-check + live-set registration with close(), but do
@@ -332,6 +369,9 @@ public final class OresScheduler implements AutoCloseable {
             tasks.add(runner);
         }
         try {
+            if (deadlineFailure != null) {
+                runner.armWallDeadline(remainingNanos, deadlineFailure);
+            }
             runner.scheduleInitial();
         } catch (RuntimeException | Error failure) {
             // A concurrent close may already have cancelled and retired the
@@ -499,12 +539,31 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
+        private final AtomicReference<ScheduledFuture<?>> wallDeadline =
+                new AtomicReference<>();
         private volatile ActorTurnWatchdog.Lease watchdogLease;
 
         private TaskRunner(Task<T> task, Runnable onQuiescent) {
             this.task = task;
             this.onQuiescent = onQuiescent;
             this.completion = new OresFuture<>(this::cancelFromFuture);
+        }
+
+        private void armWallDeadline(long delayNanos, Throwable failure) {
+            ScheduledFuture<?> timer = WALL_DEADLINES.schedule(
+                    () -> failTerminal(failure), delayNanos, TimeUnit.NANOSECONDS);
+            if (!wallDeadline.compareAndSet(null, timer)) {
+                timer.cancel(false);
+                throw new IllegalStateException("task wall deadline already armed");
+            }
+            // A concurrent close may have retired this task while the timer
+            // was being submitted. Never retain a stale queued deadline.
+            if (phase.get() == TERMINAL) cancelWallDeadline();
+        }
+
+        private void cancelWallDeadline() {
+            ScheduledFuture<?> timer = wallDeadline.getAndSet(null);
+            if (timer != null) timer.cancel(false);
         }
 
         private void scheduleInitial() {
@@ -778,6 +837,7 @@ public final class OresScheduler implements AutoCloseable {
                 // cancelled/failed guest turn is still physically executing.
                 // A terminal Future is not a carrier-exit witness.
                 tasks.remove(this);
+                cancelWallDeadline();
                 onQuiescent.run();
             }
         }
