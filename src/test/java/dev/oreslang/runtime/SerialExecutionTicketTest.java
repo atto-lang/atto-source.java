@@ -177,4 +177,35 @@ final class SerialExecutionTicketTest {
         firstGate.close();
         otherGate.close();
     }
+
+    @Test void sourceTicketRejectsForeignIncarnationBeforeControlQueueReservation() {
+        Object original = new Object();
+        Object restarted = new Object();
+        SerialActorAdmission gate = new SerialActorAdmission(2);
+        var first = gate.submit(MESSAGE).join();
+        var originalTicket = new SerialExecutionTicket(
+                "same-actor-id", original, 1L, gate, first, () -> true);
+
+        assertTrue(originalTicket.issuedFor("same-actor-id", original));
+        assertFalse(originalTicket.issuedFor("same-actor-id", restarted),
+                "same value actor ID and recycled task number do not establish authority");
+        assertFalse(originalTicket.issuedFor("other-actor", original),
+                "foreign actor must be rejected before reserving CONTROL capacity");
+        assertFalse(originalTicket.issuedFor(null, original));
+        assertFalse(originalTicket.issuedFor("same-actor-id", null));
+
+        // The pre-queue check is identity-only: actual execution admission
+        // still has to prove the originating lease is live and runnable.
+        first.suspend();
+        assertTrue(originalTicket.issuedFor("same-actor-id", original));
+        assertThrows(IllegalStateException.class,
+                () -> originalTicket.requireRunnable("same-actor-id", original, first));
+        first.close();
+        assertTrue(originalTicket.issuedFor("same-actor-id", original),
+                "historical origin is immutable, not an accidental liveness oracle");
+        assertFalse(originalTicket.mayEnqueue());
+        assertThrows(SerialExecutionTicket.RetiredTaskException.class,
+                () -> originalTicket.requireAdmissible("same-actor-id", original, null));
+        gate.close();
+    }
 }
