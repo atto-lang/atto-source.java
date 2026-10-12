@@ -1,6 +1,8 @@
 package dev.oreslang.nodes;
 
+import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresVM;
 import dev.oreslang.runtime.OresScheduler;
 import org.graalvm.polyglot.Value;
 
@@ -45,6 +47,7 @@ public final class OresHostFutureBridge {
         private Object ownerContext;
         private Object ownerRoot;
         private OresFuture<?> future;
+        private OresVM.HostHandoffLease entryLease;
         private final ArrayList<OresScheduler.DeferredStart<?>> deferredStarts =
                 new ArrayList<>();
 
@@ -76,6 +79,12 @@ public final class OresHostFutureBridge {
             // a rejected claim must not retain a partially staged context.
             Object validatedContext = Objects.requireNonNull(context, "context");
             Object validatedRoot = Objects.requireNonNull(root, "root");
+            // A guest-side ticket is verified BEFORE admission is held. This
+            // gate prevents its scheduler task from entering a second Truffle
+            // thread until the outer host Value.execute physically returns.
+            if (validatedContext instanceof OresContext runtime) {
+                entryLease = runtime.vm().beginHostHandoff();
+            }
             ownerContext = validatedContext;
             ownerRoot = validatedRoot;
             state = State.CLAIMED;
@@ -169,17 +178,15 @@ public final class OresHostFutureBridge {
         }
 
         void close() {
-            requireOwnerThread();
-            // Also protect scope corruption and callers abandoning a claimed
-            // scope without taking a published Future.
-            for (OresScheduler.DeferredStart<?> deferred : deferredStarts) {
-                deferred.abandonBeforeDispatch();
-            }
-            deferredStarts.clear();
             state = State.CLOSED;
             ownerContext = null;
             ownerRoot = null;
             future = null;
+            OresVM.HostHandoffLease lease = entryLease;
+            entryLease = null;
+            // Unlike publication in guest code, this happens only after the
+            // outer host Value.execute has physically completed.
+            if (lease != null) lease.close();
         }
     }
 
