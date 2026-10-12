@@ -53,6 +53,9 @@ public final class ReturnCleanupChecker {
         final Set<Binding> returned = new HashSet<>();
         final Set<Binding> reboundInDefer = new HashSet<>();
         final Set<Binding> scannedDeferredCallbacks = new HashSet<>();
+        // Track deferred calls independently of the first scan: a callback
+        // may be reassigned *after* registration but before scope exit.
+        final Set<Binding> deferredLocalCallbacks = new HashSet<>();
         int loopsInsideFinally;
     }
 
@@ -79,6 +82,15 @@ public final class ReturnCleanupChecker {
         for (Ast.Param param : params) scope.define(param.name());
         State state = new State();
         statements(statements, scope, false, false, true, state);
+        // Deferred callbacks are invoked on scope exit, not when registered.
+        // Earlier static scans cannot authorize a later-replaced closure.
+        for (Binding callback : state.deferredLocalCallbacks) {
+            if (callback.reassigned) {
+                throw new IllegalArgumentException(
+                        "defer cannot verify reassigned or dynamic local callback '" +
+                        callback.name + "'; use a statically known lexical callback");
+            }
+        }
         for (Binding binding : state.returned) {
             if (state.reboundInDefer.contains(binding)) {
                 throw new IllegalArgumentException(
@@ -298,6 +310,7 @@ public final class ReturnCleanupChecker {
                             "defer cannot verify reassigned or dynamic local callback '" +
                             name.name() + "'; use a statically known lexical callback");
                 }
+                if (target != null) state.deferredLocalCallbacks.add(target);
                 // A named local cleanup callback must not evade the direct
                 // deferred-lambda returned-binding check. Scan each lexical
                 // callback once to avoid recursive-call analysis loops.
