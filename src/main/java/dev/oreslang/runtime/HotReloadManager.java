@@ -3,6 +3,9 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.parser.MacroExpander;
+import dev.oreslang.parser.Lexer;
+import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -29,6 +32,7 @@ public final class HotReloadManager implements AutoCloseable {
     private static final int MAX_ADVERSARIAL_SOURCE_CHARS = 1_048_576;
     private static final int MAX_ADVERSARIAL_CODE_UNIT_ID_CHARS = 512;
     private static final int MAX_ADVERSARIAL_LIVE_GENERATIONS = 8;
+    private static final int MAX_ADVERSARIAL_MACRO_LINEAGES = 256;
 
     private final IsolatePolicy supervisorPolicy;
     private final IsolatePolicy guestPolicy;
@@ -36,6 +40,7 @@ public final class HotReloadManager implements AutoCloseable {
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
+    private final Map<String, MacroExpander.Snapshot> macroSnapshotsByCodeUnit = new LinkedHashMap<>();
     private final Map<Long, Generation> generations = new LinkedHashMap<>();
 
     public HotReloadManager(
@@ -76,8 +81,12 @@ public final class HotReloadManager implements AutoCloseable {
      */
     public synchronized Generation load(String name, String sourceText) {
         validateAdmissionInputs(name, sourceText);
-        OresCompiler.validateForIsolate(sourceText, guestPolicy);
-        return stage(name, digest(sourceText), sourceText);
+        Parser.MacroParseResult parsed = Parser.parseWithMacroSnapshot(
+                sourceText, macroSnapshotsByCodeUnit.get(name));
+        CapabilityChecker.check(OresCompiler.analyze(parsed.program()), guestPolicy);
+        Generation staged = stage(name, digest(sourceText), sourceText);
+        macroSnapshotsByCodeUnit.put(name, parsed.snapshot());
+        return staged;
     }
 
     /**
@@ -88,8 +97,18 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
-        CapabilityChecker.check(unit.program(), guestPolicy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        if (!digest(unit.sourceText()).equals(unit.sourceDigest())) {
+            throw new IllegalArgumentException(
+                    "compiled unit source digest does not match its staged source");
+        }
+        Parser.MacroParseResult parsed = Parser.parseWithMacroSnapshot(
+                unit.sourceText(), macroSnapshotsByCodeUnit.get(unit.unitId()));
+        // Admission must validate the actual staged source, not just a caller-supplied
+        // cached AST: otherwise the source and its actor/ownership checks can diverge.
+        CapabilityChecker.check(OresCompiler.analyze(parsed.program()), guestPolicy);
+        Generation staged = stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        macroSnapshotsByCodeUnit.put(unit.unitId(), parsed.snapshot());
+        return staged;
     }
 
     private void validateAdmissionInputs(
@@ -100,7 +119,16 @@ public final class HotReloadManager implements AutoCloseable {
         if (codeUnitId.isBlank()) {
             throw new IllegalArgumentException("codeUnitId cannot be blank");
         }
-        if (!guestPolicy.adversarial()) return;
+        if (!guestPolicy.adversarial()) {
+            rejectRuntimeMacroExpansion(sourceText);
+            return;
+        }
+        // Persist AOT lineage across retirement without allowing unbounded IDs in hostile loads.
+        if (!macroSnapshotsByCodeUnit.containsKey(codeUnitId)
+                && macroSnapshotsByCodeUnit.size() >= MAX_ADVERSARIAL_MACRO_LINEAGES) {
+            throw new IllegalStateException("adversarial macro lineage limit exceeded: "
+                    + MAX_ADVERSARIAL_MACRO_LINEAGES);
+        }
         if (codeUnitId.length() > MAX_ADVERSARIAL_CODE_UNIT_ID_CHARS) {
             throw new IllegalArgumentException(
                     "adversarial hot-load codeUnitId exceeds maximum length "
@@ -111,6 +139,16 @@ public final class HotReloadManager implements AutoCloseable {
                     "adversarial hot-load source exceeds maximum character count "
                             + MAX_ADVERSARIAL_SOURCE_CHARS);
         }
+        rejectRuntimeMacroExpansion(sourceText);
+    }
+
+    /**
+     * Source hot loading executes inside a running application. Macro expansion here
+     * would bypass the required offline guest-AOT build and artifact-admission gate.
+     * Until pre-expanded, signed artifact loading exists, fail before macro parsing.
+     */
+    static void rejectRuntimeMacroExpansion(String sourceText) {
+        MacroExpander.rejectRuntimeCodeGeneration(new Lexer(sourceText).scan());
     }
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
@@ -173,6 +211,7 @@ public final class HotReloadManager implements AutoCloseable {
         for (Generation generation : generations.values()) generation.close();
         generations.clear();
         activeByCodeUnit.clear();
+        macroSnapshotsByCodeUnit.clear();
         active.set(null);
     }
 
