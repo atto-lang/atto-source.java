@@ -7,6 +7,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import dev.oreslang.runtime.OresFuture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -78,6 +79,69 @@ final class ActorContinuationTeardownTest {
                     "the producer must not execute a guest callback on its own thread");
             assertEquals(1, segments.get(),
                     "terminally stopped actor must not execute a stale source continuation");
+        }
+    }
+
+    @Test
+    void producerCompletionRacingActorStopNeverPublishesTwiceOrRevivesActor()
+            throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(2, 4, 64, 32);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            for (int attempt = 0; attempt < 12; attempt++) {
+                CompletableFuture<Integer> stage = new CompletableFuture<>();
+                OresFuture<Integer> awaited = OresFuture.from(stage);
+                CountDownLatch firstSegment = new CountDownLatch(1);
+                CountDownLatch race = new CountDownLatch(1);
+                AtomicInteger executions = new AtomicInteger();
+                AtomicInteger publications = new AtomicInteger();
+                AtomicReference<Throwable> backgroundFailure = new AtomicReference<>();
+                var ref = runtime.<Integer>spawnShared(() -> (mail, context) ->
+                        context.runtime().startActorTask(resume -> {
+                            int pc = executions.getAndIncrement();
+                            if (pc == 0) {
+                                firstSegment.countDown();
+                                return OresScheduler.await(awaited);
+                            }
+                            if (pc != 1) {
+                                throw new AssertionError("producer resumed source twice");
+                            }
+                            publications.incrementAndGet();
+                            return OresScheduler.done(null);
+                        }));
+                ref.send(1);
+                assertTrue(firstSegment.await(5, TimeUnit.SECONDS),
+                        "actor source task never reached await: " + attempt);
+                Thread producer = Thread.ofPlatform().start(() -> {
+                    try {
+                        race.await();
+                        stage.complete(7);
+                    } catch (Throwable failure) {
+                        backgroundFailure.compareAndSet(null, failure);
+                    }
+                });
+                Thread canceller = Thread.ofPlatform().start(() -> {
+                    try {
+                        race.await();
+                        ref.stop();
+                    } catch (Throwable failure) {
+                        backgroundFailure.compareAndSet(null, failure);
+                    }
+                });
+                race.countDown();
+                producer.join();
+                canceller.join();
+                if (backgroundFailure.get() != null) {
+                    fail("producer/stop race failed", backgroundFailure.get());
+                }
+                assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS),
+                        "actor failed to terminate after cancellation race " + attempt);
+                assertTrue(executions.get() <= 2,
+                        "stale/duplicate source continuation executed: " + attempt);
+                assertTrue(publications.get() <= 1,
+                        "source result published more than once: " + attempt);
+                assertTrue(ref.failure().isEmpty(),
+                        "normal cancellation poisoned the actor: " + ref.failure());
+            }
         }
     }
 }
