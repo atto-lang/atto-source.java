@@ -55,7 +55,7 @@ jobs:
           set -euo pipefail
           timeout 45s "./target/ores-${{ matrix.mode }}" \
             --internal-native-shutdown-selftest | tee /tmp/native-actor-shutdown.log
-          grep -x 'ORES_NATIVE_SHUTDOWN|PASS|cleanup=1|physical_done=1' /tmp/native-actor-shutdown.log
+          grep -x 'ORES_NATIVE_SHUTDOWN|PASS|cleanup=1|physical_done=1|failed_drain_fenced=1' /tmp/native-actor-shutdown.log
       - name: Execute guest await, lexical defer and finally in Native Image
         shell: bash
         run: |
