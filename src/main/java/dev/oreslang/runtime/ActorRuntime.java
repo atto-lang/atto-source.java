@@ -1918,9 +1918,12 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Unforgeable join authority for one ActorGroup. Capabilities may cross
-     * actor mailboxes but are runtime-affine and cannot be reconstructed from a
-     * group id.
+     * Unforgeable, runtime-affine join authority for one ActorGroup. Trusted
+     * host actor plumbing may transport an opaque permit under the runtime's
+     * capability checks; Oreslang source ActorMail<T> deliberately rejects
+     * these handles (including nested payloads). Independent guest actors
+     * require a dedicated, target-scoped CONTROL invitation path rather than
+     * ordinary mailbox serialization. A group ID never confers authority.
      */
     public final class ActorGroupJoinCapability {
         private final ActorGroupId groupId;
