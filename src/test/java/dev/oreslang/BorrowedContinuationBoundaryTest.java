@@ -122,7 +122,7 @@ final class BorrowedContinuationBoundaryTest {
                   yield rt borrow box;
                   return;
                 }
-                """, "yield cannot expose a borrowed reference");
+                """, "async/generator result cannot expose borrowed references");
     }
 
     @Test
