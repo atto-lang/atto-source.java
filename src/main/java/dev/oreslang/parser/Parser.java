@@ -38,6 +38,18 @@ public final class Parser {
     }
 
     public Ast.Program parseProgram() {
+        // Fail closed for the entire compilation unit, including declarations,
+        // expressions and nested blocks. Until a typed host/device execution
+        // graph exists, interpreting these markers as CPU expressions or
+        // silently skipping their bodies would violate placement semantics.
+        // A token preflight also covers paths not reached by the normal parser.
+        for (Token token : tokens) {
+            if (token.type() == GPU || token.type() == CPU || token.type() == QUANTUM) {
+                throw error(token, "execution domain '" + token.lexeme()
+                        + "' requires typed effect/ownership checking and explicit backend lowering;"
+                        + " nested cpu/gpu blocks are not yet enabled; no implicit CPU fallback");
+            }
+        }
         String namespace = null;
         if (match(NAMESPACE)) {
             namespace = consume(IDENT, "expected flat namespace name").lexeme();
