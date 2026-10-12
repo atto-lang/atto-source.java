@@ -368,6 +368,77 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
     }
 
     /**
+     * Exhaustively enumerate the pre-scheduling admission boundary. Returning
+     * a non-redeemable certificate after an unsanctioned guest task has started
+     * is too late: physical execution must have zero side effects when no
+     * request-scoped, owner-thread issuance capability exists.
+     */
+    private enum PrestartEvent {
+        RESERVE, CERTIFIED_START, UNSCOPED_START, FOREIGN_THREAD_START, SEAL
+    }
+
+    private record PrestartState(boolean reserved, boolean started,
+                                 boolean sealed, int guestStarts) {
+        static PrestartState initial() { return new PrestartState(false, false, false, 0); }
+    }
+
+    private static PrestartState prestartStep(PrestartState s, PrestartEvent event) {
+        if (event == PrestartEvent.RESERVE && !s.sealed && !s.reserved) {
+            return new PrestartState(true, s.started, false, s.guestStarts);
+        }
+        if (event == PrestartEvent.CERTIFIED_START
+                && s.reserved && !s.started && !s.sealed) {
+            return new PrestartState(true, true, false, s.guestStarts + 1);
+        }
+        if (event == PrestartEvent.SEAL) {
+            return new PrestartState(s.reserved, s.started, true, s.guestStarts);
+        }
+        // UNSCOPED_START and FOREIGN_THREAD_START MUST be rejected BEFORE
+        // scheduler creation, not merely made unredeemable afterward.
+        return s;
+    }
+
+    private static void invariantPrestart(PrestartState s) {
+        assertTrue(s.guestStarts >= 0 && s.guestStarts <= 1);
+        if (s.guestStarts != 0) {
+            assertTrue(s.started && s.reserved,
+                    "guest task began without an authorized pump reservation");
+        }
+    }
+
+    @Test
+    void allBoundedPrestartAdmissionInterleavingsPreserveZeroUnauthorizedEffects() {
+        Set<PrestartState> seen = new HashSet<>();
+        ArrayDeque<PrestartState> work = new ArrayDeque<>();
+        work.add(PrestartState.initial());
+        seen.add(PrestartState.initial());
+        boolean sawAuthorized = false, sawSealed = false;
+        while (!work.isEmpty()) {
+            PrestartState state = work.removeFirst();
+            invariantPrestart(state);
+            sawAuthorized |= state.guestStarts == 1;
+            sawSealed |= state.sealed;
+            for (PrestartEvent event : PrestartEvent.values()) {
+                PrestartState next = prestartStep(state, event);
+                invariantPrestart(next);
+                if (event == PrestartEvent.UNSCOPED_START
+                        || event == PrestartEvent.FOREIGN_THREAD_START) {
+                    assertEquals(state, next,
+                            "unauthorized start changed the physical guest state");
+                }
+                if (seen.add(next)) work.add(next);
+            }
+        }
+        assertTrue(sawAuthorized && sawSealed && seen.size() >= 4);
+    }
+
+    @Test
+    void unsafePrestartSideEffectMutantFailsTheInvariant() {
+        PrestartState unsafe = new PrestartState(false, true, false, 1);
+        assertThrows(AssertionError.class, () -> invariantPrestart(unsafe));
+    }
+
+    /**
      * Frame-local lease abstraction independent of the host queue. A compiler
      * bug or internal caller bypassing the pump still cannot resume the same
      * heap-resident source continuation in two live physical turns.

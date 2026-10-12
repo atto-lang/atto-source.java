@@ -126,6 +126,13 @@ public final class OresScheduler implements AutoCloseable {
         // exact one-use issuance lease BEFORE scheduling any guest task.
         // Outside that scope the receipt is deliberately unredeemable.
         Object boundRequest = HostGeneratorTurnPump.bindCertifiedIssuance(owner, this);
+        if (boundRequest == null) {
+            // No root-owned pump reservation means NO scheduler producer may
+            // start. Reject before generating a task, guest side effects, or
+            // physical receipt; later rejection of redemption is too late.
+            throw new SecurityException(
+                    "certified generator start requires an active pump reservation");
+        }
         long generation = NEXT_PHYSICAL_RECEIPT_GENERATION.incrementAndGet();
         TaskRunner<T> runner = startRunner(task);
         OresFuture<T> result = runner.completion;

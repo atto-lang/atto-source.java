@@ -413,31 +413,36 @@ final class HostGeneratorTurnPumpTest {
                         return OresScheduler.done(GeneratorRuntime.Step.yielded(value));
                     });
 
-            HostGeneratorTurnPump.Turn<GeneratorRuntime.Step<Integer>> first =
-                    frame.nextTurn().start();
-            // The observer registers before the held guest carrier is released.
-            // Runtime Future waiters are delivered in registration order; this
-            // latch follows the frame's own physical-exit lease callback.
-            CountDownLatch firstExitCallbacksDone = new CountDownLatch(1);
-            first.physicalExit().whenCompleteRuntime(
-                    (ignored, failure) -> firstExitCallbacksDone.countDown());
+            OresFuture<GeneratorRuntime.Step<Integer>> first =
+                    pump.requestCertified(pump.token(), frame.nextTurn());
+            assertTrue(pump.dispatchOne());
+            OresFuture<GeneratorRuntime.Step<Integer>> second =
+                    pump.requestCertified(pump.token(), frame.nextTurn());
             try {
                 assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
-                assertThrows(IllegalStateException.class,
+                assertFalse(pump.dispatchOne(),
+                        "overlapping host pull may not enter a second physical turn");
+                assertThrows(SecurityException.class,
                         () -> frame.nextTurn().start(),
-                        "even an internal bypass cannot resume one heap frame twice");
+                        "internal bypass without one-use reservation is rejected prestart");
                 assertEquals(1, resumes.get());
+                assertFalse(second.isDone());
             } finally {
                 releaseFirst.countDown();
             }
-            assertEquals(1, first.result().get(5, TimeUnit.SECONDS).value());
-            assertTrue(firstExitCallbacksDone.await(5, TimeUnit.SECONDS));
-
-            HostGeneratorTurnPump.Turn<GeneratorRuntime.Step<Integer>> second =
-                    frame.nextTurn().start();
-            assertEquals(2, second.result().get(5, TimeUnit.SECONDS).value());
-            second.physicalExit().get(5, TimeUnit.SECONDS);
+            assertEquals(1, first.get(5, TimeUnit.SECONDS).value());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            boolean dispatched = false;
+            while (!dispatched && System.nanoTime() < deadline) {
+                dispatched = pump.dispatchOne();
+                if (!dispatched) Thread.onSpinWait();
+            }
+            assertTrue(dispatched, "second pull never received physical turn authority");
+            assertEquals(2, second.get(5, TimeUnit.SECONDS).value());
             assertEquals(2, resumes.get());
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!pump.isQuiescent() && System.nanoTime() < deadline) Thread.onSpinWait();
+            assertTrue(pump.isQuiescent());
             pump.close();
         }
     }
@@ -511,6 +516,23 @@ final class HostGeneratorTurnPumpTest {
             assertFalse(unresolved.isDone(), "do not cancel an externally owned Future");
             pump.close();
         }
+    }
+
+    @Test
+    void sourceLoweringCannotBypassAsyncTaskSafeFutureBoundary() {
+        String source = """
+                async generator fnc numbers(pending: Future<int>): int {
+                  yield await pending;
+                  return;
+                }
+                """;
+        OresFuture<Integer> unresolved = new OresFuture<>();
+        assertThrows(IllegalArgumentException.class,
+                () -> GeneratorRuntime.SourceLowering.compile(
+                        source, "numbers", java.util.Map.of("pending", unresolved)),
+                "unsafe host Futures cannot be smuggled through typechecking");
+        assertFalse(unresolved.isDone(),
+                "rejecting an unsafe source parameter must not cancel its owner");
     }
 
     @Test
@@ -686,24 +708,21 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
-    void preIssuedDoneReceiptCannotBeLaunderedIntoLaterRequest() throws Exception {
+    void certifiedGeneratorOutsideReservationIsRejectedBeforeGuestEffects() throws Exception {
         try (OresScheduler root = new OresScheduler(1)) {
             HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
                     UUID.randomUUID(), () -> true, root);
-            // Same context and scheduler, valid issued generation, successful
-            // physical exit -- but NO active pump request when it was minted.
-            var preIssued = root.startCertifiedGeneratorTurn(
-                    pump.token(), input -> OresScheduler.done(41));
-            assertEquals(41, preIssued.result().get(5, TimeUnit.SECONDS));
-            OresFuture<Integer> attempt =
-                    pump.requestCertified(pump.token(), () -> preIssued);
-            assertTrue(pump.dispatchOne());
-            assertInstanceOf(SecurityException.class,
-                    assertThrows(java.util.concurrent.ExecutionException.class,
-                            () -> attempt.get(5, TimeUnit.SECONDS)).getCause());
-            assertFalse(pump.isQuiescent());
-            assertThrows(IllegalStateException.class, pump::close,
-                    "a pre-issued DONE cannot bypass request-scoped authorization");
+            AtomicInteger effects = new AtomicInteger();
+            // A matching context, scheduler and function are insufficient:
+            // without a live, one-use pump reservation no guest task may start.
+            assertThrows(SecurityException.class, () ->
+                    root.startCertifiedGeneratorTurn(pump.token(), input -> {
+                        effects.incrementAndGet();
+                        return OresScheduler.done(41);
+                    }));
+            assertEquals(0, effects.get(), "unauthorized scheduler start ran guest code");
+            assertTrue(pump.isQuiescent());
+            pump.close();
         }
     }
 
@@ -737,11 +756,15 @@ final class HostGeneratorTurnPumpTest {
             AtomicReference<HostGeneratorTurnPump.Turn<Integer>> leaked =
                     new AtomicReference<>();
             AtomicReference<Throwable> backgroundFailure = new AtomicReference<>();
+            AtomicInteger untrustedGuestEffects = new AtomicInteger();
             OresFuture<Integer> host = pump.requestCertified(pump.token(), () -> {
                 Thread worker = Thread.ofPlatform().start(() -> {
                     try {
                         leaked.set(root.startCertifiedGeneratorTurn(
-                                pump.token(), input -> OresScheduler.done(17)));
+                                pump.token(), input -> {
+                                    untrustedGuestEffects.incrementAndGet();
+                                    return OresScheduler.done(17);
+                                }));
                     } catch (Throwable failure) {
                         backgroundFailure.set(failure);
                     }
@@ -754,8 +777,10 @@ final class HostGeneratorTurnPumpTest {
                             "starter interrupted waiting for unauthorized worker", interrupted);
                 }
                 assertFalse(worker.isAlive());
-                assertNull(backgroundFailure.get(), String.valueOf(backgroundFailure.get()));
-                return leaked.get();
+                assertInstanceOf(SecurityException.class, backgroundFailure.get(),
+                        "foreign starter must be denied before TaskRunner creation");
+                assertEquals(0, untrustedGuestEffects.get());
+                throw (SecurityException) backgroundFailure.get();
             });
             assertTrue(pump.dispatchOne());
             assertInstanceOf(SecurityException.class,
