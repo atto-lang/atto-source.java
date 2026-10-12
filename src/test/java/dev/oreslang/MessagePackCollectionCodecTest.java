@@ -163,6 +163,39 @@ final class MessagePackCollectionCodecTest {
     }
 
     @Test
+    void nestedEnumWireNamesCannotCollideThroughLossyAsciiEncoding() {
+        var empty = new MessagePackCollectionCodec.EnumCaseShape("Message1", 1, null);
+        assertThrows(IllegalArgumentException.class, () ->
+                new MessagePackCollectionCodec.NestedEnum("Bár", List.of(empty)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new MessagePackCollectionCodec.NestedEnum("B?r", List.of(empty)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new MessagePackCollectionCodec.NestedEnum("B" + "x".repeat(256),
+                        List.of(empty)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new MessagePackCollectionCodec.EnumCaseShape("Mássage1", 1, null));
+        assertThrows(IllegalArgumentException.class, () ->
+                new MessagePackCollectionCodec.EnumCaseShape("M?ssage1", 1, null));
+
+        var valid = new MessagePackCollectionCodec.NestedEnum("Bar", List.of(empty));
+        assertNotNull(MessagePackCollectionCodec.shapeDigest(valid));
+    }
+
+    @Test
+    void nestedEnumDescriptorBudgetRejectsOversizedClosedCaseCatalog() {
+        var names = new java.util.ArrayList<MessagePackCollectionCodec.EnumCaseShape>();
+        for (int i = 1; i <= 4096; i++) {
+            names.add(new MessagePackCollectionCodec.EnumCaseShape(
+                    "C" + "z".repeat(243) + i, i, null));
+        }
+        var shape = new MessagePackCollectionCodec.NestedEnum("Bar", names);
+        var problem = assertThrows(IllegalArgumentException.class,
+                () -> MessagePackCollectionCodec.shapeDigest(shape));
+        assertTrue(problem.getMessage().contains("descriptor exceeds byte quota"),
+                problem.getMessage());
+    }
+
+    @Test
     void decoderEnforcesBudgetsAndNumericalTypes() {
         assertThrows(IllegalArgumentException.class,
                 () -> decode("demo.X.v1", list(string()), new byte[MAX_BYTES + 1]));
