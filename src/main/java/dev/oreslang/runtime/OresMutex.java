@@ -63,7 +63,28 @@ public final class OresMutex {
      * could be detached from the mutex's domain/permit accounting.</p>
      */
     public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
+        // Queued failures and caller cancellation must physically unlink the
+        // deadlock edge before completing the public Future. The callback is
+        // set before an async waiter can escape to the caller.
+        private volatile java.util.function.BooleanSupplier revokeQueuedWaiter;
+
         private GuardFuture() { }
+
+        private boolean failQueuedFromRuntime(Throwable failure) {
+            java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
+            return revoke != null && revoke.getAsBoolean() && super.completeExceptionally(failure);
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
+            if (revoke != null && !revoke.getAsBoolean()) {
+                // Dequeue already won: an in-flight physical handoff is
+                // noncancellable until the resulting Guard is published.
+                return false;
+            }
+            return super.cancel(mayInterruptIfRunning);
+        }
 
         private boolean completeFromRuntime(Guard<T> guard) {
             return super.complete(guard);
@@ -544,6 +565,9 @@ public final class OresMutex {
             private final Object ownerDomain;
             private final boolean enforceOwnerDomain;
             private final GuardFuture<T> future;
+            // Once claimed (by a terminal failure or handoff) admission quota
+            // must be returned before callers can observe the settled Future.
+            private final AtomicBoolean admissionSettled = new AtomicBoolean();
 
             private AsyncWaiter(
                     Object ownerDomain,
@@ -552,6 +576,29 @@ public final class OresMutex {
                 this.ownerDomain = ownerDomain;
                 this.enforceOwnerDomain = enforceOwnerDomain;
                 this.future = future;
+            }
+        }
+
+        /**
+         * Claim cancellation/timeout of a still-queued waiter BEFORE publishing
+         * its terminal Future. Removal and deadlock-edge cleanup share the
+         * dequeue monitor, so a concurrent permit handoff wins or loses as
+         * one atomic decision. A dequeued waiter is already committed to
+         * handoff (including the poisoned failure path).
+         */
+        private void settleWaiterAdmission(AsyncWaiter waiter) {
+            if (!waiter.admissionSettled.compareAndSet(false, true)) return;
+            releaseAsyncWaiter();
+            releaseGlobalAsyncWaiter();
+        }
+
+        private boolean revokeQueuedWaiter(AsyncWaiter waiter) {
+            synchronized (asyncQueueLock) {
+                if (!asyncQueue.remove(waiter)) return false;
+                endWait(waiter.ownerDomain);
+                releaseDomain(waiter.ownerDomain);
+                settleWaiterAdmission(waiter);
+                return true;
             }
         }
 
@@ -576,6 +623,7 @@ public final class OresMutex {
                         // removed from the queue, this path owns wait/domain cleanup.
                         endWait(candidate.ownerDomain);
                         releaseDomain(candidate.ownerDomain);
+                        settleWaiterAdmission(candidate);
                     }
 
                     if (waiter == null) {
@@ -595,6 +643,7 @@ public final class OresMutex {
                 if (poisoned.get()) {
                     endWait(waiter.ownerDomain);
                     releaseDomain(waiter.ownerDomain);
+                    settleWaiterAdmission(waiter);
                     waiter.future.failFromRuntime(new PoisonedMutexException());
                     continue;
                 }
@@ -604,6 +653,7 @@ public final class OresMutex {
                 SharedGuard guard = new SharedGuard(
                         waiter.ownerDomain,
                         waiter.enforceOwnerDomain);
+                settleWaiterAdmission(waiter);
                 if (waiter.future.completeFromRuntime(guard)) return;
 
                 // Cancellation won after dequeue but before completion.
@@ -717,18 +767,12 @@ public final class OresMutex {
                     ownerDomain,
                     enforceOwnerDomain,
                     future);
+            future.revokeQueuedWaiter = () -> revokeQueuedWaiter(waiter);
 
             future.whenComplete((ignored, failure) -> {
-                boolean removed;
-                synchronized (asyncQueueLock) {
-                    removed = asyncQueue.remove(waiter);
-                }
-                if (removed) {
-                    endWait(ownerDomain);
-                    releaseDomain(ownerDomain);
-                }
-                releaseAsyncWaiter();
-                releaseGlobalAsyncWaiter();
+                // Defensive one-shot fallback for unexpected completion paths.
+                // Normal publication always settles admission first.
+                settleWaiterAdmission(waiter);
             });
 
             boolean acquired = false;
@@ -766,9 +810,11 @@ public final class OresMutex {
 
             if (waitFailure != null) {
                 releaseDomain(ownerDomain);
+                settleWaiterAdmission(waiter);
                 future.failFromRuntime(waitFailure);
             } else if (poisonedNow) {
                 releaseDomain(ownerDomain);
+                settleWaiterAdmission(waiter);
                 future.failFromRuntime(new PoisonedMutexException());
             } else if (acquired) {
                 try {
@@ -776,12 +822,14 @@ public final class OresMutex {
                     SharedGuard guard = new SharedGuard(
                             ownerDomain,
                             enforceOwnerDomain);
+                    settleWaiterAdmission(waiter);
                     if (!future.completeFromRuntime(guard)) {
                         guard.releaseFromRuntime();
                     }
                 } catch (RuntimeException | Error failure) {
                     releaseDomain(ownerDomain);
                     releasePermitOrHandoff();
+                    settleWaiterAdmission(waiter);
                     future.failFromRuntime(failure);
                 }
             }
@@ -803,18 +851,18 @@ public final class OresMutex {
 
             long timeoutNanos = saturatedNanos(timeout);
             if (timeoutNanos == 0L) {
-                future.failFromRuntime(new LockTimeoutException(timeout));
+                future.failQueuedFromRuntime(new LockTimeoutException(timeout));
                 return future;
             }
 
             final java.util.concurrent.ScheduledFuture<?> timeoutTask;
             try {
                 timeoutTask = ASYNC_TIMEOUTS.schedule(
-                        () -> future.failFromRuntime(new LockTimeoutException(timeout)),
+                        () -> future.failQueuedFromRuntime(new LockTimeoutException(timeout)),
                         timeoutNanos,
                         TimeUnit.NANOSECONDS);
             } catch (RuntimeException schedulingFailure) {
-                future.failFromRuntime(schedulingFailure);
+                future.failQueuedFromRuntime(schedulingFailure);
                 return future;
             }
             future.whenComplete((ignored, failure) -> timeoutTask.cancel(false));

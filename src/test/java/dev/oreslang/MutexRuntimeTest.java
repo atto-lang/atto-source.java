@@ -12,6 +12,7 @@ import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -1213,6 +1214,207 @@ final class MutexRuntimeTest {
         assertFalse(waiter.isAlive());
         assertNull(failure.get());
         owner.release();
+    }
+
+    @Test
+    void wrappedOresFutureCancellationReturnsWaiterQuotaBeforeVisibility() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var free = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread requester = Thread.ofPlatform().start(() -> {
+            try {
+                var producer = held.lockAsync();
+                var adapted = dev.oreslang.runtime.OresFuture.from(producer);
+                assertTrue(adapted.cancel(false), "queued producer must accept cancellation");
+                assertTrue(producer.isCancelled());
+                assertTrue(adapted.isCancelled());
+                assertEquals(0, queuedAsyncReservations(held),
+                        "wrapper completed cancellation before quota cleanup");
+                // The same execution domain may now start another acquisition.
+                var next = free.lock();
+                next.release();
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+
+        requester.join(3_000);
+        assertFalse(requester.isAlive());
+        assertNull(failure.get());
+        owner.release();
+        var next = held.lockFor(Duration.ofSeconds(2));
+        assertTrue(next.isPresent(), "wrapper cancellation leaked the physical permit");
+        next.orElseThrow().release();
+    }
+
+    @Test
+    void cancelledAsyncWaitUnlinksDeadlockGraphBeforeObservation() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var free = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread waiter = Thread.ofPlatform().start(() -> {
+            try {
+                for (int attempt = 0; attempt < 64; attempt++) {
+                    var queued = held.lockAsync();
+                    assertTrue(queued.cancel(false), "queued cancellation should claim the wait");
+                    assertThrows(java.util.concurrent.CancellationException.class, queued::join);
+                    // Same execution domain on the same thread. A stale WAITING_ON
+                    // edge, even briefly visible, rejects this unrelated acquisition.
+                    var next = free.lock();
+                    next.release();
+                }
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+
+        waiter.join(5_000);
+        assertFalse(waiter.isAlive(), "cancelled waiter never settled");
+        assertNull(failure.get());
+        owner.release();
+    }
+
+    @Test
+    void repeatedTimedAsyncFailuresNeverPublishStaleDeadlockEdges() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var free = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread waiter = Thread.ofPlatform().start(() -> {
+            try {
+                for (int attempt = 0; attempt < 64; attempt++) {
+                    var timed = held.lockAsyncFor(Duration.ofMillis(2));
+                    var timedFailure = assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> timed.get(2, TimeUnit.SECONDS));
+                    assertInstanceOf(OresMutex.LockTimeoutException.class, timedFailure.getCause());
+                    var next = free.lock();
+                    next.release();
+                }
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+
+        waiter.join(8_000);
+        assertFalse(waiter.isAlive(), "timeout stress did not settle");
+        assertNull(failure.get());
+        owner.release();
+    }
+
+    @Test
+    void timeoutVersusHandoffDoesNotLosePermitOrPublishStaleEdge() throws Exception {
+        for (int attempt = 0; attempt < 48; attempt++) {
+            var held = OresMutex.shared(new int[]{0});
+            var free = OresMutex.shared(new int[]{0});
+            var owner = held.lock();
+            CountDownLatch pending = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            Thread waiter = Thread.ofPlatform().start(() -> {
+                try {
+                    var timed = held.lockAsyncFor(Duration.ofMillis(20));
+                    pending.countDown();
+                    try {
+                        var acquired = timed.get(2, TimeUnit.SECONDS);
+                        acquired.release();
+                    } catch (java.util.concurrent.ExecutionException expected) {
+                        assertInstanceOf(OresMutex.LockTimeoutException.class, expected.getCause());
+                    }
+                    // A successful handoff owns the guard; a timeout must have
+                    // detached the deadlock edge before get() returns.
+                    var other = free.lock();
+                    other.release();
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                    pending.countDown();
+                }
+            });
+
+            assertTrue(pending.await(2, TimeUnit.SECONDS));
+            owner.release();
+            waiter.join(3_000);
+            assertFalse(waiter.isAlive(), "handoff/timeout raced into a hang");
+            assertNull(failure.get());
+            var after = held.lockFor(Duration.ofSeconds(2));
+            assertTrue(after.isPresent(), "handoff/timeout leaked the physical permit");
+            after.orElseThrow().release();
+        }
+    }
+
+    private static int queuedAsyncReservations(OresMutex.Shared<?> mutex) throws Exception {
+        // Regression-only admission accounting introspection: the Future must
+        // never be externally settled before the reservation is returned.
+        var field = OresMutex.Shared.class.getDeclaredField("asyncWaiters");
+        field.setAccessible(true);
+        return ((AtomicInteger) field.get(mutex)).get();
+    }
+
+    @Test
+    void timedOutAndCancelledWaitersReturnQuotaBeforeFutureObservation() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread requester = Thread.ofPlatform().start(() -> {
+            try {
+                for (int attempt = 0; attempt < 64; attempt++) {
+                    var timed = held.lockAsyncFor(Duration.ofMillis(1));
+                    var timedFailure = assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> timed.get(2, TimeUnit.SECONDS));
+                    assertInstanceOf(OresMutex.LockTimeoutException.class, timedFailure.getCause());
+                    assertEquals(0, queuedAsyncReservations(held),
+                            "timed future was visible before admission quota release");
+
+                    var cancelled = held.lockAsync();
+                    assertTrue(cancelled.cancel(false));
+                    assertTrue(cancelled.isCancelled());
+                    assertEquals(0, queuedAsyncReservations(held),
+                            "cancelled future was visible before admission quota release");
+                }
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+
+        requester.join(10_000);
+        assertFalse(requester.isAlive());
+        assertNull(failure.get());
+        owner.release();
+    }
+
+    @Test
+    void awardedAsyncWaiterReturnsQuotaBeforeGuardVisibility() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch queued = new CountDownLatch(1);
+
+        Thread requester = Thread.ofPlatform().start(() -> {
+            try {
+                var pending = held.lockAsyncFor(Duration.ofSeconds(3));
+                queued.countDown();
+                var guard = pending.get(3, TimeUnit.SECONDS);
+                assertEquals(0, queuedAsyncReservations(held),
+                        "successful handoff exposed guard before quota was settled");
+                guard.release();
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+        assertTrue(queued.await(2, TimeUnit.SECONDS));
+        assertEquals(1, queuedAsyncReservations(held));
+        owner.release();
+        requester.join(4_000);
+        assertFalse(requester.isAlive());
+        assertNull(failure.get());
+        assertEquals(0, queuedAsyncReservations(held));
     }
 
     @Test
