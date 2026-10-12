@@ -142,7 +142,8 @@ public final class OresContext implements AutoCloseable {
                     contextId, () -> generatorRootTurnAuthorized(
                             vm.isRootSchedulerCurrent(),
                             Boolean.TRUE.equals(rootGuestEntryScope.get())),
-                    vm.rootScheduler());
+                    () -> vm.executeControl(() -> hostGeneratorTurns.dispatchOne()),
+                    256, vm.rootScheduler());
         } catch (RuntimeException | Error failure) {
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
@@ -397,6 +398,30 @@ public final class OresContext implements AutoCloseable {
      */
     HostGeneratorTurnPump hostGeneratorTurns() {
         return hostGeneratorTurns;
+    }
+
+    /**
+     * Internal host-pull bridge for typechecked, restricted source generators.
+     * This is intentionally NOT a public Polyglot API. A pull merely queues
+     * work; an admitted root CONTROL turn performs dispatch under physical
+     * Truffle entry. No host thread executes a guest continuation directly.
+     *
+     * Strict isolates need caller-thread/JNI admission orchestration before
+     * this bridge can be enabled there; fail closed instead of inventing a
+     * second guest carrier.
+     */
+    GeneratorRuntime.HostPullSession openStagedSourceGenerator(
+            String source, String function, java.util.Map<String, ?> arguments) {
+        if (isolatedRootTurns != null) {
+            throw new UnsupportedOperationException(
+                    "strict isolation requires caller-thread host-turn admission");
+        }
+        GeneratorRuntime.SourceLowering frame =
+                GeneratorRuntime.SourceLowering.compile(source, function, arguments);
+        return new GeneratorRuntime.HostPullSession(
+                hostGeneratorTurns,
+                GeneratorRuntime.schedulerBacked(
+                        vm.rootScheduler(), hostGeneratorTurns.token(), frame));
     }
 
     /** Neither a scheduler binding nor a guest-entry lease alone suffices. */
