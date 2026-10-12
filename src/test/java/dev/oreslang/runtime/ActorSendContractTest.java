@@ -156,4 +156,53 @@ final class ActorSendContractTest {
                             .address().runtimeId());
         }
     }
+    @Test
+    void failedDrainObserverCallbacksRunOutsideActorLifecycleMonitor() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                entered.countDown();
+                release.await(5, TimeUnit.SECONDS);
+            });
+            ref.send(1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            // Test the runtime's lock-order contract directly. A failed
+            // OresFuture invokes its registered runtime callbacks synchronously.
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var actors = (java.util.Map<?, ?>) actorsField.get(runtime);
+            Object cell = actors.get(ref.id());
+            assertNotNull(cell);
+            var monitorField = cell.getClass().getDeclaredField("lifecycleLock");
+            monitorField.setAccessible(true);
+            Object lifecycleMonitor = monitorField.get(cell);
+
+            AtomicInteger callbacksUnderLock = new AtomicInteger();
+            CountDownLatch callbackObserved = new CountDownLatch(1);
+            OresFuture<Void> pending = ref.drain();
+            assertFalse(pending.isDone());
+            pending.whenCompleteRuntime((ignored, failure) -> {
+                if (Thread.holdsLock(lifecycleMonitor)) callbacksUnderLock.incrementAndGet();
+                callbackObserved.countDown();
+            });
+
+            Thread stopper = new Thread(ref::stop, "actor-drain-monitor-regression");
+            stopper.start();
+            try {
+                assertTrue(callbackObserved.await(5, TimeUnit.SECONDS),
+                        "stopping an actor must fail pending drains");
+                assertEquals(0, callbacksUnderLock.get(),
+                        "runtime callbacks must never run inside lifecycleLock");
+            } finally {
+                release.countDown();
+                stopper.join(5_000);
+            }
+            assertFalse(stopper.isAlive());
+        } finally {
+            release.countDown();
+        }
+    }
+
 }
