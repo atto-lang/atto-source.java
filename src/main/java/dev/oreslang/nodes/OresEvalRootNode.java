@@ -55,6 +55,10 @@ public final class OresEvalRootNode extends RootNode {
     public static final String INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND =
             "__ores_internal_invoke_public_future_bridge__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
+    // One-use host-side binding handshake. Never return a live OresContext
+    // through a guest Value; publish it only to the caller's Java ThreadLocal.
+    public static final String BIND_SCOPED_HOST_SOURCE_COMMAND =
+            "__ores_internal_bind_scoped_host_source__";
 
     private final Ast.Program program;
     private final String codeUnitId;
@@ -81,6 +85,12 @@ public final class OresEvalRootNode extends RootNode {
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
         CapabilityChecker.check(program, context.isolatePolicy(), context.permissionCheckMode());
+        if (arguments.length == 2
+                && BIND_SCOPED_HOST_SOURCE_COMMAND.equals(arguments[0])
+                && arguments[1] instanceof String nonce) {
+            OresHostFutureBridge.claimBoundSource(nonce, context, this);
+            return null;
+        }
         if (isControl(arguments, PREPARE_CONTEXT_DISPOSAL_COMMAND)) {
             context.close();
             return null;

@@ -176,4 +176,74 @@ final class FormalHostFutureAdmissionGateModelCheckTest {
                 assertFalse(released.leases == 0));
     }
 
+    private enum OwnedEvent {
+        OWN_ENTER, OWN_LEAVE, FOREIGN_ENTER, FOREIGN_LEAVE,
+        HOST_BEGIN, HOST_END, SEAL
+    }
+
+    private record OwnedState(int own, int foreign, int hostDepth, boolean sealed) {
+        static OwnedState initial() { return new OwnedState(0, 0, 0, false); }
+    }
+
+    private static OwnedState nextOwned(OwnedState s, OwnedEvent e) {
+        return switch (e) {
+            case OWN_ENTER -> s.sealed || s.hostDepth > 0 || s.own == 2
+                    ? null : new OwnedState(s.own + 1, s.foreign, s.hostDepth, false);
+            case OWN_LEAVE -> s.own == 0 ? null
+                    : new OwnedState(s.own - 1, s.foreign, s.hostDepth, s.sealed);
+            case FOREIGN_ENTER -> s.sealed || s.hostDepth > 0 || s.foreign == 2
+                    ? null : new OwnedState(s.own, s.foreign + 1, s.hostDepth, false);
+            case FOREIGN_LEAVE -> s.foreign == 0 ? null
+                    : new OwnedState(s.own, s.foreign - 1, s.hostDepth, s.sealed);
+            case HOST_BEGIN -> s.sealed || s.foreign > 0 || s.hostDepth == 2
+                    ? null : new OwnedState(s.own, s.foreign, s.hostDepth + 1, false);
+            case HOST_END -> s.hostDepth == 0 ? null
+                    : new OwnedState(s.own, s.foreign, s.hostDepth - 1, s.sealed);
+            case SEAL -> s.sealed ? null
+                    : new OwnedState(s.own, s.foreign, s.hostDepth, true);
+        };
+    }
+
+    private static void ownedInvariant(OwnedState s) {
+        assertTrue(s.own >= 0 && s.own <= 2);
+        assertTrue(s.foreign >= 0 && s.foreign <= 2);
+        assertTrue(s.hostDepth >= 0 && s.hostDepth <= 2);
+        assertFalse(s.hostDepth > 0 && s.foreign > 0,
+                "host reentry cannot launder another carrier's guest lease");
+    }
+
+    @Test
+    void boundedSameCarrierReentryAndForeignOverlapAllOrders() {
+        java.util.Set<OwnedState> explored = new java.util.HashSet<>();
+        java.util.ArrayDeque<OwnedState> pending = new java.util.ArrayDeque<>();
+        pending.add(OwnedState.initial());
+        explored.add(OwnedState.initial());
+        boolean sawLegitimateReentry = false;
+        boolean sawForeignOverlapWithoutHost = false;
+        boolean sawSealedCleanup = false;
+        while (!pending.isEmpty()) {
+            OwnedState current = pending.removeFirst();
+            ownedInvariant(current);
+            sawLegitimateReentry |= current.own > 0 && current.hostDepth > 0;
+            sawForeignOverlapWithoutHost |= current.own > 0
+                    && current.foreign > 0 && current.hostDepth == 0;
+            sawSealedCleanup |= current.sealed && current.own > 0;
+            for (OwnedEvent e : OwnedEvent.values()) {
+                OwnedState next = nextOwned(current, e);
+                if (next != null && explored.add(next)) pending.addLast(next);
+            }
+        }
+        assertTrue(sawLegitimateReentry);
+        assertTrue(sawForeignOverlapWithoutHost);
+        assertTrue(sawSealedCleanup);
+        assertTrue(explored.size() >= 15);
+    }
+
+    @Test
+    void unsafeForeignCarrierLaunderingProducesCounterexample() {
+        OwnedState invalid = new OwnedState(1, 1, 1, false);
+        assertThrows(AssertionError.class, () -> ownedInvariant(invalid));
+    }
+
+
 }
