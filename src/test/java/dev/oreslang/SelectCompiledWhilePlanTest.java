@@ -74,6 +74,45 @@ final class SelectCompiledWhilePlanTest {
     }
 
     @Test
+    void compiledActorWhileSelectUsesActorOwnedFairnessAcrossTurns()
+            throws Exception {
+        String source = """
+                actor fnc serve(): void {
+                  val Channel<int> control = Channel.new<int>(1);
+                  val Channel<int> workers = Channel.new<int>(1);
+                  val Channel<int> timers = Channel.new<int>(1);
+                  writech control, 0;
+                  writech workers, 1;
+                  writech timers, 2;
+                  let int ticks = 0;
+                  while ticks < 9 {
+                    select {
+                      when readch control: let event {
+                        stdio.stdout.write("c");
+                        writech control, event;
+                      }
+                      when readch workers: let event {
+                        stdio.stdout.write("w");
+                        writech workers, event;
+                      }
+                      when readch timers: let event {
+                        stdio.stdout.write("t");
+                        writech timers, event;
+                      }
+                    }
+                    ticks = ticks + 1;
+                  }
+                  return;
+                }
+                pub routine main(): void {
+                  serve();
+                  return;
+                }
+                """;
+        assertEquals("cwtcwtcwt", SelectNestedReturnContractTest.run(source));
+    }
+
+    @Test
     void compiledWhileSelectReevaluatesChangedChannelBinding()
             throws Exception {
         String source = """
