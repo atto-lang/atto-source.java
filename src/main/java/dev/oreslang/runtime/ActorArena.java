@@ -164,15 +164,16 @@ public final class ActorArena implements AutoCloseable {
         // Revoke both FFM regions even if the first physical close fails.
         // Failed native release is retryable and must not be misreported as
         // completed; do not unregister this arena on incomplete cleanup.
-        RuntimeException failure = null;
+        Throwable failure = null;
         try { scratch.close(); }
-        catch (RuntimeException error) { failure = error; }
+        catch (RuntimeException | Error error) { failure = error; }
         try { persistent.close(); }
-        catch (RuntimeException error) {
+        catch (RuntimeException | Error error) {
             if (failure == null) failure = error;
-            else failure.addSuppressed(error);
+            else if (failure != error) failure.addSuppressed(error);
         }
-        if (failure != null) throw failure;
+        if (failure instanceof RuntimeException error) throw error;
+        if (failure instanceof Error error) throw error;
         owner.unregisterArena(this);
     }
 }
