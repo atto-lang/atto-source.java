@@ -8,6 +8,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import static org.junit.jupiter.api.Assertions.*;
@@ -26,6 +27,7 @@ final class ActorBorrowSuspensionInterleavingTest {
             AtomicInteger active = new AtomicInteger();
             AtomicInteger maximum = new AtomicInteger();
             AtomicInteger callbacks = new AtomicInteger();
+            AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
             AtomicBoolean userMailOvertookContinuation = new AtomicBoolean();
             CountDownLatch registered = new CountDownLatch(1);
             CountDownLatch release = new CountDownLatch(1);
@@ -64,8 +66,14 @@ final class ActorBorrowSuspensionInterleavingTest {
                                             assertEquals(context.self().id(),
                                                     ActorRuntime.currentActorId().orElseThrow());
                                             callbacks.incrementAndGet();
+                                        } catch (Throwable failure) {
+                                            callbackFailure.compareAndSet(null, failure);
+                                        } finally {
+                                            // A failed guest assertion must not turn
+                                            // into a mysterious latch timeout.
                                             callbacksDone.countDown();
-                                        } finally { active.decrementAndGet(); }
+                                            active.decrementAndGet();
+                                        }
                                     });
                                 }
                                 registered.countDown();
@@ -95,6 +103,8 @@ final class ActorBorrowSuspensionInterleavingTest {
                     assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
                     assertTrue(actor.failure().isEmpty(), () -> actor.failure().toString());
                     assertFalse(userMailOvertookContinuation.get(), kind.toString());
+                    assertNull(callbackFailure.get(),
+                            () -> kind + " callback assertion failed: " + callbackFailure.get());
                     assertEquals(CALLBACKS, callbacks.get());
                     assertEquals(1, maximum.get(), kind + " overlapped guest execution");
                     assertEquals(0, active.get());
@@ -152,11 +162,14 @@ final class ActorBorrowSuspensionInterleavingTest {
                     actor.cancel();
                     release.countDown();
                     assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
-                    for (var future : pending) future.completeFromRuntime(7);
+                    // Inspect BEFORE completing the producer future. A future
+                    // naturally discards its waiters on completion, so checking
+                    // only afterwards could conceal a cancellation leak.
                     for (var future : pending) {
                         assertEquals(0, future.pendingRuntimeWaiterCount(),
                                 kind + " retained callbacks after actor death");
                     }
+                    for (var future : pending) future.completeFromRuntime(7);
                     assertEquals(0, callbacks.get(), kind.toString());
                     assertEquals(0, userMessages.get(), kind.toString());
                 } finally {
