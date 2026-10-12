@@ -312,12 +312,16 @@ public final class NativeHttp implements AutoCloseable {
             if (drained != null) return drained;
             drained = new OresFuture<>(() -> false, () -> { });
             stopAccepting();
-            for (Handler handler : List.copyOf(pooledHandlers)) handler.shutdownFor(this);
+            // Do not cancel persistent workers before the grace interval:
+            // they may still own already-admitted HTTP exchanges that need to
+            // finish their response. Stopping admission is independent of
+            // terminating the workers serving those exchanges.
             io.execute(() -> {
                 try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
                 finally {
-                    synchronized (this) { transportStopped = true; }
                     for (State state : active) state.abort(503);
+                    for (Handler handler : List.copyOf(pooledHandlers)) handler.shutdownFor(this);
+                    synchronized (this) { transportStopped = true; }
                     servers.remove(this);
                     completeDrain();
                 }
