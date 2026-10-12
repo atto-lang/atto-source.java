@@ -158,6 +158,84 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void workerCompletionNeverInvokesObserverUnderAdmissionLock() throws Exception {
+        try (var io = new AsyncNativeIo(1)) {
+            CountDownLatch workStarted = new CountDownLatch(1);
+            CountDownLatch finishWork = new CountDownLatch(1);
+            CountDownLatch callbackCalled = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicBoolean monitorHeld =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            var operation = io.submit("completed-with-observer", () -> {
+                workStarted.countDown();
+                assertTrue(finishWork.await(2, TimeUnit.SECONDS));
+                return 42;
+            });
+            assertTrue(workStarted.await(2, TimeUnit.SECONDS));
+            operation.whenCompleteRuntime((value, failure) -> {
+                monitorHeld.set(Thread.holdsLock(io));
+                assertNull(failure);
+                assertEquals(42, value);
+                callbackCalled.countDown();
+            });
+            finishWork.countDown();
+            assertEquals(42, operation.get(2, TimeUnit.SECONDS));
+            assertTrue(callbackCalled.await(2, TimeUnit.SECONDS));
+            assertFalse(monitorHeld.get(), "host completion callback must run after unlocking admission");
+        }
+    }
+
+    @Test void closeCallbacksNeverRunUnderAdmissionLock() throws Exception {
+        try (var io = new AsyncNativeIo(1)) {
+            CountDownLatch started = new CountDownLatch(1);
+            var operation = io.submit("pending-through-close", () -> {
+                started.countDown();
+                try {
+                    new CountDownLatch(1).await();
+                } catch (InterruptedException expected) {
+                    Thread.currentThread().interrupt();
+                }
+                return 99;
+            });
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            java.util.concurrent.atomic.AtomicBoolean callbackHeldLock =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            CountDownLatch called = new CountDownLatch(1);
+            operation.whenCompleteRuntime((value, failure) -> {
+                callbackHeldLock.set(Thread.holdsLock(io));
+                assertNotNull(failure);
+                called.countDown();
+            });
+            io.close();
+            assertTrue(called.await(2, TimeUnit.SECONDS));
+            assertFalse(callbackHeldLock.get(),
+                    "teardown callback must run after unlocking admission");
+            ExecutionException closed = assertThrows(ExecutionException.class,
+                    () -> operation.get(2, TimeUnit.SECONDS));
+            assertEquals("I/O context closed", closed.getCause().getMessage());
+        }
+    }
+
+    @Test void observerMayReenterAdmissionAfterCompletionWithoutMonitorOwnership() throws Exception {
+        try (var io = new AsyncNativeIo(1)) {
+            CountDownLatch release = new CountDownLatch(1);
+            var initial = io.submit("initial", () -> {
+                assertTrue(release.await(2, TimeUnit.SECONDS));
+                return 1;
+            });
+            CountDownLatch done = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>> nested =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            initial.whenCompleteRuntime((value, failure) -> {
+                assertFalse(Thread.holdsLock(io));
+                nested.set(io.submit("nested", () -> 2));
+                done.countDown();
+            });
+            release.countDown();
+            assertTrue(done.await(2, TimeUnit.SECONDS));
+            assertEquals(2, nested.get().get(2, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void delayedTcpReadReleasesSingleActorCarrierAndSupportsWriteAndEof() throws Exception {
         String previous = System.getProperty("ores.runtime.actor.shared.parallelism");
         System.setProperty("ores.runtime.actor.shared.parallelism", "1");
