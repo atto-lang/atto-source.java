@@ -95,6 +95,30 @@ final class HostFutureAdmissionGate {
         notifyAll();
     }
 
+    /**
+     * Shutdown must not retire code or I/O while the host still owns a
+     * scoped Value.execute. Called after sealing new claims, before tearing
+     * down any actor/root/async dependencies. Retry remains possible.
+     */
+    synchronized void requireNoActiveHostClaim() {
+        if (hostOwner != null || depth != 0) {
+            throw new IllegalStateException(
+                    "unfinished host Future handoff: active Value.execute scope");
+        }
+    }
+
+    /**
+     * Final physical barrier: guest entry reservations are released only
+     * after TruffleContext.leave. A terminal Future is not enough.
+     */
+    synchronized void requirePhysicalQuiescence() {
+        if (hostOwner != null || depth != 0 || guestTurnReservations != 0
+                || physicalExitUnproven) {
+            throw new IllegalStateException(
+                    "unfinished Truffle context entry or unproven physical guest leave");
+        }
+    }
+
     /** A failed TruffleContext.leave is NOT a successful physical exit. */
     synchronized void quarantineUnknownPhysicalExit() {
         physicalExitUnproven = true;
