@@ -14,8 +14,20 @@ final class GpuBufferFenceTest {
         assertEquals(GpuBufferFence.Status.IN_FLIGHT, buffer.status());
         assertThrows(IllegalStateException.class, buffer::take);
         assertThrows(IllegalStateException.class, buffer::close);
+        // The same generation and sequence on an unrelated buffer must
+        // not forge completion or cancellation of this buffer's command.
+        var unrelated = new GpuBufferFence(id, 8);
+        var unrelatedTicket = unrelated.beginCommand(id);
+        assertEquals(command.generation(), unrelatedTicket.generation());
+        assertEquals(command.sequence(), unrelatedTicket.sequence());
         assertThrows(IllegalStateException.class,
-                () -> buffer.complete(new GpuBufferFence.Ticket(6, command.sequence()), true));
+                () -> buffer.complete(unrelatedTicket, true));
+        assertThrows(IllegalStateException.class,
+                () -> buffer.cancelPending(unrelatedTicket));
+        assertEquals(0, GpuBufferFence.Ticket.class.getConstructors().length);
+        unrelated.complete(unrelatedTicket, true);
+        unrelated.retireAfterBackendRelease(id);
+        unrelated.close();
         buffer.complete(command, true);
         assertThrows(IllegalStateException.class, () -> buffer.complete(command, true));
         var owner = buffer.take();
@@ -25,6 +37,8 @@ final class GpuBufferFenceTest {
         var next = owner.beginCommand(id);
         assertNotEquals(command.sequence(), next.sequence());
         owner.cancelPending(next);
+        assertThrows(IllegalStateException.class,
+                () -> owner.acknowledgeCancelledDeviceEvent(command, id));
         assertEquals(GpuBufferFence.Status.POISONED, owner.status());
         assertThrows(IllegalStateException.class, owner::take);
         assertThrows(IllegalStateException.class, () -> owner.retireAfterBackendRelease(id));
