@@ -165,6 +165,51 @@ final class MethodDeclarationSpellingTest {
     }
 
     @Test
+    void inferredMemberExtractionCannotCaptureInstanceReceiver() {
+        // An expected Fnc<T> has its own separate path. Also reject an
+        // unannotated binding: it must not infer a receiver-bound closure.
+        IllegalArgumentException captured = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Worker as
+                            pub fnc work(int value): int { return value + 1; }
+                            pub static fnc reusable(int value): int { return value + 2; }
+                        end
+                        fnc invalid(): void {
+                            val worker = new Worker();
+                            val captured = worker.work;
+                        }
+                        """)));
+        assertTrue(captured.getMessage().contains("direct-call-only"), captured::getMessage);
+
+        // Static functions are still first-class even without contextual Fnc
+        // typing, and explicit lambdas may capture their instance receiver.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Worker as
+                    pub method work(int value): int { return value + 1; }
+                    pub static fnc reusable(int value): int { return value + 2; }
+                end
+                fnc valid(): int {
+                    val worker = new Worker();
+                    val static_callback = Worker.reusable;
+                    val instance_callback = |int value| -> { return worker.work(value); };
+                    return static_callback(1) + instance_callback(2);
+                }
+                """)));
+    }
+
+    @Test
+    void contextualMethodWordIsStillAValidBareMethodName() {
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
+                Parser.parse("""
+                        define class C as
+                            method(): int { return 7; }
+                        end
+                        """).modules().getFirst().declarations().getFirst());
+        assertEquals("method", klass.methods().getFirst().name());
+        assertFalse(klass.methods().getFirst().isStatic());
+    }
+
+    @Test
     void doesNotReinterpretAnOrdinarySuspendMethodNameAsModifier() {
         Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
                 Parser.parse("""
