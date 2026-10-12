@@ -65,6 +65,21 @@ final class AutomaticLoopBorrowAdmissionTest {
                 }));
     }
 
+    @org.junit.jupiter.api.Test void nestedBorrowTypeInParameterCannotCrossAutomaticLoopHandoff() {
+        String source = BOX + """
+                fnc bad(Option<borrow Box> nested): void {
+                  for (let i = 0; i < 80; i = i + 1) do
+                    val next = i + 1;
+                  done
+                  return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(parsed));
+        assertTrue(error.getMessage().contains(ERROR), error.getMessage());
+    }
+
     @TestFactory Stream<DynamicTest> directBorrowedIterableIsNotAnOwnedLoopCapability() {
         Map<String, String> cases = new LinkedHashMap<>();
         cases.put("for-of borrowed input", """
