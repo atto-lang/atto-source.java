@@ -120,4 +120,44 @@ final class OresHostFutureBridgeTicketTest {
         assertThrows(IllegalStateException.class, slot::result);
         slot.close();
     }
+    @Test
+    void abandonedPublishedFutureIsCancelledWhenScopeCloses() {
+        var slot = new OresHostFutureBridge.Slot("work");
+        Object context = new Object();
+        Object root = new Object();
+        OresFuture<Integer> orphan = new OresFuture<>();
+        slot.claim("work", slot.nonce(), context, root);
+        slot.publish("work", slot.nonce(), context, root, orphan);
+        slot.close();
+        assertTrue(orphan.isCancelled(),
+                "scope teardown must not strand a published unreturned Future");
+        assertThrows(IllegalStateException.class, slot::result);
+    }
+
+    @Test
+    void foreignThreadCannotCloseAnotherHostsFutureScope() throws Exception {
+        var slot = new OresHostFutureBridge.Slot("work");
+        Object context = new Object();
+        Object root = new Object();
+        slot.claim("work", slot.nonce(), context, root);
+        OresFuture<Integer> pending = new OresFuture<>();
+        slot.publish("work", slot.nonce(), context, root, pending);
+        java.util.concurrent.atomic.AtomicReference<Throwable> rejected =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread worker = Thread.ofPlatform().start(() -> {
+            try {
+                slot.close();
+            } catch (Throwable failure) {
+                rejected.set(failure);
+            }
+        });
+        worker.join(5000);
+        assertFalse(worker.isAlive());
+        assertInstanceOf(SecurityException.class, rejected.get(),
+                "foreign worker may not release owner-scoped admission");
+        assertFalse(pending.isDone(), "foreign close must not cancel the owner's work");
+        assertSame(pending, slot.result());
+        slot.close();
+    }
+
 }
