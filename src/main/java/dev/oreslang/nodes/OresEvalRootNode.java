@@ -1703,6 +1703,24 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /**
+         * Preserve one consistent process-exit precedence rule across both
+         * resumable source-task cleanup and ordinary synchronous block unwind.
+         * An earlier exit owns its status; an earlier unhandled failure must
+         * never be downgraded by a later deferred exit(0).
+         */
+        private SourceFlow mergeCleanupFailure(SourceFlow currentFlow, Throwable cleanupFailure) {
+            Throwable earlier = currentFlow.failure();
+            if (earlier == cleanupFailure) return currentFlow; // no self-suppression
+            if (earlier instanceof ProcessExitSignal
+                    || (earlier != null && cleanupFailure instanceof ProcessExitSignal)) {
+                earlier.addSuppressed(cleanupFailure);
+                return currentFlow;
+            }
+            if (earlier != null) cleanupFailure.addSuppressed(earlier);
+            return SourceFlow.throwing(cleanupFailure);
+        }
+
         private void finishBlock(
                 SourceTask task,
                 Env env,
@@ -1715,7 +1733,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = mergeCleanupFailure(initialFlow, failure);
                 }
                 // The consumer owns any failure it throws. Do not call it twice.
                 continuation.accept(task, completed);
@@ -1743,7 +1761,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = mergeCleanupFailure(currentFlow, failure);
                 }
                 continuation.accept(task, completed);
                 return;
@@ -1757,14 +1775,11 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
-                            if (currentFlow.failure() != null) {
-                                failure.addSuppressed(currentFlow.failure());
-                            }
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    SourceFlow.throwing(failure),
+                                    mergeCleanupFailure(currentFlow, failure),
                                     continuation);
                         } else {
                             runOneDefer(
