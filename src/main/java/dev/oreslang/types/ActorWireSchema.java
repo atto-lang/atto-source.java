@@ -141,7 +141,7 @@ public final class ActorWireSchema {
                             "Serializable homogeneous Array/List requires one element type");
                 }
                 Shape element = resolve(shape.getFirst(), aliases, activeAliases,
-                        depth + 1, nodes);
+                        depth + 1, nodes, enumResolver);
                 return ref.name().equals("Array")
                         ? MessagePackCollectionCodec.array(element)
                         : MessagePackCollectionCodec.list(element);
