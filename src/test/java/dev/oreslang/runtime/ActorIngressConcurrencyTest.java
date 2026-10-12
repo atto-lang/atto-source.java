@@ -119,9 +119,11 @@ class ActorIngressConcurrencyTest {
                 futures.add(workers.submit(() -> {
                     start.await();
                     var conn = budget.tryOpenConnection(66);
+                    if (conn != null) admitted.incrementAndGet();
+                    // Publish the observation before marking this contender
+                    // finished, otherwise the parent can read a stale count.
                     admissionsAttempted.countDown();
                     if (conn == null) return null;
-                    admitted.incrementAndGet();
                     try (conn) {
                         // Distinct connection handlers can each have 2 live turns.
                         var first = conn.tryEnter(1, 66);
