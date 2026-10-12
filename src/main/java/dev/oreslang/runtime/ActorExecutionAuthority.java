@@ -20,6 +20,9 @@ public final class ActorExecutionAuthority {
     private long generation = 1;
     private long sequence;
     private long owner;
+    // The Claim is an opaque, identity-sensitive local capability. Numerical
+    // sequence/carrier metadata alone must never permit a forged release.
+    private Claim activeClaim;
     private Phase phase = Phase.READY;
 
     public synchronized long generation() { return generation; }
@@ -33,7 +36,8 @@ public final class ActorExecutionAuthority {
         if (sequence == Long.MAX_VALUE) return Optional.empty(); // no ABA wrap
         owner = carrierId;
         phase = Phase.RUNNING;
-        return Optional.of(new Claim(generation, ++sequence, owner));
+        activeClaim = new Claim(generation, ++sequence, owner);
+        return Optional.of(activeClaim);
     }
 
     /**
@@ -45,6 +49,7 @@ public final class ActorExecutionAuthority {
         if (!owns(claim) || (phase != Phase.RUNNING && phase != Phase.STOPPING))
             return false;
         owner = 0;
+        activeClaim = null;
         if (phase != Phase.STOPPING) phase = suspended ? Phase.SUSPENDED : Phase.READY;
         return true;
     }
@@ -63,7 +68,7 @@ public final class ActorExecutionAuthority {
      */
     public synchronized boolean acknowledgeRetired(long expectedGeneration) {
         if (expectedGeneration != generation || phase != Phase.STOPPING ||
-                owner != 0) return false;
+                owner != 0 || activeClaim != null) return false;
         phase = Phase.TERMINATED;
         return true;
     }
@@ -73,7 +78,7 @@ public final class ActorExecutionAuthority {
      * A previous incarnation's Claim cannot pass generation equality.
      */
     public synchronized Optional<Long> restart() {
-        if (phase != Phase.TERMINATED || owner != 0 ||
+        if (phase != Phase.TERMINATED || owner != 0 || activeClaim != null ||
                 generation == Long.MAX_VALUE || sequence == Long.MAX_VALUE)
             return Optional.empty();
         generation++;
@@ -82,7 +87,8 @@ public final class ActorExecutionAuthority {
     }
 
     public synchronized boolean owns(Claim claim) {
-        return claim != null && claim.carrierId() > 0 && owner == claim.carrierId() &&
+        return claim != null && claim == activeClaim &&
+                claim.carrierId() > 0 && owner == claim.carrierId() &&
                 claim.generation() == generation && claim.sequence() == sequence;
     }
 }
