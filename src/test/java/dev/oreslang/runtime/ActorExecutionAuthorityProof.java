@@ -43,6 +43,10 @@ public final class ActorExecutionAuthorityProof {
         check(!gate.acknowledgeRetired(1), "retired without stop");
         check(gate.requestStop(1), "stop failed");
         check(!gate.acknowledgeRetired(1), "retired active guest");
+        check(!gate.leave(new ActorExecutionAuthority.Claim(
+                first.generation(), first.sequence(), first.carrierId()), false),
+                "equal-valued forged claim revoked the owner");
+        check(gate.owns(first), "forged claim cleared live authority");
         check(gate.leave(first, false), "owner failed to exit");
         check(gate.acknowledgeRetired(1), "retirement failed");
         check(gate.restart().orElseThrow() == 2, "generation fence");
