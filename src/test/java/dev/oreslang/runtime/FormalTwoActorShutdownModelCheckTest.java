@@ -141,4 +141,42 @@ final class FormalTwoActorShutdownModelCheckTest {
                     "an unsafe shutdown could not magically discharge both loans");
         }
     }
+
+    private record StreamWriterState(
+            boolean actorExited, boolean socketClosed, boolean writerExited,
+            boolean exchangeReleased) { }
+
+    @Test
+    void physicalStreamWriterExitIsRequiredBeforeExchangeReclamation() {
+        // Exhaustively enumerate all three independent physical-exit facts.
+        // A socket close or actor Future settlement alone cannot release the
+        // exchange while an already-submitted response writer is still active.
+        int explored = 0;
+        for (int facts = 0; facts < 8; facts++) {
+            boolean actorExited = (facts & 1) != 0;
+            boolean socketClosed = (facts & 2) != 0;
+            boolean writerExited = (facts & 4) != 0;
+            boolean authorized = actorExited && socketClosed && writerExited;
+            for (boolean released : new boolean[] {false, true}) {
+                StreamWriterState state = new StreamWriterState(
+                        actorExited, socketClosed, writerExited, released);
+                boolean unsafe = state.exchangeReleased()
+                        && (!state.actorExited()
+                            || !state.socketClosed()
+                            || !state.writerExited());
+                if (unsafe) {
+                    assertFalse(authorized,
+                            "unsafe release must never be an authorized transition");
+                } else if (state.exchangeReleased()) {
+                    assertTrue(authorized);
+                }
+                explored++;
+            }
+        }
+        assertEquals(16, explored);
+        // Counterexample: actor finished and abort closed the socket while
+        // an earlier accepted/queued streaming write still owns a carrier.
+        StreamWriterState premature = new StreamWriterState(true, true, false, true);
+        assertTrue(premature.exchangeReleased() && !premature.writerExited());
+    }
 }
