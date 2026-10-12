@@ -17,6 +17,7 @@ final class HostFutureAdmissionGate {
     private int guestTurnReservations;
     private boolean closing;
     private boolean hostClaimsSealed;
+    private boolean physicalExitUnproven;
 
     synchronized void begin() {
         if (closing || hostClaimsSealed) throw new IllegalStateException(
@@ -92,6 +93,18 @@ final class HostFutureAdmissionGate {
     synchronized void sealHostClaims() {
         hostClaimsSealed = true;
         notifyAll();
+    }
+
+    /** A failed TruffleContext.leave is NOT a successful physical exit. */
+    synchronized void quarantineUnknownPhysicalExit() {
+        physicalExitUnproven = true;
+        hostClaimsSealed = true;
+        closing = true;
+        notifyAll();
+    }
+
+    synchronized boolean physicalExitUnproven() {
+        return physicalExitUnproven;
     }
 
     synchronized void close() {
