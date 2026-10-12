@@ -25,25 +25,34 @@ public final class NativeHttp implements AutoCloseable {
     /** One permit per unclaimed transfer, including expired mailbox tombstones. */
     static final class TransferBudget {
         private final int limit;
-        private final Semaphore permits;
+        // CAS prevents even a transient over-release from inflating capacity.
+        private final java.util.concurrent.atomic.AtomicInteger outstanding =
+                new java.util.concurrent.atomic.AtomicInteger();
         private final AtomicLong rejected = new AtomicLong();
 
         TransferBudget(int capacity) {
             if (capacity < 1) throw new IllegalArgumentException("invalid transfer capacity");
             limit = Math.min(capacity, MAX_UNCLAIMED_TRANSFERS_PER_SERVER);
-            permits = new Semaphore(limit);
         }
         boolean tryReserve() {
-            if (permits.tryAcquire()) return true;
-            rejected.incrementAndGet();
-            return false;
+            for (;;) {
+                int held = outstanding.get();
+                if (held == limit) {
+                    rejected.incrementAndGet();
+                    return false;
+                }
+                if (outstanding.compareAndSet(held, held + 1)) return true;
+            }
         }
         void release() {
-            permits.release();
-            if (permits.availablePermits() > limit)
-                throw new IllegalStateException("HTTP transfer reservation released more than once");
+            for (;;) {
+                int held = outstanding.get();
+                if (held <= 0) throw new IllegalStateException(
+                        "HTTP transfer reservation released more than once");
+                if (outstanding.compareAndSet(held, held - 1)) return;
+            }
         }
-        int outstanding() { return limit - permits.availablePermits(); }
+        int outstanding() { return outstanding.get(); }
         int limit() { return limit; }
         long rejected() { return rejected.get(); }
     }
@@ -166,16 +175,22 @@ public final class NativeHttp implements AutoCloseable {
                 // actor's readiness Future. A stalled actor's pending ready
                 // Future otherwise retains one callback per rejected dispatch.
                 String token = exchange.moveTo(actor, !serial);
-                actor.ready().whenCompleteRuntime((ignored, failure) -> {
-                    long spawn;
-                    long ready;
-                    synchronized (exchange.state) {
-                        exchange.state.readyNanos = System.nanoTime();
-                        spawn = exchange.state.spawnNanos;
-                        ready = exchange.state.readyNanos;
-                    }
-                    CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
-                });
+                var readyObserver = actor.ready().whenCompleteRuntimeCancellable(
+                        (ignored, failure) -> {
+                            long spawn;
+                            long ready;
+                            synchronized (exchange.state) {
+                                exchange.state.readyNanos = System.nanoTime();
+                                spawn = exchange.state.spawnNanos;
+                                ready = exchange.state.readyNanos;
+                            }
+                            CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
+                        });
+                synchronized (exchange.state) {
+                    exchange.state.readyObserver = readyObserver;
+                }
+                // A timer or shutdown may already have settled the exchange.
+                exchange.state.detachReadyObserverIfTerminal();
                 actor.send(token);
             } catch (RuntimeException failure) {
                 synchronized (exchange.state) {
@@ -428,6 +443,8 @@ public final class NativeHttp implements AutoCloseable {
         boolean persistentActor;
         /** Detachable actor-lifetime observer; do not retain every request forever. */
         OresFuture.RuntimeWaiterRegistration<Void> actorDoneObserver;
+        /** Actor startup profiling must not pin timed-out exchanges. */
+        OresFuture.RuntimeWaiterRegistration<Void> readyObserver;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
         }
@@ -461,6 +478,9 @@ public final class NativeHttp implements AutoCloseable {
                 }
                 cancelActor = !alreadyClosed && !persistentActor ? actor : null;
             }
+            // Startup diagnostics are no longer needed after terminal state;
+            // unlink from a stuck actor.ready producer independently of mail.
+            detachReadyObserverIfTerminal();
             // An HTTP deadline cancels a per-request actor, never a persistent
             // serial actor processing other HTTP requests and actor messages.
             if (cancelActor != null) cancelActor.cancel();
@@ -478,6 +498,7 @@ public final class NativeHttp implements AutoCloseable {
         }
         void finish() {
             synchronized (this) { if (terminal) return; terminal = true; }
+            detachReadyObserverIfTerminal();
             try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
         }
         void release() {
@@ -501,7 +522,18 @@ public final class NativeHttp implements AutoCloseable {
                 server.admission.release(); server.completed.incrementAndGet(); server.completeDrain();
                 completion.completeFromRuntime((long) responseStatus);
             }
+            detachReadyObserverIfTerminal();
             detachActorDoneObserverIfReleased();
+        }
+
+        void detachReadyObserverIfTerminal() {
+            OresFuture.RuntimeWaiterRegistration<Void> observer;
+            synchronized (this) {
+                if (!terminal) return;
+                observer = readyObserver;
+                readyObserver = null;
+            }
+            if (observer != null) observer.detach();
         }
 
         /**
