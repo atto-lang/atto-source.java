@@ -449,19 +449,18 @@ public final class OresContext implements AutoCloseable {
             }
             closeOwner = Thread.currentThread();
             try {
-                // HTTP exchanges are actor-owned capabilities. Shut down
-                // listeners and cancel their in-flight actor turns while the
-                // actor CONTROL scheduler, guest cleanup continuations and
-                // native I/O workers are all still available. Otherwise an
-                // actor suspended on a streaming exchange can strand
-                // ActorRuntime.close() before HTTP gets to revoke it.
-                http.close();
-
-                // Once HTTP exchange/actor reservations have been discharged,
-                // drain any remaining actors and the root VM scheduler.
-                // Neither scheduler can be retired while guest finally/defer
-                // still owns a continuation or native resource loan.
+                // Three-way shutdown ordering:
+                // (1) seal HTTP admissions and request transport/actor aborts;
+                // (2) finalize the actors while their guest CONTROL and HTTP
+                // carrier dependencies remain available;
+                // (3) physically drain HTTP and retire the remaining runtime.
+                // A synchronous http.close() BEFORE actors.close() can wait
+                // forever on a persistent actor that only its runtime's stop
+                // lifecycle can finalize. The reverse ordering can strand an
+                // actor still awaiting its HTTP exchange's cancellation.
+                http.beginContextShutdown();
                 actors.close();
+                http.close();
                 vm.close();
 
                 // A settled/cancelled Future is not physical worker exit.
