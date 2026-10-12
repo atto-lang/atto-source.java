@@ -585,6 +585,8 @@ final class SupervisorChildRegistryTest {
             assertEquals(child.child(), entries.get(i).state().child());
         }
         assertEquals(claim.nonce(), entries.get(2).restartPermit());
+        assertNull(entries.get(2).stopPermit(),
+                "a restart reservation cannot masquerade as a STOP ticket");
         assertEquals(claim.nonce(), entries.get(5).restartPermit());
         assertEquals(retry.nonce(), entries.get(7).restartPermit());
         assertEquals(retry.nonce(), entries.get(10).restartPermit());
@@ -614,8 +616,12 @@ final class SupervisorChildRegistryTest {
         assertEquals(43, registry.committedTransitions().get(3).stopTurn());
         assertNull(registry.committedTransitions().get(2).restartPermit(),
                 "a STOP nonce must not masquerade as a restart capability");
+        assertEquals(permit.nonce(), registry.committedTransitions().get(2).stopPermit(),
+                "STOP reservation must retain its exact independent nonce");
         assertNull(registry.committedTransitions().get(3).restartPermit(),
                 "uncertain STOP must not expose a restart permit");
+        assertEquals(permit.nonce(), registry.committedTransitions().get(3).stopPermit(),
+                "uncertain STOP must preserve the original nonce");
         assertEquals(SupervisorChildRegistry.Phase.STOPPING,
                 registry.snapshot(child.child()).phase());
         registry.reconcileVerifiedStop(permit); // host proof is external
@@ -623,6 +629,8 @@ final class SupervisorChildRegistryTest {
                 registry.committedTransitions().get(4).operation());
         assertEquals(5, registry.committedTransitions().size());
         assertNull(registry.committedTransitions().get(4).restartPermit());
+        assertEquals(permit.nonce(), registry.committedTransitions().get(4).stopPermit(),
+                "reconciled STOP must use the same authorized receipt identity");
     }
 
     @Test
