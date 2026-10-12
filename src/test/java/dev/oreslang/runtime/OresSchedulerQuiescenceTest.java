@@ -219,6 +219,7 @@ final class OresSchedulerQuiescenceTest {
         CountDownLatch admissionEntered = new CountDownLatch(1);
         CountDownLatch finishAdmission = new CountDownLatch(1);
         CountDownLatch closeStarted = new CountDownLatch(1);
+        CountDownLatch closeFinished = new CountDownLatch(1);
         java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>> result =
                 new java.util.concurrent.atomic.AtomicReference<>();
         java.util.concurrent.atomic.AtomicReference<Throwable> error =
@@ -254,9 +255,17 @@ final class OresSchedulerQuiescenceTest {
             assertTrue(admissionEntered.await(3, TimeUnit.SECONDS));
             closer = Thread.ofPlatform().start(() -> {
                 closeStarted.countDown();
-                scheduler.close();
+                try {
+                    scheduler.close();
+                } finally {
+                    closeFinished.countDown();
+                }
             });
             assertTrue(closeStarted.await(3, TimeUnit.SECONDS));
+            assertTrue(closeFinished.await(2, TimeUnit.SECONDS),
+                    "close must not wait for an arbitrary blocked executor enqueue");
+            assertEquals(1, retireCount.get(),
+                    "close retires a registered task before blocked enqueue returns");
         } finally {
             finishAdmission.countDown();
             starter.join(3_000);
