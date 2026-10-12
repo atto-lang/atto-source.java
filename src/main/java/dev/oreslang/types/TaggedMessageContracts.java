@@ -79,6 +79,18 @@ public final class TaggedMessageContracts {
 
     public static Registry verify(Ast.Program program) {
         Objects.requireNonNull(program);
+        // Detect infinitely sized direct and mutual recursion before
+        // constructing any case schema, independent of declaration order.
+        List<EnumPayloadDependencies.Reference> nested =
+                EnumPayloadDependencies.check(program);
+        if (!nested.isEmpty()) {
+            var first = nested.getFirst();
+            throw new IllegalArgumentException(
+                    "enum payload " + first.from() + "." + first.caseName()
+                    + " refers to nominal enum '" + first.to() + "'; "
+                    + "nested enum values are valid type-level dependencies but "
+                    + "a portable nested enum wire codec is not yet implemented");
+        }
         Map<String, EnumType> enums = new LinkedHashMap<>();
         Map<String, Ast.PatternDecl> pending = new LinkedHashMap<>();
         Set<String> taken = new HashSet<>();
