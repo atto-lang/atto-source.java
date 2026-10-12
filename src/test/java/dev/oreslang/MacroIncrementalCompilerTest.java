@@ -34,11 +34,19 @@ final class MacroIncrementalCompilerTest {
     }
 
     @Test
-    void incrementalCompilerCanRecompileJitMacrosAsNewGeneration() {
+    void incrementalCompilerRecompilesRebuildableMacrosOnlyAsNewGeneration() {
         IncrementalCompiler compiler = new IncrementalCompiler();
-        assertDoesNotThrow(() -> compiler.compile(Map.of("app.ores", unit("jit", 1))));
-        assertDoesNotThrow(() -> compiler.compile(Map.of("app.ores", unit("jit", 2))));
+        assertDoesNotThrow(() -> compiler.compile(Map.of("app.ores", unit("rebuildable", 1))));
+        assertDoesNotThrow(() -> compiler.compile(Map.of("app.ores", unit("rebuildable", 2))));
         assertThrows(IllegalArgumentException.class,
                 () -> compiler.compile(Map.of("app.ores", unit("aot", 3))));
+    }
+
+    @Test
+    void rejectsJitMacroModeAtCompilationBeforeCodeGeneration() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> compiler.compile(Map.of("app.ores", unit("jit", 1))));
+        assertTrue(rejected.getMessage().contains("forbidden"), rejected.getMessage());
     }
 }
