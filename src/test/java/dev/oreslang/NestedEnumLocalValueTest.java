@@ -34,13 +34,11 @@ final class NestedEnumLocalValueTest {
         assertNull(bar.sourcePayload());
         assertNull(bar.payload());
         assertEquals("Bar", foo.sourcePayload().name());
-        assertNull(foo.payload(), "nested enum codec is not implemented");
+        assertInstanceOf(dev.oreslang.runtime.MessagePackCollectionCodec.NestedEnum.class,
+                foo.payload());
         assertEquals(1, foo.tag());
-
-        assertThrows(IllegalArgumentException.class,
-                () -> TaggedMessageContracts.verify(program));
-        assertThrows(IllegalArgumentException.class,
-                () -> new TaggedMessageCodec(registry.requireDomain("Foo")));
+        assertDoesNotThrow(() -> TaggedMessageContracts.verify(program));
+        assertDoesNotThrow(() -> new TaggedMessageCodec(registry.requireDomain("Foo")));
         // Constructed values are tagged instances, not their wire integer tags.
         var inner = new TaggedMessageCodec.TaggedValue("Bar", "Message1", 1, null);
         var outer = new TaggedMessageCodec.TaggedValue("Foo", "Message1", 1, inner);
@@ -92,7 +90,7 @@ final class NestedEnumLocalValueTest {
     }
 
     @Test
-    void actorMailboxCannotPromoteNestedEnumWithoutCanonicalWireCodec() {
+    void actorMailboxAdmitsFiniteNestedEnumAndStillRejectsBoxedRecursion() {
         var source = DECLS + """
                 define actor Worker as
                     receive(ActorMail<Foo> mail): void {
@@ -101,10 +99,21 @@ final class NestedEnumLocalValueTest {
                     }
                 end
                 """;
-        var error = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(source)));
-        assertTrue(error.getMessage().contains("no portable actor wire codec"),
-                error.getMessage());
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        var boxedSource = """
+                define enum Recursive as
+                    Empty
+                    More: Box<Recursive>
+                end
+                define actor Worker as
+                    receive(ActorMail<Recursive> mail): void {
+                        self.end();
+                        return;
+                    }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(boxedSource)));
     }
 
     @Test
@@ -165,6 +174,27 @@ final class NestedEnumLocalValueTest {
             assertTrue(problem.getMessage().contains("Box<T> requires exactly one"),
                     problem.toString());
         }
+    }
+
+    @Test
+    void nestedActorWireRoundTripAndNominalTamperRejection() {
+        var registry = TaggedMessageContracts.verify(Parser.parse(DECLS));
+        var codec = new TaggedMessageCodec(registry.requireDomain("Foo"));
+        var inner = new TaggedMessageCodec.TaggedValue("Bar", "Message1", 1, null);
+        var outer = new TaggedMessageCodec.TaggedValue("Foo", "Message1", 1, inner);
+        var bytes = codec.encode(outer);
+        assertEquals(outer, codec.decode(bytes));
+        assertThrows(IllegalArgumentException.class, () -> codec.encode(
+                new TaggedMessageCodec.TaggedValue("Foo", "Message1", 1,
+                        new TaggedMessageCodec.TaggedValue("Bar", "Message1", 3, null))));
+        assertThrows(IllegalArgumentException.class, () -> codec.encode(
+                new TaggedMessageCodec.TaggedValue("Foo", "Message1", 1,
+                        new TaggedMessageCodec.TaggedValue("Foo", "Message1", 1, inner))));
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(
+                java.util.Arrays.copyOf(bytes, bytes.length - 1)));
+
+        assertTrue(java.util.HexFormat.of().formatHex(bytes).contains("a3426172"),
+                "nested wire contains canonical Bar owner name");
     }
 
     @Test
