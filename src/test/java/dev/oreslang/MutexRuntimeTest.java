@@ -1217,6 +1217,39 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    void wrappedOresFutureCancellationReturnsWaiterQuotaBeforeVisibility() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var free = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread requester = Thread.ofPlatform().start(() -> {
+            try {
+                var producer = held.lockAsync();
+                var adapted = dev.oreslang.runtime.OresFuture.from(producer);
+                assertTrue(adapted.cancel(false), "queued producer must accept cancellation");
+                assertTrue(producer.isCancelled());
+                assertTrue(adapted.isCancelled());
+                assertEquals(0, queuedAsyncReservations(held),
+                        "wrapper completed cancellation before quota cleanup");
+                // The same execution domain may now start another acquisition.
+                var next = free.lock();
+                next.release();
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+
+        requester.join(3_000);
+        assertFalse(requester.isAlive());
+        assertNull(failure.get());
+        owner.release();
+        var next = held.lockFor(Duration.ofSeconds(2));
+        assertTrue(next.isPresent(), "wrapper cancellation leaked the physical permit");
+        next.orElseThrow().release();
+    }
+
+    @Test
     void cancelledAsyncWaitUnlinksDeadlockGraphBeforeObservation() throws Exception {
         var held = OresMutex.shared(new int[]{0});
         var free = OresMutex.shared(new int[]{0});
