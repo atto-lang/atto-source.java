@@ -146,6 +146,34 @@ public final class ChannelRuntime {
         }
 
         /**
+         * Runtime-only selective drain. Removes only buffered values; values
+         * already delivered to a reader are never recalled. Each removed
+         * value remains owned by its caller until the consumer releases it.
+         * The channel arbitration lock makes this linearizable with tryRead.
+         */
+        boolean removeBufferedIf(
+                java.util.function.Predicate<? super T> predicate,
+                java.util.function.Consumer<? super T> consumer) {
+            Objects.requireNonNull(predicate, "predicate");
+            Objects.requireNonNull(consumer, "consumer");
+            java.util.ArrayList<T> removed = new java.util.ArrayList<>();
+            COORDINATOR.lock();
+            try {
+                for (var iterator = buffer.iterator(); iterator.hasNext();) {
+                    T item = iterator.next();
+                    if (predicate.test(item)) {
+                        iterator.remove();
+                        removed.add(item);
+                    }
+                }
+            } finally {
+                COORDINATOR.unlock();
+            }
+            for (T item : removed) consumer.accept(item);
+            return !removed.isEmpty();
+        }
+
+        /**
          * Immediate send probe. No waiter remains registered when this returns
          * false.
          */
