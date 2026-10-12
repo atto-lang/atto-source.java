@@ -73,6 +73,25 @@ retain physical resource reservations until the actual final release, and
 report all incomplete cleanup obligations. Never silently turn a deadline
 into a successful `get_done()` or completed context shutdown.
 
+## Distinct STOP observation and physical termination
+
+The Java draft now keeps `ActorRef.get_done()` pending when source cleanup
+times out and retains actor/context physical resources. A new runtime-owned
+host observer `ActorRef.get_shutdown_result()` reports the failed drain
+exceptionally without pretending that physical termination has completed.
+Successful physical finalization settles both observers. If physical
+termination completes with an actor error, `get_done()` may complete
+exceptionally, but only after finalization.
+
+The host observer method is not yet a documented guest-source method or
+compiler ABI. The draft JVM revision needs fresh exact-head CI, and GraalVM
+AOT/hybrid runtime execution remains unverified. Outstanding native FFM
+loans can still physically outlive actor shutdown under the existing
+loan-retaining memory-slice design; extending the actor physical done barrier
+to wait for all such loans requires a separate owner-lifetime callback
+protocol and conformance tests. Do not claim the stronger FFM invariant from
+the current host change alone.
+
 ## Executable gates
 
 - Real guest-source nested `defer`/`finally` cancellation: tested on JVM
