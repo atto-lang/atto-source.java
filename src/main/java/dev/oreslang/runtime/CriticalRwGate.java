@@ -122,6 +122,11 @@ public final class CriticalRwGate implements AutoCloseable {
                 if (domain != null) DOMAINS.remove(domain, this);
                 if (former == State.QUEUED) {
                     waiters.remove(this);
+                    // A cancelled queued writer may have been the only
+                    // barrier keeping later readers behind active readers.
+                    // Re-evaluate the new FIFO head immediately, without
+                    // waiting for those unrelated readers to exit.
+                    wake = drainLocked();
                 } else if (former == State.GRANTED) {
                     if (mode == Mode.READ) {
                         readers.remove(this);
