@@ -282,6 +282,23 @@ final class NestedEnumLocalValueTest {
     }
 
     @Test
+    void primitiveBoxDeclarationIsLocalOnlyWithoutNestedEnumDependency() {
+        var parsed = Parser.parse("""
+                define enum Holder as
+                    Empty
+                    Boxed: Box<int>
+                end
+                """);
+        var local = assertDoesNotThrow(() -> TaggedMessageContracts.forTypes(parsed));
+        var boxed = local.requireCase("Holder.Boxed");
+        assertEquals("Box", boxed.sourcePayload().name());
+        assertNull(boxed.payload(), "Box<int> has no portable binary representation yet");
+        assertThrows(IllegalArgumentException.class, () -> TaggedMessageContracts.verify(parsed));
+        assertThrows(IllegalArgumentException.class,
+                () -> new TaggedMessageCodec(local.requireDomain("Holder")));
+    }
+
+    @Test
     void boxIsExplicitIndirectionNotImplicitSerialization() {
         var source = Parser.parse("""
                 define enum Foo as
