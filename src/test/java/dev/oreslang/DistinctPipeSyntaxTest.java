@@ -89,7 +89,7 @@ final class DistinctPipeSyntaxTest {
         Ast.Program parsed = assertDoesNotThrow(() -> Parser.parse(code));
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(parsed));
-        assertTrue(failure.getMessage().contains("ActorStream graph composition"),
+        assertTrue(failure.getMessage().contains("must explicitly implement StreamOperator"),
                 failure::getMessage);
     }
 
@@ -101,6 +101,17 @@ final class DistinctPipeSyntaxTest {
                     val int pipe = 7;
                     val int result = pipe |> double;
                     stdio.stdout.write(result + 3);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void functionalPipeAcceptsParenthesizedTypedLambda() throws Exception {
+        assertEquals("17", run("""
+                pub routine main(): void {
+                    val int outcome = 7 |> (|int x| -> x + 10);
+                    stdio.stdout.write(outcome);
                     return;
                 }
                 """));

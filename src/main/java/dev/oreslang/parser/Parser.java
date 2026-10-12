@@ -2597,10 +2597,12 @@ public final class Parser {
                 arguments.addAll(call.arguments());
                 left = new Ast.CallExpr(call.callee(),
                         call.typeArguments(), call.typeArgumentsPresent(), arguments);
-            } else if (isNamedPipelineCallee(right)) {
+            } else if (isNamedPipelineCallee(right) || right instanceof Ast.LambdaExpr) {
+                // Literal lambdas have no side-effectful callee computation;
+                // the lowered call still evaluates the left input once.
                 left = new Ast.CallExpr(right, List.of(left));
             } else {
-                throw error(operator, "|> requires a callable name or a named function call");
+                throw error(operator, "|> requires a callable name, lambda, or named function call");
             }
         }
         return left;
