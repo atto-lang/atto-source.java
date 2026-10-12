@@ -396,6 +396,20 @@ final class MacroExpanderTest {
     }
 
     @Test
+    void boundsMacroDelimiterNestingWithoutUnboundedScannerWork() {
+        String definition = "macro_rules! identity { ($value:tt) => { $value }; }\\n";
+        String tooDeep = "(".repeat(140) + "7" + ")".repeat(140);
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> MacroExpander.expand(new Lexer(definition + "identity!(" + tooDeep + ")").scan()));
+        assertTrue(rejected.getMessage().contains("macro delimiter nesting depth exceeded"),
+                rejected.getMessage());
+
+        String ordinary = "(".repeat(20) + "7" + ")".repeat(20);
+        assertDoesNotThrow(() -> MacroExpander.expand(
+                new Lexer(definition + "identity!(" + ordinary + ")").scan()));
+    }
+
+    @Test
     void fuzzMismatchedMacroDelimitersFailClosed() {
         Random random = new Random(0xD311B17EL);
         char[] open = {'(', '[', '{'};
