@@ -43,6 +43,8 @@ final class OresContextLifecycleTest {
                     val Channel<int> work = Channel.new<int>(0);
                     stdio.println("work-pending");
                     const result = await (nb readch work);
+                  } catch (ignored) {
+                    stdio.println("INVALID-catch");
                   } finally {
                     val Channel<int> cleanup = Channel.new<int>(0);
                     stdio.println("cleanup-pending");
