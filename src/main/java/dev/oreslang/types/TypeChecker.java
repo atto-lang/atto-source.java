@@ -149,17 +149,29 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals("ActorUtils") || module.name().equals("ActorStream")) {
+                throw new IllegalArgumentException(
+                        "reserved actor pipeline namespace: " + module.name());
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("ActorUtils") || klass.name().equals("ActorStream")) {
+                        throw new IllegalArgumentException(
+                                "reserved actor pipeline type/namespace: " + klass.name());
+                    }
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    if (alias.name().equals("ActorStream") || alias.name().equals("ActorUtils")) {
+                        throw new IllegalArgumentException(
+                                "reserved actor pipeline alias: " + alias.name());
+                    }
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
@@ -1706,11 +1718,22 @@ public final class TypeChecker {
     }
 
     private static void collectActorPipeStages(Ast.Expr expr, List<Ast.Expr> stages) {
-        if (expr instanceof Ast.BinaryExpr nested && nested.operator().equals("pipe")) {
-            collectActorPipeStages(nested.left(), stages);
-            collectActorPipeStages(nested.right(), stages);
-        } else {
-            stages.add(expr);
+        // Infix pipe is left-associative. Flatten iteratively so an untrusted
+        // oversized input cannot overflow the compiler stack before the
+        // 2..16 stage limit is applied, even for heavily parenthesized chains.
+        java.util.ArrayDeque<Ast.Expr> pending = new java.util.ArrayDeque<>();
+        pending.push(expr);
+        while (!pending.isEmpty()) {
+            Ast.Expr next = pending.pop();
+            if (next instanceof Ast.BinaryExpr binary && binary.operator().equals("pipe")) {
+                pending.push(binary.right());
+                pending.push(binary.left());
+            } else {
+                if (stages.size() == 16) {
+                    throw new IllegalArgumentException("ActorStream pipe requires 2..16 stages");
+                }
+                stages.add(next);
+            }
         }
     }
 

@@ -5718,11 +5718,19 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void collectActorPipeStages(Ast.Expr expr, List<Ast.Expr> stages) {
-            if (expr instanceof Ast.BinaryExpr binary && binary.operator().equals("pipe")) {
-                collectActorPipeStages(binary.left(), stages);
-                collectActorPipeStages(binary.right(), stages);
-            } else {
-                stages.add(expr);
+            java.util.ArrayDeque<Ast.Expr> pending = new java.util.ArrayDeque<>();
+            pending.push(expr);
+            while (!pending.isEmpty()) {
+                Ast.Expr next = pending.pop();
+                if (next instanceof Ast.BinaryExpr binary && binary.operator().equals("pipe")) {
+                    pending.push(binary.right());
+                    pending.push(binary.left());
+                } else {
+                    if (stages.size() == 16) {
+                        throw new IllegalArgumentException("ActorStream pipe requires 2..16 stages");
+                    }
+                    stages.add(next);
+                }
             }
         }
 

@@ -81,13 +81,15 @@ final class ActorStreamPipeExecutionTest {
                 () -> execute(source.replace("ActorUtils::pipe(", "ActorUtils.pipe(")));
     }
 
-    @Test void rejectDuplicateActorCapabilityWithoutRunningGuestCallbacks() throws Exception {
-        String original = program();
-        String malformed = original.replace(
-                "return ActorUtils::pipe(", "return ActorUtils::pipe(")
-                .replace("spawn Source(),\n        spawn Transform()",
-                    "spawn Source(),\n        spawn Source()");
-        assertThrows(PolyglotException.class, () -> execute(malformed));
+    @Test void rejectReusingOneActorCapabilityAtRuntime() throws Exception {
+        String malformed = program().replace(
+                "return ActorUtils::pipe(\n        spawn Source(),\n        spawn Transform(),",
+                "val repeated = spawn Source();\n    return ActorUtils::pipe(\n        repeated,\n        repeated,");
+        assertNotEquals(program(), malformed);
+        PolyglotException rejected = assertThrows(PolyglotException.class,
+                () -> execute(malformed));
+        assertTrue(rejected.toString().contains("distinct same-runtime"),
+                rejected.toString());
     }
 
     @Test void rejectNonActorStageAtTypechecking() throws Exception {
@@ -126,5 +128,61 @@ final class ActorStreamPipeExecutionTest {
                 }
                 """;
         assertThrows(PolyglotException.class, () -> execute(source));
+    }
+
+    private static String resizePipeline(int transforms) throws Exception {
+        String original = program();
+        int start = original.indexOf("    return ActorUtils::pipe(");
+        int end = original.indexOf("\n}", start);
+        if (start < 0 || end < 0) throw new IllegalStateException("fixture factory changed");
+        java.util.ArrayList<String> stages = new java.util.ArrayList<>();
+        stages.add("spawn Source()");
+        for (int i = 0; i < transforms; i++) stages.add("spawn Transform()");
+        stages.add("spawn Sink()");
+        int value = 6 + transforms * 2;
+        int actors = transforms + 2;
+        return (original.substring(0, start)
+                + "    return ActorUtils::pipe(" + String.join(", ", stages) + ");"
+                + original.substring(end))
+                .replace("if n == 32 then", "if n == " + value + " then")
+                .replace("PIPE_15_RESULT_32", "PIPE_" + actors + "_RESULT_" + value);
+    }
+
+    @Test void minimumTwoActorPipelineDoesRealForwardBackwardDelivery() throws Exception {
+        assertEquals("PIPE_2_RESULT_6", execute(resizePipeline(0)));
+    }
+
+    @Test void maximumSixteenActorPipelineDoesRealForwardBackwardDelivery() throws Exception {
+        assertEquals("PIPE_16_RESULT_34", execute(resizePipeline(14)));
+    }
+
+    @Test void reservedPipelineBuiltinsCannotBeHijackedByLocalClasses() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class ActorUtils as
+                    pub static fnc pipe(): int { return 42; }
+                end
+                pub fnc main(): int { return ActorUtils::pipe(); }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class ActorStream as
+                    pub fnc f(): int { return 42; }
+                end
+                pub fnc main(): int { return 5; }
+                """)));
+    }
+
+    @Test void tooManyInfixPipelineStagesFailBeforeGuestStageCreation() throws Exception {
+        String source = program();
+        int start = source.indexOf("    return ActorUtils::pipe(");
+        int end = source.indexOf("\n}", start);
+        java.util.ArrayList<String> stages = new java.util.ArrayList<>();
+        stages.add("spawn Source()");
+        for (int i = 0; i < 128; i++) stages.add("spawn Transform()");
+        stages.add("spawn Sink()");
+        String malformed = source.substring(0,start) + "    return "
+                + String.join(" pipe ", stages) + ";" + source.substring(end);
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(malformed)));
+        assertTrue(rejected.toString().contains("2..16"), rejected.toString());
     }
 }
