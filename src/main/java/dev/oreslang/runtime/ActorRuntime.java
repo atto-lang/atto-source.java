@@ -6014,6 +6014,7 @@ public final class ActorRuntime implements AutoCloseable {
         private OresScheduler sourceScheduler;
         /** No physical finalization while source cleanup/shutdown is outstanding. */
         private boolean sourceShutdownRequested;
+        private boolean sourceShutdownStarted;
         private boolean sourceShutdownCompleted;
         private Throwable sourceShutdownFailure;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
@@ -6153,6 +6154,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         private OresScheduler sourceScheduler() {
             synchronized (lifecycleLock) {
+                if (stopped.get() || forceKillFenced || closed.get()) {
+                    throw new RejectedExecutionException(
+                            "actor " + ref.id() + " is stopping; source task admission is closed");
+                }
                 if (sourceScheduler != null) return sourceScheduler;
 
                 java.util.concurrent.Executor mailboxExecutor = command -> {
@@ -6327,6 +6332,7 @@ public final class ActorRuntime implements AutoCloseable {
                     lifecycleLock.notifyAll();
                 }
             }
+            maybeStartSourceShutdown();
         }
 
         private void reserveOutput(long bytes) {
@@ -6510,6 +6516,9 @@ public final class ActorRuntime implements AutoCloseable {
                     ACTOR_CARRIER.remove();
                 }
                 if (reschedule) schedule();
+                // A guest turn may still be settling its own admission failure.
+                // Start source cancellation only after TurnExecutor has exited.
+                maybeStartSourceShutdown();
             }
         }
 
@@ -6777,7 +6786,6 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
-            OresScheduler schedulerToClose = null;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -6793,7 +6801,6 @@ public final class ActorRuntime implements AutoCloseable {
                 pendingOperations.clear();
                 if (sourceScheduler != null && !sourceShutdownRequested) {
                     sourceShutdownRequested = true;
-                    schedulerToClose = sourceScheduler;
                 }
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
@@ -6808,11 +6815,20 @@ public final class ActorRuntime implements AutoCloseable {
                         child.ref.id(),
                         "parent actor " + ref.id() + " terminated"));
             }
-            if (schedulerToClose != null) {
-                OresScheduler closing = schedulerToClose;
-                Thread.ofVirtual().name("ores-source-shutdown-" + ref.id())
-                        .start(() -> drainSourceScheduler(closing));
+            maybeStartSourceShutdown();
+        }
+
+        private void maybeStartSourceShutdown() {
+            OresScheduler scheduler;
+            synchronized (lifecycleLock) {
+                if (!sourceShutdownRequested || sourceShutdownStarted
+                        || sourceShutdownCompleted || activeTurns != 0
+                        || carrierActive) return;
+                sourceShutdownStarted = true;
+                scheduler = sourceScheduler;
             }
+            Thread.ofVirtual().name("ores-source-shutdown-" + ref.id())
+                    .start(() -> drainSourceScheduler(scheduler));
         }
 
         private void drainSourceScheduler(OresScheduler scheduler) {
