@@ -4084,6 +4084,21 @@ public final class OresEvalRootNode extends RootNode {
                             List.of());
                 }
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
+                        && (member.member().equals("forward")
+                            || member.member().equals("backward"))) {
+                    if (args.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "self." + member.member() + " requires exactly one enum message");
+                    }
+                    return object.owner.invokableInvocation(
+                            ignored -> {
+                                object.owner.context.actors().routeCurrentPipeline(
+                                        args.getFirst(), member.member().equals("forward"));
+                                return null;
+                            },
+                            List.of());
+                }
+                if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("send")) {
                     if (args.size() != 1) {
                         throw new IllegalArgumentException(
@@ -5404,6 +5419,21 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of());
                     }
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
+                            && (methodCall.member().equals("forward")
+                                || methodCall.member().equals("backward"))) {
+                        if (args.size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "self." + methodCall.member() + " requires one enum message");
+                        }
+                        return object.owner.invokableInvocation(
+                                ignored -> {
+                                    object.owner.context.actors().routeCurrentPipeline(
+                                            args.getFirst(), methodCall.member().equals("forward"));
+                                    return null;
+                                },
+                                List.of());
+                    }
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("send")) {
                         if (args.size() != 1) {
                             throw new IllegalArgumentException(
@@ -5701,6 +5731,17 @@ public final class OresEvalRootNode extends RootNode {
                 if (messageTypes.enums().containsKey(name.name())) {
                     return new EnumNamespace(name.name());
                 }
+                if (name.name().equals("pipeline")) return (Invokable) args -> {
+                    if (args.size() != 3
+                            || !(args.get(0) instanceof ActorRuntime.ActorRef<?> source)
+                            || !(args.get(1) instanceof ActorRuntime.ActorRef<?> transform)
+                            || !(args.get(2) instanceof ActorRuntime.ActorRef<?> sink)) {
+                        throw new IllegalArgumentException(
+                                "pipeline(source, transform, sink) requires three actor refs");
+                    }
+                    context.actors().bindLinearPipeline(source, transform, sink);
+                    return null;
+                };
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("std")) return new StdFacade(context);
                 if (name.name().equals("fs") || name.name().equals("File")) return new FileSystemFacade(context);
