@@ -612,12 +612,27 @@ final class SupervisorChildRegistryTest {
                 "stop.uncertain"), registry.committedTransitions().stream()
                 .map(SupervisorChildRegistry.Transition::operation).toList());
         assertEquals(43, registry.committedTransitions().get(3).stopTurn());
+        assertNull(registry.committedTransitions().get(2).restartPermit(),
+                "a STOP nonce must not masquerade as a restart capability");
+        assertNull(registry.committedTransitions().get(3).restartPermit(),
+                "uncertain STOP must not expose a restart permit");
         assertEquals(SupervisorChildRegistry.Phase.STOPPING,
                 registry.snapshot(child.child()).phase());
         registry.reconcileVerifiedStop(permit); // host proof is external
         assertEquals("stop.ack-reconciled",
                 registry.committedTransitions().get(4).operation());
         assertEquals(5, registry.committedTransitions().size());
+        assertNull(registry.committedTransitions().get(4).restartPermit());
+    }
+
+    @Test
+    void registryJournalAndRestartPermitTypesAreNotPublicGuestApis() throws Exception {
+        assertFalse(java.lang.reflect.Modifier.isPublic(
+                SupervisorChildRegistry.Transition.class.getModifiers()));
+        assertFalse(java.lang.reflect.Modifier.isPublic(SupervisorChildRegistry.class
+                .getDeclaredMethod("committedTransitions").getModifiers()));
+        assertFalse(java.lang.reflect.Modifier.isPublic(SupervisorChildRegistry.class
+                .getDeclaredMethod("auditTraceComplete").getModifiers()));
     }
 
     @Test
