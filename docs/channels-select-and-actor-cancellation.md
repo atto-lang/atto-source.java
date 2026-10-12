@@ -489,6 +489,40 @@ The Java implementation has bounded trace-refinement tests for selection
 across multiple plan generations; these do not prove LLVM source lowering,
 unbounded liveness, or complete Java compiler optimization parity.
 
+## Compiled while/select site reuse (READ/DEFAULT first milestone)
+
+Java/GraalVM now parses `while condition { ... }` by lowering to the
+existing resumable `ForStmt` engine. The compiler evaluator retains one
+immutable `SelectPlan` for each stable static READ/DEFAULT select site,
+scoped to its owning actor incarnation (or root evaluator); the same shared
+AST executed by two actors never shares mutable fairness state.
+
+The implementation still evaluates channel operands in source order on
+**every** entry. When channel identities are unchanged, it reuses the
+retained plan and its FAIR cursor; when any READ operand points at a
+different channel, it builds new descriptors that share the site's cursor
+but do **not** reuse old registrations. Each select invocation still gets
+one fresh atomic registration and loser cancellation/teardown. A DEFAULT
+winner never rotates the FAIR cursor because no channel event committed.
+This behavior applies to both the regular execution path and the
+resumable SourceTask select path.
+
+WRITE arms are intentionally **not hoisted**: their evaluated payloads
+must not accidentally persist and replay across loop iterations, and
+move-only/Copy ownership semantics are not yet fully proven for cached
+writes. Currently they use the older per-entry SelectPlan construction.
+A stronger per-site fairness guarantee covering mixed READ/WRITE and
+dynamic-plan mutations remains future work, as do allocation-free static
+case expression lowering, arbitrary suspension of guest expressions, and
+LLVM compiler parity.
+
+Fairness has a precise scope: if all N READ arms remain ready at every
+atomic winner decision, a reused FAIR site selects each within N committed
+wins. This guarantee says nothing about event arrival adversaries, a guest
+handler that never yields, or intentionally strict supervisor CONTROL
+priority. Runtime source assertions and bounded TLC remain necessary;
+compilation alone is not a proof of global starvation freedom.
+
 ## Select plans: optional optimization layer
 
 A `SelectPlan` is an optional reusable descriptor for hot repeated selects and
