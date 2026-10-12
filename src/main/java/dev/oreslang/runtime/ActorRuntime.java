@@ -1945,7 +1945,9 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     if (cell.cleanupOnlyRequested) {
                         Throwable terminal = failure == null ? null : OresFuture.unwrap(failure);
-                        if (terminal instanceof java.util.concurrent.CancellationException) {
+                        if (terminal instanceof java.util.concurrent.CancellationException
+                                && java.util.Arrays.stream(terminal.getSuppressed()).allMatch(
+                                        dev.oreslang.runtime.SourceBoundaryTrace.class::isInstance)) {
                             cell.terminateTree(null, false);
                         } else {
                             cell.terminateTree(new IllegalStateException(
