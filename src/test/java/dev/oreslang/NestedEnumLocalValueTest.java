@@ -245,6 +245,43 @@ final class NestedEnumLocalValueTest {
     }
 
     @Test
+    void boundedCrossVariantRoundTripsAndInnerEnumEvolutionFencesWire() {
+        String original = """
+                define enum Bar as
+                    A = 1
+                    B = 3
+                    C = 9
+                end
+                define enum Foo as
+                    Wrap: Bar
+                    Text: string
+                end
+                define match pattern Messages as
+                    ...Foo
+                end
+                """;
+        var registry = TaggedMessageContracts.verify(Parser.parse(original));
+        var oldCodec = new TaggedMessageCodec(registry.requireDomain("Messages"));
+        for (var caseInfo : registry.enums().get("Bar").cases()) {
+            var inner = new TaggedMessageCodec.TaggedValue(
+                    "Bar", caseInfo.name(), caseInfo.tag(), null);
+            var outer = new TaggedMessageCodec.TaggedValue("Foo", "Wrap", 1, inner);
+            assertEquals(outer, oldCodec.decode(oldCodec.encode(outer)));
+        }
+        var grown = TaggedMessageContracts.verify(Parser.parse(
+                original.replace("C = 9", "C = 9\n    D = 12")));
+        var newCodec = new TaggedMessageCodec(grown.requireDomain("Messages"));
+        var old = new TaggedMessageCodec.TaggedValue("Foo", "Wrap", 1,
+                new TaggedMessageCodec.TaggedValue("Bar", "A", 1, null));
+        byte[] before = oldCodec.encode(old);
+        byte[] after = newCodec.encode(old);
+        assertFalse(java.util.Arrays.equals(before, after),
+                "inner enum schema evolution must change the shape digest");
+        assertThrows(IllegalArgumentException.class, () -> oldCodec.decode(after));
+        assertThrows(IllegalArgumentException.class, () -> newCodec.decode(before));
+    }
+
+    @Test
     void boxIsExplicitIndirectionNotImplicitSerialization() {
         var source = Parser.parse("""
                 define enum Foo as
