@@ -26,8 +26,8 @@ final class MacroExpanderTest {
             end
             """;
 
-    private static final String JIT_ONE = """
-            @expand(jit)
+    private static final String REBUILDABLE_ONE = """
+            @expand(rebuildable)
             macro_rules! adjust {
               ($v:expr) => { ($v + 1) };
             }
@@ -38,7 +38,7 @@ final class MacroExpanderTest {
             end
             """;
 
-    private static final String JIT_TWO = JIT_ONE.replace("($v + 1)", "($v + 2)");
+    private static final String REBUILDABLE_TWO = REBUILDABLE_ONE.replace("($v + 1)", "($v + 2)");
 
     @Test
     void expandsBeforeAstParsingAndPreservesOrdinaryLanguageChecks() {
@@ -61,10 +61,10 @@ final class MacroExpanderTest {
     }
 
     @Test
-    void jitMacroCanChangeOnlyByRecompilingANewGeneration() {
-        Parser.MacroParseResult first = Parser.parseWithMacroSnapshot(JIT_ONE, null);
+    void rebuildableMacroCanChangeOnlyByRecompilingANewGeneration() {
+        Parser.MacroParseResult first = Parser.parseWithMacroSnapshot(REBUILDABLE_ONE, null);
         Parser.MacroParseResult next = assertDoesNotThrow(
-                () -> Parser.parseWithMacroSnapshot(JIT_TWO, first.snapshot()));
+                () -> Parser.parseWithMacroSnapshot(REBUILDABLE_TWO, first.snapshot()));
         assertNotEquals(first.snapshot().definitions().get("adjust").sha256(),
                 next.snapshot().definitions().get("adjust").sha256());
     }
@@ -380,7 +380,7 @@ final class MacroExpanderTest {
     }
 
     @Test
-    void fuzzAotAndJitGenerationFingerprintsAndFormatting() {
+    void fuzzAotAndRebuildableGenerationFingerprintsAndFormatting() {
         Random random = new Random(0xA07C0DEF00DL);
         for (int iteration = 0; iteration < 120; iteration++) {
             int value = random.nextInt(1_000_000);
@@ -398,14 +398,14 @@ final class MacroExpanderTest {
                     () -> MacroExpander.expand(new Lexer(changed).scan(), initial),
                     () -> "AOT edit was allowed: iteration=" + caseNumber);
 
-            String jit = aot.replace("@expand(aot)", "@expand(jit)");
-            String jitChanged = changed.replace("@expand(aot)", "@expand(jit)");
-            MacroExpander.Snapshot jitInitial = MacroExpander.expand(new Lexer(jit).scan()).snapshot();
-            MacroExpander.Snapshot jitUpdated =
-                    MacroExpander.expand(new Lexer(jitChanged).scan(), jitInitial).snapshot();
-            assertNotEquals(jitInitial, jitUpdated, "iteration=" + iteration);
+            String rebuildable = aot.replace("@expand(aot)", "@expand(rebuildable)");
+            String rebuildableChanged = changed.replace("@expand(aot)", "@expand(rebuildable)");
+            MacroExpander.Snapshot rebuildableInitial = MacroExpander.expand(new Lexer(rebuildable).scan()).snapshot();
+            MacroExpander.Snapshot rebuildableUpdated =
+                    MacroExpander.expand(new Lexer(rebuildableChanged).scan(), rebuildableInitial).snapshot();
+            assertNotEquals(rebuildableInitial, rebuildableUpdated, "iteration=" + iteration);
             assertThrows(IllegalArgumentException.class,
-                    () -> MacroExpander.expand(new Lexer(aot).scan(), jitInitial),
+                    () -> MacroExpander.expand(new Lexer(aot).scan(), rebuildableInitial),
                     () -> "mode switch was allowed: iteration=" + caseNumber);
         }
     }
@@ -531,7 +531,7 @@ final class MacroExpanderTest {
     @Test
     void rejectsUnknownExpansionModeButDoesNotConsumeUnrelatedAnnotations() {
         String definition = "macro_rules! identity { ($x:expr) => { $x }; }";
-        for (String mode : List.of("gpu", "AOT", "runtime")) {
+        for (String mode : List.of("gpu", "AOT", "runtime", "jit")) {
             assertThrows(IllegalArgumentException.class,
                     () -> MacroExpander.expand(
                             new Lexer("@expand(" + mode + ")\n" + definition).scan()), mode);
