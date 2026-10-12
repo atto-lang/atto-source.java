@@ -84,7 +84,7 @@ TypeOK ==
     /\ cancelledBeforeWin \in BOOLEAN
 
 NoLateSteal ==
-    cancelledBeforeWin => ~consumed
+    (cancelledBeforeWin /\ ~cleanup) => ~consumed
 NoUnrevokedCancelledWait ==
     (cancelledBeforeWin /\ ~cleanup) => status # "Armed"
 OneShotCommit ==
