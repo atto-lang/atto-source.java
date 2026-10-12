@@ -1962,6 +1962,11 @@ public final class ActorRuntime implements AutoCloseable {
         // Explicitly lifecycle-managed workers, distinct from cooperating
         // members: membership never grants cancellation authority.
         private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
+        // Pending physical RESTART candidates are not yet logical children,
+        // but MUST be cancelled by group close even if publication loses.
+        // Guarded by authorityLock; never expose their refs to ordinary users.
+        private final Map<ActorId, ActorRef<?>> pendingRestartCandidates =
+                new java.util.HashMap<>();
         // Guarded by authorityLock: a stop-admitted actor cannot be released
         // into a different supervisor before stop actually dispatches.
         private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
@@ -2054,9 +2059,26 @@ public final class ActorRuntime implements AutoCloseable {
             requireSupervisorContext("spawn unpublished supervisor RESTART");
             if (currentActor.get() != null)
                 throw new IllegalStateException("RESTART spawn requires host CONTROL");
-            synchronized (authorityLock) { requireOpen(); }
-            return ActorRuntime.this.spawnInternal(
-                    kind, policy, factory, true, null, null, null, true);
+            // Match runtime.close()'s runtimeLifecycleLock -> group ownership
+            // order. Do not acquire authorityLock and then try to spawn under
+            // runtimeLifecycleLock: that inverts teardown and can deadlock.
+            synchronized (runtimeLifecycleLock) {
+                synchronized (authorityLock) {
+                    requireOpen();
+                    if (!childRegistry.restartAdmissionOpen())
+                        throw new IllegalStateException(
+                                "supervisor RESTART admission already fenced");
+                    if (managedWorkers.size() + pendingRestartCandidates.size()
+                            >= memberLimit)
+                        throw new IllegalStateException(
+                                "supervisor has no capacity for a RESTART candidate");
+                    ActorRef<M> candidate = ActorRuntime.this.spawnInternal(
+                            kind, policy, factory, true,
+                            null, null, null, true);
+                    pendingRestartCandidates.put(candidate.id(), candidate);
+                    return candidate;
+                }
+            }
         }
 
         /**
@@ -2090,7 +2112,8 @@ public final class ActorRuntime implements AutoCloseable {
                             || cell.managedByGroup.get() != null
                             || cell.supervisedChild.get() != null
                             || !cell.children.isEmpty()
-                            || managedWorkers.containsKey(replacement.id())) {
+                            || managedWorkers.containsKey(replacement.id())
+                            || pendingRestartCandidates.get(replacement.id()) != replacement) {
                         throw new IllegalStateException(
                                 "replacement is not an idle, unpublished ActorCell");
                     }
@@ -2121,6 +2144,7 @@ public final class ActorRuntime implements AutoCloseable {
                         cell.supervisedChild.set(tracking);
                         // The routing flip itself cannot allocate or fail.
                         cell.restartUnpublished = false;
+                        pendingRestartCandidates.remove(replacement.id());
                         return committed;
                     } catch (RuntimeException | Error failure) {
                         managedWorkers.remove(replacement.id(), replacement);
@@ -2907,8 +2931,14 @@ public final class ActorRuntime implements AutoCloseable {
                 // Revocation is part of close: even a capability held by code
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
-                owned = List.copyOf(managedWorkers.values());
+                // A hidden replacement has no logical child association yet,
+                // but remains an owned physical actor requiring termination.
+                // Keep it in the same non-cancellable group-close drain.
+                var live = new ArrayList<ActorRef<?>>(managedWorkers.values());
+                live.addAll(pendingRestartCandidates.values());
+                owned = List.copyOf(live);
                 managedWorkers.clear();
+                pendingRestartCandidates.clear();
                 stoppingWorkers.clear();
             }
             // Attach completion handlers before requesting cancellation: an
