@@ -17,8 +17,10 @@ final class ExplicitNativeConcurrentLoanReleaseTest {
         AtomicReference<Throwable> error = new AtomicReference<>();
         CountDownLatch created = new CountDownLatch(1);
         ActorRuntime runtime = new ActorRuntime();
+        ActorRuntime.ActorRef<String> actor;
+        java.util.concurrent.CompletableFuture<Void> stopping;
         try {
-            var actor = runtime.<String>spawnPrivate(() -> (mail, ctx) -> {
+            actor = runtime.<String>spawnPrivate(() -> (mail, ctx) -> {
                 try {
                     var nativeRegion = ctx.actorOwnedMemory().orElseThrow().newExplicitNativeI64Region(1);
                     var slot = nativeRegion.allocate(99);
@@ -35,9 +37,14 @@ final class ExplicitNativeConcurrentLoanReleaseTest {
             actor.send("allocate");
             assertTrue(created.await(20, TimeUnit.SECONDS));
             if (error.get() != null) fail(error.get());
-        } finally {
-            runtime.close();
-        }
+            stopping = java.util.concurrent.CompletableFuture.runAsync(actor::stop);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (!region.get().closed() && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertTrue(region.get().closed(), "STOP must fence FFM reads");
+            assertFalse(actor.get_done().isDone(),
+                    "physical done must wait for all native loans");
 
         assertNotNull(region.get());
         assertTrue(region.get().closed());
@@ -67,5 +74,12 @@ final class ExplicitNativeConcurrentLoanReleaseTest {
         assertTrue(region.get().physicallyClosed());
         assertEquals(0L, runtime.privateMemoryBytes(),
                 "native bytes must be refunded exactly once, after the last loan");
+            stopping.get(5, TimeUnit.SECONDS);
+            actor.get_done().get(5, TimeUnit.SECONDS);
+        } finally {
+            try { runtime.close(); } catch (IllegalStateException incomplete) {
+                if (error.get() == null) throw incomplete;
+            }
+        }
     }
 }
