@@ -691,6 +691,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
         private final Set<ActorOwnedGraphArena<?>> ownedGraphs = ConcurrentHashMap.newKeySet();
+        private final Set<ActorOwnedI64Region> ownedI64Regions = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -769,6 +770,35 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Experimental typed actor-local i64 layout. This is a logical
+         * storage ABI, not Graal/HotSpot GC suppression. The LLVM compiler
+         * has a strict GC-free native lowering for this scalar layout.
+         */
+        public ActorOwnedI64Region newI64Region(int slots) {
+            ActorCell<?> cell = requireCurrentOwner();
+            if (slots < 1 || slots > Integer.MAX_VALUE / Long.BYTES) {
+                throw new IllegalArgumentException("bounded i64 slot count required");
+            }
+            synchronized (cell.lifecycleLock) {
+                if (sliceClosed.get()) throw new IllegalStateException("actor heap is retired");
+                PrivateMemoryBlock block = allocatePrivateBytes(
+                        Math.multiplyExact(slots, Long.BYTES));
+                try {
+                    AtomicReference<ActorOwnedI64Region> registered = new AtomicReference<>();
+                    ActorOwnedI64Region region = new ActorOwnedI64Region(block, slots,
+                            this::requireCurrentOwner,
+                            () -> ownedI64Regions.remove(registered.get()));
+                    registered.set(region);
+                    ownedI64Regions.add(region);
+                    return region;
+                } catch (RuntimeException | Error failure) {
+                    block.close();
+                    throw failure;
+                }
+            }
+        }
+
         private MemoryReservation reserveMailbox(Object isolatedMessage) {
             ActorCell<?> cell = actors.get(owner);
             if (cell == null) throw new IllegalStateException("actor has no live heap");
@@ -839,6 +869,10 @@ public final class ActorRuntime implements AutoCloseable {
                 graph.retireFromActor();
             }
             ownedGraphs.clear();
+            for (ActorOwnedI64Region region : List.copyOf(ownedI64Regions)) {
+                region.retireFromActor();
+            }
+            ownedI64Regions.clear();
             for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
             blocks.clear();
             long bytes = usedBytes.getAndSet(0);
