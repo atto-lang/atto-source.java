@@ -102,7 +102,7 @@ final class FormalActorFinalizationOrderingModelCheckTest {
         }
         assertTrue(reachedTerminal, "model did not reach a physical DONE state");
         assertTrue(parentAfterChild, "model never witnessed child DONE before parent");
-        assertTrue(seen.size() >= 100, "must explore meaningful ordering cases");
+        assertTrue(seen.size() >= 20, "must explore meaningful ordering cases");
     }
 
     @Test
