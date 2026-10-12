@@ -328,8 +328,13 @@ public final class RuntimePermissions {
         }
 
         public Builder allow(Permission permission, String scope) {
+            // Empty filesystem scopes previously normalized to "" and matched
+            // EVERY absolute Unix path via resource.startsWith("/").
+            // A missing scope must never become a root-wide capability.
+            if (scope == null || scope.isBlank())
+                throw new IllegalArgumentException("empty allow scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
-            if ("*".equals(scope == null ? null : scope.trim())) rule.allowAll = true;
+            if ("*".equals(scope.trim())) rule.allowAll = true;
             else rule.allowed.add(normalize(permission, scope));
             return this;
         }
@@ -350,8 +355,12 @@ public final class RuntimePermissions {
         }
 
         public Builder deny(Permission permission, String scope) {
+            // Denials must not accept an ambiguous empty resource either;
+            // malformed serialized arguments should fail, not be reinterpreted.
+            if (scope == null || scope.isBlank())
+                throw new IllegalArgumentException("empty deny scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
-            if ("*".equals(scope == null ? null : scope.trim())) rule.denyAll = true;
+            if ("*".equals(scope.trim())) rule.denyAll = true;
             else rule.denied.add(normalize(permission, scope));
             return this;
         }
