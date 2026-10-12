@@ -1065,11 +1065,16 @@ final class ActorRuntimeTest {
             });
 
             ref.send((byte) 42);
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (ref.isAlive() && System.nanoTime() < deadline) Thread.sleep(5);
+            // isAlive() becomes false when stop is requested, before the
+            // scheduler exits its native execution lease and closes the
+            // private memory slice. The termination barrier, unlike the
+            // liveness bit, guarantees all cleanup/accounting is complete.
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS),
+                    "actor must finalize after self-stop");
             assertFalse(ref.isAlive());
             assertTrue(ref.failure().isEmpty());
-            assertEquals(0L, runtime.privateMemoryBytes(), "actor teardown must release its private direct-memory quota");
+            assertEquals(0L, runtime.privateMemoryBytes(),
+                    "actor teardown must release its private direct-memory quota");
         }
     }
 

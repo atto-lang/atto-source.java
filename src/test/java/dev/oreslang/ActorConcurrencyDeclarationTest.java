@@ -118,10 +118,9 @@ final class ActorConcurrencyDeclarationTest {
     }
 
     @Test
-    void ordinaryActorsCannotHideAdmissionLimitsAsMutableFields() {
+    void ordinaryActorsExposeOnlyMessageConcurrency() {
         Ast.ClassDecl actor = actor("""
                 define actor Worker as
-                    int requestConcurrency = 1;
                     int messageConcurrency = 1;
                 end
                 """);
@@ -131,14 +130,22 @@ final class ActorConcurrencyDeclarationTest {
         assertTrue(actor.fields().isEmpty());
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
-                    int requestConcurrency = 1;
                     int messageConcurrency = 1;
                 end
                 """)));
+        for (String illegal : new String[] {
+                "int requestConcurrency = 1;",
+                "int requestConcurrency = 3;"
+        }) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse("define actor Worker as\n" + illegal + "\nend"));
+            assertTrue(error.getMessage().contains("ordinary actors expose only messageConcurrency"),
+                    error::getMessage);
+        }
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
-                    int requestConcurrency = 3;
                     int messageConcurrency = 4;
                 end
                 """)));
@@ -191,6 +198,78 @@ final class ActorConcurrencyDeclarationTest {
                 IllegalArgumentException.class, () -> TypeChecker.check(program));
         assertTrue(failure.getMessage().contains("request/session adapter"),
                 failure::getMessage);
+    }
+
+    @Test
+    void allNetworkActorKindsMustHaveAdaptersBeforeSpawnOrPipe() {
+        for (String protocol : new String[] {"http", "tcp", "websocket"}) {
+            String declaration = "define " + protocol + " actor Endpoint as\n"
+                    + "  int requestConcurrency = 1;\n"
+                    + "  int messageConcurrency = 1;\nend\n";
+            for (String spelling : new String[]{
+                    "spawn Endpoint()", "spawn new Endpoint()",
+                    "spawn (new Endpoint())"
+            }) {
+                String source = declaration + "pub routine main(): void {\n"
+                        + "  val running = " + spelling + ";\n  return;\n}";
+                IllegalArgumentException failure = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> TypeChecker.check(Parser.parse(source)),
+                        protocol + " " + spelling);
+                assertTrue(failure.getMessage().contains("request/session adapter"),
+                        failure::getMessage);
+            }
+            String pipe = declaration + """
+                    define actor Sink as
+                      receive(ActorMail<int> mail): void { return; }
+                    end
+                    pub routine main(): void {
+                      val graph = spawn Endpoint() pipe spawn Sink();
+                      return;
+                    }
+                    """;
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(pipe)), protocol);
+            assertTrue(failure.getMessage().contains("request/session adapter"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
+    void actorAdmissionSettingNamesCannotBeInstanceOrStaticMethods() {
+        for (String actorHeader : new String[] {
+                "define actor Worker as",
+                "define serial actor Worker as",
+                "define http actor Worker as"
+        }) {
+            for (String setting : new String[] {
+                    "requestConcurrency", "messageConcurrency"
+            }) {
+                for (String method : new String[] {
+                        setting + "(): int { return 1; }",
+                        "static fnc " + setting + "(): int { return 1; }"
+                }) {
+                    String source = actorHeader + "\n" + method + "\nend";
+                    IllegalArgumentException error = assertThrows(
+                            IllegalArgumentException.class,
+                            () -> TypeChecker.check(Parser.parse(source)), source);
+                    assertTrue(error.getMessage().contains("cannot declare admission setting"),
+                            error::getMessage);
+                }
+            }
+        }
+    }
+
+    @Test
+    void admissionSettingMethodNamesRemainLegalOutsideActors() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Metrics as
+                    pub requestConcurrency(): int { return 1; }
+                    pub messageConcurrency(): int { return 1; }
+                end
+                pub routine main(): void { return; }
+                """)));
     }
 
     @Test

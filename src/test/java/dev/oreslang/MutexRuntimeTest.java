@@ -724,11 +724,23 @@ final class MutexRuntimeTest {
 
             assertTrue(validationEntered.await(2, TimeUnit.SECONDS));
             allowFailure.countDown();
-            for (int i = 0; i < 500 && doomed.failure().isEmpty(); i++) Thread.yield();
-            assertTrue(doomed.failure().isPresent());
-
-            releaseValidation.countDown();
-            sender.join();
+            // A fixed number of Thread.yield() calls does not establish a
+            // happens-before relationship with actor failure on CI runners.
+            // Keep validation suspended until the failure is observed, but
+            // always release the sender even if an assertion fails.
+            try {
+                long failureDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (doomed.failure().isEmpty()
+                        && System.nanoTime() < failureDeadline) {
+                    Thread.sleep(5);
+                }
+                assertTrue(doomed.failure().isPresent(),
+                        "actor must fail before the blocked transport validation resumes");
+            } finally {
+                releaseValidation.countDown();
+            }
+            sender.join(TimeUnit.SECONDS.toMillis(2));
+            assertFalse(sender.isAlive(), "blocked sender must complete after validation resumes");
 
             assertNotNull(senderFailure.get());
             assertTrue(senderFailure.get().getMessage().contains("terminated")

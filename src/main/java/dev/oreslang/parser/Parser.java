@@ -757,11 +757,29 @@ public final class Parser {
             Ast.ActorConcurrencySpec policy, boolean declaredSerial) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
+
+        // This is a builtin actor superclass, not a class reference. The
+        // runtime supplies its final lifecycle and exclusive scheduling
+        // behavior; only its documented hooks are overridable.
+        Ast.BuiltinActorBase builtinBase = null;
+        if (match(FROM)) {
+            if (declaredSerial) {
+                throw error(previous(), "serial actor already selects the builtin serial base");
+            }
+            consumeContextualIdentifier("serial",
+                    "actor 'from' currently supports only the builtin 'serial actor' base");
+            consume(ACTOR, "builtin actor base must be spelled 'from serial actor'");
+            if (actorKind != Ast.ActorKind.SHARED) {
+                throw error(previous(), "builtin serial actor base currently requires a SHARED actor");
+            }
+            builtinBase = Ast.BuiltinActorBase.SERIAL;
+        }
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
+        boolean asStyle = match(AS);
         boolean braceStyle = match(LBRACE);
-        if (!braceStyle) match(AS);
+        if (!asStyle && !braceStyle) match(AS);
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
@@ -790,6 +808,14 @@ public final class Parser {
                 }
                 consume(SEMICOLON, "actor concurrency setting requires ';'");
                 if (key.equals("requestConcurrency")) {
+                    // Generic actors have ONE public concurrency axis:
+                    // the in-flight message-handler limit. A request/session
+                    // dimension makes sense only for HTTP/TCP/WebSocket actors.
+                    if (policy == null || policy.protocol().equals("actor")) {
+                        throw error(raw,
+                                "ordinary actors expose only messageConcurrency; "
+                                + "requestConcurrency is reserved for network actors");
+                    }
                     if (requestDeclared) throw error(raw, "duplicate requestConcurrency setting");
                     requestDeclared = true;
                     requestConcurrency = value;
@@ -798,8 +824,8 @@ public final class Parser {
                     messageDeclared = true;
                     messageConcurrency = value;
                 }
-                if (declaredSerial && value != 1) {
-                    throw error(raw, "serial actor requires requestConcurrency = 1 and messageConcurrency = 1");
+                if ((declaredSerial || builtinBase == Ast.BuiltinActorBase.SERIAL) && value != 1) {
+                    throw error(raw, "serial actor base requires requestConcurrency = 1 and messageConcurrency = 1");
                 }
                 continue;
             }
@@ -840,13 +866,13 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         Ast.ActorConcurrencySpec configured =
-                policy == null && !requestDeclared && !messageDeclared ? null
+                policy == null && builtinBase == null && !requestDeclared && !messageDeclared ? null
                 : new Ast.ActorConcurrencySpec(
                         policy == null ? "actor" : policy.protocol(),
                         requestConcurrency, messageConcurrency);
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces,
-                fields, null, methods, null, configured);
+                fields, null, methods, null, configured, builtinBase);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
@@ -2708,12 +2734,49 @@ public final class Parser {
     }
 
     private Ast.Expr parseConditional() {
-        Ast.Expr condition = parseLogicalOr();
+        Ast.Expr condition = parsePipelines();
         if (!match(QUESTION)) return condition;
         Ast.Expr whenTrue = parseAssignment();
         consume(COLON, "expected ':' in ternary expression");
         Ast.Expr whenFalse = parseConditional();
         return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+    }
+
+    /**
+     * Functional |> is application (with the value inserted as argument zero).
+     * The contextual 'pipe' word is a separate actor-stream composition operator.
+     * Both bind more loosely than arithmetic/logical operators, and associate left.
+     * 'pipe' deliberately remains a legal identifier outside infix position.
+     */
+    private Ast.Expr parsePipelines() {
+        Ast.Expr expr = parseLogicalOr();
+        while (true) {
+            if (match(PIPE_FORWARD)) {
+                Token operator = previous();
+                Ast.Expr target = parseLogicalOr();
+                if (target instanceof Ast.CallExpr call) {
+                    List<Ast.Expr> arguments = new ArrayList<>();
+                    arguments.add(expr);
+                    arguments.addAll(call.arguments());
+                    expr = new Ast.CallExpr(
+                            call.callee(), call.typeArguments(),
+                            call.typeArgumentsPresent(), arguments);
+                } else if (target instanceof Ast.NameExpr
+                        || target instanceof Ast.MemberExpr
+                        || target instanceof Ast.LambdaExpr) {
+                    expr = new Ast.CallExpr(target, List.of(expr));
+                } else {
+                    throw error(operator,
+                            "'|>' expects a callable or a callable invocation on its right; "
+                            + "'pipe' is reserved for actor stream connections");
+                }
+            } else if (matchContextualIdentifier("pipe")) {
+                expr = new Ast.BinaryExpr("pipe", expr, parseLogicalOr());
+            } else {
+                break;
+            }
+        }
+        return expr;
     }
 
     private Ast.Expr parseLogicalOr() {
@@ -3141,13 +3204,22 @@ public final class Parser {
             return new Ast.NameExpr(previous().lexeme());
         }
         if (match(SPAWN)) {
+            // Three spellings produce exactly the same actor-runtime operation:
+            // spawn Worker(), spawn new Worker(), spawn (new Worker()).
+            // In none of these does the caller construct or own actor state.
+            boolean parenthesizedNew = match(LPAREN);
+            if (parenthesizedNew) {
+                consume(NEW, "expected 'new' inside parenthesized actor spawn");
+            } else {
+                match(NEW);
+            }
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after actor type");
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after actor spawn arguments");
-            // Keep actor creation semantically distinct from ordinary class construction.
-            // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
-            // `spawn ActorType(...)`, never `rt spawn` or `new ActorType(...)`.
+            if (parenthesizedNew) {
+                consume(RPAREN, "expected ')' to close parenthesized actor spawn");
+            }
             return new Ast.RuntimeCallExpr("spawn", List.of(new Ast.NewExpr(type, args)));
         }
         if (match(NEW)) {

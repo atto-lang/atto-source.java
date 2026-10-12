@@ -601,7 +601,8 @@ public final class TreeShaker {
                         constructor,
                         methods,
                         klass.proxySpec(),
-                        klass.concurrencySpec());
+                        klass.concurrencySpec(),
+                        klass.builtinActorBase());
             }
             return declaration;
         }

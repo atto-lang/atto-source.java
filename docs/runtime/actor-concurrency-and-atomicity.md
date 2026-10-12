@@ -21,16 +21,20 @@ Separate three dimensions:
 1. **Execution parallelism:** always exactly *at most one native thread* at a
    time executes code belonging to one actor, including continuations, timers,
    request callbacks, and cleanup. This is the actor-wide execution lease.
-2. **Request concurrency:** number of admitted, not-yet-finished HTTP/TCP/
-   WebSocket request/session lifetimes *per actor*. Requests suspended on IO
-   still count toward this bound.
-3. **Message concurrency:** maximum simultaneously admitted, not-yet-finished
-   message-processing lifetimes **per request/session**. This applies to
-   streamed messages, not a count of native threads.
+2. **Transport-session concurrency:** number of admitted live HTTP/TCP/
+   WebSocket connections *per actor*, including idle but open sessions.
+   The parser's legacy spelling for this axis is `requestConcurrency`;
+   this must not be confused with HTTP requests. An HTTP/1.1 keep-alive
+   connection can carry several sequential requests; HTTP/2 and HTTP/3
+   connections can multiplex concurrent streams.
+3. **Message concurrency:** maximum simultaneously admitted logical
+   message-handler invocations **per connection/session**, including
+   suspended handlers. For HTTP, preserve the separate request/stream ID
+   within each session. These axes are not a count of native threads.
 
 For an HTTP actor with `requestConcurrency=3` and
-`messageConcurrency=4`, up to three request lifetimes and four message
-lifetimes *within each request* (12 total) can exist, yet only one native
+`messageConcurrency=4`, up to three live transport sessions and four in-flight message
+handlers *per session* (12 total) can exist, yet only one native
 thread at a time may execute code of that actor. The scheduler must be fair
 between requests and messages and enforce both bounds through atomic admission
 tokens. It must not allocate one carrier per continuation.
@@ -57,12 +61,22 @@ end
 `serial` is contextual in actor-declaration position; it enforces both values
 of one and cannot be overridden by values greater than one. `http`, `tcp`
 and `websocket` are similarly contextual actor protocol labels.
-The two concurrency names are compile-time declarations, **not actor state
+**Ordinary `actor` and `isoactor` expose only `messageConcurrency`**;
+explicit `requestConcurrency` is a compile-time error for a generic
+actor even if assigned `1`. Protocol actors expose exactly the two
+legacy-spelled axes; no third scheduling knob exists.
+The concurrency names are compile-time declarations, **not actor state
 fields**; external callers cannot write them, and user code cannot mutate
-them. Values must be constant positive integers. A bare `serial actor`
-uses protocol `actor`, with a strict (1,1) policy.
+them. Values must be constant positive integers. A bare `serial actor` uses protocol `actor` with a strict
+single-message admission policy. Internally this may be represented
+as `(1,1)` for a shared scheduler layout, but the first dimension is
+not exposed to generic actors.
 
-Default for any currently runnable protocol actor is (1,1). A future runtime
+Protocol actor declarations with `(1,1)` are parser/type-checker
+contracts only: **no `define http/tcp/websocket actor` declaration can
+spawn as a native network listener yet**. The source runtime fails closed
+until a connection-aware ingress broker is implemented.
+Default declarative policy for protocol actors is (1,1). A future runtime
 may choose a different default only with an explicit source-compatibility
 decision; do not silently change this.
 
@@ -150,6 +164,7 @@ an admission manager, enforce the concurrency-aware borrow rules, and test
 fairness, cancellation, nested await, retries, close, backpressure, and
 cross-isolation behavior.
 
-The current parser/type-checker accept (1,1) configurations, reject (3,4),
-and preserve actor configuration through AST transformation. The next
+The current parser/type-checker accept protocol (1,1) declarations,
+reject protocol (3,4) for execution, reject ordinary actor
+`requestConcurrency` outright, and preserve actor configuration through AST transformation. The next
 execution backend must not silently treat (3,4) as (1,1).

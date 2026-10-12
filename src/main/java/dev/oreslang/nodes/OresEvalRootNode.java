@@ -3020,6 +3020,11 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.BinaryExpr binary) {
+                    if (binary.operator().equals("pipe")) {
+                        continuation.accept(task, null, new IllegalStateException(
+                                "actor pipe graph is not implemented; no stages were spawned"));
+                        return;
+                    }
                     if (binary.operator().equals("&&")) {
                         evalSuspendableExpr(
                                 task,
@@ -5744,6 +5749,10 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (expr instanceof Ast.BinaryExpr binary) {
+                if (binary.operator().equals("pipe")) {
+                    throw new IllegalStateException(
+                            "actor pipe graph is not implemented; no stages were spawned");
+                }
                 if (binary.operator().equals("&&")) {
                     Object left = eval(binary.left(), env);
                     return truth(left) && truth(eval(binary.right(), env));
@@ -5804,6 +5813,14 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalStateException(
                                 "ProxyActor requires authenticated remote transport; "
                                 + "local source-actor spawn is forbidden");
+                    }
+                    if (actorClass.builtinActorBase() == Ast.BuiltinActorBase.SERIAL
+                            && (actorClass.actorKind() != Ast.ActorKind.SHARED
+                                || actorClass.concurrencySpec() == null
+                                || !actorClass.concurrencySpec().serial())) {
+                        throw new IllegalStateException(
+                                "builtin serial actor spawn must preserve SHARED isolation "
+                                + "and exclusive handler admission");
                     }
                     if (actorClass.concurrencySpec() != null
                             && !actorClass.concurrencySpec().protocol().equals("actor")) {
@@ -7121,7 +7138,9 @@ public final class OresEvalRootNode extends RootNode {
                 boolean externalConstruction) {
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalStateException("actor '" + klass.name()
-                        + "' cannot be constructed with new; actor state must be initialized inside ActorRuntime");
+                        + "' cannot be constructed with new outside spawn; "
+                        + "use 'spawn " + klass.name() + "()' or 'spawn new " + klass.name()
+                        + "()'. Actor state must be initialized inside ActorRuntime");
             }
             if (externalConstruction && klass.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException(

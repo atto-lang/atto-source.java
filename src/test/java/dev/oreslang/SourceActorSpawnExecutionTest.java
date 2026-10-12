@@ -268,13 +268,56 @@ final class SourceActorSpawnExecutionTest {
         }) {
             String statement = modifier.isEmpty()
                     ? "define actor Worker as\n"
-                        + "int requestConcurrency = 1;\n"
                         + "int messageConcurrency = 1;\n"
                     : "define serial actor Worker as\n";
             String program = body.replace("actor Worker as\n", statement);
             assertEquals("before|1|second", run(program, "serial-execution.ores"),
                     "a suspended serial handler must not admit another user message");
         }
+    }
+
+    @Test
+    void builtinSerialActorSubclassPreservesRuntimeSchedulingAndOverrideHooks() throws Exception {
+        String program = """
+                define actor Base from serial actor as {
+                    let int progress;
+                    on_start(): void {
+                        self.progress = 1;
+                        return;
+                    }
+                    pub progress_value(): int { return self.progress; }
+                    receive(ActorMail<String> mail): void {
+                        self.send("base");
+                        self.end();
+                        return;
+                    }
+                }
+
+                define actor Child extends Base as
+                    receive(ActorMail<String> mail): void {
+                        self.send("before");
+                        rt cooperate;
+                        self.send(self.progress_value());
+                        self.end();
+                        return;
+                    }
+                end
+
+                pub async routine main(): void {
+                    val worker = spawn Child();
+                    await worker.ready;
+                    worker.send("first");
+                    val one = (await worker.outputs.next()).value.unwrap();
+                    val two = (await worker.outputs.next()).value.unwrap();
+                    stdio.stdout.write(one.value);
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(two.value);
+                    await worker.done;
+                    return;
+                }
+                """;
+        assertEquals("before|1", run(program, "builtin-serial-subclass.ores"),
+                "child receive override must preserve inherited actor state and single-flight scheduling");
     }
 
     private static String run(String sourceText, String name) throws Exception {
