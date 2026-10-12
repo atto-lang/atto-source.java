@@ -74,6 +74,17 @@ public final class EnumPayloadDependencies {
             throw new IllegalArgumentException(
                     "enum payload dependency descriptor exceeds depth/node quota");
         }
+        if (type.name().equals("Box")) {
+            // Box is only a finite-sized *indirection type constructor*.
+            // Until its runtime is implemented, never infer size breakage
+            // from Box<> / Box<Foo, Bar> / boxed metadata.
+            if (type.inferArguments() || type.arguments().size() != 1
+                    || type.arguments().getFirst().isNamedParameter()
+                    || type.arguments().getFirst().isSequenceShape()) {
+                throw new IllegalArgumentException(
+                        "Box<T> requires exactly one explicit element type");
+            }
+        }
         if (enums.contains(type.name())) {
             if (!type.arguments().isEmpty()) {
                 throw new IllegalArgumentException(
