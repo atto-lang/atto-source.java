@@ -5356,10 +5356,10 @@ public final class OresEvalRootNode extends RootNode {
             if (call.typeArgumentsPresent()
                     || call.arguments().size() != 1
                     || !(call.arguments().getFirst() instanceof Ast.LambdaExpr callback)
-                    || !callback.explicitStateMode() || callback.nonLexical()
+                    || callback.nonLexical()
                     || callback.parameters().size() != 1) {
                 throw new IllegalArgumentException(
-                        "handle_state requires an inline critical read or critical write callback");
+                        "handle_state requires one inline lexical state callback (read by default; critical for write)");
             }
             Set<Object> seen = java.util.Collections.newSetFromMap(
                     new IdentityHashMap<>());
@@ -5372,7 +5372,8 @@ public final class OresEvalRootNode extends RootNode {
                         "critical handle_state await/select requires resumable state-loan lowering");
             }
             return invokableInvocation(ignored -> actor.actorState.critical(
-                    callback.criticalMode() == Ast.CriticalMode.WRITE, access -> {
+                    callback.criticalMode() == Ast.CriticalMode.WRITE
+                            || callback.criticalMode() == Ast.CriticalMode.EXCLUSIVE, access -> {
                 Env local = new Env(env);
                 local.define(callback.parameters().getFirst().name(), access, Ast.BindingKind.VAL);
                 try {
