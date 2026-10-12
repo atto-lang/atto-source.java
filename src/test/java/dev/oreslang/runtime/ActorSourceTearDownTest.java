@@ -9,6 +9,8 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -117,6 +119,65 @@ final class ActorSourceTearDownTest {
                 assertEquals(1, executor.teardowns.get(), "actor kind " + kind);
                 assertFalse(ref.isAlive());
             }
+        }
+    }
+
+    @Test
+    void stopAfterGuestTurnButBeforeTurnExecutorReturnReschedulesTeardown()
+            throws Exception {
+        CountDownLatch returnedFromGuest = new CountDownLatch(1);
+        CountDownLatch releaseTurnExecutor = new CountDownLatch(1);
+        AtomicBoolean first = new AtomicBoolean();
+        AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+        ActorRuntime.TurnExecutor delayedBoundary = turn -> {
+            turn.run();
+            if (first.compareAndSet(false, true)) {
+                returnedFromGuest.countDown();
+                try {
+                    if (!releaseTurnExecutor.await(3, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "test did not release first TurnExecutor boundary");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("test carrier interrupted", interrupted);
+                }
+            }
+        };
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(
+                     IsolatePolicy.developer(),
+                     ActorRuntime.DispatcherConfig.defaults(),
+                     delayedBoundary)) {
+            Executor executor = new Executor(image(store), false);
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            ref.ready().get(2, TimeUnit.SECONDS);
+            assertTrue(returnedFromGuest.await(2, TimeUnit.SECONDS));
+            Thread stopping = new Thread(() -> {
+                try {
+                    ref.stop();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            }, "actor-stop-at-carrier-exit");
+            stopping.start();
+            try {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (ref.isAlive() && System.nanoTime() < deadline) {
+                    Thread.yield();
+                }
+                assertFalse(ref.isAlive(), "host stop must seal admission");
+            } finally {
+                releaseTurnExecutor.countDown();
+            }
+            ref.done().get(3, TimeUnit.SECONDS);
+            stopping.join(TimeUnit.SECONDS.toMillis(3));
+            assertFalse(stopping.isAlive(), "host stop must not stay parked");
+            assertNull(stopFailure.get(), () -> "host stop failure: " + stopFailure.get());
+            assertEquals(1, executor.teardowns.get(),
+                    "reserved teardown wake must survive TurnExecutor exit");
+            assertEquals(0, executor.receives.get());
         }
     }
 
