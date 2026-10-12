@@ -9,6 +9,66 @@ import org.junit.jupiter.api.Test;
 
 final class OresVMTest {
     @Test
+    void executorThrowingDuringPhysicalRootTurnQuarantinesHostAndRetirement()
+            throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var letExit = new java.util.concurrent.CountDownLatch(1);
+        var worker = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        var bodyRuns = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.Executor broken = admitted -> {
+            Thread carrier = Thread.ofPlatform().daemon(true).start(admitted);
+            worker.set(carrier);
+            if (!entered.await(5, TimeUnit.SECONDS)) {
+                throw new java.util.concurrent.RejectedExecutionException(
+                        "physical guest turn failed to start in test");
+            }
+            // The executor reports failure WHILE its accepted guest carrier
+            // remains entered. It is not safe to replay or retire that turn.
+            throw new java.util.concurrent.RejectedExecutionException(
+                    "accepted CONTROL runnable is still physically executing");
+        };
+        OresVM vm = OresVM.create(Runnable::run, broken);
+        OresVM.HostHandoffLease lease = vm.beginHostHandoff();
+        try {
+            vm.rootScheduler().startSync(() -> {
+                bodyRuns.incrementAndGet();
+                entered.countDown();
+                if (!letExit.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test did not release guest body");
+                }
+                return 83;
+            });
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    java.util.concurrent.RejectedExecutionException.class,
+                    lease::close,
+                    "executor failure while entered cannot prove physical DONE");
+            assertEquals(1, bodyRuns.get());
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    java.util.concurrent.RejectedExecutionException.class,
+                    vm::beginHostHandoff,
+                    "an uncertain root entry must permanently quarantine host admission");
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class, vm::requireHostHandoffReleased,
+                    "an uncertain carrier may never be treated as quiescent");
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    java.util.concurrent.RejectedExecutionException.class,
+                    lease::close,
+                    "idempotent close may not replay an uncertain physical carrier");
+            assertEquals(1, bodyRuns.get());
+        } finally {
+            letExit.countDown();
+            Thread carrier = worker.get();
+            if (carrier != null) {
+                carrier.join(5000);
+                assertTrue(!carrier.isAlive());
+            }
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class, vm::close,
+                    "uncertain physical exit must block VM retirement");
+        }
+    }
+
+    @Test
     void inlineExecutorThatRunsGuestThenThrowsCannotReplayCompletedTurn()
             throws Exception {
         var submissions = new java.util.concurrent.atomic.AtomicInteger();
