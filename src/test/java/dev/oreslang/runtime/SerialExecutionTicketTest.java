@@ -122,6 +122,25 @@ final class SerialExecutionTicketTest {
         assertFalse(unbound.mayEnqueue());
     }
 
+    @Test void stopRetiresOwnContinuationButDoesNotHideForeignActorAuthority() {
+        Object incarnation = new Object();
+        AtomicBoolean alive = new AtomicBoolean(true);
+        var ticket = new SerialExecutionTicket(
+                "actor", incarnation, 17L, null, null, alive::get);
+        ticket.requireRunnable("actor", incarnation, null);
+        alive.set(false);
+        assertFalse(ticket.mayEnqueue());
+        assertThrows(SerialExecutionTicket.RetiredTaskException.class,
+                () -> ticket.requireAdmissible("actor", incarnation, null),
+                "same-incarnation STOP races are benign retired completions");
+        assertThrows(IllegalStateException.class,
+                () -> ticket.requireAdmissible("foreign-actor", incarnation, null),
+                "retirement must never legitimize foreign actor tickets");
+        assertThrows(IllegalStateException.class,
+                () -> ticket.requireAdmissible("actor", new Object(), null),
+                "retirement must never hide stale-incarnation authority");
+    }
+
     @Test void lateQueuedCompletionAfterReceiveCloseIsBenignAcrossNextTurn() {
         Object incarnation = new Object();
         SerialActorAdmission gate = new SerialActorAdmission(3);
