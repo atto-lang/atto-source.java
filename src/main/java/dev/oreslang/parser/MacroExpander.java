@@ -38,6 +38,10 @@ public final class MacroExpander {
             NAMESPACE, TYPE, TYPES, PUB, PRIVATE, STATIC, ABSTRACT,
             SHARED, UNTRUSTED, GENERATOR, STOP, DONE, DEF,
             CONFORMS, EXTENDS, IMPLEMENTS, STRUCTURAL, MUT, NLEX, RT,
+            // Annotation synthesis and async/actor authority are not valid
+            // expression-template syntax without typed AST/effect lowering.
+            AT, BACKTICK, AWAIT, SPAWN, SELECT, READCH, WRITECH,
+            ASYNC, SUSPENDS, TRAP,
             EQUAL, FAT_ARROW, ARROW);
 
 
