@@ -15,7 +15,10 @@ java -cp "$work" dev.oreslang.runtime.accel.AcceleratorSafetySmoke
 # control-plane transition to consumers outside the runtime package.
 for call in 'beginCommand(id)' 'complete(t, true)' 'cancelPending(t)' \
             'acknowledgeCancelledDeviceEvent(t, id)' \
-            'retireAfterBackendRelease(id)' 'claimPair(fence, fence, 1024)'; do
+            'retireAfterBackendRelease(id)' 'claimPair(fence, fence, 1024)' \
+            'completePair(fence, fence, null, true)' \
+            'cancelPair(fence, fence, null)' \
+            'acknowledgeCancelledPair(fence, fence, null)'; do
     printf '%s\n' \
         'import dev.oreslang.runtime.accel.GpuBufferFence;' \
         'final class OutsideRuntimePackage {' \
