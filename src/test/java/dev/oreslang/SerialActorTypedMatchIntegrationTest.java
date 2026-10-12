@@ -37,7 +37,7 @@ final class SerialActorTypedMatchIntegrationTest {
                     });
                 }
 
-                async receive(ActorMail<String> mail): void {
+                suspends receive(ActorMail<String> mail): void {
                     const answer: int = match<ret=int> await ready() over {
                         on 7 {
                             defer stdio.println("first");
@@ -58,10 +58,10 @@ final class SerialActorTypedMatchIntegrationTest {
 
             pub async routine main(): void {
                 val worker = spawn Counter();
-                await worker.ready;
+                await worker.get_ready();
                 worker.send("first");
                 worker.send("second");
-                await worker.done;
+                await worker.get_done();
                 return;
             }
             """;
