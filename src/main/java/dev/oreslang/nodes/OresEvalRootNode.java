@@ -46,6 +46,8 @@ public final class OresEvalRootNode extends RootNode {
     public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
+    public static final String INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND =
+            "__ores_internal_invoke_public_future_bridge__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
 
     private final Ast.Program program;
@@ -81,6 +83,56 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
+        // Bridge messages are host control messages, never guest main calls.
+        // Reject missing/malformed nonce before linking or scheduling a task.
+        // In particular, an incomplete internal command must not fall through
+        // to the backward-compatible executeMain entrypoint.
+        boolean futureBridgeCommand = arguments.length > 0
+                && INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0]);
+        if (futureBridgeCommand) {
+            // Adversarial contexts retain a single owner thread and queue root
+            // turns for owner-side pumping. Returning an unpumped host Future
+            // would strand it forever and risk leaking cancellation cleanup.
+            // Reject this entrypoint until a supervisor-owned isolate turn
+            // pump is available; never spawn an orphaned root task.
+            if (context.isolatePolicy().adversarial()) {
+                throw new SecurityException(
+                        "scoped host Future bridge is unavailable in adversarial contexts");
+            }
+            if (arguments.length < 3
+                    || !(arguments[1] instanceof String functionName)
+                    || !(arguments[2] instanceof String nonce)) {
+                throw new SecurityException("invalid scoped host Future handoff command");
+            }
+            // Consume the one-use ticket before linking or guest dispatch.
+            OresHostFutureBridge.requireActiveScope(functionName, nonce, context, this);
+        }
+
+        // A malformed reserved host command must not fall through to guest
+        // main or trigger evaluator initialization as a side effect.
+        if (arguments.length > 0
+                && arguments[0] instanceof String control
+                && control.startsWith("__ores_internal_")) {
+            boolean wellFormed = isControl(arguments, LINK_ONLY_COMMAND)
+                    || isControl(arguments, INIT_ONLY_COMMAND)
+                    || isControl(arguments, MAIN_ONLY_COMMAND)
+                    || (REGISTER_IMPORT_COMMAND.equals(control)
+                        && arguments.length == 3
+                        && arguments[1] instanceof String
+                        && arguments[2] instanceof String)
+                    || (INVOKE_PUBLIC_COMMAND.equals(control)
+                        && arguments.length >= 2
+                        && arguments[1] instanceof String)
+                    || (futureBridgeCommand
+                        && arguments.length >= 3
+                        && arguments[1] instanceof String
+                        && arguments[2] instanceof String);
+            if (!wellFormed) {
+                throw new SecurityException(
+                        "malformed or unknown internal Oreslang host control command");
+            }
+        }
+
         Evaluator current = evaluator(context);
         if (isControl(arguments, LINK_ONLY_COMMAND)) {
             current.link();
@@ -98,17 +150,50 @@ public final class OresEvalRootNode extends RootNode {
             });
         }
         if (arguments.length >= 2
-                && INVOKE_PUBLIC_COMMAND.equals(arguments[0])
+                && (INVOKE_PUBLIC_COMMAND.equals(arguments[0])
+                    || INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0]))
                 && arguments[1] instanceof String functionName) {
+            boolean bridged = futureBridgeCommand;
             current.link();
             Object result = current.invokePublic(
-                    functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
-            // Runtime Future/Channel handles are not valid raw Truffle interop
-            // results. Adapt only the explicit public embedder boundary:
-            // guest dispatch retains native Oreslang handles, and no arbitrary
-            // host object gains admission across an async guest task boundary.
+                    functionName,
+                    java.util.Arrays.copyOfRange(
+                            arguments, bridged ? 3 : 2, arguments.length),
+                    bridged);
+            if (bridged) {
+                if (!(result instanceof OresFuture<?> future)) {
+                    throw new IllegalArgumentException(
+                            "host Future handoff requires an async public function: " + functionName);
+                }
+                try {
+                    if (!OresHostFutureBridge.publish(
+                            functionName, (String) arguments[2], context, this, future)) {
+                        throw new SecurityException(
+                                "host Future handoff requires an active scoped invocation");
+                    }
+                } catch (RuntimeException | Error rejected) {
+                    // Producer exists but no host receiver owns it. Request
+                    // cancellation and retain the actual cleanup barrier.
+                    try { future.cancel(false); }
+                    catch (RuntimeException | Error cancelFailure) {
+                        if (cancelFailure != rejected) rejected.addSuppressed(cancelFailure);
+                    }
+                    throw rejected;
+                }
+                // Return a plain scalar acknowledgment. The embedder already
+                // has the real Future in its thread-local host-only scope and
+                // must not call Value.asHostObject() while guest work runs.
+                return 0;
+            }
+            // Runtime-owned Future, Channel and pull-driven Generator handles
+            // cannot be returned as raw Truffle guest results. Convert only
+            // at the explicit public embedder boundary to satisfy the Polyglot
+            // interop value contract. Generators remain lazy; no producer is
+            // dispatched until Java requests a pull from its typed handle.
             if (result instanceof OresFuture<?>
-                    || result instanceof ChannelRuntime.Channel<?>) {
+                    || result instanceof ChannelRuntime.Channel<?>
+                    || result instanceof GeneratorRuntime.Generator<?>
+                    || result instanceof GeneratorRuntime.AsyncGenerator<?>) {
                 return context.env().asGuestValue(result);
             }
             return result;
@@ -699,10 +784,52 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invokePublic(String name, Object[] arguments) {
+            return invokePublic(name, arguments, false);
+        }
+
+        private Object invokePublic(
+                String name, Object[] arguments, boolean requireAsync) {
             Ast.FunctionDecl fn = findFunction(name, arguments.length);
             if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export public function '" + name + "'");
+            }
+            // External host iteration of an async generator would start
+            // an AsyncRuntime virtual carrier without an authorized, pumped
+            // Truffle guest turn. The generator is lazy, so reject here
+            // BEFORE constructing/publishing its handle or guest side effects.
+            // Guest-to-guest async generator iteration remains available.
+            if (!requireAsync && fn.generator() && fn.async()) {
+                throw new SecurityException(
+                        "host async generator pulls require an authorized isolate turn pump: "
+                        + name);
+            }
+            // An async public callable produces a scheduler-owned Future.
+            // Legacy Value.execute() plus Value.asHostObject() must not return
+            // that Future: the host's second interop entry can race the freshly
+            // dispatched guest task. Reject BEFORE calling any guest body.
+            // Pull-driven async generators are not Futures and keep their
+            // separate iterator protocol.
+            if (!requireAsync && !fn.generator()
+                    && (fn.async() || (fn.returnType() != null && "Future".equals(fn.returnType().name())))) {
+                throw new IllegalArgumentException(
+                        "legacy public Future return is unsafe; use "
+                        + "OresHostFutureBridge.invokePublicFuture: " + name);
+            }
+            // Reject unsupported synchronous functions BEFORE any guest body
+            // executes. Otherwise the host Future bridge may throw after
+            // running user side effects and misreporting a rejected request.
+            if (requireAsync && !fn.async()
+                    && !(fn.returnType() != null && "Future".equals(fn.returnType().name()))) {
+                throw new IllegalArgumentException(
+                        "host Future handoff requires an async public function or "
+                        + "a public function returning Future<T>: " + name);
+            }
+            if (requireAsync && fn.generator()) {
+                // Async generators are pull-driven iterators, not Futures;
+                // reject before creating a producer or running guest effects.
+                throw new IllegalArgumentException(
+                        "host Future handoff does not accept async generators: " + name);
             }
             Object result = callFunction(fn, java.util.Arrays.asList(arguments));
             return result instanceof HostObjectFacade host ? host.value() : result;

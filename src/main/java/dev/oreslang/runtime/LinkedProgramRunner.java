@@ -9,6 +9,7 @@ import dev.oreslang.interop.MixedInteropBridge;
 import dev.oreslang.interop.MixedJavaCompiler;
 import dev.oreslang.interop.MixedSourceUnit;
 import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.nodes.OresHostFutureBridge;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.stdlib.CoreLibrarySources;
 import org.graalvm.polyglot.Context;
@@ -248,7 +249,16 @@ public final class LinkedProgramRunner {
                     LinkedHashMap<String, MixedInteropBridge.Invoker> bridgeInvokers = new LinkedHashMap<>();
                     for (Map.Entry<String, Value> parsed : parsedUnits.entrySet()) {
                         Value unit = parsed.getValue();
+                        Ast.Program compiledProgram = programs.get(parsed.getKey());
                         bridgeInvokers.put(parsed.getKey(), (function, arguments) -> {
+                            // Decide from the validated source AST before any guest
+                            // dispatch. A legacy Value.asHostObject() call after
+                            // starting an async task may race CONTROL Truffle entry.
+                            if (publicFunctionReturnsFuture(
+                                    compiledProgram, function, arguments.length)) {
+                                return OresHostFutureBridge.invokePublicFuture(
+                                        unit, function, arguments);
+                            }
                             Object[] invocation = new Object[2 + arguments.length];
                             invocation[0] = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
                             invocation[1] = function;
@@ -272,6 +282,49 @@ public final class LinkedProgramRunner {
             }
         }
         return new RunResult(build, exitStatus);
+    }
+
+    /**
+     * Exact name/arity preflight for Java mixed-source export invocations.
+     * Keep this consistent with the Truffle root's own async/Future preflight;
+     * a pull-driven generator does not return an OresFuture.
+     */
+    static boolean publicFunctionReturnsFuture(
+            Ast.Program program, String name, int arity) {
+        if (program == null || name == null || name.isBlank()) return false;
+        // The evaluator indexes name + arity inside its owning module and
+        // rejects unqualified names when multiple modules define that name.
+        // Host preflight must resolve the *same* callable before choosing
+        // between the scalar Polyglot path and a scoped Future handoff.
+        int dot = name.lastIndexOf('.');
+        String owner = dot >= 0 ? name.substring(0, dot) : null;
+        String simpleName = dot >= 0 ? name.substring(dot + 1) : name;
+        String unqualifiedOwner = null;
+        Ast.FunctionDecl selected = null;
+        for (Ast.ModuleDecl module : program.modules()) {
+            if (owner != null && !owner.equals(module.name())) continue;
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.FunctionDecl fn)
+                        || !fn.name().equals(simpleName)) continue;
+                if (owner == null) {
+                    // Ambiguity is per function name, not per arity. Even a
+                    // non-public overload in another module makes a bare
+                    // lookup ambiguous at the guest evaluator boundary.
+                    if (unqualifiedOwner != null
+                            && !unqualifiedOwner.equals(module.name())) {
+                        throw new IllegalArgumentException("ambiguous function "
+                                + simpleName + "; qualify it with its module");
+                    }
+                    unqualifiedOwner = module.name();
+                }
+                if (fn.parameters().size() == arity) selected = fn;
+            }
+        }
+        return selected != null
+                && selected.visibility() == Ast.Visibility.PUBLIC
+                && !selected.generator()
+                && (selected.async() || (selected.returnType() != null
+                    && "Future".equals(selected.returnType().name())));
     }
 
     private static int requireExitStatus(Value value) {

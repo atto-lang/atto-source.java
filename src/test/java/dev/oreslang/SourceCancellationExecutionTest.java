@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.nodes.OresHostFutureBridge;
 import dev.oreslang.runtime.OresFuture;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -45,10 +46,8 @@ final class SourceCancellationExecutionTest {
     private static OresFuture<?> start(Context context, String source) throws Exception {
         Source guest = Source.newBuilder(OresLanguage.ID, source, "source-cancel.ores")
                 .mimeType(OresLanguage.MIME_TYPE).build();
-        Value result = context.parse(guest).execute(
-                OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "work");
-        assertTrue(result.isHostObject(), "async source result must be a runtime Future");
-        return assertInstanceOf(OresFuture.class, result.asHostObject());
+        Value parsed = context.parse(guest);
+        return OresHostFutureBridge.invokePublicFuture(parsed, "work");
     }
 
     @Test

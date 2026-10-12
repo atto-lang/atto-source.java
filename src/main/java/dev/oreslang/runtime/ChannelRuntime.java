@@ -273,14 +273,25 @@ public final class ChannelRuntime {
         }
 
         public void retire() {
-            // Retirement is an admission AND commit barrier, not merely a
-            // fairness-accounting sentinel. Without the coordinator gate a
-            // stopped actor's already-registered selection could still
-            // consume a later write, and fresh selections could be admitted.
+            fenceRetirement().run();
+        }
+
+        /**
+         * Atomically seal and detach every pending operation, returning only
+         * the Future notifications. Actor.stop() calls this under lifecycleLock
+         * but MUST run its returned action after releasing that monitor:
+         * Future waiters may reenter actor/scheduler accounting.
+         *
+         * <p>Never hand a detached selection to a new caller. New registrations
+         * reject the retired cursor under the same COORDINATOR. Completing
+         * callbacks afterwards cannot change a previously committed channel
+         * operation.</p>
+         */
+        public Runnable fenceRetirement() {
             ArrayList<Runnable> cancellations = new ArrayList<>();
             COORDINATOR.lock();
             try {
-                if (index.get() == RETIRED) return;
+                if (index.get() == RETIRED) return () -> { };
                 index.set(RETIRED);
                 for (SelectRegistration selection : List.copyOf(ACTIVE)) {
                     if (selection.set.fairCursor != this || selection.decided) continue;
@@ -293,8 +304,9 @@ public final class ChannelRuntime {
             } finally {
                 COORDINATOR.unlock();
             }
-            // Never invoke scheduler callbacks while holding COORDINATOR.
-            runCompletions(cancellations);
+            // Caller controls when callbacks fire: no COORDINATOR and no
+            // enclosing actor lifecycle monitor may be held during delivery.
+            return () -> runCompletions(cancellations);
         }
 
         private boolean isRetired() {

@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.nodes.OresHostFutureBridge;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.OresScheduler;
@@ -82,10 +83,10 @@ final class SourcePendingCleanupExecutionTest {
         assertSame(fin, command.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
                 "exposeFinallyGate").asHostObject(),
                 "reading a module field must reuse its exact process-local channel identity");
-        Value result = command.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "work");
-        assertTrue(result.isHostObject(), "async source invocation must return a host Future");
-        return new Started(assertInstanceOf(OresFuture.class, result.asHostObject()),
-                start, fin, defer);
+        // The Future is captured before Truffle Value.execute returns. Never
+        // enter Polyglot Value.asHostObject once the source task can execute.
+        OresFuture<?> task = OresHostFutureBridge.invokePublicFuture(command, "work");
+        return new Started(task, start, fin, defer);
     }
 
 
@@ -330,7 +331,7 @@ final class SourcePendingCleanupExecutionTest {
 
 
     @Test
-    void cancelledBlockingStaticSelectRevokesAllPendingChannelRegistrations()
+    void bridgedCancellationRevokesAllPendingMultiArmStaticSelectRegistrations()
             throws Exception {
         String source = """
                 pub async fnc work(): int {
@@ -338,7 +339,10 @@ final class SourcePendingCleanupExecutionTest {
                     stdio.println("armed");
                     select {
                       case readch gates.startGate: val value {
-                        stdio.println("INVALID-selected");
+                        stdio.println("INVALID-selected-first");
+                      }
+                      case readch gates.finallyGate: val other {
+                        stdio.println("INVALID-selected-second");
                       }
                     }
                   } catch (cancelled) {
@@ -355,13 +359,18 @@ final class SourcePendingCleanupExecutionTest {
             Started started = start(context, source);
             awaitOutput(output, "armed");
             awaitChannelRegistration(started.startGate());
+            awaitChannelRegistration(started.finallyGate());
             assertTrue(started.task().cancel(false));
             assertThrows(CancellationException.class,
                     () -> started.task().get(5, TimeUnit.SECONDS));
             assertEquals(0, activeChannelRegistrations(started.startGate()),
-                    "a cancelled select must revoke its owned pending channel case");
+                    "a cancelled select must revoke its first registered channel arm");
+            assertEquals(0, activeChannelRegistrations(started.finallyGate()),
+                    "a cancelled select must revoke its second registered channel arm");
             assertFalse(started.startGate().tryWrite(41),
-                    "late producer must not complete an abandoned select read");
+                    "late producer cannot complete first abandoned select arm");
+            assertFalse(started.finallyGate().tryWrite(42),
+                    "late producer cannot complete second abandoned select arm");
             assertEquals("armed\ncleanup-once\n", output(output));
         }
     }
