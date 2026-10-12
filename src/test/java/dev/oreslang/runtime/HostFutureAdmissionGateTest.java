@@ -24,8 +24,12 @@ final class HostFutureAdmissionGateTest {
         AtomicInteger admitted = new AtomicInteger();
         FutureTask<Void> carrier = new FutureTask<>(() -> {
             launched.countDown();
-            gate.awaitGuestAdmission();
-            admitted.incrementAndGet();
+            Runnable lease = gate.reserveGuestTurn();
+            try {
+                admitted.incrementAndGet();
+            } finally {
+                lease.run();
+            }
             return null;
         });
         Thread thread = new Thread(carrier, "guest-behind-host-value");
@@ -55,7 +59,7 @@ final class HostFutureAdmissionGateTest {
         CountDownLatch started = new CountDownLatch(1);
         FutureTask<Void> carrier = new FutureTask<>(() -> {
             started.countDown();
-            gate.awaitGuestAdmission();
+            gate.reserveGuestTurn().run();
             return null;
         });
         Thread thread = new Thread(carrier, "guest-closed-host-context");
@@ -66,7 +70,7 @@ final class HostFutureAdmissionGateTest {
             ExecutionException failure = assertThrows(ExecutionException.class,
                     () -> carrier.get(5, TimeUnit.SECONDS));
             assertInstanceOf(RejectedExecutionException.class, failure.getCause());
-            assertThrows(RejectedExecutionException.class, gate::awaitGuestAdmission);
+            assertThrows(RejectedExecutionException.class, gate::reserveGuestTurn);
             assertThrows(IllegalStateException.class, gate::begin);
             // The original host still owns this scope and must release it
             // safely even after disposal to avoid retaining its thread.
@@ -100,6 +104,66 @@ final class HostFutureAdmissionGateTest {
     }
 
     @Test
+    void activeGuestReservationRejectsNewHostClaimUntilTruffleLeave()
+            throws Exception {
+        HostFutureAdmissionGate gate = new HostFutureAdmissionGate();
+        CountDownLatch guestReserved = new CountDownLatch(1);
+        CountDownLatch guestMayLeave = new CountDownLatch(1);
+        FutureTask<Void> guest = new FutureTask<>(() -> {
+            Runnable lease = gate.reserveGuestTurn();
+            guestReserved.countDown();
+            try {
+                if (!guestMayLeave.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("guest leave was not released");
+                }
+            } finally {
+                lease.run();
+            }
+            return null;
+        });
+        Thread thread = new Thread(guest, "guest-reserves-before-host");
+        try {
+            thread.start();
+            assertTrue(guestReserved.await(5, TimeUnit.SECONDS));
+            IllegalStateException blocked = assertThrows(
+                    IllegalStateException.class, gate::begin);
+            assertTrue(blocked.getMessage().contains("idle guest-entry"),
+                    blocked.getMessage());
+            guestMayLeave.countDown();
+            guest.get(5, TimeUnit.SECONDS);
+            gate.begin();
+            gate.end();
+        } finally {
+            guestMayLeave.countDown();
+            gate.close();
+            thread.join(5_000);
+        }
+        assertFalse(thread.isAlive());
+    }
+
+    @Test
+    void guestEntryLeaseIsSingleUseAndCarrierBound() throws Exception {
+        HostFutureAdmissionGate gate = new HostFutureAdmissionGate();
+        Runnable lease = gate.reserveGuestTurn();
+        FutureTask<Boolean> foreign = new FutureTask<>(() -> {
+            assertThrows(IllegalStateException.class, lease::run);
+            return true;
+        });
+        Thread thread = new Thread(foreign, "wrong-guest-lease-owner");
+        try {
+            thread.start();
+            assertTrue(foreign.get(5, TimeUnit.SECONDS));
+            lease.run();
+            assertThrows(IllegalStateException.class, lease::run);
+            gate.begin();
+            gate.end();
+        } finally {
+            gate.close();
+            thread.join(5_000);
+        }
+    }
+
+    @Test
     void interruptedGuestNeverPassesAdmissionOrLosesInterruptFlag() throws Exception {
         HostFutureAdmissionGate gate = new HostFutureAdmissionGate();
         gate.begin();
@@ -107,7 +171,7 @@ final class HostFutureAdmissionGateTest {
         FutureTask<Boolean> carrier = new FutureTask<>(() -> {
             start.countDown();
             try {
-                gate.awaitGuestAdmission();
+                gate.reserveGuestTurn().run();
                 return false;
             } catch (java.util.concurrent.CancellationException expected) {
                 return Thread.currentThread().isInterrupted();
