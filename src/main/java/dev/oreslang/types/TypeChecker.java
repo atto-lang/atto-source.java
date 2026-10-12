@@ -1991,23 +1991,23 @@ public final class TypeChecker {
     private boolean safeValueMatchContextScalarExpr(Ast.Expr expr, Env env) {
         if (safeValueMatchScalarExpr(expr)) return true;
         if (!currentMaySuspend) return false;
-        // An actor may await only an explicitly declared local instance
-        // producer through self. Do not grant ambient file/module callable
-        // access, accept an alias, or use an arbitrary actor reference here.
+        // Only a direct static function owned by the current actor class is
+        // admissible here. An async instance method would capture self across
+        // suspension without an implemented receiver move/borrow protocol.
         if (expr instanceof Ast.AwaitExpr actorAwait
                 && actorAwait.expression() instanceof Ast.CallExpr actorCall
                 && actorCall.callee() instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr receiver
-                && receiver.name().equals("self")
                 && actorCall.arguments().isEmpty()
                 && !actorCall.typeArgumentsPresent()
                 && lexicalClassOrigin != null
                 && lexicalClassOrigin.actorKind() != Ast.ActorKind.NONE
-                && currentClassOwner == lexicalClassOrigin) {
+                && currentClassOwner == lexicalClassOrigin
+                && receiver.name().equals(lexicalClassOrigin.name())) {
             int matches = 0;
             for (Ast.MethodDecl candidate : lexicalClassOrigin.methods()) {
                 if (candidate.name().equals(member.member())
-                        && !candidate.isStatic()
+                        && candidate.isStatic()
                         && !candidate.isAbstract()
                         && candidate.async()
                         && candidate.genericParameters().isEmpty()
