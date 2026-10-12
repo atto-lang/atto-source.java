@@ -32,13 +32,38 @@ public final class OresMain {
 
     private OresMain() { }
 
-    public static void main(String[] args) throws Exception {
+    /**
+     * Only the standalone command-line host is permitted to terminate its process.
+     * Embedders use LinkedProgramRunner.runWithExitStatus() instead.
+     */
+    public static void main(String[] args) {
+        int status = exitStatusForArgs(args);
+        if (status != 0) System.exit(status);
+    }
+
+    /** Testable CLI boundary: syntax/configuration failures never masquerade as success. */
+    static int exitStatusForArgs(String[] args) {
+        try {
+            return runForExitStatus(args);
+        } catch (UsageException failure) {
+            System.err.println("oreslang: " + failure.getMessage());
+            return 2;
+        } catch (Exception failure) {
+            String message = failure.getMessage();
+            System.err.println("oreslang: " +
+                    ((message == null || message.isBlank())
+                            ? failure.getClass().getSimpleName() : message));
+            return 1;
+        }
+    }
+
+    private static int runForExitStatus(String[] args) throws Exception {
         if (args.length == 1 && args[0].equals("--build-info")) {
             System.out.println("{\"build_mode\":\"" + NativeBuildMode.kind().name().toLowerCase(Locale.ROOT)
                     + "\",\"default_execution_mode\":\"" + NativeBuildMode.defaultExecutionMode()
                     + "\",\"guest_execution\":\"" + (NativeBuildMode.kind() == NativeBuildMode.Kind.AOT
                         ? "interpreter-no-jit" : "runtime-selected") + "\"}");
-            return;
+            return 0;
         }
         String perfEnv = System.getenv("ORES_CORE_PERF");
         boolean corePerf = "true".equalsIgnoreCase(perfEnv) || "1".equals(perfEnv);
@@ -105,9 +130,9 @@ public final class OresMain {
                 }
                 allowedHostClasses.add(raw);
             } else if (arg.startsWith("--")) {
-                throw new IllegalArgumentException("unknown option: " + arg);
+                throw new UsageException("unknown option: " + arg);
             } else if (filename == null) filename = arg;
-            else throw new IllegalArgumentException("only one .ores or .java source file may be supplied");
+            else throw new UsageException("only one .ores or .java source file may be supplied");
         }
 
         CorePerf.configure(corePerf);
@@ -122,8 +147,7 @@ public final class OresMain {
             if (path == null) {
                 printUsage();
                 System.err.println("or define [entrypoints].main in " + OresProjectConfig.MANIFEST_NAME);
-                System.exit(2);
-                return;
+                return 2;
             }
             filename = path.toString();
         } else {
@@ -183,7 +207,7 @@ public final class OresMain {
             result.retainedSymbols().stream().sorted().forEach(symbol -> System.out.println("  + " + symbol));
             System.out.println("tree-shake removed:");
             result.removedSymbols().stream().sorted().forEach(symbol -> System.out.println("  - " + symbol));
-            return;
+            return 0;
         }
 
         if (!buildDefines.isEmpty() || !buildEntryPoints.isEmpty()) {
@@ -199,9 +223,9 @@ public final class OresMain {
                         permissionCheckMode);
             } catch (Exception error) {
                 System.err.println(formatCheckDiagnostic(path, error));
-                System.exit(1);
+                return 1;
             }
-            return;
+            return 0;
         }
 
         ExecutionProfile profile = ExecutionProfile.parse(mode, platform);
@@ -215,7 +239,11 @@ public final class OresMain {
                 System.getenv(),
                 System.out,
                 System.err).exitStatus();
-        if (exitStatus != 0) System.exit(exitStatus);
+        return exitStatus;
+    }
+
+    private static final class UsageException extends IllegalArgumentException {
+        UsageException(String message) { super(message); }
     }
 
     private static boolean parsePermissionFlag(
