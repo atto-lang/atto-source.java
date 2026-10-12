@@ -45,6 +45,12 @@ final class FormalSerialTicketCompletionModelCheckTest {
         assertTrue(model.edges().stream().anyMatch(e -> e.action() == Action.RESTART_ACTOR));
         assertTrue(model.edges().stream().anyMatch(e -> e.action() == Action.DUPLICATE_DONE));
         assertTrue(model.edges().stream().anyMatch(e -> e.action() == Action.PUBLISH_OR_DISCARD));
+        assertTrue(model.edges().stream().anyMatch(e ->
+                        e.action() == Action.DRAIN_CALLBACK
+                        && e.from().phase() == Phase.QUEUED
+                        && e.from().epoch() == 2
+                        && e.to().phase() == Phase.UNWIND),
+                "must actually drain a queued callback after actor restart and discard it");
 
         for (State s : model.states()) {
             assertTrue(s.cleanups() >= 0 && s.cleanups() <= 1);
@@ -160,17 +166,20 @@ final class FormalSerialTicketCompletionModelCheckTest {
                     s.receiveClosed(), s.cleanups(), s.publications()));
         }
         if (action == Action.CANCEL_TASK && !s.terminal() && !s.cancelled()) {
-            return Optional.of(update(s, Phase.UNWIND, true, true,
-                    s.receiveClosed(), s.cleanups(), s.publications()));
+            return Optional.of(update(s,
+                    s.phase() == Phase.QUEUED ? Phase.QUEUED : Phase.UNWIND,
+                    true, true, s.receiveClosed(), s.cleanups(), s.publications()));
         }
         if (action == Action.END_RECEIVE && !s.receiveClosed()) {
-            Phase phase = s.terminal() ? Phase.SETTLED : Phase.UNWIND;
+            Phase phase = s.terminal() ? Phase.SETTLED
+                    : s.phase() == Phase.QUEUED ? Phase.QUEUED : Phase.UNWIND;
             return Optional.of(update(s, phase, true, true,
                     true, s.cleanups(), s.publications()));
         }
         if (action == Action.RESTART_ACTOR && s.epoch() == 1) {
             return Optional.of(new State(
-                    s.terminal() ? Phase.SETTLED : Phase.UNWIND,
+                    s.terminal() ? Phase.SETTLED
+                            : s.phase() == Phase.QUEUED ? Phase.QUEUED : Phase.UNWIND,
                     2, s.lease(), true, true, true,
                     s.cleanups(), s.publications()));
         }
