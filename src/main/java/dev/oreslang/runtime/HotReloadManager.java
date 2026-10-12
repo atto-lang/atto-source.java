@@ -198,8 +198,21 @@ public final class HotReloadManager implements AutoCloseable {
 
     public synchronized Generation loadAndStart(String name, String sourceText) {
         Generation generation = load(name, sourceText);
-        generation.start();
-        return generation;
+        try {
+            generation.start();
+            return generation;
+        } catch (RuntimeException | Error failure) {
+            // Do not let rejected user source accumulate generations after
+            // their Contexts have already been physically retired. A failed
+            // Context close instead retains a tombstone via retire().
+            try {
+                retire(generation.id());
+            } catch (RuntimeException | Error cleanup) {
+                failure.addSuppressed(new IllegalStateException(
+                        "failed generation retirement was not confirmed"));
+            }
+            throw failure;
+        }
     }
 
     /** Last generation staged, retained for compatibility with the single-unit API. */
