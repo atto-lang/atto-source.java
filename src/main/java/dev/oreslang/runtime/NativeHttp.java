@@ -398,8 +398,16 @@ public final class NativeHttp implements AutoCloseable {
             // serial actor processing other HTTP requests and actor messages.
             if (cancelActor != null) cancelActor.cancel();
             if (alreadyClosed) { release(); return; }
-            try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException closed) { release(); }
+            // Executor shutdown may race with a request deadline or actor stop.
+            // Every accepted HTTP exchange must close its transport *before*
+            // releasing admission, even if the cleanup task is rejected.
+            executeAbortCleanup(io, () -> {
+                try { if (send) reject(raw, status); else raw.close(); }
+                finally {
+                    synchronized (this) { transportClosed = true; }
+                    release();
+                }
+            });
         }
         void finish() {
             synchronized (this) { if (terminal) return; terminal = true; }
@@ -729,6 +737,19 @@ public final class NativeHttp implements AutoCloseable {
     private static void reject(HttpExchange raw, int status) {
         try { raw.sendResponseHeaders(status, -1); } catch (IOException ignored) { } finally { raw.close(); }
     }
+
+    /** Schedule terminal transport cleanup, running it inline if shutdown wins. */
+    static void executeAbortCleanup(Executor executor, Runnable cleanup) {
+        Objects.requireNonNull(executor, "HTTP I/O executor");
+        Objects.requireNonNull(cleanup, "HTTP abort cleanup");
+        try {
+            executor.execute(cleanup);
+        } catch (RejectedExecutionException rejected) {
+            // The virtual-thread executor no longer accepts work; never
+            // leave transportClosed=false and permanently retain admission.
+            cleanup.run();
+        }
+    }
     @Override public synchronized void close() {
         closed = true;
         for (Server server : List.copyOf(servers)) server.close();
@@ -738,6 +759,11 @@ public final class NativeHttp implements AutoCloseable {
             }
         }
         handlers.clear();
-        timers.shutdownNow(); io.shutdownNow(); transfers.clear();
+        timers.shutdownNow();
+        // Shutdown without discarding accepted abort tasks: they own transport
+        // closure, semaphore release and exchange completion notifications.
+        // Late aborts after shutdown use executeAbortCleanup's inline fallback.
+        io.shutdown();
+        transfers.clear();
     }
 }
