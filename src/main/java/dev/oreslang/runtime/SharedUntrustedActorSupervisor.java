@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Objects;
@@ -25,6 +26,9 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
     private static final long MAX_HEAP_BYTES = 1024L * MIB;
     private static final int MAX_ACTORS = 256;
     private static final int MAX_SOURCE_CHARS = 256 * 1024;
+    // Parse/link/static initialization are not actor turns and would
+    // otherwise inherit the Context's cumulative 12-hour CPU quota.
+    private static final Duration MAX_ADMISSION_TIME = Duration.ofSeconds(30);
 
     private final Object lifecycle = new Object();
     private final long isolateHeapBytes;
@@ -117,16 +121,24 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
 
         SharedUntrustedIsolatePool.Group group = null;
         UntrustedJitCodeUnit code = null;
+        GuestAdmissionDeadline admission = null;
         try {
             // Each actor gets a Context, NOT a new Engine. Every group shares
             // the singleton pool's physical isolate collector and JIT.
             group = applicationPool().createGroup();
+            SharedUntrustedIsolatePool.Group leasedGroup = group;
+            admission = new GuestAdmissionDeadline(
+                    MAX_ADMISSION_TIME, leasedGroup::close);
             code = new UntrustedJitCodeUnit(group, source, sourceId);
             UntrustedJitCodeUnit.RemoteUntrustedActor remote =
                     code.spawnUntrustedActor(code.generation(), actorType);
             synchronized (lifecycle) {
                 if (closed) throw new IllegalStateException(
                         "untrusted supervisor retired during actor admission");
+                if (!admission.commitIfLive()) {
+                    throw new IllegalStateException(
+                            "untrusted source admission timed out and guest Context was revoked");
+                }
                 Actor actor = new Actor(group, code, remote);
                 active.add(actor);
                 return actor;
@@ -145,6 +157,7 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
             if (code != null) code.fenceAfterContextClose();
             throw failure;
         } finally {
+            if (admission != null) admission.close();
             synchronized (lifecycle) { pendingSpawns--; }
         }
     }
