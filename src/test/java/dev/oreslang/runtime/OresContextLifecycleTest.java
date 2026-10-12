@@ -88,13 +88,18 @@ final class OresContextLifecycleTest {
     void guestFinallyCanResumeAfterFailedHostPreflightAndDisposeOnRetry()
             throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        OresFuture<Integer> hostCleanupSignal = new OresFuture<>();
         Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(true).out(output).build();
         boolean disposed = false;
         try {
             String sourceText = """
-                    pub async fnc work(cleanupGate: Future<int>): int {
+                    define module Cleanup as
+                      pub let Channel<int> gate = Channel.new<int>(1);
+                    end
+                    pub fnc cleanup_gate(): Channel<int> {
+                      return Cleanup.gate;
+                    }
+                    pub async fnc work(): int {
                       try {
                         val Channel<int> workGate = Channel.new<int>(0);
                         stdio.println("work-entered");
@@ -103,16 +108,22 @@ final class OresContextLifecycleTest {
                         stdio.println("INVALID-work-catch");
                       } finally {
                         stdio.println("finally-entered");
-                        const cleanupValue = await cleanupGate;
+                        const cleanupValue = await (nb readch Cleanup.gate);
                         stdio.println("cleanup-result");
                       }
                       return 17;
                     }
                     """;
-            Value result = context.parse(Source.newBuilder(
-                    OresLanguage.ID, sourceText, "retry-guest-finally.ores").build())
-                    .execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
-                            "work", hostCleanupSignal);
+            Value guest = context.parse(Source.newBuilder(
+                    OresLanguage.ID, sourceText, "retry-guest-finally.ores").build());
+            Value exposed = guest.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
+                    "cleanup_gate");
+            assertTrue(exposed.isHostObject(), "host must observe the guest-owned channel");
+            @SuppressWarnings("unchecked")
+            ChannelRuntime.Channel<Long> hostAccessibleGate =
+                    (ChannelRuntime.Channel<Long>) assertInstanceOf(
+                            ChannelRuntime.Channel.class, exposed.asHostObject());
+            Value result = guest.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "work");
             OresFuture<?> task = assertInstanceOf(OresFuture.class,
                     result.asHostObject());
             awaitOutput(output, "work-entered");
@@ -126,9 +137,10 @@ final class OresContextLifecycleTest {
                     failure.toString());
             assertFalse(task.isDone(), "failed preflight cannot settle cleanup");
 
-            // A host-owned producer may finish its Future without entering
-            // the sealed guest scheduler or creating new guest tasks.
-            assertTrue(hostCleanupSignal.completeFromRuntime(77));
+            // The host supplies a buffered channel value through the
+            // already-created guest channel object. No guest function, new
+            // async task, or scheduler admission is invoked after sealing.
+            assertTrue(hostAccessibleGate.tryWrite(77L));
             assertThrows(java.util.concurrent.CancellationException.class,
                     () -> task.get(5, TimeUnit.SECONDS));
             awaitOutput(output, "cleanup-result");
