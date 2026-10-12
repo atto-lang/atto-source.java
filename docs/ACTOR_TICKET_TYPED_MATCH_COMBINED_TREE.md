@@ -152,3 +152,43 @@ unimplemented/unproven. In particular, terminal Future cancellation and
 scheduler close must not be mistaken for LIFO guest `defer/finally`
 unwinding. Do not merge until real guest cancellation tests and a
 cross-layer refinement/conformance run succeed.
+
+## Host terminal Future callback ordering audit (October 12)
+
+The original two-phase finalizer signaled `physicalTerminationFuture`
+before settling `readyFuture` or `doneFuture`. Runtime waiter callbacks
+are invoked synchronously by `OresFuture.settle()`. Consequently, a
+physical-stop observer that waited for `actor.done()` could deadlock the
+only thread able to settle that Future; the actor would appear physically
+terminated but `done` and parent teardown could hang indefinitely.
+
+The host-only `OresFuture.prepareCompleteFromRuntime` and
+`prepareFailureFromRuntime` APIs now atomically settle a terminal outcome
+without invoking pre-registered callbacks. The actor finalizer prepares
+`ready`, then `done`, then physical termination before it publishes any
+of their notifications. A late subscriber may observe a prepared terminal
+state directly, but since physical is prepared last, every physical
+observer can safely inspect both earlier outcomes. The returned notification
+actions are idempotent. Existing normal Future settlement remains unchanged.
+
+New Java regression gates (source committed, **not yet executed**):
+- `DeferredTerminalFutureNotificationTest` checks deferred/late waiter
+  behavior, idempotence, original exception identity and cross-Future
+  dependency ordering.
+- `ActorTwoPhaseFinalizationTest.physicalStopObserverCanSynchronouslyAwaitDoneWithoutDeadlocking`
+  exercises a real host actor and the private physical completion Future.
+
+New bounded TLA+ model:
+`verification/actor_cleanup/ActorTerminalObserverOrdering.tla`.
+[Exact-source funded Actions #38279905893](https://github.com/zed-pkg-test/java-app/actions/runs/38279905893)
+passed safe TLC exploration (7 distinct states; 8 generated) and detected
+both deliberately unsafe variants: physical publication before `done`
+and notification of `done` before physical is prepared. This is formal
+protocol evidence, **not** a passing Maven/Truffle executable regression.
+
+**Still blocked:** Source-org CI for the latest head fails before runner
+allocation (`runner_id=0`, zero executed steps); no claim of full Java
+compilation or JUnit execution is justified. Abruptly cancelled suspended
+guest `SourceTask` lexical `defer/finally` unwinding remains unproven,
+and the cleanup-only continuation authority must not be invented from
+this terminal Future ordering change.
