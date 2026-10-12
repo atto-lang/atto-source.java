@@ -9,6 +9,50 @@ import org.junit.jupiter.api.Test;
 
 final class OresVMTest {
     @Test
+    void rejectedRootDrainCanRetryWithoutReleasingHostLeaseTwice()
+            throws Exception {
+        var accepted = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        var rejectOnce = new java.util.concurrent.atomic.AtomicBoolean(true);
+        java.util.concurrent.Executor downstream = runnable -> {
+            if (rejectOnce.getAndSet(false)) {
+                throw new java.util.concurrent.RejectedExecutionException(
+                        "deterministic first submission rejection");
+            }
+            accepted.add(runnable);
+        };
+        try (OresVM vm = OresVM.create(Runnable::run, downstream)) {
+            OresVM.HostHandoffLease lease = vm.beginHostHandoff();
+            var guestEffects = new java.util.concurrent.atomic.AtomicInteger();
+            try {
+                OresFuture<Integer> task = vm.rootScheduler().startSync(() -> {
+                    guestEffects.incrementAndGet();
+                    return 23;
+                });
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        java.util.concurrent.RejectedExecutionException.class,
+                        lease::close);
+                assertEquals(1, vm.queuedHostHandoffTurns(),
+                        "failed executor acceptance must retain queued owner");
+                assertEquals(0, guestEffects.get());
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalStateException.class, vm::requireHostHandoffReleased);
+                vm.sealHostHandoffAdmission();
+                lease.close(); // retry only: never decrement hostScopes twice
+                assertEquals(0, vm.queuedHostHandoffTurns());
+                Runnable submitted = accepted.poll(5, TimeUnit.SECONDS);
+                org.junit.jupiter.api.Assertions.assertNotNull(submitted);
+                submitted.run();
+                assertEquals(23, task.get(5, TimeUnit.SECONDS));
+                assertEquals(1, guestEffects.get(),
+                        "retry must not duplicate guest execution");
+                vm.requireHostHandoffReleased();
+            } finally {
+                lease.close();
+            }
+        }
+    }
+
+    @Test
     void executorAcceptedBeforeHostScopeCannotEnterGuestAfterHostClaims()
             throws Exception {
         var admitted = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
