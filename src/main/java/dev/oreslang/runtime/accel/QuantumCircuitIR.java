@@ -18,8 +18,11 @@ public final class QuantumCircuitIR {
             if (qubits < 1 || qubits > 16 || classicalBits < 1 || classicalBits > 16) {
                 throw new IllegalArgumentException("simulation profile supports 1..16 qubits and bits");
             }
-            gates = List.copyOf(Objects.requireNonNull(gates));
+            Objects.requireNonNull(gates, "gates");
+            // Reject oversized user-supplied collections before List.copyOf
+            // traverses/allocates their entire contents.
             if (gates.size() > 1024) throw new IllegalArgumentException("circuit exceeds gate quota");
+            gates = List.copyOf(gates);
             boolean measuring = false;
             boolean[] consumedQubits = new boolean[qubits];
             boolean[] filledBits = new boolean[classicalBits];
@@ -171,7 +174,10 @@ public final class QuantumCircuitIR {
         }
         Random random = new Random(seed);
         for (int shot = 0; shot < shots; shot++) {
-            double value = random.nextDouble() * total;
+            // Multiplication can round a value drawn below 1.0 up to
+            // total; clamp to the greatest representable value below total
+            // so the strict CDF upper-bound never selects a zero-weight tail.
+            double value = Math.min(random.nextDouble() * total, Math.nextDown(total));
             // Upper bound: cdf[outcome] must strictly exceed value. Equal
             // prefix sums represent impossible outcomes and are skipped.
             int low = 0, high = cdf.length - 1;
