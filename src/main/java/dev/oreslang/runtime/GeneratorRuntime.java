@@ -62,6 +62,11 @@ public final class GeneratorRuntime {
         private final HostGeneratorTurnPump.OwnerToken owner;
         private final SchedulerFrame<T> frame;
         private final AtomicBoolean terminal = new AtomicBoolean();
+        // The pump serializes host admissions, but the heap frame must also
+        // defend its mutable program counter against an accidental second
+        // internal start before the first physical guest turn exits.
+        private final AtomicBoolean physicalTurnInFlight = new AtomicBoolean();
+        private final AtomicBoolean unprovenPhysicalExit = new AtomicBoolean();
 
         private SchedulerBacked(OresScheduler root,
                 HostGeneratorTurnPump.OwnerToken owner, SchedulerFrame<T> frame) {
@@ -72,23 +77,48 @@ public final class GeneratorRuntime {
 
         HostGeneratorTurnPump.Start<Step<T>> nextTurn() {
             return () -> {
-                HostGeneratorTurnPump.Turn<Step<T>> turn =
-                        root.startCertifiedGeneratorTurn(owner, input -> {
-                            if (terminal.get()) return OresScheduler.done(Step.doneStep());
-                            try {
-                                return Objects.requireNonNull(frame.resume(input),
-                                        "generator frame returned no scheduler step");
-                            } catch (Exception | Error failure) {
-                                terminal.set(true);
-                                throw failure;
-                            }
-                        });
-                turn.result().whenCompleteRuntime((step, failure) -> {
-                    if (failure != null || step != null && step.done()) {
-                        terminal.set(true);
-                    }
-                });
-                return turn;
+                if (unprovenPhysicalExit.get()) {
+                    throw new IllegalStateException(
+                            "generator frame is quarantined after unknown physical exit");
+                }
+                if (!physicalTurnInFlight.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "generator frame already owns a physical guest turn");
+                }
+                try {
+                    HostGeneratorTurnPump.Turn<Step<T>> turn =
+                            root.startCertifiedGeneratorTurn(owner, input -> {
+                                if (terminal.get()) return OresScheduler.done(Step.doneStep());
+                                try {
+                                    return Objects.requireNonNull(frame.resume(input),
+                                            "generator frame returned no scheduler step");
+                                } catch (Exception | Error failure) {
+                                    terminal.set(true);
+                                    throw failure;
+                                }
+                            });
+                    turn.result().whenCompleteRuntime((step, failure) -> {
+                        if (failure != null || step != null && step.done()) {
+                            terminal.set(true);
+                        }
+                    });
+                    turn.physicalExit().whenCompleteRuntime((ignored, failure) -> {
+                        if (failure != null) {
+                            terminal.set(true);
+                            unprovenPhysicalExit.set(true);
+                            // A failed receipt cannot release the frame lease.
+                        } else {
+                            physicalTurnInFlight.set(false);
+                        }
+                    });
+                    return turn;
+                } catch (RuntimeException | Error failure) {
+                    // The starter may have launched guest work before throwing.
+                    // Without its receipt, never reuse the heap continuation.
+                    terminal.set(true);
+                    unprovenPhysicalExit.set(true);
+                    throw failure;
+                }
             };
         }
 
