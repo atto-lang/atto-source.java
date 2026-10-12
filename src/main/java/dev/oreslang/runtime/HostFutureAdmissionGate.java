@@ -116,6 +116,18 @@ final class HostFutureAdmissionGate {
     }
 
     /**
+     * A poisoned physical entry/exit must reject teardown BEFORE retiring
+     * any actor/root/async dependency. A later quiescence check still guards
+     * non-poisoned, live guest reservations.
+     */
+    synchronized void requireProvenEntryAndExit() {
+        if (physicalEntryUnproven || physicalExitUnproven) {
+            throw new IllegalStateException(
+                    "guest physical enter/leave unproven: context retirement denied");
+        }
+    }
+
+    /**
      * Final physical barrier: guest entry reservations are released only
      * after TruffleContext.leave. A terminal Future is not enough.
      */
