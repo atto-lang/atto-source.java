@@ -48,6 +48,10 @@ jobs:
           grep -x 'ORES_NATIVE|defer' /tmp/ores-jvm-native-fixture.log
           grep -x 'ORES_NATIVE|finally' /tmp/ores-jvm-native-fixture.log
           ! grep -F 'ORES_NATIVE|unexpected-catch' /tmp/ores-jvm-native-fixture.log
+          awk '/^(42|ORES_NATIVE\\|defer|ORES_NATIVE\\|finally|ORES_NATIVE\\|unexpected-catch)$/ { print }' \
+            /tmp/ores-jvm-native-fixture.log > /tmp/ores-jvm-observed.txt
+          printf '42\\nORES_NATIVE|defer\\nORES_NATIVE|finally\\n' > /tmp/ores-jvm-expected.txt
+          diff -u /tmp/ores-jvm-expected.txt /tmp/ores-jvm-observed.txt
       - name: Build native executable
         run: mvn -B -ntp -Pnative-${{ matrix.mode }} -DskipTests package
       - name: Verify actual Native Image build mode
@@ -78,6 +82,10 @@ jobs:
           grep -x 'ORES_NATIVE|defer' /tmp/native-source-cleanup.log
           grep -x 'ORES_NATIVE|finally' /tmp/native-source-cleanup.log
           ! grep -F 'ORES_NATIVE|unexpected-catch' /tmp/native-source-cleanup.log
+          awk '/^(42|ORES_NATIVE\\|defer|ORES_NATIVE\\|finally|ORES_NATIVE\\|unexpected-catch)$/ { print }' \
+            /tmp/native-source-cleanup.log > /tmp/ores-native-observed.txt
+          printf '42\\nORES_NATIVE|defer\\nORES_NATIVE|finally\\n' > /tmp/ores-native-expected.txt
+          diff -u /tmp/ores-native-expected.txt /tmp/ores-native-observed.txt
           awk '/^42$|^ORES_NATIVE\\|/ {print}' /tmp/native-source-cleanup.log \
             > /tmp/native-source-observed.txt
           printf '42\nORES_NATIVE|defer\nORES_NATIVE|finally\n' \
