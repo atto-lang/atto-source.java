@@ -30,6 +30,19 @@ final class ChannelCancellationLinearizationTest {
         return lock;
     }
 
+    private static int retainedRegistrations(ChannelRuntime.Channel<?> channel)
+            throws ReflectiveOperationException {
+        ReentrantLock lock = coordinator();
+        Field field = ChannelRuntime.Channel.class.getDeclaredField("registrations");
+        field.setAccessible(true);
+        lock.lock();
+        try {
+            return ((java.util.Collection<?>) field.get(channel)).size();
+        } finally {
+            lock.unlock();
+        }
+    }
+
     private static Thread start(FutureTask<?> action, String name) {
         Thread worker = new Thread(action, name);
         worker.setDaemon(true);
@@ -73,6 +86,7 @@ final class ChannelCancellationLinearizationTest {
         assertThrows(CancellationException.class, selection::join);
         assertEquals(42, channel.tryRead().orElseThrow(),
                 "a later producer must not be swallowed by an abandoned read");
+        assertEquals(0, retainedRegistrations(channel));
     }
 
     @Test
@@ -101,6 +115,7 @@ final class ChannelCancellationLinearizationTest {
         assertEquals(73, selection.get(5, TimeUnit.SECONDS).value());
         assertTrue(channel.tryRead().isEmpty(),
                 "each committed value is consumed at most once");
+        assertEquals(0, retainedRegistrations(channel));
     }
 
     @Test
@@ -130,6 +145,10 @@ final class ChannelCancellationLinearizationTest {
         assertTrue(first.tryWrite(34));
         assertEquals(34, first.tryRead().orElseThrow());
         assertEquals(89, second.tryRead().orElseThrow());
+        assertEquals(0, retainedRegistrations(first),
+                "cancelled losing select arm must not retain the actor");
+        assertEquals(0, retainedRegistrations(second),
+                "cancelled winning candidate must not retain the actor");
     }
 
     @Test
@@ -157,5 +176,6 @@ final class ChannelCancellationLinearizationTest {
         assertFalse(receive.get(5, TimeUnit.SECONDS));
         assertThrows(CancellationException.class, selection::join);
         assertTrue(channel.tryRead().isEmpty());
+        assertEquals(0, retainedRegistrations(channel));
     }
 }
