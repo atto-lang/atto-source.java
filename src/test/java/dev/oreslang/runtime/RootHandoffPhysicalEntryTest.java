@@ -64,6 +64,42 @@ final class RootHandoffPhysicalEntryTest {
     }
 
     @Test
+    void foreignThreadCannotReleaseHostPhysicalEntryLease() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        OresVM.HostHandoffLease ownerLease = vm.beginHostHandoff();
+        try {
+            CountDownLatch rootEntered = new CountDownLatch(1);
+            OresFuture<Integer> turn = vm.rootScheduler().startSync(() -> {
+                rootEntered.countDown();
+                return 19;
+            });
+            java.util.concurrent.atomic.AtomicReference<Throwable> foreignFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Thread foreign = Thread.ofPlatform().start(() -> {
+                try {
+                    ownerLease.close();
+                } catch (Throwable failure) {
+                    foreignFailure.set(failure);
+                }
+            });
+            foreign.join(5000);
+            assertFalse(foreign.isAlive());
+            assertInstanceOf(SecurityException.class, foreignFailure.get(),
+                    "foreign release must not surrender host physical ownership");
+            assertEquals(1L, rootEntered.getCount(),
+                    "foreign release must not dispatch root guest work");
+            assertThrows(IllegalStateException.class, vm::requireHostHandoffReleased);
+            ownerLease.close();
+            assertEquals(19, turn.get(5, TimeUnit.SECONDS));
+            assertTrue(rootEntered.await(5, TimeUnit.SECONDS));
+            ownerLease.close(); // duplicate owner close is inert
+        } finally {
+            ownerLease.close();
+            vm.close();
+        }
+    }
+
+    @Test
     void hostLeaseDefersRootEntryUntilOuterScopeReleases() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try {
