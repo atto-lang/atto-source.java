@@ -88,4 +88,31 @@ final class ActorOffCarrierTurnExecutorTest {
                     "duplicate actor callback must terminate its actor");
         }
     }
+    @Test
+    void swallowedDuplicateTurnCallbackStillTerminatesActor() throws Exception {
+        AtomicBoolean factoryExecuted = new AtomicBoolean();
+        AtomicBoolean suppressedError = new AtomicBoolean();
+        ActorRuntime.TurnExecutor hostile = turn -> {
+            turn.run();
+            try {
+                turn.run();
+            } catch (IllegalStateException ignored) {
+                // The host cannot hide a second actor callback attempt
+                // merely by suppressing the guard's exception.
+                suppressedError.set(true);
+            }
+        };
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 1, 16), hostile)) {
+            var ref = runtime.<String>spawnShared(() -> {
+                assertTrue(factoryExecuted.compareAndSet(false, true));
+                return (message, context) -> { };
+            });
+            assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(suppressedError.get());
+            assertTrue(factoryExecuted.get());
+            assertTrue(ref.failure().isPresent(),
+                    "an attempted duplicate must be fail-stop even if the host swallowed the error");
+        }
+    }
 }
