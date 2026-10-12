@@ -69,6 +69,14 @@ Commit ==
     /\ registered' = {}
     /\ UNCHANGED <<generation, startCursor, ready, cancelled>>
 
+DefaultSelect ==
+    /\ phase = "Waiting"
+    /\ ready = {}
+    /\ phase' = "Defaulted"
+    /\ registered' = {}
+    /\ UNCHANGED <<generation, cursor, startCursor, ready,
+                    winner, consumed, cancelled>>
+
 Cancel ==
     /\ phase = "Waiting"
     /\ phase' = "Cancelled"
@@ -78,14 +86,14 @@ Cancel ==
                     winner, consumed>>
 
 NextGeneration ==
-    /\ phase \in {"Committed", "Cancelled"}
+    /\ phase \in {"Committed", "Cancelled", "Defaulted"}
     /\ generation < MaxGenerations
     /\ phase' = "New"
     /\ UNCHANGED <<generation, cursor, startCursor, ready,
                     registered, winner, consumed, cancelled>>
 
 Finish ==
-    /\ phase \in {"Committed", "Cancelled"}
+    /\ phase \in {"Committed", "Cancelled", "Defaulted"}
     /\ generation = MaxGenerations
     /\ phase' = "Done"
     /\ UNCHANGED <<generation, cursor, startCursor, ready,
@@ -96,13 +104,14 @@ Next ==
     \/ \E a \in Arms : MakeReady(a)
     \/ Commit
     \/ Cancel
+    \/ DefaultSelect
     \/ NextGeneration
     \/ Finish
     \/ (phase = "Done" /\ UNCHANGED vars)
 
 TypeOK ==
     /\ generation \in 0..MaxGenerations
-    /\ phase \in {"New", "Waiting", "Committed", "Cancelled", "Done"}
+    /\ phase \in {"New", "Waiting", "Committed", "Cancelled", "Defaulted", "Done"}
     /\ cursor \in Arms
     /\ startCursor \in Arms
     /\ ready \subseteq Arms
@@ -125,6 +134,12 @@ CancellationPreservesCursor ==
     phase = "Cancelled" => cursor = startCursor
 ActiveRegistration ==
     phase = "Waiting" => registered = Arms
+DefaultPreservesCursor ==
+    phase = "Defaulted" =>
+        /\ cursor = startCursor
+        /\ consumed = {}
+        /\ winner = NoWinner
+
 
 Spec == Init /\ [][Next]_vars
 FairSpec == Spec /\ WF_vars(Commit)
