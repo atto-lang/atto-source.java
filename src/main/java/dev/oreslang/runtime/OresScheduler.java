@@ -423,7 +423,7 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
-    private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
+    private final class TaskRunner<T> {
         // Typed scheduler lifecycle; no integer states or magic ordinals.
         // Phase.NEW -> Phase.QUEUED -> Phase.RUNNING -> (Phase.WAITING -> Phase.QUEUED)* -> Phase.TERMINAL.
         // Cancellation may transition any non-terminal phase to Phase.TERMINAL.
@@ -441,6 +441,25 @@ public final class OresScheduler implements AutoCloseable {
                 new AtomicReference<>();
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
+        /*
+         * A waiter callback may already be in flight when the registration is
+         * detached. Its identity must therefore be tied to ONE await, not to
+         * the TaskRunner reused for the next suspension.
+         */
+        private final AtomicReference<AwaitWaiter> activeAwaitWaiter =
+                new AtomicReference<>();
+
+        private final class AwaitWaiter implements BiConsumer<Object, Throwable> {
+            @Override
+            public void accept(Object value, Throwable failure) {
+                // A late callback from a previous await must never satisfy a
+                // later await, even if the old registration was already claimed
+                // by its producer before detachment.
+                if (!activeAwaitWaiter.compareAndSet(this, null)) return;
+                if (phase.get() != Phase.WAITING) return;
+                deliverAwaitCompletion(value, failure);
+            }
+        }
         private final OresFuture<T> completion;
 
         private TaskRunner(Task<T> task, Executor taskPlacement) {
@@ -578,12 +597,14 @@ public final class OresScheduler implements AutoCloseable {
                     return;
                 }
 
-                // Pending path: TaskRunner itself is the reusable callback
-                // target, avoiding a new captured lambda for every await. The
-                // detachable registration remains per suspension so scheduler
-                // close/task cancellation can sever retention safely.
+                // Pending path: one callback identity per suspension. A
+                // producer may have claimed the old registration while the
+                // task advances to its next await; an old delivery cannot be
+                // mistaken for the new await's result.
+                AwaitWaiter waiter = new AwaitWaiter();
+                activeAwaitWaiter.set(waiter);
                 OresFuture.RuntimeWaiterRegistration<?> registration =
-                        awaited.whenCompleteRuntimeCancellable(this);
+                        awaited.whenCompleteRuntimeCancellable(waiter);
 
                 OresFuture.RuntimeWaiterRegistration<?> previous =
                         activeAwaitRegistration.getAndSet(registration);
@@ -599,11 +620,6 @@ public final class OresScheduler implements AutoCloseable {
             } catch (RuntimeException | Error registrationFailure) {
                 failTerminal(registrationFailure);
             }
-        }
-
-        @Override
-        public void accept(Object value, Throwable failure) {
-            deliverAwaitCompletion(value, failure);
         }
 
         private void deliverAwaitCompletion(Object value, Throwable failure) {
@@ -643,6 +659,10 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void detachActiveAwaitRegistration() {
+            // Revoke the callback identity BEFORE detaching its registration.
+            // A producer may have claimed the registration already and still
+            // be about to invoke the callback on another thread.
+            activeAwaitWaiter.set(null);
             OresFuture.RuntimeWaiterRegistration<?> registration =
                     activeAwaitRegistration.getAndSet(null);
             if (registration != null) registration.detach();
