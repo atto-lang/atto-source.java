@@ -820,7 +820,8 @@ public final class ActorRuntime implements AutoCloseable {
                     AtomicReference<ExplicitNativeI64Region> registered = new AtomicReference<>();
                     ExplicitNativeI64Region region = new ExplicitNativeI64Region(slots,
                             reservation, this::requireCurrentOwner,
-                            () -> explicitNativeI64Regions.remove(registered.get()));
+                            () -> explicitNativeI64Regions.remove(registered.get()),
+                            this::reportNativePhysicalCloseFailure);
                     registered.set(region);
                     explicitNativeI64Regions.add(region);
                     return region;
@@ -883,6 +884,19 @@ public final class ActorRuntime implements AutoCloseable {
                         "actor memory slice may only be reserved by its owning actor");
             }
             return cell;
+        }
+
+        /**
+         * An Arena.close() failure on a late host/FFI loan must remain
+         * observable even when the original actor scheduler has shut down.
+         * Never acquire lifecycleLock synchronously from a region monitor:
+         * actor finalization retires regions while holding lifecycleLock.
+         */
+        private void reportNativePhysicalCloseFailure(Throwable failure) {
+            ActorCell<?> cell = actors.get(owner);
+            if (cell == null) return;
+            Thread.ofVirtual().name("ores-native-close-failure-" + owner)
+                    .start(() -> cell.onNativePhysicalCloseFailure(failure));
         }
 
         /** Native loan completion may occur on a different carrier after
@@ -6361,6 +6375,16 @@ public final class ActorRuntime implements AutoCloseable {
                         && memorySlice.retainedNativeBytes.get() == 0L) {
                     finalizeStopLocked();
                 }
+                lifecycleLock.notifyAll();
+            }
+        }
+
+        private void onNativePhysicalCloseFailure(Throwable failure) {
+            synchronized (lifecycleLock) {
+                if (finalized) return;
+                nativeMemoryRetirementFailure = failure;
+                ref.terminationCause.compareAndSet(null, failure);
+                ref.shutdownResultFuture.failFromRuntime(failure);
                 lifecycleLock.notifyAll();
             }
         }
