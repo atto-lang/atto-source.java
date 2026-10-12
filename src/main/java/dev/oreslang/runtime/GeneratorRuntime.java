@@ -444,26 +444,24 @@ public final class GeneratorRuntime {
             // Never hold the session lifecycle monitor while signalling the
             // root scheduler. An owner notifier is permitted to block or
             // fail; close must not wait for host submission to return.
-            OresFuture<Step<Object>> result =
-                    pump.requestCertified(pump.token(), frame.nextTurn());
-            boolean cancelAfterClose;
-            synchronized (lifecycle) {
-                cancelAfterClose = closed;
-                if (!closed) pulls.add(result);
-            }
-            if (cancelAfterClose) {
-                // close raced submission before its Future was published.
-                // Cancellation is not physical DONE; the pump keeps its lease
-                // until its scheduler-issued receipt proves guest exit.
-                result.cancel(false);
-            } else {
-                result.whenCompleteRuntime((value, failure) -> {
-                    synchronized (lifecycle) {
-                        pulls.remove(result);
-                    }
-                });
-            }
-            return result;
+            return pump.requestCertified(pump.token(), frame.nextTurn(), accepted -> {
+                final boolean cancelAfterClose;
+                synchronized (lifecycle) {
+                    cancelAfterClose = closed;
+                    if (!closed) pulls.add(accepted);
+                }
+                if (cancelAfterClose) {
+                    // Registered after session closure but BEFORE any owner
+                    // wake: do not allow a stale pull to enter guest code.
+                    accepted.cancel(false);
+                } else {
+                    accepted.whenCompleteRuntime((value, failure) -> {
+                        synchronized (lifecycle) {
+                            pulls.remove(accepted);
+                        }
+                    });
+                }
+            });
         }
 
         @Override
