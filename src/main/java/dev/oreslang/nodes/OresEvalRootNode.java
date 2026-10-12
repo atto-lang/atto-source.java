@@ -2936,19 +2936,45 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
-                SourceValueCont continuation) {
+                SourceValueCont downstream) {
+            // Most expressions are immediate. Keep their common path free of
+            // a per-expression atomic allocation and, crucially, never wrap
+            // downstream continuation delivery in an evaluation catch block.
+            boolean mightSuspend;
             try {
-                if (!expressionContainsPotentialSuspension(
+                mightSuspend = expressionContainsPotentialSuspension(
                         expr,
                         java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
-                    continuation.accept(
-                            task,
-                            eval(expr, env),
-                            null);
+                                new IdentityHashMap<>()));
+            } catch (RuntimeException | Error failure) {
+                downstream.accept(task, null, failure);
+                return;
+            }
+            if (!mightSuspend) {
+                Object immediate;
+                try {
+                    immediate = eval(expr, env);
+                } catch (RuntimeException | Error failure) {
+                    downstream.accept(task, null, failure);
                     return;
                 }
+                downstream.accept(task, immediate, null);
+                return;
+            }
 
+            // Suspended expressions may complete on a different carrier. A
+            // nested continuation is single-use: throwing *after* delivery
+            // must not cause the enclosing evaluator's catch to replay it.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            SourceValueCont continuation = (t, value, failure) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "source expression continuation attempted multiple deliveries");
+                }
+                downstream.accept(t, value, failure);
+            };
+            try {
                 if (expr instanceof Ast.AwaitExpr awaited) {
                     evalSuspendableExpr(
                             task,
@@ -3424,8 +3450,13 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
-                continuation.accept(task, eval(expr, env), null);
+                // Conservative fallback for an expression shape not lowered
+                // to a resumable case above. Keep any evaluation error separate
+                // from its single downstream completion.
+                Object fallback = eval(expr, env);
+                continuation.accept(task, fallback, null);
             } catch (RuntimeException | Error failure) {
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
