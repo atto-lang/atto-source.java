@@ -806,6 +806,9 @@ final class HostGeneratorTurnPumpTest {
                 assertThrows(java.util.concurrent.RejectedExecutionException.class,
                         session::nextStep,
                         "admission after close must be rejected");
+                assertTrue(pump.isQuiescent(),
+                        "session close must cancel queued pull before notifier returns");
+                assertEquals(0, guestEffects.get());
             } finally {
                 releaseNotifier.countDown();
             }
