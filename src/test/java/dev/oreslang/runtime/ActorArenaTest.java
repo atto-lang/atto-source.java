@@ -236,4 +236,58 @@ final class ActorArenaTest {
             assertDoesNotThrow(slice.get()::close);
         }
     }
+
+    @Test
+    void failedMemoryWipeDoesNotStrandActorFinalizationAndCanBeRetried() throws Exception {
+        var memory = new AtomicReference<ActorRuntime.ActorMemorySlice>();
+        var block = new AtomicReference<ActorRuntime.PrivateMemoryBlock>();
+        var writable = new AtomicReference<java.nio.ByteBuffer>();
+        var failure = new AtomicReference<Throwable>();
+        var reached = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnPrivate(() -> (mail, ctx) -> {
+                try {
+                    var slice = ctx.actorOwnedMemory().orElseThrow();
+                    memory.set(slice);
+                    var nativeBlock = slice.allocatePrivateBytes(16);
+                    block.set(nativeBlock);
+                    nativeBlock.writeByte(0, (byte) 0x5a);
+                    // A test-only fault makes the next native wipe fail.
+                    // Production blocks are never published as raw buffers.
+                    var backing = ActorRuntime.PrivateMemoryBlock.class
+                            .getDeclaredField("memory");
+                    backing.setAccessible(true);
+                    var original = (java.nio.ByteBuffer) backing.get(nativeBlock);
+                    writable.set(original);
+                    backing.set(nativeBlock, original.asReadOnlyBuffer());
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                } finally {
+                    reached.countDown();
+                }
+            });
+            actor.send("allocate");
+            assertTrue(reached.await(20, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+            actor.stop();
+            assertTrue(actor.awaitTermination(20, TimeUnit.SECONDS),
+                    "a failed wipe must not strand the physical actor barrier");
+            assertTrue(actor.done().isDone(), "done Future must settle on cleanup fault");
+            assertTrue(actor.failure().isPresent(), "native cleanup fault must reach supervisor");
+            assertTrue(actor.failure().orElseThrow().toString()
+                    .contains("ReadOnlyBufferException"),
+                    () -> "unexpected actor failure: " + actor.failure());
+            assertFalse(block.get().closed(), "unscrubbed memory must remain retryable");
+            assertEquals(16L, memory.get().usedBytes(),
+                    "failed wipe must not refund unreclaimed bytes");
+            var backing = ActorRuntime.PrivateMemoryBlock.class
+                    .getDeclaredField("memory");
+            backing.setAccessible(true);
+            backing.set(block.get(), writable.get());
+            assertDoesNotThrow(memory.get()::close, "supervisor cleanup retry failed");
+            assertTrue(block.get().closed(), "retry must scrub and revoke block");
+            assertEquals(0L, memory.get().usedBytes(), "retry did not release quota");
+            assertEquals(0, writable.get().get(0), "native bytes were not scrubbed");
+        }
+    }
 }
