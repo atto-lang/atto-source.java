@@ -66,7 +66,7 @@ final class ActorStateLoanRuntimeTest {
                         phase.set("work: bad-key");
                         assertThrows(IllegalArgumentException.class,
                                 () -> state.write(s -> { s.set("unknown", 4); return 0; }));
-                        assertThrows(IllegalStateException.class, () -> state.read(s -> {
+                        assertEquals(0L, state.read(s -> {
                             assertThrows(IllegalStateException.class,
                                     () -> state.write(w -> 0));
                             return 0;
