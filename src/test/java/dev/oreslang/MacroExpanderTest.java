@@ -207,7 +207,7 @@ final class MacroExpanderTest {
 
     @Test
     void groupedTokenTreesCannotSmuggleControlFlowOrAnnotationSyntax() {
-        String prefix = "macro_rules! single { ($x:tt) => { $x }; }\\n";
+        String prefix = "macro_rules! single { ($x:tt) => { $x }; }\n";
         for (String bad : List.of("(return 42)", "{let x = 3;}", "(@unsafe)", "[defer 1]")) {
             IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
                     () -> MacroExpander.expand(new Lexer(prefix + "single!(" + bad + ")").scan()), bad);
