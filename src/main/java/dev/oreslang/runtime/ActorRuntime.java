@@ -900,6 +900,16 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 releasePrivateRuntimeBytes(bytes, owner);
             }
+            // A completing native-loan thread may still hold its region
+            // monitor. Never acquire lifecycleLock here: finalization holds
+            // that lock while retiring all regions, so a synchronous callback
+            // would invert lifecycleLock -> regionLock on concurrent release.
+            ActorCell<?> cell = actors.get(owner);
+            if (cell != null && cell.nativeMemoryRetirementComplete
+                    && cell.stopped.get()) {
+                Thread.ofVirtual().name("ores-native-release-" + owner)
+                        .start(cell::onNativePhysicalRelease);
+            }
         }
 
         private synchronized void release(long bytes) {
@@ -6036,6 +6046,9 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean sourceShutdownStarted;
         private boolean sourceShutdownCompleted;
         private Throwable sourceShutdownFailure;
+        /** Physical FFM retirement may outlive logical STOP and scheduler drain. */
+        private volatile boolean nativeMemoryRetirementComplete;
+        private Throwable nativeMemoryRetirementFailure;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
@@ -6275,9 +6288,26 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || !children.isEmpty()
                     || (sourceShutdownRequested && !sourceShutdownCompleted)
-                    || sourceShutdownFailure != null) return;
-            // The source scheduler was shut down outside the lifecycle monitor,
-            // and its entered turns and lexical cleanup are already drained.
+                    || sourceShutdownFailure != null
+                    || nativeMemoryRetirementFailure != null) return;
+            // Revoke actor access and retire FFM arenas only after both
+            // scheduler drain and the entered Truffle TurnExecutor exit.
+            // FFM loans can outlive that boundary: keep get_done pending until
+            // the very last arena is physically released and quota refunded.
+            if (!nativeMemoryRetirementComplete) {
+                try {
+                    memorySlice.close();
+                    nativeMemoryRetirementComplete = true;
+                } catch (RuntimeException | Error failure) {
+                    nativeMemoryRetirementFailure = failure;
+                    ref.terminationCause.compareAndSet(null, failure);
+                    ref.shutdownResultFuture.failFromRuntime(failure);
+                    lifecycleLock.notifyAll();
+                    return;
+                }
+            }
+            if (memorySlice.retainedNativeBytes.get() != 0L) return;
+            // The source scheduler and actor-native FFM are now fully drained.
             finalized = true;
             sourceCleanupMailbox.close();
             while (sourceCleanupMailbox.drainOne(envelope -> {
@@ -6290,7 +6320,8 @@ public final class ActorRuntime implements AutoCloseable {
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
-            if (memorySlice != null) memorySlice.close();
+            // The memory slice was retired and its physical native loans
+            // drained above, before publishing the physical done observer.
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
@@ -6322,6 +6353,16 @@ public final class ActorRuntime implements AutoCloseable {
             }
             finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
+        }
+
+        private void onNativePhysicalRelease() {
+            synchronized (lifecycleLock) {
+                if (stopped.get() && nativeMemoryRetirementComplete
+                        && memorySlice.retainedNativeBytes.get() == 0L) {
+                    finalizeStopLocked();
+                }
+                lifecycleLock.notifyAll();
+            }
         }
 
         private void childFinalized(ActorCell<?> child) {
