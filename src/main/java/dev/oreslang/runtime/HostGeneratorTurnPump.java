@@ -32,15 +32,12 @@ final class HostGeneratorTurnPump implements AutoCloseable {
         }
     }
 
-    record Turn<T>(OresFuture<T> result, OresFuture<?> physicalExit) {
+    record Turn<T>(OresFuture<T> result, PhysicalGuestExitLedger.Receipt physicalExit) {
         Turn {
             Objects.requireNonNull(result, "result");
             Objects.requireNonNull(physicalExit, "physicalExit");
-            if (result == physicalExit) {
-                throw new IllegalArgumentException(
-                        "physical exit must be a distinct source-owned barrier, "
-                        + "not the public Future's early completion/cancellation");
-            }
+            // The physical barrier must be a context-owned runtime receipt,
+            // never an ordinary Future supplied by a guest/host producer.
         }
     }
 
@@ -89,8 +86,17 @@ final class HostGeneratorTurnPump implements AutoCloseable {
 
     HostGeneratorTurnPump(UUID contextId, BooleanSupplier ownerTurnAuthorized,
                           Runnable signalOwner, int capacity) {
-        this.owner = new OwnerToken(
-                Objects.requireNonNull(contextId, "contextId"), UUID.randomUUID());
+        this(new OwnerToken(Objects.requireNonNull(contextId, "contextId"),
+                UUID.randomUUID()), ownerTurnAuthorized, signalOwner, capacity);
+    }
+
+    HostGeneratorTurnPump(OwnerToken owner, BooleanSupplier ownerTurnAuthorized) {
+        this(owner, ownerTurnAuthorized, () -> { }, DEFAULT_CAPACITY);
+    }
+
+    private HostGeneratorTurnPump(OwnerToken owner, BooleanSupplier ownerTurnAuthorized,
+                          Runnable signalOwner, int capacity) {
+        this.owner = Objects.requireNonNull(owner, "owner");
         this.ownerTurnAuthorized = Objects.requireNonNull(
                 ownerTurnAuthorized, "ownerTurnAuthorized");
         this.signalOwner = Objects.requireNonNull(signalOwner, "signalOwner");
@@ -183,6 +189,10 @@ final class HostGeneratorTurnPump implements AutoCloseable {
             if (started == null) {
                 throw new IllegalStateException(
                         "generator turn starter returned no physical-exit barrier");
+            }
+            if (!started.physicalExit().claim(owner)) {
+                throw new SecurityException(
+                        "physical DONE receipt is foreign, replayed or incorrectly bound");
             }
         } catch (RuntimeException | Error failure) {
             synchronized (gate) {

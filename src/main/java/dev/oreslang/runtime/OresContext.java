@@ -33,6 +33,10 @@ public final class OresContext implements AutoCloseable {
     // real VM root turn may dispatch them; the current virtual-thread generator
     // producer is not yet allowed through this admission boundary.
     private final HostGeneratorTurnPump hostGeneratorTurns;
+    // Physical DONE receipts are minted on actual Truffle entry and published
+    // only after the corresponding leave path has completed.
+    private final PhysicalGuestExitLedger physicalGuestExits = new PhysicalGuestExitLedger(
+            new HostGeneratorTurnPump.OwnerToken(contextId, contextIncarnation));
     // A scheduler-current ThreadLocal by itself cannot prove a physical
     // Truffle guest entry. Scope this marker inside executeGuestTurn after
     // TruffleContext.enter succeeds and always clear it on leave.
@@ -47,6 +51,7 @@ public final class OresContext implements AutoCloseable {
     public NativeHttp http() { return http; }
 
     private final UUID contextId = UUID.randomUUID();
+    private final UUID contextIncarnation = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final AtomicLong sourceLoopCooperates = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
@@ -134,7 +139,8 @@ public final class OresContext implements AutoCloseable {
             this.asyncRuntime = async;
             this.garbageCollector = gc;
             this.hostGeneratorTurns = new HostGeneratorTurnPump(
-                    contextId, () -> generatorRootTurnAuthorized(
+                    new HostGeneratorTurnPump.OwnerToken(contextId, contextIncarnation),
+                    () -> generatorRootTurnAuthorized(
                             vm.isRootSchedulerCurrent(),
                             Boolean.TRUE.equals(rootGuestEntryScope.get())));
         } catch (RuntimeException | Error failure) {
@@ -436,13 +442,31 @@ public final class OresContext implements AutoCloseable {
         TruffleContext truffleContext = env.getContext();
         Object previous = null;
         boolean entered = false;
+        PhysicalGuestExitLedger.Entry physicalEntry = null;
         try {
             previous = truffleContext.enter(null);
             entered = true;
+            physicalEntry = physicalGuestExits.enteredAfterTruffleEnter();
             turn.run();
         } finally {
-            if (entered) truffleContext.leave(null, previous);
-            if (serialize) adversarialActorTurnLock.unlock();
+            try {
+                if (entered) {
+                    Throwable leaveFailure = null;
+                    try {
+                        truffleContext.leave(null, previous);
+                    } catch (RuntimeException | Error failedLeave) {
+                        leaveFailure = failedLeave;
+                        throw failedLeave;
+                    } finally {
+                        // Never publish successful DONE before physical leave.
+                        if (physicalEntry != null) {
+                            physicalGuestExits.completedAfterTruffleLeave(physicalEntry, leaveFailure);
+                        }
+                    }
+                }
+            } finally {
+                if (serialize) adversarialActorTurnLock.unlock();
+            }
         }
     }
 

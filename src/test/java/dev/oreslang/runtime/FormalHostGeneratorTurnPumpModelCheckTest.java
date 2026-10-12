@@ -20,7 +20,8 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         ENQUEUE, OWNER_DISPATCH, FOREIGN_DISPATCH, WRONG_INCARNATION,
         SETTLE_RESULT, PHYSICAL_EXIT, CANCEL_PENDING, CANCEL_ACTIVE,
         SEAL_CONTEXT, STARTER_FAILED_NO_EXIT_RECEIPT,
-        FAILED_EXIT_RECEIPT, PUBLISH_AFTER_EXIT, RETRY_CLOSE
+        FAILED_EXIT_RECEIPT, FOREIGN_EXIT_RECEIPT, REPLAYED_EXIT_RECEIPT,
+        PUBLISH_AFTER_EXIT, RETRY_CLOSE
     }
 
     private record State(
@@ -65,6 +66,10 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
             }
             case PHYSICAL_EXIT -> {
                 if (active) exited = true;
+            }
+            case FOREIGN_EXIT_RECEIPT, REPLAYED_EXIT_RECEIPT -> {
+                // Neither a foreign incarnation nor a previously claimed
+                // physical DONE receipt may release active ownership.
             }
             case CANCEL_PENDING -> {
                 if (queued > 0) queued--;
@@ -169,7 +174,9 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
                 State next = step(state, event);
                 invariant(next);
                 if (event == Event.FOREIGN_DISPATCH
-                        || event == Event.WRONG_INCARNATION) {
+                        || event == Event.WRONG_INCARNATION
+                        || event == Event.FOREIGN_EXIT_RECEIPT
+                        || event == Event.REPLAYED_EXIT_RECEIPT) {
                     assertEquals(state, next,
                             "foreign identity unexpectedly acquired guest authority");
                 }

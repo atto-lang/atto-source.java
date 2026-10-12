@@ -19,6 +19,27 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(value = 20, unit = TimeUnit.SECONDS)
 final class HostGeneratorTurnPumpTest {
 
+    private static final class GuestExit {
+        private final PhysicalGuestExitLedger ledger;
+        private final PhysicalGuestExitLedger.Entry entry;
+        final PhysicalGuestExitLedger.Receipt receipt;
+
+        GuestExit(HostGeneratorTurnPump pump) {
+            ledger = new PhysicalGuestExitLedger(pump.token());
+            entry = ledger.enteredAfterTruffleEnter();
+            receipt = entry.receipt();
+        }
+
+        void succeed() { ledger.completedAfterTruffleLeave(entry, null); }
+        void fail(Throwable failure) { ledger.completedAfterTruffleLeave(entry, failure); }
+    }
+
+    private static PhysicalGuestExitLedger.Receipt completedExit(HostGeneratorTurnPump pump) {
+        var exit = new GuestExit(pump);
+        exit.succeed();
+        return exit.receipt;
+    }
+
     @Test
     void rootSchedulerIdentityAloneDoesNotAuthorizeGuestEntry() {
         assertFalse(OresContext.generatorRootTurnAuthorized(false, false));
@@ -38,7 +59,7 @@ final class HostGeneratorTurnPumpTest {
         OresFuture<Integer> pull = pump.request(pump.token(), () -> {
             starts.incrementAndGet();
             return new HostGeneratorTurnPump.Turn<>(
-                    OresFuture.completed(7), OresFuture.completed(null));
+                    OresFuture.completed(7), completedExit(pump));
         });
         CountDownLatch attempted = new CountDownLatch(1);
         AtomicReference<Throwable> denied = new AtomicReference<>();
@@ -68,15 +89,15 @@ final class HostGeneratorTurnPumpTest {
         HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
                 UUID.randomUUID(), () -> true, wakes::incrementAndGet, 2);
         OresFuture<Integer> firstValue = new OresFuture<>();
-        OresFuture<Void> firstPhysicalExit = new OresFuture<>();
+        GuestExit firstPhysicalExit = new GuestExit(pump);
         AtomicInteger secondStarts = new AtomicInteger();
 
         OresFuture<Integer> first = pump.request(pump.token(),
-                () -> new HostGeneratorTurnPump.Turn<>(firstValue, firstPhysicalExit));
+                () -> new HostGeneratorTurnPump.Turn<>(firstValue, firstPhysicalExit.receipt));
         OresFuture<Integer> second = pump.request(pump.token(), () -> {
             secondStarts.incrementAndGet();
             return new HostGeneratorTurnPump.Turn<>(
-                    OresFuture.completed(22), OresFuture.completed(null));
+                    OresFuture.completed(22), completedExit(pump));
         });
 
         AtomicReference<Boolean> publicationRetainedOwnership = new AtomicReference<>();
@@ -89,7 +110,7 @@ final class HostGeneratorTurnPumpTest {
         assertFalse(pump.dispatchOne(), "a second producer must not overlap guest entry");
         assertEquals(0, secondStarts.get());
         assertThrows(IllegalStateException.class, pump::requireQuiescent);
-        firstPhysicalExit.completeFromRuntime(null);
+        firstPhysicalExit.succeed();
         assertEquals(11, first.get(5, TimeUnit.SECONDS));
         assertEquals(Boolean.TRUE, publicationRetainedOwnership.get(),
                 "the previous Future must publish before the next turn is eligible");
@@ -104,9 +125,9 @@ final class HostGeneratorTurnPumpTest {
     void cancelledPullDoesNotFakePhysicalGuestExitOrAllowNewTurn() {
         HostGeneratorTurnPump pump = new HostGeneratorTurnPump(UUID.randomUUID(), () -> true);
         OresFuture<Integer> producerValue = new OresFuture<>();
-        OresFuture<Void> physicalExit = new OresFuture<>();
+        GuestExit physicalExit = new GuestExit(pump);
         OresFuture<Integer> pull = pump.request(pump.token(),
-                () -> new HostGeneratorTurnPump.Turn<>(producerValue, physicalExit));
+                () -> new HostGeneratorTurnPump.Turn<>(producerValue, physicalExit.receipt));
         assertTrue(pump.dispatchOne());
         assertTrue(pull.cancel(false));
         assertTrue(producerValue.isCancelled(),
@@ -115,29 +136,29 @@ final class HostGeneratorTurnPumpTest {
                 "Future cancellation is not physical guest cleanup");
         pump.seal();
         assertThrows(IllegalStateException.class, pump::requireQuiescent);
-        physicalExit.completeFromRuntime(null);
+        physicalExit.succeed();
         assertDoesNotThrow(pump::requireQuiescent);
         assertThrows(RejectedExecutionException.class,
                 () -> pump.request(pump.token(),
                         () -> new HostGeneratorTurnPump.Turn<>(
-                                OresFuture.completed(1), OresFuture.completed(null))));
+                                OresFuture.completed(1), completedExit(pump))));
     }
 
     @Test
     void cancelledPhysicalExitReceiptCannotAuthorizeNextTurnOrRetirement() {
         HostGeneratorTurnPump pump = new HostGeneratorTurnPump(UUID.randomUUID(), () -> true);
         OresFuture<Integer> producer = new OresFuture<>();
-        OresFuture<Void> exit = new OresFuture<>();
+        GuestExit exit = new GuestExit(pump);
         AtomicInteger secondStarts = new AtomicInteger();
         OresFuture<Integer> first = pump.request(pump.token(),
-                () -> new HostGeneratorTurnPump.Turn<>(producer, exit));
+                () -> new HostGeneratorTurnPump.Turn<>(producer, exit.receipt));
         OresFuture<Integer> second = pump.request(pump.token(), () -> {
             secondStarts.incrementAndGet();
             return new HostGeneratorTurnPump.Turn<>(
-                    OresFuture.completed(22), OresFuture.completed(null));
+                    OresFuture.completed(22), completedExit(pump));
         });
         assertTrue(pump.dispatchOne());
-        assertTrue(exit.cancel(false));
+        assertTrue(exit.fail(new java.util.concurrent.CancellationException("physical exit cancelled")));
         assertTrue(producer.isCancelled(),
                 "failed exit proof must request cancellation of the producer");
         assertTrue(second.isCancelled(), "a failed physical exit seals the pending queue");
@@ -153,11 +174,11 @@ final class HostGeneratorTurnPumpTest {
     void exceptionalPhysicalExitReceiptCannotAuthorizeRetirement() {
         HostGeneratorTurnPump pump = new HostGeneratorTurnPump(UUID.randomUUID(), () -> true);
         OresFuture<Integer> producer = OresFuture.completed(13);
-        OresFuture<Void> exit = new OresFuture<>();
+        GuestExit exit = new GuestExit(pump);
         OresFuture<Integer> pull = pump.request(pump.token(),
-                () -> new HostGeneratorTurnPump.Turn<>(producer, exit));
+                () -> new HostGeneratorTurnPump.Turn<>(producer, exit.receipt));
         assertTrue(pump.dispatchOne());
-        exit.failFromRuntime(new IllegalStateException("physical exit unknown"));
+        exit.fail(new IllegalStateException("physical exit unknown"));
         assertTrue(pull.isDone());
         assertFalse(pump.isQuiescent(),
                 "failure of DONE evidence must remain permanently quarantined");
@@ -175,18 +196,18 @@ final class HostGeneratorTurnPumpTest {
                         () -> {
                             started.incrementAndGet();
                             return new HostGeneratorTurnPump.Turn<>(
-                                    OresFuture.completed(1), OresFuture.completed(null));
+                                    OresFuture.completed(1), completedExit(pump));
                         }));
         OresFuture<Integer> queued = pump.request(pump.token(), () -> {
             started.incrementAndGet();
             return new HostGeneratorTurnPump.Turn<>(
-                    OresFuture.completed(1), OresFuture.completed(null));
+                    OresFuture.completed(1), completedExit(pump));
         });
         assertThrows(RejectedExecutionException.class,
                 () -> pump.request(pump.token(), () -> {
                     started.incrementAndGet();
                     return new HostGeneratorTurnPump.Turn<>(
-                            OresFuture.completed(2), OresFuture.completed(null));
+                            OresFuture.completed(2), completedExit(pump));
                 }));
         pump.seal();
         assertTrue(queued.isCancelled(), "sealed requests must be cancelled before dispatch");
@@ -200,18 +221,17 @@ final class HostGeneratorTurnPumpTest {
             throws Exception {
         HostGeneratorTurnPump invalid = new HostGeneratorTurnPump(
                 UUID.randomUUID(), () -> true);
-        OresFuture<Integer> pull = invalid.request(invalid.token(), () -> {
-            OresFuture<Integer> shared = new OresFuture<>();
-            return new HostGeneratorTurnPump.Turn<>(shared, shared);
-        });
+        HostGeneratorTurnPump foreign = new HostGeneratorTurnPump(UUID.randomUUID(), () -> true);
+        OresFuture<Integer> pull = invalid.request(invalid.token(), () ->
+                new HostGeneratorTurnPump.Turn<>(new OresFuture<>(), completedExit(foreign)));
         assertTrue(invalid.dispatchOne());
         var failure = assertThrows(java.util.concurrent.ExecutionException.class,
                 () -> pull.get(5, TimeUnit.SECONDS));
         assertInstanceOf(IllegalArgumentException.class, failure.getCause());
         assertFalse(invalid.isQuiescent(),
-                "invalid starter exit receipt cannot certify physical quiescence");
+                "foreign starter exit receipt cannot certify physical quiescence");
         assertThrows(IllegalStateException.class, invalid::close,
-                "invalid physical-exit receipt must permanently quarantine this incarnation");
+                "foreign physical-exit receipt must permanently quarantine this incarnation");
 
         AtomicInteger producerStarts = new AtomicInteger();
         HostGeneratorTurnPump brokenNotifier = new HostGeneratorTurnPump(
@@ -221,7 +241,7 @@ final class HostGeneratorTurnPumpTest {
                 brokenNotifier.request(brokenNotifier.token(), () -> {
                     producerStarts.incrementAndGet();
                     return new HostGeneratorTurnPump.Turn<>(
-                            OresFuture.completed(5), OresFuture.completed(null));
+                            OresFuture.completed(5), completedExit(invalid));
                 }));
         assertTrue(brokenNotifier.isQuiescent());
         assertEquals(0, producerStarts.get(),
@@ -229,7 +249,7 @@ final class HostGeneratorTurnPumpTest {
         assertThrows(RejectedExecutionException.class,
                 () -> brokenNotifier.request(brokenNotifier.token(),
                         () -> new HostGeneratorTurnPump.Turn<>(
-                                OresFuture.completed(6), OresFuture.completed(null))));
+                                OresFuture.completed(6), completedExit(invalid))));
         brokenNotifier.close();
     }
 
@@ -244,7 +264,7 @@ final class HostGeneratorTurnPumpTest {
         CountDownLatch releaseStarter = new CountDownLatch(1);
         AtomicReference<Throwable> ownerFailure = new AtomicReference<>();
         OresFuture<Integer> guestResult = new OresFuture<>();
-        OresFuture<Void> physicalExit = new OresFuture<>();
+        GuestExit physicalExit = new GuestExit(pump);
         OresFuture<Integer> request = pump.request(pump.token(), () -> {
             starterEntered.countDown();
             try {
@@ -255,7 +275,7 @@ final class HostGeneratorTurnPumpTest {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException(interrupted);
             }
-            return new HostGeneratorTurnPump.Turn<>(guestResult, physicalExit);
+            return new HostGeneratorTurnPump.Turn<>(guestResult, physicalExit.receipt);
         });
         Thread owner = Thread.ofPlatform().start(() -> {
             try { pump.dispatchOne(); }
@@ -292,7 +312,7 @@ final class HostGeneratorTurnPumpTest {
                 "cancellation before starter return must reach its guest result");
         assertFalse(pump.isQuiescent(),
                 "cancelled result cannot stand in for physical exit");
-        physicalExit.completeFromRuntime(null);
+        physicalExit.succeed();
         assertDoesNotThrow(pump::requireQuiescent);
     }
 
@@ -301,17 +321,17 @@ final class HostGeneratorTurnPumpTest {
         HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
                 UUID.randomUUID(), () -> true);
         OresFuture<Integer> guestResult = new OresFuture<>();
-        OresFuture<Void> physicalExit = new OresFuture<>();
+        GuestExit physicalExit = new GuestExit(pump);
         OresFuture<Integer> host = pump.request(pump.token(), () -> {
             pump.seal(); // permitted concurrently with starter execution
             assertThrows(IllegalStateException.class, pump::requireQuiescent);
-            return new HostGeneratorTurnPump.Turn<>(guestResult, physicalExit);
+            return new HostGeneratorTurnPump.Turn<>(guestResult, physicalExit.receipt);
         });
         assertTrue(pump.dispatchOne());
         assertTrue(host.isCancelled());
         assertTrue(guestResult.isCancelled());
         assertThrows(IllegalStateException.class, pump::requireQuiescent);
-        physicalExit.completeFromRuntime(null);
+        physicalExit.succeed();
         pump.close();
     }
 
@@ -326,7 +346,7 @@ final class HostGeneratorTurnPumpTest {
         OresFuture<Integer> later = pump.request(pump.token(), () -> {
             laterStarts.incrementAndGet();
             return new HostGeneratorTurnPump.Turn<>(
-                    OresFuture.completed(4), OresFuture.completed(null));
+                    OresFuture.completed(4), completedExit(pump));
         });
         assertTrue(pump.dispatchOne());
         assertInstanceOf(IllegalStateException.class,
@@ -350,16 +370,16 @@ final class HostGeneratorTurnPumpTest {
         CountDownLatch started = new CountDownLatch(1);
         CountDownLatch resumeOwner = new CountDownLatch(1);
         OresFuture<Integer> producerValue = new OresFuture<>();
-        OresFuture<Void> physicalExit = new OresFuture<>();
+        GuestExit physicalExit = new GuestExit(pump);
         AtomicInteger secondStarts = new AtomicInteger();
         OresFuture<Integer> first = pump.request(pump.token(), () -> {
             started.countDown();
-            return new HostGeneratorTurnPump.Turn<>(producerValue, physicalExit);
+            return new HostGeneratorTurnPump.Turn<>(producerValue, physicalExit.receipt);
         });
         OresFuture<Integer> second = pump.request(pump.token(), () -> {
             secondStarts.incrementAndGet();
             return new HostGeneratorTurnPump.Turn<>(
-                    OresFuture.completed(2), OresFuture.completed(null));
+                    OresFuture.completed(2), completedExit(pump));
         });
 
         AtomicReference<Throwable> ownerFailure = new AtomicReference<>();
@@ -386,7 +406,7 @@ final class HostGeneratorTurnPumpTest {
         assertFalse(owner.isAlive(), "owner dispatch is not allowed to deadlock teardown");
         assertNull(ownerFailure.get(), String.valueOf(ownerFailure.get()));
         assertEquals(0, secondStarts.get());
-        physicalExit.completeFromRuntime(null);
+        physicalExit.succeed();
         assertDoesNotThrow(pump::requireQuiescent);
     }
 }
