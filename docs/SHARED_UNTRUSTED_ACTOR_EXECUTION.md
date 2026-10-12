@@ -78,6 +78,43 @@ and rejects unsupported placement instead of silently downgrading it.
   process boundary. Higher-assurance multi-tenant fault isolation is a
   distinct deployment tier, not the default actor model.
 
+## Post-audit hardening (2026-10-12)
+
+**Exactly-once teardown:** `VerifiedCloseFence` waits for confirmed native
+Context/Engine retirement and preserves failure results for concurrent and
+repeat callers. An untrusted actor or hot-load generation whose Context
+fails to close remains counted against admission capacity, with its handles
+fenced. A manager/supervisor cannot claim successful shutdown while
+its retirement is still in progress. `SharedUntrustedActorSupervisor.close()`
+also waits for already-admitted pending spawns, including when the
+application (not the supervisor) owns the shared pool.
+
+**Bounded hostile source admission:** `GuestAdmissionDeadline` sets a
+30-second upper bound for source parse/link/initialization and initial
+actor creation, which otherwise inherit the group's much longer cumulative
+CPU limit. Expiry launches `Context.close(true)` outside the guest entry
+monitor; failed cancellation is fail-closed (the reservation remains
+occupied). A daemon timer performs admission expiry decisions, dispatching
+native revocations on separate virtual threads so one stalled shutdown does
+not block other deadlines. The 30-second limit is a host admission
+deadline, *not* a guarantee that a blocked JVM/native close finishes by
+that time; that must be verified under native-image cancellation tests.
+
+**Priority force cancellation:** a supervisor actor proxy exposes
+`forceCancel()` in addition to cooperative `cancel()`.
+`forceCancel()` retires that actor's Context, not the shared Engine,
+and returns successfully only after Context close was confirmed. It
+does not require the guest Context's entry monitor; the cooperative
+`cancel()` path can wait behind a hostile guest turn. The sibling actors
+are not deliberately cancelled, but GraalVM warns that cancelling one
+Context may negatively affect other Contexts sharing its Engine.
+
+**Security limits:** an in-process Graal language isolate is not an OS
+process boundary. A shared isolated Engine also does not provide hard
+fault independence between arbitrary untrusted tenants. Per-actor
+logical arenas, Contexts, and watchdogs do not imply a separate native
+collector or isolated system-call authority per actor.
+
 ## Tests and remaining release gates
 
 `SharedUntrustedActorSupervisorTest` verifies configuration, fail-closed
