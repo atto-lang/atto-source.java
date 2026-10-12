@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import dev.oreslang.OresLanguage;
 import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.nodes.OresHostFutureBridge;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -55,10 +56,11 @@ final class OresContextLifecycleTest {
         Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(true).out(output).build();
         try {
-            Value value = context.parse(Source.newBuilder(OresLanguage.ID,
-                    sourceText, "preflight-pending.ores").build())
-                    .execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "work");
-            OresFuture<?> future = assertInstanceOf(OresFuture.class, value.asHostObject());
+            Value parsed = context.parse(Source.newBuilder(OresLanguage.ID,
+                    sourceText, "preflight-pending.ores").build());
+            // Use the explicit host-side Future capture. Calling Value.asHostObject()
+            // after scheduler dispatch can race Truffle's context admission.
+            OresFuture<?> future = OresHostFutureBridge.invokePublicFuture(parsed, "work");
             awaitOutput(output, "work-pending");
             assertTrue(future.cancel(false));
             awaitOutput(output, "cleanup-pending");

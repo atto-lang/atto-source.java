@@ -42,18 +42,19 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
+    /**
+     * Host lifecycle entry while the outer Polyglot Context remains entered.
+     * Refuse to dispose until source cleanup and its owner have drained.
+     */
+    public static final String PREPARE_CONTEXT_DISPOSAL_COMMAND =
+            "__ores_internal_prepare_context_disposal__";
     public static final String LINK_ONLY_COMMAND = "__ores_internal_link_only__";
     public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
+    public static final String INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND =
+            "__ores_internal_invoke_public_future_bridge__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
-    /**
-     * Host lifecycle entry: run while the outer Polyglot Context is still
-     * entered and valid, BEFORE calling Context.close(). A failed drain is an
-     * error, not permission to dispose the outer context.
-     */
-    public static final String PREPARE_CONTEXT_DISPOSAL_COMMAND =
-            "__ores_internal_prepare_context_disposal__";
 
     private final Ast.Program program;
     private final String codeUnitId;
@@ -92,6 +93,30 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
+        // Bridge messages are host control messages, never guest main calls.
+        // Reject missing/malformed nonce before linking or scheduling a task.
+        // In particular, an incomplete internal command must not fall through
+        // to the backward-compatible executeMain entrypoint.
+        boolean futureBridgeCommand = arguments.length > 0
+                && INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0]);
+        if (futureBridgeCommand) {
+            // Adversarial contexts retain a single owner thread and queue root
+            // turns for owner-side pumping. Returning an unpumped host Future
+            // would strand it forever and risk leaking cancellation cleanup.
+            // Reject this entrypoint until a supervisor-owned isolate turn
+            // pump is available; never spawn an orphaned root task.
+            if (context.isolatePolicy().adversarial()) {
+                throw new SecurityException(
+                        "scoped host Future bridge is unavailable in adversarial contexts");
+            }
+            if (arguments.length < 3
+                    || !(arguments[1] instanceof String functionName)
+                    || !(arguments[2] instanceof String nonce)) {
+                throw new SecurityException("invalid scoped host Future handoff command");
+            }
+            OresHostFutureBridge.requireActiveScope(functionName, nonce);
+        }
+
         Evaluator current = evaluator(context);
         if (isControl(arguments, LINK_ONLY_COMMAND)) {
             current.link();
@@ -109,15 +134,38 @@ public final class OresEvalRootNode extends RootNode {
             });
         }
         if (arguments.length >= 2
-                && INVOKE_PUBLIC_COMMAND.equals(arguments[0])
+                && (INVOKE_PUBLIC_COMMAND.equals(arguments[0])
+                    || INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0]))
                 && arguments[1] instanceof String functionName) {
+            boolean bridged = futureBridgeCommand;
             current.link();
             Object result = current.invokePublic(
-                    functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
-            // Java Future is not a valid raw Truffle interop return value.
-            // Adapt only the public host-invocation boundary; guest dispatch
-            // continues receiving the original scheduler-owned OresFuture.
-            if (result instanceof OresFuture<?>) return context.env().asGuestValue(result);
+                    functionName,
+                    java.util.Arrays.copyOfRange(
+                            arguments, bridged ? 3 : 2, arguments.length),
+                    bridged);
+            if (bridged) {
+                if (!(result instanceof OresFuture<?> future)) {
+                    throw new IllegalArgumentException(
+                            "host Future handoff requires an async public function: " + functionName);
+                }
+                if (!OresHostFutureBridge.publish(functionName, (String) arguments[2], future)) {
+                    throw new SecurityException(
+                            "host Future handoff requires an active scoped invocation");
+                }
+                // Return a plain scalar acknowledgment. The embedder already
+                // has the real Future in its thread-local host-only scope and
+                // must not call Value.asHostObject() while guest work runs.
+                return 0;
+            }
+            // Runtime Future/Channel handles are not valid raw Truffle interop
+            // results. Adapt only the explicit public embedder boundary:
+            // guest dispatch retains native Oreslang handles, and no arbitrary
+            // host object gains admission across an async guest task boundary.
+            if (result instanceof OresFuture<?>
+                    || result instanceof ChannelRuntime.Channel<?>) {
+                return context.env().asGuestValue(result);
+            }
             return result;
         }
 
@@ -187,6 +235,14 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+        // A module field is process/code-unit static state, never a fresh
+        // initializer evaluation on each member read. Identity keys prevent
+        // accidental collisions between separate declaration origins.
+        // All access is serialized here so concurrent first reads cannot
+        // create competing channel, singleton, or resource instances.
+        private final IdentityHashMap<Ast.FieldDecl, Object> moduleFieldValues =
+                new IdentityHashMap<>();
+        private static final Object MODULE_FIELD_INITIALIZING = new Object();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
@@ -698,10 +754,22 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invokePublic(String name, Object[] arguments) {
+            return invokePublic(name, arguments, false);
+        }
+
+        private Object invokePublic(
+                String name, Object[] arguments, boolean requireAsync) {
             Ast.FunctionDecl fn = findFunction(name, arguments.length);
             if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export public function '" + name + "'");
+            }
+            // Reject unsupported synchronous functions BEFORE any guest body
+            // executes. Otherwise the host Future bridge may throw after
+            // running user side effects and misreporting a rejected request.
+            if (requireAsync && !fn.async()) {
+                throw new IllegalArgumentException(
+                        "host Future handoff requires an async public function: " + name);
             }
             Object result = callFunction(fn, java.util.Arrays.asList(arguments));
             return result instanceof HostObjectFacade host ? host.value() : result;
@@ -944,6 +1012,8 @@ public final class OresEvalRootNode extends RootNode {
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
+            // Exclusive to an inline channel operation, never a shared Future.
+            private OresFuture<?> ownedPendingChannelAwait;
             private OresScheduler.Step<Object> nextStep;
 
             private SourceTask(
@@ -1050,6 +1120,15 @@ public final class OresEvalRootNode extends RootNode {
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
+                    OresFuture<?> abandonedChannel = ownedPendingChannelAwait;
+                    ownedPendingChannelAwait = null;
+                    if (abandonedChannel != null
+                            && resume.failure() instanceof OresScheduler.TaskCancelledException
+                            && cleanupDepth == 0) {
+                        // This uniquely-created inline channel select must not
+                        // retain a phantom consumer after its owner cancels.
+                        abandonedChannel.cancel(false);
+                    }
                     boolean wasCooperating = awaitingCooperate;
                     awaitingCooperate = false;
                     if (resume.failure() instanceof OresScheduler.TaskCancelledException
@@ -1145,6 +1224,13 @@ public final class OresEvalRootNode extends RootNode {
             private void suspend(
                     OresFuture<?> future,
                     SourceValueCont continuation) {
+                suspend(future, continuation, false);
+            }
+
+            private void suspend(
+                    OresFuture<?> future,
+                    SourceValueCont continuation,
+                    boolean ownsInlineChannelOperation) {
                 Objects.requireNonNull(future, "future");
                 Objects.requireNonNull(continuation, "continuation");
                 if (nextStep != null) {
@@ -1153,6 +1239,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 awaitingCooperate = false;
                 awaitingContinuation = continuation;
+                ownedPendingChannelAwait = ownsInlineChannelOperation ? future : null;
                 nextStep = OresScheduler.await(future);
             }
 
@@ -3303,7 +3390,10 @@ public final class OresEvalRootNode extends RootNode {
                                     suspendOnAwaitable(
                                             t,
                                             value,
-                                            continuation);
+                                            continuation,
+                                            awaited.expression() instanceof Ast.ChannelOpExpr channel
+                                                    && channel.mode() == Ast.WaitMode.NONBLOCKING
+                                                    && !channel.callback());
                                 }
                             });
                     return;
@@ -3902,7 +3992,8 @@ public final class OresEvalRootNode extends RootNode {
         private void suspendOnAwaitable(
                 SourceTask task,
                 Object value,
-                SourceValueCont continuation) {
+                SourceValueCont continuation,
+                boolean ownsInlineChannelOperation) {
             OresFuture<?> future;
             if (value instanceof OresFuture<?> oresFuture) {
                 future = oresFuture;
@@ -3948,7 +4039,8 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(
                                     t,
                                     result,
-                                    failure));
+                                    failure),
+                    ownsInlineChannelOperation);
         }
 
         private void evalSuspendableChannel(
@@ -3985,22 +4077,20 @@ public final class OresEvalRootNode extends RootNode {
                                 == Ast.ChannelOperation.READ) {
                             if (operation.mode()
                                     == Ast.WaitMode.IMMEDIATE) {
+                                final Object channelResult;
                                 try {
                                     java.util.Optional<Object> result =
                                             channel.tryRead();
-                                    continuation.accept(
-                                            t,
-                                            result.isPresent()
-                                                    ? new OptionValue(
-                                                            true,
-                                                            result.get())
-                                                    : new OptionValue(
-                                                            false,
-                                                            null),
-                                            null);
+                                    channelResult = result.isPresent()
+                                            ? new OptionValue(true, result.get())
+                                            : new OptionValue(false, null);
                                 } catch (RuntimeException | Error failure) {
                                     continuation.accept(t, null, failure);
+                                    return;
                                 }
+                                // A lexical continuation may throw after executing
+                                // side effects; never re-enter it as a channel fault.
+                                continuation.accept(t, channelResult, null);
                                 return;
                             }
 
@@ -4020,14 +4110,14 @@ public final class OresEvalRootNode extends RootNode {
                             }
 
                             if (future.isDone()) {
+                                final Object channelResult;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            future.join(),
-                                            null);
+                                    channelResult = future.join();
                                 } catch (RuntimeException | Error failure) {
                                     continuation.accept(t, null, failure);
+                                    return;
                                 }
+                                continuation.accept(t, channelResult, null);
                             } else {
                                 t.suspend(
                                         future,
@@ -4035,7 +4125,8 @@ public final class OresEvalRootNode extends RootNode {
                                                 continuation.accept(
                                                         t2,
                                                         value,
-                                                        failure));
+                                                        failure),
+                                        true); // This SourceTask owns the direct channel registration.
                             }
                             return;
                         }
@@ -4054,13 +4145,13 @@ public final class OresEvalRootNode extends RootNode {
                                     }
 
                                     if (operation.callback()) {
+                                        OresFuture<Void> completion = null;
                                         try {
                                             if (!ActorRuntime.inActorExecution()) {
                                                 throw new IllegalStateException(
                                                         "nb cb writech requires actor execution");
                                             }
-                                            OresFuture<Void> completion =
-                                                    channel.writeAsync(value);
+                                            completion = channel.writeAsync(value);
                                             ActorRuntime.ContinuationTarget target =
                                                     context.actors()
                                                             .captureCurrentContinuationTarget();
@@ -4084,29 +4175,29 @@ public final class OresEvalRootNode extends RootNode {
                                                             }
                                                         }
                                                     });
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    null);
                                         } catch (RuntimeException | Error failure) {
+                                            // If registration fails after writeAsync, revoke
+                                            // only this newly owned pending producer.
+                                            if (completion != null) completion.cancel(false);
                                             continuation.accept(t2, null, failure);
+                                            return;
                                         }
+                                        // A lexical continuation can itself throw.
+                                        // Never deliver twice or reinterpret it as I/O.
+                                        continuation.accept(t2, null, null);
                                         return;
                                     }
 
                                     if (operation.mode()
                                             == Ast.WaitMode.IMMEDIATE) {
+                                        final boolean written;
                                         try {
-                                            continuation.accept(
-                                                    t2,
-                                                    channel.tryWrite(value),
-                                                    null);
+                                            written = channel.tryWrite(value);
                                         } catch (RuntimeException | Error failure) {
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    failure);
+                                            continuation.accept(t2, null, failure);
+                                            return;
                                         }
+                                        continuation.accept(t2, written, null);
                                         return;
                                     }
 
@@ -4128,16 +4219,11 @@ public final class OresEvalRootNode extends RootNode {
                                     if (future.isDone()) {
                                         try {
                                             future.join();
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    null);
                                         } catch (RuntimeException | Error failure) {
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    failure);
+                                            continuation.accept(t2, null, failure);
+                                            return;
                                         }
+                                        continuation.accept(t2, null, null);
                                     } else {
                                         t2.suspend(
                                                 future,
@@ -4145,7 +4231,8 @@ public final class OresEvalRootNode extends RootNode {
                                                         continuation.accept(
                                                                 t3,
                                                                 null,
-                                                                failure));
+                                                                failure),
+                                                true); // This SourceTask owns the direct channel registration.
                                     }
                                 });
                     });
@@ -7717,12 +7804,47 @@ public final class OresEvalRootNode extends RootNode {
                     return new ClassFacade(this, klass);
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
-                    if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
-                    return eval(field.initializer(), new Env(null));
+                    return moduleFieldValue(module, field);
                 }
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
         }
+
+        private Object moduleFieldValue(Ast.ModuleDecl module, Ast.FieldDecl field) {
+            synchronized (moduleFieldValues) {
+                if (moduleFieldValues.containsKey(field)) {
+                    Object existing = moduleFieldValues.get(field);
+                    if (existing == MODULE_FIELD_INITIALIZING) {
+                        throw new IllegalStateException("recursive module field initialization: "
+                                + module.name() + "." + field.name());
+                    }
+                    if (existing instanceof FailedModuleField failed) {
+                        Throwable failure = failed.failure();
+                        if (failure instanceof RuntimeException runtime) throw runtime;
+                        if (failure instanceof Error fatal) throw fatal;
+                        throw new IllegalStateException("module initializer failed", failure);
+                    }
+                    return existing;
+                }
+                if (field.initializer() == null) {
+                    throw new IllegalArgumentException("module field has no initializer: "
+                            + module.name() + "." + field.name());
+                }
+                moduleFieldValues.put(field, MODULE_FIELD_INITIALIZING);
+                try {
+                    Object value = eval(field.initializer(), new Env(null));
+                    moduleFieldValues.put(field, value);
+                    return value;
+                } catch (RuntimeException | Error failure) {
+                    // Retry is not automatic: a failed module initializer must
+                    // not be silently evaluated again with duplicate effects.
+                    moduleFieldValues.put(field, new FailedModuleField(failure));
+                    throw failure;
+                }
+            }
+        }
+
+        private record FailedModuleField(Throwable failure) { }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
             Ast.FunctionDecl match = null;
