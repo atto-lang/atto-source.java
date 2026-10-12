@@ -66,7 +66,7 @@ public final class FunctionEffects {
         return new FunctionEffects(result);
     }
 
-    /** `using` signatures specify an upper bound, not an exact effect list. */
+    /** `with` signatures specify an upper bound, not an exact effect list. */
     public boolean permits(FunctionEffects inferred) {
         return effects.containsAll(inferred.effects);
     }
