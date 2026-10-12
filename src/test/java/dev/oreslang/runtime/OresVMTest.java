@@ -61,6 +61,32 @@ final class OresVMTest {
     }
 
     @Test
+    void closeFromRootCarrierFailsBeforeRevokingVmAndHostCanStillClose() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try {
+            OresFuture<Integer> first = vm.rootScheduler().start(resume -> {
+                IllegalStateException denied = org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalStateException.class, vm::close);
+                assertTrue(denied.getMessage().contains("outside actor and CONTROL"));
+                assertTrue(vm.started(),
+                        "failed self-close must never poison the live VM's STARTED state");
+                return OresScheduler.done(41);
+            });
+            assertEquals(41, first.get(5, TimeUnit.SECONDS));
+            assertTrue(vm.started());
+
+            OresFuture<Integer> next =
+                    vm.rootScheduler().start(resume -> OresScheduler.done(42));
+            assertEquals(42, next.get(5, TimeUnit.SECONDS),
+                    "a denied self-close must not revoke subsequent CONTROL turns");
+        } finally {
+            vm.close();
+        }
+        assertTrue(!vm.started(), "external teardown must complete normally");
+        vm.close(); // idempotent
+    }
+
+    @Test
     void startupIsIdempotentAndSchedulerDispatchIdsRemainFresh() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try {

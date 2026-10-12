@@ -156,6 +156,17 @@ public final class OresVM implements AutoCloseable {
 
     @Override
     public synchronized void close() {
+        // A CONTROL/root task cannot wait for its own carrier to leave. Reject
+        // BEFORE setting CLOSED or revoking dispatch; otherwise the scheduler's
+        // own close guard throws after the VM has been irreversibly poisoned.
+        // An ordinary actor/Mailman must likewise delegate blocking VM teardown
+        // to its supervising host after its turn finishes.
+        if (isRootSchedulerCurrent()
+                || ActorRuntime.inActorExecution()
+                || ActorRuntime.inActorGroupMailmanExecution()) {
+            throw new IllegalStateException(
+                    "OresVM must be closed outside actor and CONTROL scheduler turns");
+        }
         if (!closed.compareAndSet(false, true)) return;
         startupState = StartupState.CLOSED;
         try {
