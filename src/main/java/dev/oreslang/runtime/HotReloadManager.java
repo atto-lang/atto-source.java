@@ -148,7 +148,7 @@ public final class HotReloadManager implements AutoCloseable {
      * Until pre-expanded, signed artifact loading exists, fail before macro parsing.
      */
     static void rejectRuntimeMacroExpansion(String sourceText) {
-        MacroExpander.rejectRuntimeMacroDefinitions(new Lexer(sourceText).scan());
+        MacroExpander.rejectRuntimeCodeGeneration(new Lexer(sourceText).scan());
     }
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
