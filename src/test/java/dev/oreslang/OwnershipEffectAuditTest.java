@@ -19,7 +19,7 @@ final class OwnershipEffectAuditTest {
                             define actor Counter as
                               state { count: int = 0; }
                               pub probe(): void {
-                                self.handle_state(critical |s| -> {
+                                self.handle_state(critical write |s| -> {
                                   val Channel<int> ch = Channel.new<int>(1);
                                   %s
                                   s.count = 1;
@@ -37,7 +37,7 @@ final class OwnershipEffectAuditTest {
                 define actor Counter as
                   state { count: int = 0; }
                   pub probe(): void {
-                    self.handle_state(critical |s| -> { s.count = 1; });
+                    self.handle_state(critical write |s| -> { s.count = 1; });
                     rt cooperate;
                     return;
                   }
