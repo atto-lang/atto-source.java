@@ -6599,10 +6599,6 @@ public final class ActorRuntime implements AutoCloseable {
             boolean carrierEntered = false;
             boolean reschedule = false;
             try {
-                if (dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes) {
-                    int cpu = lanes.cpuForLane(dispatchLane);
-                    if (cpu >= 0) NativeCarrierExecutor.bindCurrentThreadToCpu(cpu);
-                }
                 synchronized (lifecycleLock) {
                     // Prevent obsolete queued runnables impersonating the
                     // next actor turn after scheduled was cleared and re-claimed.
@@ -6617,6 +6613,13 @@ public final class ActorRuntime implements AutoCloseable {
                     carrierEntered = true;
                 }
 
+                // Only the admitted owner may have its native CPU affinity
+                // changed. An obsolete queued runnable is inert, even if the
+                // dispatcher supports physical CPU pinning.
+                if (dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes) {
+                    int cpu = lanes.cpuForLane(dispatchLane);
+                    if (cpu >= 0) NativeCarrierExecutor.bindCurrentThreadToCpu(cpu);
+                }
                 turnExecutor.execute(this::runBatchEntered);
             } catch (Throwable failure) {
                 fail(failure);
