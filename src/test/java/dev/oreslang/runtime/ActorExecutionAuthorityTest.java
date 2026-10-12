@@ -61,6 +61,10 @@ final class ActorExecutionAuthorityTest {
         assertFalse(gate.acknowledgeRetired(1));
         assertTrue(gate.enter(1, 12).isEmpty());
         assertFalse(gate.leave(new ActorExecutionAuthority.Claim(1, live.sequence(), 12), false));
+        assertFalse(gate.leave(new ActorExecutionAuthority.Claim(
+                live.generation(), live.sequence(), live.carrierId()), false),
+                "a reconstructed equal-valued claim must not release the carrier");
+        assertTrue(gate.owns(live));
         assertTrue(gate.leave(live, false));
         assertFalse(gate.leave(live, false));
         assertTrue(gate.acknowledgeRetired(1));
