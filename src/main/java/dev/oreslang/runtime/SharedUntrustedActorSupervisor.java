@@ -6,8 +6,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.FutureTask;
 
 /**
  * Supervisor-backed source UNTRUSTED actors in exactly ONE shared Graal
@@ -152,7 +150,7 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
         private final UntrustedJitCodeUnit code;
         private final UntrustedJitCodeUnit.RemoteUntrustedActor remote;
         private final AtomicBoolean revoked = new AtomicBoolean();
-        private final FutureTask<Void> closeOnce = new FutureTask<>(() -> {
+        private final VerifiedCloseFence closeFence = new VerifiedCloseFence(() -> {
             try {
                 // No group monitor is held here: Context.close(true) must
                 // interrupt a malicious running guest rather than deadlock.
@@ -164,7 +162,6 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
                 // revoked. Its occupied slot prevents over-admission.
                 code.fenceAfterContextClose();
             }
-            return null;
         });
 
         private Actor(SharedUntrustedIsolatePool.Group group,
@@ -230,19 +227,7 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
 
         @Override public void close() {
             revoked.set(true);
-            closeOnce.run();
-            try {
-                closeOnce.get();
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException(
-                        "interrupted before untrusted actor retirement was confirmed");
-            } catch (ExecutionException failed) {
-                // A failed Context close consumes capacity until the entire
-                // Engine can be safely retired, never silently recycled.
-                throw new IllegalStateException(
-                        "untrusted actor close was not confirmed; lease remains reserved");
-            }
+            closeFence.awaitConfirmedClose("untrusted actor lease");
         }
     }
 
