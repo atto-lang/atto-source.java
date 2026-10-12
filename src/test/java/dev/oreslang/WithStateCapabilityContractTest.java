@@ -94,12 +94,16 @@ final class WithStateCapabilityContractTest {
         for (String op : new String[] { "take", "share", "borrow" }) {
             String viaIntrinsic = actor("with state.read",
                     "self.handle_state(|s| -> { rt " + op + " s.v; return s.v; })");
-            assertThrows(IllegalArgumentException.class,
-                    () -> ActorStateContract.verify(Parser.parse(viaIntrinsic)), op);
+            Ast.Program parsedIntrinsic = Parser.parse(viaIntrinsic);
+            var intrinsicFailure = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(parsedIntrinsic), op);
+            assertTrue(intrinsicFailure.getMessage().contains("state-backed"), op);
             String viaUsing = actor("with state.read",
                     "using state.read(|s| -> { rt " + op + " s.v; return s.v; })");
-            assertThrows(IllegalArgumentException.class,
-                    () -> ActorStateContract.verify(Parser.parse(viaUsing)), op);
+            Ast.Program parsedUsing = Parser.parse(viaUsing);
+            var usingFailure = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(parsedUsing), op);
+            assertTrue(usingFailure.getMessage().contains("state-backed"), op);
         }
     }
 
