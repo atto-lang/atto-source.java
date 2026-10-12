@@ -243,4 +243,65 @@ final class ChannelCancellationLinearizationTest {
             throw new AssertionError(reflectionFailure);
         }
     }
+
+    @Test
+    void cancellationQueuedBeforeRendezvousWriterLeavesChannelUnconsumed() throws Exception {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0);
+        OresFuture<ChannelRuntime.SelectResult> receiver =
+                ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel)).selectAsync();
+        assertFalse(receiver.isDone());
+
+        ReentrantLock lock = coordinator();
+        FutureTask<Boolean> cancel = new FutureTask<>(() -> receiver.cancel(false));
+        FutureTask<Boolean> write = new FutureTask<>(() -> channel.tryWrite(91));
+        lock.lock();
+        try {
+            Thread cancelling = start(cancel, "cancel-rendezvous-receiver");
+            awaitQueued(lock, cancelling);
+            Thread writing = start(write, "write-after-cancel");
+            awaitQueued(lock, writing);
+        } finally {
+            lock.unlock();
+        }
+
+        assertTrue(cancel.get(5, TimeUnit.SECONDS));
+        assertFalse(write.get(5, TimeUnit.SECONDS),
+                "the abandoned read cannot acknowledge a new rendezvous write");
+        assertThrows(CancellationException.class, receiver::join);
+        assertEquals(0, retainedRegistrations(channel));
+
+        OresFuture<ChannelRuntime.SelectResult> fresh =
+                ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel)).selectAsync();
+        assertTrue(channel.tryWrite(92));
+        assertEquals(92, fresh.join().value(),
+                "new readers must not inherit cancelled rendezvous state");
+        assertEquals(0, retainedRegistrations(channel));
+    }
+
+    @Test
+    void rendezvousWriterQueuedBeforeCancelCommitsReadExactlyOnce() throws Exception {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0);
+        OresFuture<ChannelRuntime.SelectResult> receiver =
+                ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel)).selectAsync();
+        assertFalse(receiver.isDone());
+
+        ReentrantLock lock = coordinator();
+        FutureTask<Boolean> write = new FutureTask<>(() -> channel.tryWrite(55));
+        FutureTask<Boolean> cancel = new FutureTask<>(() -> receiver.cancel(false));
+        lock.lock();
+        try {
+            Thread writing = start(write, "write-before-receiver-cancel");
+            awaitQueued(lock, writing);
+            Thread cancelling = start(cancel, "late-rendezvous-cancel");
+            awaitQueued(lock, cancelling);
+        } finally {
+            lock.unlock();
+        }
+
+        assertTrue(write.get(5, TimeUnit.SECONDS));
+        assertFalse(cancel.get(5, TimeUnit.SECONDS));
+        assertEquals(55, receiver.join().value());
+        assertTrue(channel.tryRead().isEmpty());
+        assertEquals(0, retainedRegistrations(channel));
+    }
 }
