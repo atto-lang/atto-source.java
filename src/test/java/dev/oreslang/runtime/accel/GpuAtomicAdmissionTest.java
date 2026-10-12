@@ -213,4 +213,65 @@ final class GpuAtomicAdmissionTest {
         src.complete(claimed.tickets().inputTicket(), true);
         dst.complete(claimed.tickets().outputTicket(), true);
     }
+    @Test
+    void pairedCompletionIsAtomicAndRejectsMixedOrReplayTickets() {
+        var source = owner(201, "tenant", "gpu", 64);
+        var destination = owner(202, "tenant", "gpu", 64);
+        var pair = GpuBufferFence.claimPair(source, destination, 64);
+        var otherInput = owner(201, "tenant", "gpu", 64);
+        var otherOutput = owner(202, "tenant", "gpu", 64);
+        var otherPair = GpuBufferFence.claimPair(otherInput, otherOutput, 64);
+        var swapped = new GpuBufferFence.PairTickets(
+                pair.input(), otherPair.inputTicket(),
+                pair.output(), pair.outputTicket());
+        assertThrows(IllegalStateException.class,
+                () -> GpuBufferFence.completePair(source, destination, swapped, true));
+        assertEquals(GpuBufferFence.Status.IN_FLIGHT, source.status());
+        assertEquals(GpuBufferFence.Status.IN_FLIGHT, destination.status());
+        GpuBufferFence.completePair(source, destination, pair, true);
+        assertEquals(GpuBufferFence.Status.IDLE, source.status());
+        assertEquals(GpuBufferFence.Status.IDLE, destination.status());
+        assertThrows(IllegalStateException.class,
+                () -> GpuBufferFence.completePair(source, destination, pair, true));
+        GpuBufferFence.completePair(otherInput, otherOutput, otherPair, true);
+    }
+
+    @Test
+    void cancellationKeepsBothAllocationsPoisonedUntilBothEventsAreAcknowledged() {
+        var source = owner(301, "tenant", "gpu", 64);
+        var destination = owner(302, "tenant", "gpu", 64);
+        var pair = GpuBufferFence.claimPair(source, destination, 64);
+        GpuBufferFence.cancelPair(source, destination, pair);
+        assertEquals(GpuBufferFence.Status.POISONED, source.status());
+        assertEquals(GpuBufferFence.Status.POISONED, destination.status());
+        assertThrows(IllegalStateException.class, source::take);
+        assertThrows(IllegalStateException.class, destination::take);
+        assertThrows(IllegalStateException.class,
+                () -> source.retireAfterBackendRelease(pair.input()));
+        assertThrows(IllegalStateException.class,
+                () -> destination.retireAfterBackendRelease(pair.output()));
+        assertThrows(IllegalStateException.class,
+                () -> GpuBufferFence.completePair(source, destination, pair, false));
+        GpuBufferFence.acknowledgeCancelledPair(source, destination, pair);
+        assertThrows(IllegalStateException.class,
+                () -> GpuBufferFence.acknowledgeCancelledPair(source, destination, pair));
+        source.retireAfterBackendRelease(pair.input());
+        destination.retireAfterBackendRelease(pair.output());
+        source.close();
+        destination.close();
+    }
+
+    @Test
+    void pairedCompletionRejectsAlreadyHalfCompletedBufferWithoutChangingOther() {
+        var source = owner(401, "tenant", "gpu", 64);
+        var destination = owner(402, "tenant", "gpu", 64);
+        var pair = GpuBufferFence.claimPair(source, destination, 64);
+        source.complete(pair.inputTicket(), true);
+        assertThrows(IllegalStateException.class,
+                () -> GpuBufferFence.completePair(source, destination, pair, true));
+        assertEquals(GpuBufferFence.Status.IDLE, source.status());
+        assertEquals(GpuBufferFence.Status.IN_FLIGHT, destination.status());
+        destination.complete(pair.outputTicket(), true);
+    }
+
 }
