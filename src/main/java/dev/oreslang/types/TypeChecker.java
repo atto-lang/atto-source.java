@@ -2052,6 +2052,18 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            // Channels are actor-local capabilities, but their lifecycle can
+            // be controlled by the owning source code without Java interop.
+            if (sumReceiver instanceof Named channelType
+                    && channelType.name().equals("Channel")
+                    && channelType.arguments().size() == 1) {
+                return switch (member.member()) {
+                    case "close" -> new Function(List.of(), Primitive.VOID);
+                    case "is_closed" -> new Function(List.of(), Primitive.BOOL);
+                    default -> throw new IllegalArgumentException(
+                            "unknown Channel member '" + member.member() + "'");
+                };
+            }
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
             Type iteratorMember = builtinIteratorMember(sumReceiver, member.member());
