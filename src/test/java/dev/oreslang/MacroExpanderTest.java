@@ -397,7 +397,7 @@ final class MacroExpanderTest {
 
     @Test
     void boundsMacroDelimiterNestingWithoutUnboundedScannerWork() {
-        String definition = "macro_rules! identity { ($value:tt) => { $value }; }\\n";
+        String definition = "macro_rules! identity { ($value:tt) => { $value }; }\n";
         String tooDeep = "(".repeat(140) + "7" + ")".repeat(140);
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
                 () -> MacroExpander.expand(new Lexer(definition + "identity!(" + tooDeep + ")").scan()));
