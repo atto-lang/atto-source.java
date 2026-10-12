@@ -948,6 +948,55 @@ final class OresSchedulerQuiescenceTest {
     }
 
     @Test
+    void timedAdmissionIsGloballyBoundedAcrossIndependentSchedulers()
+            throws Exception {
+        int original = OresScheduler.availableWallDeadlineAdmissions();
+        assertTrue(original >= 32);
+        java.util.List<OresScheduler> schedulers = new java.util.ArrayList<>();
+        OresFuture<Integer> unresolved = new OresFuture<>();
+        java.util.List<OresFuture<Integer>> admitted = new java.util.ArrayList<>();
+        try {
+            for (int i = 0; i < 4; i++) schedulers.add(new OresScheduler(1));
+            for (int i = 0; i < original; i++) {
+                final int index = i;
+                admitted.add(schedulers.get(i % schedulers.size())
+                        .startWithWallDeadline(
+                                resume -> OresScheduler.await(unresolved),
+                                () -> { },
+                                TimeUnit.SECONDS.toNanos(30),
+                                new IllegalStateException("unexpected deadline " + index)));
+            }
+            assertEquals(0, OresScheduler.availableWallDeadlineAdmissions(),
+                    "the timed quota must be process-wide, not per scheduler");
+            for (OresScheduler scheduler : schedulers) {
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        java.util.concurrent.RejectedExecutionException.class,
+                        () -> scheduler.startWithWallDeadline(
+                                resume -> OresScheduler.done(55),
+                                () -> { },
+                                TimeUnit.SECONDS.toNanos(30),
+                                new IllegalStateException("over capacity")));
+            }
+            // Shutdown crosses multiple physical executors but must retire
+            // every reservation, including QUEUED and WAITING tasks.
+            for (OresScheduler scheduler : schedulers) scheduler.close();
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (OresScheduler.availableWallDeadlineAdmissions() != original
+                    && System.nanoTime() < until) Thread.sleep(1);
+            assertEquals(original, OresScheduler.availableWallDeadlineAdmissions(),
+                    "all independent scheduler shutdowns must reclaim their slots");
+            assertEquals(0, unresolved.pendingRuntimeWaiterCount(),
+                    "cross-scheduler close must detach all unresolved awaits");
+            for (OresFuture<Integer> task : admitted) {
+                assertTrue(task.isDone(), "shutdown cannot strand an admitted task");
+            }
+        } finally {
+            for (OresScheduler scheduler : schedulers) scheduler.close();
+        }
+        assertEquals(original, OresScheduler.availableWallDeadlineAdmissions());
+    }
+
+    @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
         AtomicInteger count = new AtomicInteger();
