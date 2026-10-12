@@ -40,7 +40,7 @@ public final class MacroExpander {
             EQUAL, FAT_ARROW, ARROW);
 
 
-    public enum Mode { AOT, JIT }
+    public enum Mode { AOT, REBUILDABLE }
 
     public record Fingerprint(Mode mode, String sha256) {
         public Fingerprint {
@@ -76,8 +76,9 @@ public final class MacroExpander {
 
     /**
      * AOT macros must remain byte-for-byte semantically identical to the previous generation.
-     * JIT macros may change, but the caller must publish the freshly checked code as a new
-     * generation; this API never patches a live actor or JIT-compiled function in place.
+     * Rebuildable macros may change only across separately compiled, fully validated
+     * program generations. All macro expansion takes place before guest AOT code generation;
+     * no macro implementation or token expansion is retained for runtime execution.
      */
     public static Result expand(List<Token> source, Snapshot previous) {
         Objects.requireNonNull(source);
@@ -102,12 +103,13 @@ public final class MacroExpander {
                     && at(source, i + 2, LPAREN) && at(source, i + 4, RPAREN)
                     && named(source, i + 5, "macro_rules") && at(source, i + 6, BANG)) {
                 if (!at(source, i + 3, IDENT) || !at(source, i + 4, RPAREN)) {
-                    throw fail(source.get(i), "expected @expand(aot) or @expand(jit)");
+                    throw fail(source.get(i), "expected @expand(aot) or @expand(rebuildable)");
                 }
                 String value = source.get(i + 3).lexeme();
                 mode = switch (value) {
                     case "aot" -> Mode.AOT;
-                    case "jit" -> Mode.JIT;
+                    case "rebuildable" -> Mode.REBUILDABLE;
+                    case "jit" -> throw fail(source.get(i + 3), "JIT macro expansion is forbidden: use @expand(rebuildable) for compile-time-only rebuilds");
                     default -> throw fail(source.get(i + 3), "unknown macro expansion mode: " + value);
                 };
                 i += 5;
