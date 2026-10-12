@@ -73,6 +73,7 @@ final class ActorArenaTest {
                             assertEquals(0, scope.read(scope.allocate(0)));
                         }
                         arena.get().close();
+                        assertDoesNotThrow(arena.get()::close, "repeat close is idempotent");
                         assertTrue(arena.get().closed());
                         assertTrue(arena.get().physicallyClosed());
                         third.countDown();
@@ -145,6 +146,8 @@ final class ActorArenaTest {
         }
         assertTrue(arena.get().closed());
         assertFalse(arena.get().physicallyClosed());
+        // Actor finalization can repeat the revocation while a lease is live.
+        // The last loan alone must trigger the single physical FFM release.
         assertThrows(IllegalStateException.class, () -> loan.get().read());
         loan.get().close();
         assertTrue(arena.get().physicallyClosed());
