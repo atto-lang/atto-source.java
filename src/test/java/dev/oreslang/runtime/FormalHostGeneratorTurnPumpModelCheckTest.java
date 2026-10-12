@@ -561,4 +561,74 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         FrameState overlapping = new FrameState(2, 2, true, true, false);
         assertThrows(AssertionError.class, () -> invariantFrame(overlapping));
     }
+
+    /**
+     * Pre-scheduling authorization invariant. A certificate rejected only at
+     * redemption would still permit guest side effects and is unacceptable.
+     * This is a bounded abstraction, not a Java/Truffle refinement proof.
+     */
+    private enum PrestartEvent {
+        RESERVE, CERTIFIED_START, UNSCOPED_START, FOREIGN_THREAD_START, SEAL
+    }
+    private record PrestartState(boolean reserved, boolean started,
+                                 boolean sealed, int guestStarts) {
+        static PrestartState initial() {
+            return new PrestartState(false, false, false, 0);
+        }
+    }
+    private static PrestartState prestartStep(PrestartState state, PrestartEvent event) {
+        if (event == PrestartEvent.RESERVE && !state.sealed && !state.reserved) {
+            return new PrestartState(true, state.started, false, state.guestStarts);
+        }
+        if (event == PrestartEvent.CERTIFIED_START && state.reserved
+                && !state.started && !state.sealed) {
+            return new PrestartState(true, true, false, state.guestStarts + 1);
+        }
+        if (event == PrestartEvent.SEAL) {
+            return new PrestartState(state.reserved, state.started, true,
+                    state.guestStarts);
+        }
+        return state;
+    }
+    private static void prestartInvariant(PrestartState state) {
+        assertTrue(state.guestStarts >= 0 && state.guestStarts <= 1);
+        if (state.guestStarts != 0) {
+            assertTrue(state.reserved && state.started,
+                    "guest started without its authorized pump reservation");
+        }
+    }
+
+    @Test
+    void boundedPrestartEventsNeverExecuteUnreservedGuestTask() {
+        Set<PrestartState> visited = new HashSet<>();
+        ArrayDeque<PrestartState> queue = new ArrayDeque<>();
+        PrestartState initial = PrestartState.initial();
+        visited.add(initial);
+        queue.addLast(initial);
+        boolean sawStart = false, sawSeal = false;
+        while (!queue.isEmpty()) {
+            PrestartState state = queue.removeFirst();
+            prestartInvariant(state);
+            sawStart |= state.guestStarts == 1;
+            sawSeal |= state.sealed;
+            for (PrestartEvent event : PrestartEvent.values()) {
+                PrestartState next = prestartStep(state, event);
+                prestartInvariant(next);
+                if (event == PrestartEvent.UNSCOPED_START
+                        || event == PrestartEvent.FOREIGN_THREAD_START) {
+                    assertEquals(state, next,
+                            "unauthorized request executed guest effects");
+                }
+                if (visited.add(next)) queue.addLast(next);
+            }
+        }
+        assertTrue(sawStart && sawSeal && visited.size() >= 4,
+                "model must explore permitted and rejected starts");
+    }
+
+    @Test
+    void unsafePrestartModelMutationViolatesAuthorizationInvariant() {
+        PrestartState forged = new PrestartState(false, true, false, 1);
+        assertThrows(AssertionError.class, () -> prestartInvariant(forged));
+    }
 }
