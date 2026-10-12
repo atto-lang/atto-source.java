@@ -174,6 +174,12 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
                     == other.group.contextForSupervisor().getEngine();
         }
 
+        /** Host-only verification for a caller-owned hot-reload Context. */
+        boolean sharesPhysicalCollectorWith(org.graalvm.polyglot.Context other) {
+            Objects.requireNonNull(other, "other");
+            return group.contextForSupervisor().getEngine() == other.getEngine();
+        }
+
         /** Different actor contexts allow targeted context retirement. */
         boolean sharesGuestContextWith(Actor other) {
             Objects.requireNonNull(other, "other");
