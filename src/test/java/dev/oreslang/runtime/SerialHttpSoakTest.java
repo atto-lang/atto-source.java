@@ -38,6 +38,9 @@ final class SerialHttpSoakTest {
         int total = boundedEnv("ORES_HTTP_SOAK_REQUESTS", 256, 1, 100_000);
         int clients = boundedEnv("ORES_HTTP_SOAK_CLIENTS", 64, 1, 1_000);
         int capacity = Math.max(64, Math.min(2_048, clients * 2));
+        boolean heapProfile = Boolean.parseBoolean(
+                System.getenv().getOrDefault("ORES_HTTP_SOAK_HEAP_PROFILE", "false"));
+        List<Long> retainedHeapSamples = new ArrayList<>();
         String guest = """
             define serial actor Counter as
               state { count: int = 0; }
@@ -123,6 +126,16 @@ final class SerialHttpSoakTest {
                                         + response.statusCode());
                             }
                         }
+                        if (heapProfile && ((long) (sent + wave) * 4L / total)
+                                > retainedHeapSamples.size()) {
+                            // Take best-effort post-GC samples only at wave
+                            // boundaries, where all clients have completed and
+                            // the serial actor has no outstanding HTTP work.
+                            System.gc();
+                            Thread.sleep(35);
+                            retainedHeapSamples.add(java.lang.management.ManagementFactory
+                                    .getMemoryMXBean().getHeapMemoryUsage().getUsed());
+                        }
                     }
                     // All workload responses have resolved; the stop request is
                     // admitted only afterward, so the supervisor can drain.
@@ -157,6 +170,20 @@ final class SerialHttpSoakTest {
         assertEquals(Integer.toString(Math.min(capacity, 1_024)), lines.get(marker + 4));
         assertEquals(total, stats.success() + stats.rejected(),
                 "every generated request must receive a response");
+        if (heapProfile) {
+            System.out.println("HTTP_SOAK_POST_GC_HEAP_SAMPLES_BYTES="
+                    + retainedHeapSamples);
+            assertTrue(retainedHeapSamples.size() >= 4,
+                    "50k stress must sample four distinct settled wave boundaries");
+            // Discard the first warm-up sample to avoid JVM class-loading and
+            // JIT cache growth. This is a regression alarm, not a heap proof.
+            long warmed = retainedHeapSamples.get(1);
+            long last = retainedHeapSamples.get(retainedHeapSamples.size() - 1);
+            long maxDrift = Math.max(64L * 1024L * 1024L, warmed / 2);
+            assertTrue(last <= warmed + maxDrift,
+                    "retained heap grew by more than the bounded post-warm-up "
+                    + "alarm threshold; samples=" + retainedHeapSamples);
+        }
         assertEquals(stats.success(), marker - 1,
                 "each successful response must correspond to one actor invocation");
         Set<Integer> seen = new HashSet<>();
