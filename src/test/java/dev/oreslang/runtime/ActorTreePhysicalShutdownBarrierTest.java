@@ -40,8 +40,8 @@ final class ActorTreePhysicalShutdownBarrierTest {
 
                 var parent = runtime.<Integer>spawnShared(() -> (mail, context) -> {
                     try {
-                        var nativeRef = context.runtime().<Integer>spawnPrivate(
-                                () -> (childMail, childContext) -> {
+                        var nativeRef = context.runtime().<Integer>spawnChildPrivate(
+                                factoryContext -> (childMail, childContext) -> {
                                     try {
                                         var heap = childContext.actorOwnedMemory().orElseThrow();
                                         var nativeRegion = heap.newExplicitNativeI64Region(1);
@@ -53,8 +53,8 @@ final class ActorTreePhysicalShutdownBarrierTest {
                                         loanAllocated.countDown();
                                     }
                                 });
-                        var sourceRef = context.runtime().<Integer>spawnPrivate(
-                                () -> (childMail, childContext) -> {
+                        var sourceRef = context.runtime().<Integer>spawnChildPrivate(
+                                factoryContext -> (childMail, childContext) -> {
                                     childContext.runtime().startActorTask(
                                             new OresScheduler.CancellationAwareTask<Integer>() {
                                                 @Override public boolean cleanupInProgress() {
@@ -83,8 +83,8 @@ final class ActorTreePhysicalShutdownBarrierTest {
                                                 }
                                             });
                                 });
-                        nativeChild.set(nativeRef);
-                        cleanupChild.set(sourceRef);
+                        nativeChild.set(nativeRef.ref());
+                        cleanupChild.set(sourceRef.ref());
                         nativeRef.send(1);
                         sourceRef.send(2);
                     } catch (Throwable error) {
