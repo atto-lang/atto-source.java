@@ -58,14 +58,22 @@ passed 26/26 focused native CTests. General async state, multiple concurrent
 flows, Java runtime parity and full legacy regression migrations are
 outstanding. See `docs/ACTOR_STATE_INVARIANT.md`.
 
-## Scoped `using` syntax admission
+## Canonical `self.handle_state` read and write design
 
-A native LLVM subset now compiles value-returning read and critical write
-capabilities. The Java parser recognizes the spelling well enough to
-issue a deliberate diagnostic: `using state.read/write requires Java scoped
-actor-state capability lowering (not implemented)`. It must **not**
-reinterpret this syntax as ordinary actor method invocation.
+The canonical actor-state API is `self.handle_state`:
+`self.handle_state(|state| -> {...})` denotes a read-only loan;
+`self.handle_state(critical |state| -> {...})` denotes an exclusive
+mutable loan. The older `using state.read/write` native prototypes
+are temporary aliases, not the preferred API.
 
-[Exact-source Java JDK25 smoke CI #38313160385](https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/38313160385)
-passed **25** focused checks. No Java guest state-loan execution was
-tested or enabled. See `docs/ACTOR_STATE_USING_CAPABILITIES.md`.
+Java's parser now recognizes and deliberately rejects both canonical
+forms as reserved actor-state capabilities with an explicit
+unimplemented-runtime diagnostic, rather than treating them as ordinary
+method calls. Java continues to reject the older `using` aliases.
+
+[Funded Java JDK25 CI #38314867754](https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/38314867754)
+passed **27** focused parser/compiler checks. LLVM's restricted
+execution of the canonical forms passed
+[57/57 native CTests](https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/38314809579).
+No executable Java state-loan, Native Image, or Java/LLVM guest parity
+is claimed. See `docs/ACTOR_STATE_USING_CAPABILITIES.md`.
