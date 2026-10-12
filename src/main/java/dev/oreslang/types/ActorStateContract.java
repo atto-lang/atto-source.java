@@ -189,10 +189,16 @@ public final class ActorStateContract {
         }
         if (node instanceof Ast.RuntimeCallExpr op && activeAccess != null
                 && (op.operation().equals("borrow") || op.operation().equals("borrow_mut")
-                    || op.operation().equals("borrowMut"))
+                    || op.operation().equals("borrowMut")
+                    || op.operation().equals("take")
+                    || op.operation().equals("share")
+                    || op.operation().equals("copy"))
                 && referencesAccess(op.arguments(), activeAccess)) {
+            // State field projections do not transfer ownership. Even a deep
+            // copy needs an independently verified typed projection/snapshot
+            // contract; an ephemeral StateAccess handle is never transferable.
             throw new IllegalArgumentException(
-                    "actor state-backed borrow requires continuation-aware loan lowering");
+                    "actor state-backed ownership operation requires verified snapshot lowering");
         }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) visit(item, actor, keys, activeAccess, nestedClosure, instanceMethod, accessMode);
