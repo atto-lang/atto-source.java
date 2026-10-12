@@ -78,6 +78,40 @@ final class MainExitStatusTest {
                 """));
     }
 
+    @Test void deferredExitCannotHideEarlierUnhandledRootFailure() throws Exception {
+        String failingRoutine = """
+                fnc fail(): void {
+                    val Array<int> empty = new Array<int>();
+                    empty.get(0);
+                    return;
+                }
+                """;
+        for (int requestedStatus : new int[] {0, 7}) {
+            assertThrows(RuntimeException.class, () -> exit(failingRoutine + """
+                    pub routine main(): void {
+                        defer std.process.exit(%d);
+                        fail();
+                    }
+                    """.formatted(requestedStatus)),
+                    "an unhandled failure must remain authoritative over deferred process.exit("
+                            + requestedStatus + ")");
+        }
+    }
+
+    @Test void earlierExplicitExitSurvivesLaterFailedDeferredCleanup() throws Exception {
+        assertEquals(7, exit("""
+                fnc fail(): void {
+                    val Array<int> empty = new Array<int>();
+                    empty.get(0);
+                    return;
+                }
+                pub routine main(): void {
+                    defer fail();
+                    std.process.exit(7);
+                }
+                """));
+    }
+
     @Test void deferCanRequestExitOnNormalVoidReturn() throws Exception {
         assertEquals(9, exit("""
                 pub routine main(): void {
