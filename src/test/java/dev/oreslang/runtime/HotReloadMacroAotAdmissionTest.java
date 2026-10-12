@@ -18,6 +18,25 @@ final class HotReloadMacroAotAdmissionTest {
     }
 
     @Test
+    void deniesFromJsonAccessorGenerationDuringRuntimeSourceLoading() {
+        String source = """
+                define class Example as
+                    @FromJson("external_id")
+                    id: int;
+                end
+                """;
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> HotReloadManager.rejectRuntimeMacroExpansion(source));
+        assertTrue(ex.getMessage().contains("runtime annotation code generation forbidden"),
+                ex.getMessage());
+        assertDoesNotThrow(() -> HotReloadManager.rejectRuntimeMacroExpansion("""
+                // @FromJson("ignored")
+                /* @FromJson("also_ignored") */
+                pub fnc main(): int { return 42; }
+                """));
+    }
+
+    @Test
     void ignoresMacroLikeTextInCommentsAndStringLiterals() {
         assertDoesNotThrow(() -> HotReloadManager.rejectRuntimeMacroExpansion("""
                 // macro_rules! fake { ($x:expr) => { $x }; }
