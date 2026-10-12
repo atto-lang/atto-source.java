@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(value = 30, unit = TimeUnit.SECONDS)
 final class OresHostGeneratorBridgeExecutionTest {
     private static final String SOURCE = """
-            async generator fnc numbers(): int {
+            pub async generator fnc numbers(): int {
               try {
                 yield 11;
                 yield 22;
@@ -71,6 +71,9 @@ final class OresHostGeneratorBridgeExecutionTest {
                     "numbers"));
             assertThrows(PolyglotException.class,
                     () -> OresHostGeneratorBridge.open(parsed, "missing"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresHostGeneratorBridge.open(parsed, ""));
+
         }
     }
 }
