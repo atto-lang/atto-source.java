@@ -84,6 +84,27 @@ final class ActorTwoPhaseFinalizationTest {
     }
 
     @Test
+    void exitHookCannotWaitForItsOwnUnpublishedPhysicalBarrier()
+            throws Exception {
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 16, 32))) {
+            var actor = runtime.<Integer>spawnShared(() -> (mail, context) -> {});
+            actor.ready().get(3, TimeUnit.SECONDS);
+            AtomicInteger rejectedSelfWait = new AtomicInteger();
+            runtime.setActorExitHook(domain -> {
+                assertThrows(IllegalStateException.class,
+                        () -> actor.awaitTermination(3, TimeUnit.SECONDS),
+                        "finalization owner must not deadlock on its own barrier");
+                rejectedSelfWait.incrementAndGet();
+            });
+            actor.stop();
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(1, rejectedSelfWait.get());
+            assertTrue(actor.done().isDone());
+        }
+    }
+
+    @Test
     void terminalFutureObserverRunsOutsideActorLifecycleMonitor()
             throws Exception {
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
