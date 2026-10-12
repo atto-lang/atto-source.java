@@ -35,6 +35,8 @@ final class HostFutureCarrierRendezvousExecutionTest {
               try {
                 stdio.println("armed");
                 const ignored = await (nb readch gates.start);
+              } catch (cancelled) {
+                stdio.println("INVALID-caught-cancellation");
               } finally {
                 stdio.println("cleanup-entered");
                 const cleaned = await (nb readch gates.cleanup);
