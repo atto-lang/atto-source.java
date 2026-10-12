@@ -4482,23 +4482,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
-            // Never turn an authorization denial, panic, or cancellation into
-            // None, even when future/completion wrappers obscure its subtype.
-            // Bound traversal and detect cycles: Throwable causes need not be
-            // a well-formed acyclic chain from arbitrary foreign integrations.
-            java.util.IdentityHashMap<Throwable, Boolean> visited =
-                    new java.util.IdentityHashMap<>();
-            Throwable current = failure;
-            for (int depth = 0; current != null && depth < 64; depth++) {
-                if (visited.put(current, Boolean.TRUE) != null) return false;
-                if (current instanceof OresPanic
-                        || current instanceof SecurityException
-                        || current instanceof java.util.concurrent.CancellationException) {
-                    return false;
-                }
-                current = current.getCause();
-            }
-            return current == null;
+            return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
+                    failure, OresPanic.class);
         }
 
         private Object callFunctionBodyUnchecked(Ast.FunctionDecl fn, List<?> args) {
