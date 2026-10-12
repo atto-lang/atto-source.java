@@ -313,6 +313,27 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
+     * Request cancellation of an ALREADY SUSPENDED compiler-lowered task without
+     * prematurely settling its completion Future. Only an owning runtime may
+     * call this package-private method. The failed resume runs on the original
+     * scheduler, allowing the source frame to unwind defer/finally first.
+     *
+     * Returns false for a task already terminal, not found, or whose producer
+     * completion already claimed its next resume. A caller must NOT treat false
+     * as successful cleanup. Force-kill and abandoned cleanup require a separate
+     * explicit incomplete-cleanup outcome.
+     */
+    boolean requestStructuredCancellation(OresFuture<?> completion) {
+        Objects.requireNonNull(completion, "completion");
+        for (TaskRunner<?> runner : tasks) {
+            if (runner.completion == completion) {
+                return runner.requestStructuredCancellation();
+            }
+        }
+        return false;
+    }
+
+    /**
      * Runtime/host bridge for non-suspending work. Source-level synchronous
      * lambdas may lower to this path.
      */
@@ -439,6 +460,13 @@ public final class OresScheduler implements AutoCloseable {
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
                 new AtomicReference<>();
+        // This flag is task-local authority: producer completions must not
+        // replace a claimed cancellation resume or execute cleanup twice.
+        private final AtomicBoolean structuredCancellationRequested =
+                new AtomicBoolean();
+        private final java.util.concurrent.CancellationException
+                structuredCancellation = new java.util.concurrent.CancellationException(
+                        "structured source task cancellation");
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
@@ -447,6 +475,27 @@ public final class OresScheduler implements AutoCloseable {
             this.task = task;
             this.taskPlacement = Objects.requireNonNull(taskPlacement, "taskPlacement");
             this.completion = new OresFuture<>(this::cancelFromFuture);
+        }
+
+        private boolean requestStructuredCancellation() {
+            // Only a truly suspended task has a heap-owned continuation on
+            // which the guest can unwind. Do not claim cleanup for NEW,
+            // RUNNING, QUEUED, or already TERMINAL tasks.
+            if (phase.get() != Phase.WAITING || completion.isDone()
+                    || !structuredCancellationRequested.compareAndSet(false, true)) {
+                return false;
+            }
+            Resume interrupted = Resume.completed(null, structuredCancellation);
+            if (!pendingResume.compareAndSet(null, interrupted)) {
+                // A producer already won the next-resume linearization.
+                structuredCancellationRequested.set(false);
+                return false;
+            }
+            detachActiveAwaitRegistration();
+            // A pending carrier still owns execution; afterCarrierTurn()
+            // will queue this failed resume once it has fully unwound.
+            scheduleReadyResume();
+            return true;
         }
 
         private void scheduleInitial() {
@@ -502,6 +551,13 @@ public final class OresScheduler implements AutoCloseable {
                 }
 
                 if (step instanceof Done<?> done) {
+                    // Cancellation may be handled by guest cleanup code, but
+                    // it cannot convert a revoked task into a successful
+                    // publication. Cleanup MUST settle before terminalization.
+                    if (structuredCancellationRequested.get()) {
+                        failTerminal(structuredCancellation);
+                        return;
+                    }
                     @SuppressWarnings("unchecked")
                     T value = (T) done.value();
                     finish(value);
@@ -613,6 +669,10 @@ public final class OresScheduler implements AutoCloseable {
                     value,
                     failure == null ? null : OresFuture.unwrap(failure));
             if (!pendingResume.compareAndSet(null, resume)) {
+                // Once structured cancellation owns this suspension, a
+                // concurrent late producer is harmless. It must not replace
+                // cleanup's cancellation resume or poison the task.
+                if (structuredCancellationRequested.get()) return;
                 failTerminal(new IllegalStateException(
                         "await delivered more than one resume to the same task"));
                 return;
