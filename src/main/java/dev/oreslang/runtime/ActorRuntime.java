@@ -1156,18 +1156,26 @@ public final class ActorRuntime implements AutoCloseable {
             memory = null;
         }
 
-        private void invalidateFromSlice() {
-            if (!blockClosed.compareAndSet(false, true)) return;
+        private synchronized void invalidateFromSlice() {
+            if (blockClosed.get()) return;
+            // Keep a failed wipe retryable. The slice's closed flag already
+            // fences all reads, so marking this block closed *before* the
+            // wipe would otherwise strand still-attached native bytes.
             zeroAndDetachMemory();
+            blockClosed.set(true);
         }
 
         @Override
-        public void close() {
-            openMemory(); // owner + liveness check before invalidation
-            if (!blockClosed.compareAndSet(false, true)) return;
-            zeroAndDetachMemory();
-            slice.unregister(this);
+        public synchronized void close() {
+            if (!blockClosed.get()) {
+                openMemory(); // owner + liveness check before invalidation
+                zeroAndDetachMemory();
+                blockClosed.set(true);
+            }
+            // A quota-release failure must not poison an already-detached
+            // block and prevent its next explicit close from retrying.
             reservation.close();
+            slice.unregister(this);
         }
     }
 
