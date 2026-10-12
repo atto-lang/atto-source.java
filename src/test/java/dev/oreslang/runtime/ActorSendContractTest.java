@@ -414,4 +414,42 @@ final class ActorSendContractTest {
         }
     }
 
+    @Test
+    void mailboxCloseDeliversPendingSelectOutsideActorLifecycleMonitor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((java.util.Map<?, ?>) actorsField.get(runtime)).get(actor.id());
+            assertNotNull(cell);
+            var monitorField = cell.getClass().getDeclaredField("lifecycleLock");
+            monitorField.setAccessible(true);
+            Object monitor = monitorField.get(cell);
+            var continuationField = cell.getClass().getDeclaredField("continuationMailbox");
+            continuationField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ChannelRuntime.Channel<Object> controlMailbox =
+                    (ChannelRuntime.Channel<Object>) continuationField.get(cell);
+            OresFuture<Object> pendingRead = controlMailbox.readAsync();
+            assertFalse(pendingRead.isDone(), "the CONTROL lane must initially be empty");
+
+            AtomicInteger callbackUnderLock = new AtomicInteger();
+            AtomicInteger callbackCount = new AtomicInteger();
+            CountDownLatch observed = new CountDownLatch(1);
+            pendingRead.whenCompleteRuntime((value, error) -> {
+                if (Thread.holdsLock(monitor)) callbackUnderLock.incrementAndGet();
+                callbackCount.incrementAndGet();
+                observed.countDown();
+            });
+            actor.stop();
+            assertTrue(observed.await(5, TimeUnit.SECONDS),
+                    "closing the CONTROL channel must settle pending selectors");
+            assertEquals(0, callbackUnderLock.get(),
+                    "channel-close completions cannot be published under lifecycleLock");
+            assertEquals(1, callbackCount.get(), "channel-close selector must settle once");
+            actor.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
 }
