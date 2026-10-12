@@ -109,6 +109,23 @@ final class HostFutureBridgeExecutionTest {
     }
 
     @Test
+    void forgedBridgedCommandCannotStartAnOrphanedGuestTask()
+            throws Exception {
+        ConcurrentOutput output = new ConcurrentOutput();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).out(output).build()) {
+            Value parsed = context.parse(Source.newBuilder(OresLanguage.ID,
+                    PROGRAM, "forged-host-bridge.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+            parsed.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+            assertThrows(SecurityException.class, () -> parsed.execute(
+                    OresEvalRootNode.INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND, "work"));
+            assertEquals("", output.toString(),
+                    "unauthenticated control command must be rejected before scheduling");
+        }
+    }
+
+    @Test
     void rejectingSyncFunctionDoesNotLeaveStaleHostCapture()
             throws Exception {
         try (Context context = Context.newBuilder(OresLanguage.ID)
