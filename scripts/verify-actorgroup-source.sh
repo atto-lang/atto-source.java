@@ -20,7 +20,21 @@ if command -v git >/dev/null 2>&1; then
   fi
 fi
 
-# Fail if any specified regression class disappears or is renamed.
+# Fail closed if an explicitly required regression class is removed or renamed.
+for required_test in \
+  src/test/java/dev/oreslang/SourceActorGroupExecutionTest.java \
+  src/test/java/dev/oreslang/SourceActorSpawnExecutionTest.java \
+  src/test/java/dev/oreslang/runtime/ActorGroupMultiMembershipTest.java \
+  src/test/java/dev/oreslang/runtime/ActorEventBusTest.java \
+  src/test/java/dev/oreslang/runtime/CooperativeActorGroupMailmanTest.java \
+  src/test/java/dev/oreslang/runtime/ActorCapabilityIsolationTest.java \
+  src/test/java/dev/oreslang/runtime/ActorTurnWatchdogTest.java \
+  src/test/java/dev/oreslang/ActorTransportHardeningTest.java; do
+  if [[ ! -f "$required_test" ]]; then
+    echo "Missing required regression: $required_test" >&2
+    exit 2
+  fi
+done
 TESTS="SourceActorGroupExecutionTest,SourceActorSpawnExecutionTest,ActorGroup*Test,ActorEventBusTest,CooperativeActorGroupMailmanTest,ActorCapabilityIsolationTest,ActorTurnWatchdogTest,ActorTransportHardeningTest"
 mvn -B -ntp '-P!native-thread-unix' \
   "-Dtest=${TESTS}" \
