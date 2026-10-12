@@ -46,57 +46,66 @@ public final class AsyncNativeIo implements AutoCloseable {
         return submitControl("socket.close_async", work);
     }
 
-    synchronized <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
+    <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
         return submit(operation, work, controls, 16);
     }
 
-    synchronized <T> OresFuture<T> submit(String operation, Callable<T> work) {
+    <T> OresFuture<T> submit(String operation, Callable<T> work) {
         return submit(operation, work, pending, capacity);
     }
 
     private <T> OresFuture<T> submit(String operation, Callable<T> work,
             Set<OresFuture<?>> admitted, int limit) {
-        // Cancellation cannot promise rollback of a filesystem mutation. The
-        // operation remains owned by the context until completion or context close.
+        // Each operation has one context-owned terminal decision. The monitor
+        // orders admission, completion, and close, but Future settlement must
+        // be outside the monitor: settlement synchronously notifies runtime
+        // observers and their host CONTROL plumbing must never run locked.
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
-        if (closed || admitted.size() >= limit) {
-            result.failFromRuntime(new RejectedExecutionException(
-                    closed ? "I/O context closed" : "I/O admission capacity exhausted"));
-            return result;
-        }
-        admitted.add(result);
-        long queued = CorePerf.start();
-        try {
-            workers.execute(() -> {
-                CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
-                long workPerf = CorePerf.start();
-                T value;
+        RuntimeException rejected = null;
+        synchronized (this) {
+            if (closed || admitted.size() >= limit) {
+                rejected = new RejectedExecutionException(
+                        closed ? "I/O context closed" : "I/O admission capacity exhausted");
+            } else {
+                admitted.add(result);
+                long queued = CorePerf.start();
                 try {
-                    value = work.call();
-                } catch (Throwable failure) {
-                    // Keep diagnostics published before waiters can observe
-                    // failure, while still settling atomically against close().
-                    SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
-                    synchronized (this) {
-                        admitted.remove(result);
-                        result.failFromRuntime(failure);
-                    }
-                    if (failure instanceof VirtualMachineError fatal) throw fatal;
-                    if (failure instanceof ThreadDeath fatal) throw fatal;
-                    if (failure instanceof LinkageError fatal) throw fatal;
-                    return;
-                } finally {
-                    CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
-                }
-                synchronized (this) {
+                    workers.execute(() -> {
+                        CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
+                        long workPerf = CorePerf.start();
+                        T value = null;
+                        Throwable failure = null;
+                        try {
+                            value = work.call();
+                        } catch (Throwable caught) {
+                            failure = caught;
+                            SourceBoundaryTrace.record(caught, "native:io", operation, "I/O");
+                        } finally {
+                            CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
+                        }
+                        // Removing the admitted operation under this monitor
+                        // irrevocably selects the worker outcome. If close()
+                        // gets the lock first, it selects failure instead.
+                        // Only the winner publishes, AFTER unlocking.
+                        final boolean winner;
+                        synchronized (AsyncNativeIo.this) {
+                            winner = admitted.remove(result);
+                        }
+                        if (winner) {
+                            if (failure == null) result.completeFromRuntime(value);
+                            else result.failFromRuntime(failure);
+                        }
+                        if (failure instanceof VirtualMachineError fatal) throw fatal;
+                        if (failure instanceof ThreadDeath fatal) throw fatal;
+                        if (failure instanceof LinkageError fatal) throw fatal;
+                    });
+                } catch (RuntimeException failure) {
                     admitted.remove(result);
-                    result.completeFromRuntime(value);
+                    rejected = failure;
                 }
-            });
-        } catch (RuntimeException failure) {
-            admitted.remove(result);
-            result.failFromRuntime(failure);
+            }
         }
+        if (rejected != null) result.failFromRuntime(rejected);
         return result;
     }
 
@@ -127,11 +136,12 @@ public final class AsyncNativeIo implements AutoCloseable {
             failing.addAll(controls);
             controls.clear();
             pending.clear();
-            // Make teardown authoritative before workers are interrupted or
-            // handles closed. Late host completions cannot revive these Futures.
-            for (OresFuture<?> future : failing)
-                future.failFromRuntime(new IllegalStateException("I/O context closed"));
+            // Clearing admission makes teardown's terminal decision
+            // authoritative; publish failures only after releasing the monitor
+            // so registered runtime observers cannot reenter under the lock.
         }
+        for (OresFuture<?> future : failing)
+            future.failFromRuntime(new IllegalStateException("I/O context closed"));
         workers.shutdownNow();
         for (AutoCloseable resource : closing) {
             try { resource.close(); } catch (Exception ignored) { /* best-effort shutdown */ }
