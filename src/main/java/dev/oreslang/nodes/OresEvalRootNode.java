@@ -202,8 +202,8 @@ public final class OresEvalRootNode extends RootNode {
         // Root/non-actor executions retain process-root fairness state here.
         // Actor executions keep their cursor in ActorCell so shared immutable
         // code never implies shared mutable scheduler state.
-        private final IdentityHashMap<Ast.SelectStmt, AtomicLong> rootStaticSelectCursors =
-                new IdentityHashMap<>();
+        private final IdentityHashMap<Ast.SelectStmt, ChannelRuntime.FairCursor>
+                rootStaticSelectCursors = new IdentityHashMap<>();
         private StartupPhase startupPhase = StartupPhase.CREATED;
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
@@ -5401,22 +5401,21 @@ public final class OresEvalRootNode extends RootNode {
             }
             return new ChannelRuntime.SelectSet(
                     cases,
-                    staticSelectTicket(selected));
+                    staticSelectCursor(selected));
         }
 
-        private long staticSelectTicket(Ast.SelectStmt selected) {
+        private ChannelRuntime.FairCursor staticSelectCursor(Ast.SelectStmt selected) {
             ActorRuntime actorRuntime = ActorRuntime.currentActorRuntime();
             if (actorRuntime != null) {
                 if (actorRuntime != context.actors()) {
                     throw new SecurityException(
                             "static select attempted to cross ActorRuntime ownership");
                 }
-                return actorRuntime.nextActorLocalSelectTicket(selected);
+                return actorRuntime.actorLocalSelectCursor(selected);
             }
             synchronized (rootStaticSelectCursors) {
-                return rootStaticSelectCursors
-                        .computeIfAbsent(selected, ignored -> new AtomicLong())
-                        .getAndIncrement();
+                return rootStaticSelectCursors.computeIfAbsent(
+                        selected, ignored -> new ChannelRuntime.FairCursor());
             }
         }
 

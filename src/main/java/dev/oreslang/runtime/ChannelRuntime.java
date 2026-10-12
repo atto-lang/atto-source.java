@@ -254,29 +254,66 @@ public final class ChannelRuntime {
      * Reusable select descriptor. Static and dynamic source select lower to
      * this same primitive.
      */
-    public static final class SelectSet {
-        private final List<SelectCase> cases;
-        private final AtomicLong fairCursor = new AtomicLong();
+    /**
+     * Shareable, actor-owned FAIR state for source select sites. Access to the
+     * cursor itself never takes the actor lifecycle lock while COORDINATOR
+     * is held. Retired actor cursors are terminal and cannot be revived by a
+     * late channel completion.
+     */
+    public static final class FairCursor {
+        private final AtomicLong index;
+        private final java.util.concurrent.atomic.AtomicBoolean retired =
+                new java.util.concurrent.atomic.AtomicBoolean();
 
-        public SelectSet(Collection<? extends SelectCase> cases) {
-            this(cases, 0L);
+        public FairCursor() {
+            this(0L);
         }
 
-        /**
-         * Compiler/runtime hook for static select sites that rebuild evaluated
-         * case values each execution but retain one deterministic fairness
-         * ticket.
-         */
+        private FairCursor(long initialIndex) {
+            this.index = new AtomicLong(initialIndex);
+        }
+
+        public void retire() {
+            retired.set(true);
+        }
+
+        private long current() {
+            return index.get();
+        }
+
+        private void committed(int selectedIndex, int caseCount) {
+            if (!retired.get()) {
+                index.set((selectedIndex + 1L) % caseCount);
+            }
+        }
+    }
+
+    public static final class SelectSet {
+        private final List<SelectCase> cases;
+        private final FairCursor fairCursor;
+
+        public SelectSet(Collection<? extends SelectCase> cases) {
+            this(cases, new FairCursor());
+        }
+
+        /** A standalone set with a specified initial FAIR index. */
+        public SelectSet(Collection<? extends SelectCase> cases, long initialFairCursor) {
+            this(cases, new FairCursor(initialFairCursor));
+        }
+
+        /** Source static-select sites pass an actor-owned cursor shared by
+         * their freshly rebuilt case descriptors. Only a committed I/O arm or
+         * terminally ready failure rotates the cursor under COORDINATOR. */
         public SelectSet(
                 Collection<? extends SelectCase> cases,
-                long initialFairCursor) {
+                FairCursor fairCursor) {
+            this.fairCursor = Objects.requireNonNull(fairCursor, "fairCursor");
             Objects.requireNonNull(cases, "cases");
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
             }
             this.cases = List.copyOf(cases);
-            this.fairCursor.set(initialFairCursor);
             long defaults = this.cases.stream()
                     .filter(DefaultCase.class::isInstance)
                     .count();
@@ -347,7 +384,7 @@ public final class ChannelRuntime {
             }
 
             if (policy == SelectPolicy.FAIR) {
-                int start = Math.floorMod(fairCursor.get(), count);
+                int start = Math.floorMod(fairCursor.current(), count);
                 for (int i = 0; i < count; i++) {
                     order[i] = (start + i) % count;
                 }
@@ -366,7 +403,7 @@ public final class ChannelRuntime {
 
         private void selected(int index, SelectPolicy policy) {
             if (policy == SelectPolicy.FAIR && !cases.isEmpty()) {
-                fairCursor.set((index + 1L) % cases.size());
+                fairCursor.committed(index, cases.size());
             }
         }
     }
@@ -674,7 +711,9 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int index : selection.order) {
+        // A suspended selection must use the latest committed FAIR cursor;
+        // its admission-time snapshot may precede many unrelated commits.
+        for (int index : selection.set.initialOrder(selection.policy)) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -711,7 +750,7 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int index : selection.order) {
+        for (int index : selection.set.initialOrder(selection.policy)) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 

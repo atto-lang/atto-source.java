@@ -636,15 +636,15 @@ public final class ActorRuntime implements AutoCloseable {
      * private, and untrusted actors executing the same AST from mutating one
      * hidden cross-actor scheduler counter.</p>
      */
-    public long nextActorLocalSelectTicket(Object selectSite) {
+    public ChannelRuntime.FairCursor actorLocalSelectCursor(Object selectSite) {
         Objects.requireNonNull(selectSite, "selectSite");
-        requireCallerRuntimeAffinity("advance actor-local select fairness");
+        requireCallerRuntimeAffinity("get actor-local select fairness");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
                     "actor-local select fairness is only available during an actor turn");
         }
-        return cell.nextStaticSelectTicket(selectSite);
+        return cell.staticSelectCursor(selectSite);
     }
 
     /**
@@ -6036,7 +6036,7 @@ public final class ActorRuntime implements AutoCloseable {
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
          */
-        private final IdentityHashMap<Object, Long> staticSelectCursors =
+        private final IdentityHashMap<Object, ChannelRuntime.FairCursor> staticSelectCursors =
                 new IdentityHashMap<>();
         /** Settles only after the actor has fully crossed its TurnExecutor boundary. */
         private final OresFuture<Void> finalizedFuture = new OresFuture<>();
@@ -6129,12 +6129,11 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = new ActorMemorySlice(ref.id(), policy.maxHeapBytes());
         }
 
-        private long nextStaticSelectTicket(Object selectSite) {
+        private ChannelRuntime.FairCursor staticSelectCursor(Object selectSite) {
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized) throw terminated(ref);
-                long ticket = staticSelectCursors.getOrDefault(selectSite, 0L);
-                staticSelectCursors.put(selectSite, Math.addExact(ticket, 1L));
-                return ticket;
+                return staticSelectCursors.computeIfAbsent(
+                        selectSite, ignored -> new ChannelRuntime.FairCursor());
             }
         }
 
@@ -6338,6 +6337,11 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             drainMailboxReservations();
+            // Retire first so a post-shutdown channel callback cannot spend
+            // this actor's cursor credit or resurrect retained source state.
+            for (ChannelRuntime.FairCursor cursor : staticSelectCursors.values()) {
+                cursor.retire();
+            }
             staticSelectCursors.clear();
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
