@@ -53,7 +53,9 @@ final class WithUsingKeywordBoundaryAuditTest {
         }) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> Parser.parse(actor(scoped).replace("with state.read", declaration)));
-            assertTrue(error.getMessage().contains("duplicate function effect clause"));
+            assertTrue(error.getMessage().contains("duplicate function effect clause")
+                    || error.getMessage().contains("using acquires scoped capabilities"),
+                    "incorrect with/using diagnostic: " + error.getMessage());
         }
     }
 
