@@ -36,6 +36,9 @@ public final class MessagePackCollectionCodec {
     public static final int MAX_DEPTH = 64;
     public static final int MAX_ELEMENTS = 100_000;
     public static final int MAX_SCHEMA_ID_BYTES = 256;
+    // Bound the canonical descriptor independently of the encoded payload.
+    // Nested enums may list thousands of declared cases with long names.
+    public static final int MAX_DESCRIPTOR_BYTES = 1_048_576;
 
     private MessagePackCollectionCodec() { }
 
@@ -99,17 +102,41 @@ public final class MessagePackCollectionCodec {
      * shape. Definitions are a finite DAG; recursive/boxed schemas are NOT
      * admitted by the compiler. No wire bytes can supply these descriptors.
      */
+    /**
+     * Nominal wire identifiers are an ASCII-only v2 ABI. Without this check
+     * shapeDigest()'s US-ASCII conversion replaces non-ASCII characters,
+     * allowing different source names to bind to the same digest.
+     * Non-ASCII local identifiers may be valid language values but require a
+     * new, explicitly versioned UTF-8 wire grammar before transport.
+     */
+    static void requireCanonicalEnumWireName(String name) {
+        if (name == null || name.isEmpty() || name.length() > 256
+                || !((name.charAt(0) >= 'A' && name.charAt(0) <= 'Z')
+                     || (name.charAt(0) >= 'a' && name.charAt(0) <= 'z')
+                     || name.charAt(0) == '_')) {
+            throw new IllegalArgumentException("nested enum wire name must be an ASCII identifier");
+        }
+        for (int i = 1; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                    || (c >= '0' && c <= '9') || c == '_')) {
+                throw new IllegalArgumentException("nested enum wire name must be an ASCII identifier");
+            }
+        }
+    }
+
     public record EnumCaseShape(String name, int tag, Shape payload) {
         public EnumCaseShape {
-            if (name == null || name.isBlank() || tag < 1)
-                throw new IllegalArgumentException("invalid nested enum case");
+            requireCanonicalEnumWireName(name);
+            if (tag < 1)
+                throw new IllegalArgumentException("invalid nested enum case tag");
         }
     }
 
     public record NestedEnum(String name, List<EnumCaseShape> cases) implements Shape {
         public NestedEnum {
-            if (name == null || name.isBlank() || cases == null
-                    || cases.isEmpty() || cases.size() > 4096)
+            requireCanonicalEnumWireName(name);
+            if (cases == null || cases.isEmpty() || cases.size() > 4096)
                 throw new IllegalArgumentException("invalid nested enum shape");
             cases = List.copyOf(cases);
             var names = new java.util.HashSet<String>();
@@ -229,6 +256,9 @@ public final class MessagePackCollectionCodec {
         Objects.requireNonNull(shape, "shape");
         StringBuilder descriptor = new StringBuilder("oreslang.actor.shape.v2/");
         appendShape(descriptor, shape, 0, new int[]{0});
+        if (descriptor.length() > MAX_DESCRIPTOR_BYTES) {
+            throw new IllegalArgumentException("codec shape descriptor exceeds byte quota");
+        }
         try {
             return MessageDigest.getInstance("SHA-256")
                     .digest(descriptor.toString().getBytes(StandardCharsets.US_ASCII));
@@ -240,6 +270,9 @@ public final class MessagePackCollectionCodec {
     private static void appendShape(StringBuilder out, Shape shape, int depth, int[] nodes) {
         if (depth > MAX_DEPTH || ++nodes[0] > MAX_NODES) {
             throw new IllegalArgumentException("codec shape exceeds maximum depth/node budget");
+        }
+        if (out.length() > MAX_DESCRIPTOR_BYTES) {
+            throw new IllegalArgumentException("codec shape descriptor exceeds byte quota");
         }
         if (shape instanceof Scalar scalar) {
             out.append(switch (scalar.kind()) {
@@ -262,6 +295,9 @@ public final class MessagePackCollectionCodec {
                 if (item.payload() == null) out.append('N');
                 else appendShape(out, item.payload(), depth + 1, nodes);
                 out.append(';');
+                if (out.length() > MAX_DESCRIPTOR_BYTES) {
+                    throw new IllegalArgumentException("codec shape descriptor exceeds byte quota");
+                }
             }
             out.append(']');
             return;

@@ -45,6 +45,20 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         }
         Map<String, CaseCodec> entries = new HashMap<>();
         Map<String, CaseCodec> schemas = new HashMap<>();
+        // The native nested-v2 emitter and the Java shape grammar both
+        // require ASCII nominal identifiers across the *entire closed
+        // domain*, not merely the inner referenced enum. Restrict only
+        // domains that opt into the new nested format, leaving legacy
+        // scalar-only domains unchanged.
+        boolean nestedDomain = domain.cases().stream().anyMatch(
+                c -> c.payload() != null && containsNestedEnum(c.payload()));
+        if (nestedDomain) {
+            MessagePackCollectionCodec.requireCanonicalEnumWireName(domain.name());
+            for (TaggedMessageContracts.Case c : domain.cases()) {
+                MessagePackCollectionCodec.requireCanonicalEnumWireName(c.owner());
+                MessagePackCollectionCodec.requireCanonicalEnumWireName(c.name());
+            }
+        }
         StringBuilder fingerprint = new StringBuilder("oreslang.tagged.domain.v1/");
         fingerprint.append(domain.name()).append('/');
         domain.cases().stream().map(TaggedMessageContracts.Case::qualifiedName)
@@ -86,6 +100,17 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         }
         byName = Map.copyOf(entries);
         bySchemaId = Map.copyOf(schemas);
+    }
+
+    private static boolean containsNestedEnum(MessagePackCollectionCodec.Shape shape) {
+        if (shape instanceof MessagePackCollectionCodec.NestedEnum) return true;
+        if (shape instanceof MessagePackCollectionCodec.Sequence sequence) {
+            for (MessagePackCollectionCodec.Shape member : sequence.slots()) {
+                if (containsNestedEnum(member)) return true;
+            }
+            return sequence.element() != null && containsNestedEnum(sequence.element());
+        }
+        return false;
     }
 
     private static String digestHex(String input) {

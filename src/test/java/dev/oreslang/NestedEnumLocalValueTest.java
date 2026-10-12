@@ -282,6 +282,48 @@ final class NestedEnumLocalValueTest {
     }
 
     @Test
+    void nestedWireRejectsNonAsciiNamesAnywhereInClosedDomain() {
+        var registry = TaggedMessageContracts.verify(Parser.parse(DECLS));
+        var nested = registry.requireCase("Foo.Message1");
+        var valid = new TaggedMessageContracts.Domain("Messages", List.of(nested));
+        assertDoesNotThrow(() -> new TaggedMessageCodec(valid));
+
+        assertThrows(IllegalArgumentException.class, () -> new TaggedMessageCodec(
+                new TaggedMessageContracts.Domain("Mässages", List.of(nested))));
+        var owner = new TaggedMessageContracts.Case(
+                "Föö", nested.name(), nested.tag(), nested.sourcePayload(), nested.payload());
+        assertThrows(IllegalArgumentException.class, () -> new TaggedMessageCodec(
+                new TaggedMessageContracts.Domain("Messages", List.of(owner))));
+        var caseName = new TaggedMessageContracts.Case(
+                "Foo", "Mässage1", nested.tag(), nested.sourcePayload(), nested.payload());
+        assertThrows(IllegalArgumentException.class, () -> new TaggedMessageCodec(
+                new TaggedMessageContracts.Domain("Messages", List.of(caseName))));
+
+        // Mixing an otherwise-valid nested case with a non-ASCII
+        // payloadless alternative must still fail the whole closed domain.
+        var other = new TaggedMessageContracts.Case("Plain", "Évent", 1, null, null);
+        assertThrows(IllegalArgumentException.class, () -> new TaggedMessageCodec(
+                new TaggedMessageContracts.Domain("Messages", List.of(nested, other))));
+    }
+
+    @Test
+    void primitiveBoxDeclarationIsLocalOnlyWithoutNestedEnumDependency() {
+        var parsed = Parser.parse("""
+                define enum Holder as
+                    Empty
+                    Boxed: Box<int>
+                end
+                """);
+        var local = assertDoesNotThrow(() -> TaggedMessageContracts.forTypes(parsed));
+        var boxed = local.requireCase("Holder.Boxed");
+        assertEquals("Box", boxed.sourcePayload().name());
+        assertNull(boxed.payload(), "Box<int> has no portable binary representation yet");
+        assertThrows(IllegalArgumentException.class, () -> TaggedMessageContracts.verify(parsed));
+        assertThrows(IllegalArgumentException.class,
+                () -> new TaggedMessageCodec(local.requireDomain("Holder")));
+    }
+
+    @Test
     void boxIsExplicitIndirectionNotImplicitSerialization() {
         var source = Parser.parse("""
                 define enum Foo as
