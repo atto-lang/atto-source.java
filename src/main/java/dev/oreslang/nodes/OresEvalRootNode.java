@@ -903,9 +903,12 @@ public final class OresEvalRootNode extends RootNode {
                     pendingLoopGuardEnv = null;
                     nextStep = null;
                     initialBlockEnv = null;
+                    // Trappable failures must not absorb panic, cancellation,
+                    // or denied runtime authority while a task resumes.
                     if (function != null && function.trapped()
                             && !(failure instanceof OresPanic)
-                            && !(failure instanceof java.util.concurrent.CancellationException)) {
+                            && !(failure instanceof java.util.concurrent.CancellationException)
+                            && !(failure instanceof SecurityException)) {
                         return OresScheduler.done(new OptionValue(false, null));
                     }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
@@ -4476,6 +4479,11 @@ public final class OresEvalRootNode extends RootNode {
                 throw panic;
             } catch (java.util.concurrent.CancellationException cancelled) {
                 throw cancelled;
+            } catch (SecurityException authorizationFailure) {
+                // A denied capability is not an ordinary guest exception.
+                // In particular, trap cannot downgrade an authorization error
+                // to None and let a caller continue as if a check passed.
+                throw authorizationFailure;
             } catch (RuntimeException ordinaryFailure) {
                 // trap is deliberately lossy: ordinary guest/runtime failure
                 // becomes None. Panic and scheduler cancellation remain distinct
