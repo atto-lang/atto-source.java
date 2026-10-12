@@ -70,19 +70,19 @@ jobs:
         if: always()
         run: |
           python3 - <<'PY'
-          import glob
           import xml.etree.ElementTree as ET
-          files = glob.glob('target/surefire-reports/TEST-*Isolate*Test.xml')
-          files += glob.glob('target/surefire-reports/TEST-*UntrustedJitCodeUnitTest.xml')
-          seen = set()
-          enabled = 0
-          for file in files:
-              if file in seen:
-                  continue
-              seen.add(file)
-              root = ET.parse(file).getroot()
-              enabled += int(root.get('tests', '0')) - int(root.get('skipped', '0'))
-          print('Executed isolate-related tests:', enabled)
-          if not seen or enabled == 0:
-              raise SystemExit('no isolate integration tests were executed')
+          names = [
+              'target/surefire-reports/TEST-dev.oreslang.runtime.SharedUntrustedIsolatePoolTest.xml',
+              'target/surefire-reports/TEST-dev.oreslang.runtime.UntrustedJitCodeUnitTest.xml',
+          ]
+          executed = skipped = 0
+          for path in names:
+              if not __import__('os').path.isfile(path):
+                  raise SystemExit('required isolate test report missing: ' + path)
+              root = ET.parse(path).getroot()
+              executed += int(root.get('tests', '0')) - int(root.get('skipped', '0'))
+              skipped += int(root.get('skipped', '0'))
+          print('Executed tests:', executed, 'Skipped tests:', skipped)
+          if executed < 6 or skipped:
+              raise SystemExit('isolate E2E must execute all required tests without skip')
           PY
