@@ -6,6 +6,7 @@ import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * Explicit native i64 backing using Java 25 FFM Arena.ofShared().
@@ -68,6 +69,7 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     private final Object identity = new Object();
     private final Runnable requireActor;
     private final Runnable onRetired;
+    private final Consumer<Throwable> onPhysicalCloseFailure;
     private final ActorRuntime.MemoryReservation reservation;
     private final Object nativeArena;
     private final Object segment;
@@ -85,12 +87,14 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
 
     ExplicitNativeI64Region(
             int slots, ActorRuntime.MemoryReservation reservation,
-            Runnable requireActor, Runnable onRetired) {
+            Runnable requireActor, Runnable onRetired,
+            Consumer<Throwable> onPhysicalCloseFailure) {
         if (slots < 1 || slots > 65536) {
             throw new IllegalArgumentException("native region size must be 1..65536 slots");
         }
         this.requireActor = Objects.requireNonNull(requireActor);
         this.onRetired = Objects.requireNonNull(onRetired);
+        this.onPhysicalCloseFailure = Objects.requireNonNull(onPhysicalCloseFailure);
         this.reservation = Objects.requireNonNull(reservation);
         this.live = new boolean[slots];
         this.slotLoans = new int[slots];
@@ -209,9 +213,11 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         try {
             closeArena.invoke(nativeArena);
         } catch (IllegalAccessException | InvocationTargetException error) {
-            // Do not report successful physical release or reimburse the
-            // actor's quota when the native FFM scope failed to close.
-            throw new IllegalStateException("failed physically releasing actor-native region", error);
+            // Fail closed: never report physical done or refund pinned quota.
+            IllegalStateException failure = new IllegalStateException(
+                    "failed physically releasing actor-native region", error);
+            onPhysicalCloseFailure.accept(failure);
+            throw failure;
         }
         physicalClosed.set(true);
         Arrays.fill(live, false);
