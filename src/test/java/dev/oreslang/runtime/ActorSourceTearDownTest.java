@@ -35,6 +35,7 @@ final class ActorSourceTearDownTest {
         private final AtomicInteger teardowns = new AtomicInteger();
         private final AtomicInteger finalCleanups = new AtomicInteger();
         private final boolean teardownFails;
+        private boolean teardownEmitsOutput;
         private volatile CountDownLatch teardownEntered;
         private volatile CountDownLatch releaseTeardown;
 
@@ -93,6 +94,9 @@ final class ActorSourceTearDownTest {
                     throw new IllegalStateException("test teardown release timed out");
                 }
             }
+            if (teardownEmitsOutput) {
+                context.runtime().emitCurrentActorOutput("teardown-output");
+            }
             if (teardownFails) throw new IllegalStateException("teardown failure");
         }
     }
@@ -119,6 +123,25 @@ final class ActorSourceTearDownTest {
                 assertEquals(1, executor.teardowns.get(), "actor kind " + kind);
                 assertFalse(ref.isAlive());
             }
+        }
+    }
+
+    @Test
+    void externallyStoppedTeardownMayStillEmitAuthorizedFinalOutput()
+            throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(image(store), false);
+            executor.teardownEmitsOutput = true;
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            ref.ready().get(2, TimeUnit.SECONDS);
+            ref.stop();
+            ref.done().get(2, TimeUnit.SECONDS);
+            assertEquals(1, executor.teardowns.get());
+            assertEquals("teardown-output",
+                    ref.outputs().next().get(2, TimeUnit.SECONDS).value().value());
+            assertTrue(ref.outputs().next().get(2, TimeUnit.SECONDS).done());
         }
     }
 
