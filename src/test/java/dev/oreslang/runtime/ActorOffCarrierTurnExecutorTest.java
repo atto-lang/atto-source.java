@@ -56,6 +56,9 @@ final class ActorOffCarrierTurnExecutorTest {
                 actorConstructorInvoked.set(true);
                 return (message, context) -> { };
             });
+            // Actors are lazy: a message activates the mailbox dispatcher.
+            // Without an enqueued turn the host TurnExecutor is never called.
+            ref.send("activate");
             assertTrue(captured.await(3, TimeUnit.SECONDS));
             assertFalse(actorConstructorInvoked.get(),
                     "no actor constructor ran on an admitted carrier");
@@ -102,6 +105,7 @@ final class ActorOffCarrierTurnExecutorTest {
                 }
                 return (message, context) -> { };
             });
+            ref.send("activate");
             assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS),
                     () -> actorTerminationState(runtime, ref.id())
                             + " failure=" + ref.failure());
@@ -132,6 +136,7 @@ final class ActorOffCarrierTurnExecutorTest {
                 assertTrue(factoryExecuted.compareAndSet(false, true));
                 return (message, context) -> { };
             });
+            ref.send("activate");
             assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS),
                     () -> actorTerminationState(runtime, ref.id())
                             + " failure=" + ref.failure());
