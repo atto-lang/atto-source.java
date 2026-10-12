@@ -506,8 +506,9 @@ final class TrapOptionSemanticsTest {
                 end
 
                 async fnc answer(): int { return 1; }
-                async fnc panics(Animal animal): int {
+                async fnc panics(): int {
                   val int received = await answer();
+                  val Animal animal = new Cat();
                   try {
                     val Option<int> absent = None;
                     return absent.unwrap();
@@ -518,7 +519,7 @@ final class TrapOptionSemanticsTest {
                   }
                 }
                 pub fnc main(): void {
-                  val int impossible = await panics(new Cat());
+                  val int impossible = await panics();
                   stdio.stdout.write("unreachable");
                   return;
                 }
