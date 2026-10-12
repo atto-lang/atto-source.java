@@ -425,7 +425,8 @@ final class ActorGroupMultiMembershipTest {
                         try {
                             assertThrows(SecurityException.class, stale::join,
                                     "rotated permit must not admit a new member");
-                            assertEquals(0, roomA.memberCount());
+                            assertThrows(SecurityException.class, roomA::memberCount,
+                                    "nonmember may not inspect group membership");
                             replacement.join();
                             joinB.join();
                             assertTrue(roomA.contains(ctx.self()));
