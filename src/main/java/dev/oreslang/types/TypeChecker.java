@@ -963,17 +963,10 @@ public final class TypeChecker {
         }
         Set<String> effectiveInstanceMethodNames = new LinkedHashSet<>();
         collectInstanceMethodNames(klass, effectiveInstanceMethodNames, new LinkedHashSet<>());
-        if (klass.actorKind() != Ast.ActorKind.NONE) {
-            if (effectiveInstanceMethodNames.contains("handle_state")) {
-                throw new IllegalArgumentException(
-                        "actor handle_state is sealed and cannot be inherited or overridden");
-            }
-            for (Ast.MethodDecl method : klass.methods()) {
-                if (method.name().equals("handle_state")) {
-                    throw new IllegalArgumentException(
-                            "actor handle_state is sealed, including static declarations");
-                }
-            }
+        if (klass.actorKind() != Ast.ActorKind.NONE
+                && hierarchyDeclaresMethod(klass, "handle_state", new LinkedHashSet<>())) {
+            throw new IllegalArgumentException(
+                    "actor handle_state is sealed across all inherited and static declarations");
         }
         for (String name : effectiveFieldNames) {
             if (effectiveInstanceMethodNames.contains(name)) {
@@ -5989,6 +5982,31 @@ public final class TypeChecker {
         }
         seen.remove(iface);
         return false;
+    }
+
+    /**
+     * Source parsing alone cannot seal runtime intrinsics in synthesized or
+     * imported actor ancestors. Static declarations are not represented in
+     * the ordinary instance-method slot collector, so inspect every method
+     * category through the complete inheritance graph.
+     */
+    private boolean hierarchyDeclaresMethod(
+            Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return false;
+        try {
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.name().equals(name)) return true;
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent != null && hierarchyDeclaresMethod(parent, name, seen)) {
+                    return true;
+                }
+            }
+            return false;
+        } finally {
+            seen.remove(klass);
+        }
     }
 
     private void collectInstanceMethodNames(
