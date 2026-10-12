@@ -76,7 +76,7 @@ class RuntimePermissionsExplicitPolicyTest {
     }
 
     @Test void blankFilesystemAllowScopeCannotBecomeRootWideGrant() {
-        for (String scope : new String[] {"", " ", "\\t", "\\n"}) {
+        for (String scope : new String[] {"", " ", "\t", "\n"}) {
             assertThrows(IllegalArgumentException.class,
                     () -> RuntimePermissions.denyAll()
                             .withAllowed(RuntimePermissions.Permission.READ, scope));
