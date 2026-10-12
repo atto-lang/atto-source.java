@@ -1386,8 +1386,10 @@ public final class ActorRuntime implements AutoCloseable {
                     "directional actor routing requires an admitted DATA receive turn");
         }
         LinearPipeline route = linearPipelines.get(cell.ref.id());
-        if (route == null || cell.stopped.get() || cell.finalized || closed.get()) {
-            throw new IllegalStateException("no live pipeline route for current actor");
+        if (route == null || cell.stopped.get() || cell.finalized
+                || cell.endRequested || closed.get()) {
+            throw new IllegalStateException(
+                    "pipeline direction is fenced after actor end/stop");
         }
         ActorId owner = cell.ref.id();
         ActorId sender = cell.activeMail.sender().orElse(null);
@@ -4619,6 +4621,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         Objects.requireNonNull(ref);
         LinearPipeline linkedRoute = linearPipelines.get(ref.id());
+        boolean initialPipelineIngress = false;
         if (linkedRoute != null && currentPipelineSend.get() != linkedRoute) {
             if (currentActor.get() != null
                     || !ref.id().equals(linkedRoute.source().id())) {
@@ -4626,7 +4629,9 @@ public final class ActorRuntime implements AutoCloseable {
                         "pipeline actors accept only scheduler-authorized directional DATA");
             }
             advancePipelinePhase(linkedRoute, 0, 1);
+            initialPipelineIngress = true;
         }
+        try {
         if (!ref.ownedBy(this)) {
             throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
         }
@@ -4783,6 +4788,17 @@ public final class ActorRuntime implements AutoCloseable {
         cell.schedule();
         } finally {
             if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
+        }
+        } catch (RuntimeException | Error admissionFailure) {
+            // The root owns exactly one causal-flow reservation. If encoding,
+            // quota, lifecycle admission or scheduling fails, never leave the
+            // state in phase 1 (which would look like a successful ingress).
+            // Poison only our own pending reservation: after admission another
+            // scheduler actor may already have advanced the route.
+            if (initialPipelineIngress) {
+                linkedRoute.phase().compareAndSet(1, -1);
+            }
+            throw admissionFailure;
         }
     }
 
