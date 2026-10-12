@@ -170,3 +170,30 @@ including this imported-parent negative regression, passed in
 https://github.com/agent-pontifex/agent-pontifex-daemon/actions/runs/38317005320.
 These checks do not enable positive `state { ... }` lowering or substitute
 for whole-application GraalVM and actor scheduler execution tests.
+
+
+## First-class sealed state frontend AST — 2026-10-12
+
+The Java parser now recognizes `state { value: int = 0 }` in an actor
+and stores its fields in `Ast.ClassDecl.actorState()`, a distinct
+`Ast.ActorStateDecl`. It is NOT a member of `ClassDecl.fields()` and
+cannot be treated as ordinary object/actor field storage, inherited fields
+or generated JSON bindings. Existing AST constructors remain source-compatible.
+
+State fields currently require explicit types and initializers. The parser
+rejects duplicate state blocks, duplicate/reserved state names, public state
+declarations and collisions with ordinary actor members. Semicolons are
+optional at newline/closing brace as in ordinary statements.
+
+**Fail-closed compiler boundary:** `TypeChecker` rejects any actor
+state declaration *before annotation expansion*, until the compiler supports
+type/effect/loan checking and fully structured `handle_state` lowering.
+`AnnotationExpander` retains the new state metadata rather than dropping
+it through old ClassDecl constructors. Linked classes cannot import a
+private runtime-owned actor state AST. Lexer recognition and parser AST
+acceptance are not executable semantics.
+
+Exact-source private Java 21 compiler/parser/semantic regression CI passed:
+https://github.com/agent-pontifex/agent-pontifex-daemon/actions/runs/38321947352.
+The run is a focused core compilation and smoke suite, NOT full Maven,
+GraalVM execution, source actor codegen, or Java/LLVM behavioral parity.
