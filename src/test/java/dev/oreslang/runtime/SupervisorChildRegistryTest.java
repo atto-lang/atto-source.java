@@ -502,4 +502,30 @@ final class SupervisorChildRegistryTest {
         System.out.println("SUPERVISOR_RESTART_TRACE_V1=" + expected);
     }
 
+
+    @Test
+    void onePhysicalReplacementCannotBeStagedForTwoLogicalChildren() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var actorA = ActorRuntime.ActorId.create();
+        var actorB = ActorRuntime.ActorId.create();
+        var a = registry.register(actorA);
+        var b = registry.register(actorB);
+        registry.finalized(a.child(), actorA, 1);
+        registry.finalized(b.child(), actorB, 1);
+        var ticketA = registry.beginRestart(a.child(), actorA, 1);
+        var ticketB = registry.beginRestart(b.child(), actorB, 1);
+        var candidate = ActorRuntime.ActorId.create();
+        registry.stageReplacement(ticketA, candidate);
+        assertThrows(IllegalStateException.class, () ->
+                registry.stageReplacement(ticketB, candidate));
+        assertThrows(IllegalStateException.class, () -> registry.register(candidate));
+        assertThrows(IllegalStateException.class, () -> registry.replace(ticketA, candidate));
+        registry.acknowledgeReplacementAdmission(ticketA, candidate, () -> true);
+        registry.replace(ticketA, candidate);
+        assertThrows(IllegalStateException.class, () ->
+                registry.stageReplacement(ticketB, candidate));
+        registry.abortRestart(ticketB);
+    }
+
 }
