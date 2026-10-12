@@ -506,4 +506,110 @@ final class FormalHostFutureHandoffModelCheckTest {
                 true, true, false, 2);
         assertThrows(AssertionError.class, () -> executorInvariant(unsafe));
     }
+
+    /** An executor may throw before, during or after physical guest execution. */
+    private enum ExecutorEvent {
+        START, EXIT_NORMAL, EXECUTOR_THROWS, RETRY, RETIRE
+    }
+
+    private enum ExecutorPhase { QUEUED, RUNNING, EXITED, REVOKED, UNCERTAIN }
+
+    private record ExecutorState(ExecutorPhase phase, boolean failed,
+            boolean poisoned, boolean retired, int starts, int retries) {
+        static ExecutorState initial() {
+            return new ExecutorState(ExecutorPhase.QUEUED, false, false, false, 0, 0);
+        }
+    }
+
+    private static ExecutorState executorStep(ExecutorState s, ExecutorEvent e) {
+        ExecutorPhase phase = s.phase;
+        boolean failed = s.failed, poisoned = s.poisoned, retired = s.retired;
+        int starts = s.starts, retries = s.retries;
+        switch (e) {
+            case START -> {
+                if (phase == ExecutorPhase.QUEUED && !poisoned && !retired) {
+                    phase = ExecutorPhase.RUNNING;
+                    starts++;
+                }
+            }
+            case EXIT_NORMAL -> {
+                if (phase == ExecutorPhase.RUNNING) phase = ExecutorPhase.EXITED;
+            }
+            case EXECUTOR_THROWS -> {
+                if (phase == ExecutorPhase.QUEUED) {
+                    // Atomic CAS revokes execution before its first entry.
+                    phase = ExecutorPhase.REVOKED;
+                    failed = true;
+                } else if (phase == ExecutorPhase.RUNNING) {
+                    // The executor reported failure while guest entry was
+                    // physically active; a later result is not a DONE proof.
+                    phase = ExecutorPhase.UNCERTAIN;
+                    failed = true;
+                    poisoned = true;
+                } else if (phase == ExecutorPhase.EXITED) {
+                    // The guarded runnable returned normally before executor
+                    // failure. No replay, but its physical exit is proven.
+                    failed = true;
+                }
+            }
+            case RETRY -> {
+                if (phase == ExecutorPhase.REVOKED && retries == 0) {
+                    phase = ExecutorPhase.QUEUED;
+                    retries++;
+                }
+            }
+            case RETIRE -> {
+                if (phase == ExecutorPhase.EXITED && !poisoned) retired = true;
+            }
+        }
+        return new ExecutorState(phase, failed, poisoned, retired, starts, retries);
+    }
+
+    private static void executorInvariant(ExecutorState s) {
+        assertTrue(s.starts >= 0 && s.starts <= 1,
+                "replayed a physically entered guest turn");
+        assertTrue(s.retries >= 0 && s.retries <= 1);
+        if (s.phase == ExecutorPhase.UNCERTAIN) {
+            assertTrue(s.poisoned, "in-flight failure omitted physical-exit quarantine");
+        }
+        if (s.poisoned) {
+            assertTrue(s.failed && !s.retired,
+                    "unproven physical exit was treated as retirement authority");
+        }
+        if (s.retired) {
+            assertEquals(ExecutorPhase.EXITED, s.phase,
+                    "a result or executor rejection is not a physical exit");
+        }
+    }
+
+    @Test
+    void boundedExecutorRejectionPreservesSingleEntryAndUnknownExitQuarantine() {
+        var seen = new HashSet<ExecutorState>();
+        var work = new ArrayDeque<ExecutorState>();
+        ExecutorState initial = ExecutorState.initial();
+        work.add(initial);
+        seen.add(initial);
+        boolean sawRevoked = false, sawUncertain = false, sawAfterExit = false;
+        while (!work.isEmpty()) {
+            ExecutorState s = work.removeFirst();
+            executorInvariant(s);
+            sawRevoked |= s.phase == ExecutorPhase.REVOKED;
+            sawUncertain |= s.phase == ExecutorPhase.UNCERTAIN && s.poisoned;
+            sawAfterExit |= s.phase == ExecutorPhase.EXITED && s.failed;
+            for (ExecutorEvent event : ExecutorEvent.values()) {
+                ExecutorState next = executorStep(s, event);
+                executorInvariant(next);
+                if (seen.add(next)) work.addLast(next);
+            }
+        }
+        assertTrue(seen.size() >= 6 && sawRevoked && sawUncertain && sawAfterExit);
+    }
+
+    @Test
+    void unsafeRetirementOfUncertainRootExitViolatesExecutorInvariant() {
+        ExecutorState unsafe = new ExecutorState(
+                ExecutorPhase.UNCERTAIN, true, false, true, 1, 0);
+        assertThrows(AssertionError.class, () -> executorInvariant(unsafe));
+    }
+
 }
