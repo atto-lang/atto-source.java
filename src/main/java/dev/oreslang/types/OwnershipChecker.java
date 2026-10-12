@@ -45,12 +45,26 @@ public final class OwnershipChecker {
     private int loopDepth;
     private boolean currentAsyncGenerator;
 
-    private OwnershipChecker(Ast.Program program) {
+    private OwnershipChecker(Ast.Program program, Map<String, Ast.FunctionDecl> verifiedImports) {
         index(program);
+        // Only the trusted linked-source resolver can supply these declarations.
+        // A missing or ambiguous import never becomes an open-ended borrow grant.
+        for (Map.Entry<String, Ast.FunctionDecl> imported : verifiedImports.entrySet()) {
+            if (imported.getValue() == null || imported.getKey().isBlank()
+                    || ambiguousFunctions.contains(imported.getKey())
+                    || functions.putIfAbsent(imported.getKey(), imported.getValue()) != null) {
+                throw error("ambiguous or invalid linked function import '" + imported.getKey() + "'");
+            }
+        }
     }
 
     public static Ast.Program check(Ast.Program program) {
-        OwnershipChecker checker = new OwnershipChecker(program);
+        return check(program, Map.of());
+    }
+
+    /** Called only with signatures from validated, path-resolved source units. */
+    public static Ast.Program check(Ast.Program program, Map<String, Ast.FunctionDecl> verifiedImports) {
+        OwnershipChecker checker = new OwnershipChecker(program, Map.copyOf(verifiedImports));
         checker.validate(program);
         return program;
     }
