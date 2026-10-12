@@ -52,9 +52,20 @@ public final class SourceCooperationQuantum {
         return (completed & (LOOP_CHECK_INTERVAL - 1)) == 0;
     }
 
-    /** Slow path only: reduction cap OR current dispatched active time. */
+    /** Slow path only: reduction cap, watchdog request, or active dispatch time.
+     * The watchdog cannot force suspension: the caller must already own a
+     * post-commit, heap-resumable continuation and be outside no-yield scopes.
+     */
     public boolean shouldCooperateAtCheck() {
-        if (backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) return true;
+        return shouldCooperateAtCheck(false);
+    }
+
+    public boolean shouldCooperateAtCheck(boolean watchdogRequested) {
+        // A pending watchdog notice is advisory and must not cause another
+        // clock read. Only the compiler-lowered caller may publish Cooperate.
+        if (watchdogRequested || backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
+            return true;
+        }
         return monotonicNanos.getAsLong() - dispatchStartedAtNanos
                 >= SOFT_DISPATCH_QUANTUM_NANOS;
     }
