@@ -6307,6 +6307,9 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof NativeHttp.Handler handler) {
                 return switch (name) {
                     case "isolated" -> handler.isolated();
+                    case "workers_created" -> handler.workersCreated();
+                    case "workers_reused" -> handler.workersReused();
+                    case "workers_alive" -> (long) handler.workersAlive();
                     case "dispatch" -> (Invokable) args -> {
                         if (args.size() != 1 || !(args.get(0) instanceof NativeHttp.Exchange exchange))
                             throw new IllegalArgumentException("dispatch requires HTTP exchange");
@@ -6409,6 +6412,17 @@ public final class OresEvalRootNode extends RootNode {
                             default -> throw new IllegalArgumentException("HTTP handler must be shared or isolated actor");
                         };
                         return context.http().handler(this, type, kind);
+                    };
+                    case "pool_handler" -> (Invokable) args -> {
+                        if (args.size() != 2 || !(args.get(0) instanceof String type) || !(args.get(1) instanceof Number count))
+                            throw new IllegalArgumentException("http.pool_handler(actor_name, worker_count)");
+                        Ast.ClassDecl declaration = requireLocalActorClass(type);
+                        ActorRuntime.ActorKind kind = switch (declaration.actorKind()) {
+                            case SHARED -> ActorRuntime.ActorKind.SHARED;
+                            case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
+                            default -> throw new IllegalArgumentException("HTTP pool handler must be shared or isolated actor");
+                        };
+                        return context.http().poolHandler(this, type, kind, count.intValue());
                     };
                     case "listen" -> (Invokable) args -> {
                         if (args.size() != 5) throw new IllegalArgumentException("http.listen(host, port, capacity, body_limit, deadline_ms)");
