@@ -2001,6 +2001,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** Host physical-stop barrier, retained even after actors.remove(). */
         private final OresFuture<Void> physicalTerminationFuture =
                 new OresFuture<>(() -> false, () -> { });
+        /** Prevent finalization hooks from synchronously awaiting themselves. */
+        private volatile Thread finalizationOwnerThread;
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind) {
@@ -2079,6 +2081,11 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
+            if (finalizationOwnerThread == Thread.currentThread()
+                    && !physicalTerminationFuture.isDone()) {
+                throw new IllegalStateException(
+                        "actor finalization hook cannot await its own physical barrier");
+            }
             // actors.remove() is part of out-of-lock finalization, but it
             // occurs before terminal observers have all been signaled. Never
             // infer physical completion from absence in the actor map.
@@ -6682,6 +6689,7 @@ public final class ActorRuntime implements AutoCloseable {
                         || activeTurns != 0 || scheduled.get() || carrierActive
                         || !children.isEmpty()) return;
                 finalizationStarted = true;
+                ref.finalizationOwnerThread = Thread.currentThread();
                 scheduler = sourceScheduler;
                 sourceScheduler = null;
                 retiringState = codeActorState;
@@ -6756,6 +6764,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // observer may synchronously call awaitTermination(), and must
                 // not deadlock on the same finalization thread.
                 ref.physicalTerminationFuture.completeFromRuntime(null);
+                ref.finalizationOwnerThread = null;
                 // Parent may begin physical finalization only after this
                 // child's own physical barrier has settled. Otherwise parent
                 // done() could precede a descendant's final cleanup.
