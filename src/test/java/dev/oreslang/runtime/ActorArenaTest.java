@@ -126,14 +126,20 @@ final class ActorArenaTest {
         assumeTrue(ExplicitNativeI64Region.isAvailable());
         var arena = new AtomicReference<ActorArena>();
         var loan = new AtomicReference<ExplicitNativeI64Region.Loan>();
+        var extra = new AtomicReference<ExplicitNativeI64Region>();
+        var slice = new AtomicReference<ActorRuntime.ActorMemorySlice>();
         var error = new AtomicReference<Throwable>();
         var created = new CountDownLatch(1);
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<String>spawnShared(() -> (mail, ctx) -> {
                 try {
-                    var instance = ctx.actorOwnedMemory().orElseThrow().newActorArena(2, 2);
+                    var owned = ctx.actorOwnedMemory().orElseThrow();
+                    slice.set(owned);
+                    var instance = owned.newActorArena(2, 2);
                     arena.set(instance);
                     loan.set(instance.borrowPersistent(instance.allocatePersistent(42)));
+                    extra.set(owned.newExplicitNativeI64Region(1));
+                    extra.get().allocate(7);
                 } catch (Throwable problem) {
                     error.compareAndSet(null, problem);
                 } finally {
@@ -146,10 +152,20 @@ final class ActorArenaTest {
         }
         assertTrue(arena.get().closed());
         assertFalse(arena.get().physicallyClosed());
+        assertTrue(extra.get().physicallyClosed(),
+                "unborrowed sibling FFM region must still retire");
+        assertEquals(16L, slice.get().usedBytes(),
+                "only persistent loan-backed FFM quota may remain after actor exit");
+        assertDoesNotThrow(slice.get()::close,
+                "repeat actor slice shutdown must preserve pinned native quota");
+        assertEquals(16L, slice.get().usedBytes());
         // Actor finalization can repeat the revocation while a lease is live.
         // The last loan alone must trigger the single physical FFM release.
         assertThrows(IllegalStateException.class, () -> loan.get().read());
         loan.get().close();
         assertTrue(arena.get().physicallyClosed());
+        assertEquals(0L, slice.get().usedBytes(),
+                "late completion must release last native quota exactly once");
+        assertDoesNotThrow(slice.get()::close);
     }
 }
