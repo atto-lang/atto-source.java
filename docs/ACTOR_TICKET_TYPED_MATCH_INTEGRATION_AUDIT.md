@@ -118,3 +118,55 @@ or explicitly fail closed in modes where guest cleanup is not guaranteed.
 Reconcile the actual #656/#661 merge tree, run an async typed-match serial
 actor through stop/cleanup/restart, and execute JVM, native-image, and LLVM
 differential gates before merging either PR.
+
+## Executed combined-source integration milestone — October 11
+
+Dedicated branch: `integration/serial-ticket-typed-match-audit-20261011`.
+Inputs: #656 `5ad42315697540cac90c8b9c925f6556347c00b9`,
+#661 `c6bfb96d7602b4d7a866b2516c3bf87dee7b87bb`,
+shared merge base `4b0ff7dd4063df2906dc2fed0f6b6348b69807c6`.
+
+The two source trees had 10 overlapping edited files. All were reconciled
+by source-verified three-way edit regions: seven automatically disjoint
+hunk sets, Lexer/Token union of serial/critical/using and
+suspends/exception tokens, and manual Parser reconciliation of the
+combined modifier record, rejection of redundant `async suspends`, and
+value-match lexical frame scoping across independent lambda bodies.
+The integration preserves 66 additionally introduced files from #661
+whose base was unchanged in #656. No file overlays were used.
+
+**Executed on an allocated private runner:**
+[GitHub Actions #38200326400](https://github.com/fiducia-cloud/fiducia-e2e/actions/runs/38200326400),
+GraalVM JDK 25, exact source Git-blob verification, compilation of the
+merged `Ast`, `Parser`, `Lexer`, `Token`, and their actual
+`FunctionEffects` dependency, with serial source and awaited typed-match
+syntax smoke. This targeted Java execution passed.
+
+New `docs/formal/SerialTypedMatchCleanup.tla` checked with TLC 1.7.4
+(SHA-256-pinned `tla2tools.jar`): **19 states generated, 11 distinct
+states, depth 7, no invariant violations**. Deliberately unsafe
+`UnsafeSkipCleanup`, `UnsafeEarlyRestart`, and
+`UnsafeStalePublish` variants all failed their safety invariants as
+intended. This is a finite protocol model with assumed legal cleanup,
+not a refinement proof of the actual JVM actor shutdown path.
+
+Added `SerialTypedValueMatchActorExecutionTest`, which runs a real
+source-level persistent serial actor across two receives containing
+`match<ret=int> await ready()` and checks deferred cleanup precedes
+the result and next receive. **That new Graal guest JUnit test has not
+executed.** It is a required release gate, not passed evidence.
+
+### Critical remaining blockers
+
+1. Full combined-tree Maven suite and real guest JUnit have not run,
+   including serial cancellation/stop vs Future completion.
+2. Abrupt `ActorRuntime.terminateTree` closes CONTROL and cancels
+   pending operations; its current implementation has not proved it
+   enters each suspended `SourceTask` to run Oreslang `defer/finally`.
+   Model-level `RunCleanup` is an assumption, not runtime evidence.
+3. Native-image/AOT/hybrid and LLVM guest compilation/semantic parity
+   have not run against the integrated tree.
+4. Release checks for persistent HTTP, actual transport supervision,
+   actor restart and mailbox saturation remain outstanding.
+
+**Remain DRAFT and unmerged until the above safety gates pass.**
