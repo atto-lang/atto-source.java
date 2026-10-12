@@ -1036,6 +1036,18 @@ public final class Parser {
         boolean untrustedSeen = false;
 
         while (true) {
+            // These spellings are recognized but deliberately unavailable
+            // until typed RW admission / actor pipeline source lowering is
+            // implemented. Never admit them as ordinary method names or
+            // silently degrade the read mode to an exclusive write gate.
+            if (check(CRITICAL_READ) || check(CRITICAL_WRITE)) {
+                throw error(peek(), "reader/writer critical declaration requires "
+                        + "checked protected-state effects and scheduler-owned RW permits");
+            }
+            if (check(TRANSFORM_PIPE)) {
+                throw error(peek(), "transform-pipe actor requires "
+                        + "typed pipeline role, forwarding and transport lowering");
+            }
             if (match(PUB)) {
                 if (visibilitySeen) throw error(previous(), "duplicate/conflicting visibility modifier");
                 visibilitySeen = true;
