@@ -45,6 +45,11 @@ public final class TypeChecker {
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
+    // Foreign aliases are visible only while expanding a public field in
+    // their declaring class, never as names available to importer source.
+    private final IdentityHashMap<Ast.ClassDecl, Map<String, Ast.TypeAliasDecl>> linkedClassAliases = new IdentityHashMap<>();
+    private Map<String, Ast.TypeAliasDecl> resolvingLinkedFieldAliases = Map.of();
+    private final Set<String> hiddenLinkedAliasNames = new HashSet<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
@@ -97,6 +102,56 @@ public final class TypeChecker {
         checker.collect(program);
         checker.validate(program);
         return new TypeCheckResult(program, checker.warnings);
+    }
+
+    /**
+     * Checked, public, explicitly imported class declarations supply field
+     * signatures to this compilation unit without importing foreign bodies.
+     * A missing linked signature must remain Unknown (and fail on arithmetic)
+     * rather than fabricating an integer or disabling type checking.
+     */
+    public static Ast.Program checkTypesWithImportedClasses(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
+        if (linkedClasses == null || linkedAliases == null) {
+            throw new IllegalArgumentException("linked public classes/aliases cannot be null");
+        }
+        program = AnnotationExpander.expand(program);
+        TypeChecker checker = new TypeChecker();
+        checker.validateImports(program);
+        checker.collect(program);
+        for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
+            String name = entry.getKey();
+            Ast.ClassDecl declaration = entry.getValue();
+            if (name == null || declaration == null || !name.equals(declaration.name())
+                    || declaration.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException("invalid linked public class: " + name);
+            }
+            boolean imported = program.imports().stream().anyMatch(use ->
+                    use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
+                            && use.names().contains(name));
+            if (!imported || checker.classes.containsKey(name)
+                    || checker.ambiguousClasses.contains(name)) {
+                throw new IllegalArgumentException(
+                        "linked public class was not uniquely imported: " + name);
+            }
+            checker.classes.put(name, declaration);
+            Map<String, Ast.TypeAliasDecl> aliases =
+                    linkedAliases.getOrDefault(name, Map.of());
+            for (Map.Entry<String, Ast.TypeAliasDecl> alias : aliases.entrySet()) {
+                if (alias.getKey() == null || alias.getValue() == null
+                        || !alias.getKey().equals(alias.getValue().name())) {
+                    throw new IllegalArgumentException("invalid private linked field type alias");
+                }
+            }
+            checker.linkedClassAliases.put(declaration, Map.copyOf(aliases));
+            checker.hiddenLinkedAliasNames.addAll(aliases.keySet());
+        }
+        if (!linkedClasses.keySet().containsAll(linkedAliases.keySet())) {
+            throw new IllegalArgumentException("orphaned linked class field alias metadata");
+        }
+        checker.validate(program);
+        return program;
     }
 
     private void validateImports(Ast.Program program) {
@@ -5639,10 +5694,15 @@ public final class TypeChecker {
     private Type classFieldType(Ast.ClassDecl klass, Ast.FieldDecl field) {
         Set<String> generics = Set.copyOf(klass.genericParameters());
         if (field.type() != null) {
-            // A field declaration has no receiver-polymorphic type variable at
-            // the declaration site. Keep `self` as a receiver-bearing method type rather than
-            // silently degrading it into the enclosing nominal class.
-            return resolve(field.type(), generics, null);
+            // Resolve a public imported field under its *own* defining module's
+            // private type aliases. Never expose those aliases in importer code.
+            Map<String, Ast.TypeAliasDecl> previous = resolvingLinkedFieldAliases;
+            resolvingLinkedFieldAliases = linkedClassAliases.getOrDefault(klass, Map.of());
+            try {
+                return resolve(field.type(), generics, null);
+            } finally {
+                resolvingLinkedFieldAliases = previous;
+            }
         }
         if (field.initializer() == null) {
             throw new IllegalArgumentException("inferred field '" + klass.name() + "." + field.name()
@@ -6971,7 +7031,20 @@ public final class TypeChecker {
 
         rejectUnimportedTypeDependency(ref.name());
 
-        Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
+        // A non-public alias used by a linked class's public field is *not*
+        // an imported type name in user code. Only the field's defining
+        // module may expand it; otherwise a private nominal could escape.
+        if (resolvingLinkedFieldAliases.get(ref.name()) == null
+                && hiddenLinkedAliasNames.contains(ref.name())
+                && !typeAliases.containsKey(ref.name())
+                && !classes.containsKey(ref.name())) {
+            throw new IllegalArgumentException(
+                    "private linked type alias '" + ref.name()
+                            + "' is not imported; use the public class field contract");
+        }
+
+        Ast.TypeAliasDecl alias = resolvingLinkedFieldAliases.get(ref.name());
+        if (alias == null) alias = findTypeAlias(ref.name());
         if (alias != null) {
             if (alias.genericParameters().size() != ref.arguments().size()) {
                 throw new IllegalArgumentException("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()

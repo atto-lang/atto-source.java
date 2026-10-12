@@ -53,6 +53,34 @@ public final class OwnershipChecker {
         return program;
     }
 
+    /** Reuse only public, explicitly linked class layouts for cross-file loans. */
+    public static Ast.Program checkWithImportedClasses(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses) {
+        if (linkedClasses == null) {
+            throw new IllegalArgumentException("linked public classes cannot be null");
+        }
+        OwnershipChecker checker = new OwnershipChecker(program);
+        for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
+            String name = entry.getKey();
+            Ast.ClassDecl declaration = entry.getValue();
+            if (name == null || declaration == null || !name.equals(declaration.name())
+                    || declaration.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException("invalid linked ownership class: " + name);
+            }
+            boolean imported = program.imports().stream().anyMatch(use ->
+                    use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
+                            && use.names().contains(name));
+            if (!imported || checker.classes.containsKey(name)
+                    || checker.ambiguousClasses.contains(name)) {
+                throw new IllegalArgumentException(
+                        "linked ownership class was not uniquely imported: " + name);
+            }
+            checker.classes.put(name, declaration);
+        }
+        checker.validate(program);
+        return program;
+    }
+
     private void index(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             modules.add(module.name());
@@ -816,6 +844,12 @@ public final class OwnershipChecker {
             }
             if (isBorrowValue(assigned)) {
                 throw error("borrowed references cannot be assigned into longer-lived storage; create a fresh lexical borrow binding instead");
+            }
+            // The RHS must be checked while a transferred owner is still
+            // marked moved. Only after a valid owned replacement exists may a
+            // rebindable local become usable again.
+            if (assignment.target() instanceof Ast.NameExpr name) {
+                ownershipRoot(requireState(scope, name.name())).moved = false;
             }
             return assigned;
         }
@@ -1620,9 +1654,24 @@ public final class OwnershipChecker {
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {
         if (target instanceof Ast.NameExpr name) {
             VarState state = requireState(scope, name.name());
-            requireUsable(state, name.name(), true);
             if (!state.rebindable) throw error("cannot reassign fixed binding '" + name.name() + "'; use let or let mut");
-            if (state.immutableBorrows > 0 || state.mutableBorrowed) throw error("cannot assign '" + name.name() + "' while it is borrowed");
+            VarState root = ownershipRoot(state);
+            if (root.moved) {
+                // A moved let/owned-mut binding is temporarily uninitialized;
+                // assigning a new owned value is legal, but reading its old
+                // value in the RHS is still rejected. Never resurrect a
+                // projected/pattern alias or a borrowed capability.
+                if (root != state || state.borrowSource != null
+                        || state.kind != ValueKind.MOVE_ONLY
+                        || state.origin == Origin.CAPTURE) {
+                    throw error("cannot reinitialize moved alias/borrow '" + name.name() + "'");
+                }
+            } else {
+                requireUsable(state, name.name(), true);
+            }
+            if (root.immutableBorrows > 0 || root.mutableBorrowed) {
+                throw error("cannot assign '" + name.name() + "' while it is borrowed");
+            }
             return;
         }
         if (target instanceof Ast.MemberExpr member) {
