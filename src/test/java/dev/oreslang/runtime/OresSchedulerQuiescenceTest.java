@@ -483,6 +483,48 @@ final class OresSchedulerQuiescenceTest {
         }
     }
 
+
+    @Test
+    void terminalCallbackMayCloseOwningSchedulerWithoutWaitingOnItsCarrier()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        CountDownLatch insideTurn = new CountDownLatch(1);
+        CountDownLatch finishTurn = new CountDownLatch(1);
+        CountDownLatch callbackExited = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> callbackFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try {
+            OresFuture<Integer> future = scheduler.start(resume -> {
+                insideTurn.countDown();
+                assertTrue(finishTurn.await(3, TimeUnit.SECONDS));
+                return OresScheduler.done(17);
+            });
+            assertTrue(insideTurn.await(3, TimeUnit.SECONDS));
+            future.whenCompleteRuntime((value, failure) -> {
+                try {
+                    assertEquals(17, value);
+                    assertEquals(null, failure);
+                    // This callback runs after runBound has cleared CURRENT,
+                    // but before afterCarrierTurn finishes on the carrier.
+                    scheduler.close();
+                } catch (Throwable thrown) {
+                    callbackFailure.set(thrown);
+                } finally {
+                    callbackExited.countDown();
+                }
+            });
+            finishTurn.countDown();
+            assertTrue(callbackExited.await(2, TimeUnit.SECONDS),
+                    "scheduler close must not await its own completion carrier");
+            assertEquals(null, callbackFailure.get());
+            assertTrue(scheduler.isClosed());
+            assertEquals(17, future.get(3, TimeUnit.SECONDS));
+        } finally {
+            finishTurn.countDown();
+            scheduler.close();
+        }
+    }
+
     @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
