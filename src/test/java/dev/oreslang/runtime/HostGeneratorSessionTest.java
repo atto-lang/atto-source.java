@@ -1,0 +1,89 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@Timeout(value = 20, unit = TimeUnit.SECONDS)
+final class HostGeneratorSessionTest {
+    private static final String SOURCE = """
+            async fnc pending(): int { return 44; }
+            async generator fnc numbers(): int {
+              try {
+                yield 11;
+                yield 22;
+                yield 33;
+                yield await pending();
+              } catch (err) {
+              } finally {
+                val int cleanup_marker = 1;
+              }
+              return;
+            }
+            """;
+
+    @Test
+    void javaHostPullsThreeTypedSourceValuesAndCancelsPendingFourth()
+            throws Exception {
+        OresFuture<Integer> pendingSourceCall = new OresFuture<>();
+        try (OresScheduler root = new OresScheduler(2)) {
+            HostGeneratorSession session = HostGeneratorSession.compile(
+                    root, () -> OresScheduler.current() == root,
+                    SOURCE, "numbers", Map.of("pending", pendingSourceCall));
+
+            // Java host calls these directly. The root scheduler, not this
+            // thread or a virtual-thread generator producer, runs the guest.
+            for (int expected : new int[]{11, 22, 33}) {
+                var pull = session.nextStep();
+                var step = pull.get(5, TimeUnit.SECONDS);
+                assertFalse(step.done());
+                assertEquals(expected, ((Number) step.value()).intValue());
+            }
+            var fourth = session.nextStep();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (session.isQuiescent() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertFalse(fourth.isDone(), "fourth source await must remain pending");
+            assertTrue(fourth.cancel(false));
+            session.seal();
+            root.close();
+            assertTrue(session.isQuiescent(), "physical DONE must precede retirement");
+            session.close();
+            assertFalse(pendingSourceCall.isDone(),
+                    "cancel cannot steal an externally-owned Future");
+        }
+    }
+
+    @Test
+    void invalidSourceRejectedBeforeHostSessionAndGuestEffects() {
+        try (OresScheduler root = new OresScheduler(1)) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    HostGeneratorSession.compile(root,
+                            () -> OresScheduler.current() == root,
+                            "async generator fnc numbers(): int { yield 1 + 2; return; }",
+                            "numbers", Map.of()));
+        }
+    }
+
+    @Test
+    void wrongPhysicalGuestEntryPredicateFailsClosed() throws Exception {
+        try (OresScheduler root = new OresScheduler(1)) {
+            HostGeneratorSession session = HostGeneratorSession.compile(
+                    root, () -> false,
+                    "async generator fnc numbers(): int { yield 1; return; }",
+                    "numbers", Map.of());
+            var pending = session.nextStep();
+            var failed = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> pending.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, failed.getCause());
+            session.seal();
+            assertFalse(session.isQuiescent(), "no physical admission proof poisons session");
+            assertThrows(IllegalStateException.class, session::close);
+        }
+    }
+}
