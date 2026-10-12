@@ -52,7 +52,7 @@ final class ActorPipelineRootAdmissionCreditTest {
             Constructor<?> ctor = routeClass.getDeclaredConstructors()[0];
             ctor.setAccessible(true);
             AtomicInteger phase = new AtomicInteger(0);
-            Object route = ctor.newInstance(source, transform, sink,
+            Object route = ctor.newInstance(java.util.List.of(source, transform, sink),
                     codec.closedDomainIdentity(), phase);
             Field registryField = ActorRuntime.class.getDeclaredField("linearPipelines");
             registryField.setAccessible(true);
