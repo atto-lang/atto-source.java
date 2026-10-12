@@ -38,9 +38,11 @@ public final class ActorExecutionAuthorityModelProof {
             for (Action action : Action.values()) {
                 var actual = new ActorExecutionAuthority();
                 State before = State.initial();
-                for (Action earlier : node.path()) before = transition(actual, before, earlier);
+                ActorExecutionAuthority.Claim[] issued = new ActorExecutionAuthority.Claim[1];
+                for (Action earlier : node.path())
+                    before = transition(actual, before, earlier, issued);
                 ensure(before.equals(node.state()), "replay diverged from state model");
-                State after = transition(actual, before, action);
+                State after = transition(actual, before, action, issued);
                 edges++;
                 ensure(after.owner() >= 0 && after.owner() <= 2, "two carrier exclusive entry");
                 ensure(after.phase() != ActorExecutionAuthority.Phase.TERMINATED
@@ -61,7 +63,8 @@ public final class ActorExecutionAuthorityModelProof {
                 + " states=" + seen.size() + " transitions=" + edges);
     }
 
-    private static State transition(ActorExecutionAuthority gate, State s, Action a) {
+    private static State transition(ActorExecutionAuthority gate, State s, Action a,
+                                    ActorExecutionAuthority.Claim[] issued) {
         var p = s.phase();
         long g = s.generation(), seq = s.sequence(), owner = s.owner();
         boolean allowed;
@@ -77,6 +80,7 @@ public final class ActorExecutionAuthorityModelProof {
                 if (actual) {
                     ensure(claim.orElseThrow().sequence() == seq + 1,
                             "nonmonotonic claim sequence");
+                    issued[0] = claim.orElseThrow();
                     s = new State(ActorExecutionAuthority.Phase.RUNNING, g, seq + 1, candidate);
                 }
             }
@@ -85,9 +89,14 @@ public final class ActorExecutionAuthorityModelProof {
                 boolean suspend = (a == Action.SUSPEND_A || a == Action.SUSPEND_B);
                 allowed = owner == carrier && (p == ActorExecutionAuthority.Phase.RUNNING
                         || p == ActorExecutionAuthority.Phase.STOPPING);
-                actual = gate.leave(new ActorExecutionAuthority.Claim(g, seq, carrier), suspend);
+                // Only the actual issued Claim may release a real owner.
+                // An equal-valued record is deliberately a forged claim.
+                var supplied = owner == carrier && issued[0] != null ? issued[0]
+                        : new ActorExecutionAuthority.Claim(g, seq, carrier);
+                actual = gate.leave(supplied, suspend);
                 ensure(allowed == actual, "owner release mismatch " + a + " " + s);
                 if (actual) {
+                    issued[0] = null;
                     var next = p == ActorExecutionAuthority.Phase.STOPPING ? p :
                             suspend ? ActorExecutionAuthority.Phase.SUSPENDED :
                                     ActorExecutionAuthority.Phase.READY;
@@ -118,8 +127,8 @@ public final class ActorExecutionAuthorityModelProof {
             }
             case STALE_LEAVE -> {
                 actual = gate.leave(new ActorExecutionAuthority.Claim(
-                        g, Math.max(0, seq - 1), owner == 0 ? 1 : owner), false);
-                ensure(!actual, "stale release stole execution authority");
+                        g, seq, owner == 0 ? 1 : owner), false);
+                ensure(!actual, "equal-valued forged claim stole execution authority");
             }
             case STALE_ENTER -> {
                 long wrongGeneration = g == 1 ? 2 : g - 1;
