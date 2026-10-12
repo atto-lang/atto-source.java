@@ -1197,7 +1197,13 @@ public final class TypeChecker {
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
-            currentMaySuspend = method.async() || method.suspends();
+            // Serial/ordinary actor receive is declared synchronously, but
+            // its SourceTask is permitted to suspend on explicit await or
+            // rt cooperate. The actor mailbox keeps the logical turn lease
+            // until that SourceTask and its lexical cleanup settle.
+            // Do not broaden this exemption to actor on_start or arbitrary
+            // synchronous instance methods.
+            currentMaySuspend = method.async() || method.suspends() || actorReceiveHook;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
