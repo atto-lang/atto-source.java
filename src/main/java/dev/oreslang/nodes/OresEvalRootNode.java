@@ -6332,6 +6332,10 @@ public final class OresEvalRootNode extends RootNode {
                     case "accepted" -> server.accepted();
                     case "rejected" -> server.rejected();
                     case "completed" -> server.completed();
+                    case "transfer_backlog" -> (long) server.transferBacklog();
+                    case "transfer_backlog_limit" -> (long) server.transferBacklogLimit();
+                    case "transfer_rejected" -> server.transferRejected();
+                    case "tombstones" -> (long) server.tombstones();
                     case "accept" -> (Invokable) args -> { requireZero(args, "http.accept"); return server.accept(); };
                     case "shutdown" -> (Invokable) args -> {
                         if (args.size() != 1) throw new IllegalArgumentException("shutdown requires grace milliseconds");
