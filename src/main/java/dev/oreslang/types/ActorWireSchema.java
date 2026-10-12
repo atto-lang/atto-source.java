@@ -34,12 +34,24 @@ public final class ActorWireSchema {
             Ast.TypeRef ref, Map<String, Ast.TypeRef> resolvedAliases) {
         Objects.requireNonNull(ref, "source actor message type");
         Objects.requireNonNull(resolvedAliases, "resolved aliases");
-        return resolve(ref, Map.copyOf(resolvedAliases), new HashSet<>(), 0, new int[]{0});
+        return fromSource(ref, resolvedAliases, ignored -> null);
+    }
+
+    /** Resolve nominal enums only through the trusted compiler declaration table. */
+    public static Shape fromSource(
+            Ast.TypeRef ref, Map<String, Ast.TypeRef> resolvedAliases,
+            java.util.function.Function<String, Shape> enumResolver) {
+        Objects.requireNonNull(ref, "source actor message type");
+        Objects.requireNonNull(resolvedAliases, "resolved aliases");
+        Objects.requireNonNull(enumResolver, "enum resolver");
+        return resolve(ref, Map.copyOf(resolvedAliases), new HashSet<>(), 0,
+                new int[]{0}, enumResolver);
     }
 
     private static Shape resolve(
             Ast.TypeRef ref, Map<String, Ast.TypeRef> aliases,
-            Set<String> activeAliases, int depth, int[] nodes) {
+            Set<String> activeAliases, int depth, int[] nodes,
+            java.util.function.Function<String, Shape> enumResolver) {
         if (depth > MessagePackCollectionCodec.MAX_DEPTH
                 || ++nodes[0] > MessagePackCollectionCodec.MAX_NODES) {
             throw new IllegalArgumentException("Serializable wire schema exceeds maximum depth/node quota");
@@ -57,7 +69,7 @@ public final class ActorWireSchema {
                 throw new IllegalArgumentException("recursive Serializable alias '" + ref.name() + "'");
             }
             try {
-                return resolve(alias, aliases, activeAliases, depth + 1, nodes);
+                return resolve(alias, aliases, activeAliases, depth + 1, nodes, enumResolver);
             } finally {
                 activeAliases.remove(ref.name());
             }
@@ -66,6 +78,12 @@ public final class ActorWireSchema {
                 || ref.isNamedParameter() || ref.isSequenceShape()
                 || ref.isRepeatExact() || ref.isRepeatMany()) {
             throw new IllegalArgumentException("type has no portable Serializable wire codec: " + ref);
+        }
+        Shape nominal = enumResolver.apply(ref.name());
+        if (nominal != null) {
+            if (!ref.arguments().isEmpty())
+                throw new IllegalArgumentException("enum payload cannot have generic arguments: " + ref.name());
+            return nominal;
         }
         switch (ref.name()) {
             case "bool", "Bool", "boolean" -> {
@@ -97,10 +115,10 @@ public final class ActorWireSchema {
                         }
                         for (int n = 0; n < count; n++) {
                             slots.add(resolve(item.arguments().getFirst(), aliases,
-                                    activeAliases, depth + 1, nodes));
+                                    activeAliases, depth + 1, nodes, enumResolver));
                         }
                     } else {
-                        slots.add(resolve(item, aliases, activeAliases, depth + 1, nodes));
+                        slots.add(resolve(item, aliases, activeAliases, depth + 1, nodes, enumResolver));
                     }
                     if (slots.size() > MessagePackCollectionCodec.MAX_ELEMENTS) {
                         throw new IllegalArgumentException("fixed Serializable sequence exceeds maximum arity");
