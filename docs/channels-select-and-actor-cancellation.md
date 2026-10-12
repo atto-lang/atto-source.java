@@ -439,6 +439,56 @@ The outer `Option` is intentionally part of the language-facing selection
 contract. It also composes uniformly with `trap` and Future APIs; the runtime
 must not flatten nested `Option` values.
 
+## Scheduler-loop `readch` contract and fairness arbitration
+
+The current **canonical source syntax** uses `when readch channel: let value { ... }`
+(or `val`/`const`). `on readch(channel) as event` was an illustrative
+proposal, **not** a verified parser spelling. For example:
+
+```ores
+while self.running {
+  select {
+    when readch self.control: let event {
+      self.handle_control(event);
+    }
+    when readch self.workers: let event {
+      self.handle_worker(event);
+    }
+    when readch self.timers: let event {
+      self.handle_timer(event);
+    }
+  }
+}
+```
+
+This describes intended source semantics; it does not certify that all actor
+suspension/continuation paths are lowered by the current Java or LLVM compiler.
+`nb readch` registers a cancellable asynchronous read; `try readch` probes
+once and leaves no pending waiter; a blocking `readch` must suspend the guest
+execution context without parking a bounded actor worker.
+
+A separate **native or VM scheduler CONTROL loop** may use a host-level
+`*_blocking` condition/selector wait, because it owns a dedicated scheduler
+OS thread. Host wakeups cannot directly invoke guest actor callbacks or turn
+the master scheduler into a guest carrier.
+
+A reusable `SelectPlan` retains its immutable case layout and fairness state;
+each iteration still performs a fresh atomic selection with detachable waiters.
+Importantly, even when *multiple pending registrations share one plan*, FAIR
+arbitration must observe the **current** cursor at commit time rather than an
+order snapshot taken earlier. PRIORITY retains lexical order; RANDOM fixes
+its randomized order per registration. This is not a general no-starvation
+proof: FAIR only rotates among concurrently available arms and does not promise
+bounded service under arbitrary independent producers, closed channels,
+CONTROL priority overrides, or a stalled actor scheduler. Stronger
+anti-starvation rules and guaranteed compiled-plan caching across loops remain
+tracked as separate future work:
+https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/17
+
+The Java implementation has bounded trace-refinement tests for selection
+across multiple plan generations; these do not prove LLVM source lowering,
+unbounded liveness, or complete Java compiler optimization parity.
+
 ## Select plans: optional optimization layer
 
 A `SelectPlan` is an optional reusable descriptor for hot repeated selects and
