@@ -1,7 +1,9 @@
 package dev.oreslang.runtime;
 
+import java.lang.reflect.Field;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -223,5 +225,43 @@ final class ActorSourceCleanupDrainTest {
             gates.cleanupAwait.completeFromRuntime(null);
             runtime.close();
         }
+    }    @Test
+    void preStopGlobalCloseRaceRetainsQueuedOwnedSourceResume() throws Exception {
+        // Deterministically create the very short production interval between
+        // closed=true and ActorCell.terminateTree(). The pending source task is
+        // already admitted; no new user work is authorized.
+        ActorRuntime runtime = new ActorRuntime();
+        Gates gates = new Gates();
+        try {
+            ActorRuntime.ActorRef<String> actor = spawnWorker(runtime, gates);
+            actor.send("run");
+            assertTrue(gates.entered.await(3, TimeUnit.SECONDS));
+
+            Field closedField = ActorRuntime.class.getDeclaredField("closed");
+            closedField.setAccessible(true);
+            AtomicBoolean closed = (AtomicBoolean) closedField.get(runtime);
+            closed.set(true);
+
+            // Publish a producer completion while the runtime is closed but
+            // before its actor is stopped. The source command must be accepted
+            // into the owned CONTROL queue, but cannot run ordinary guest work.
+            assertTrue(gates.userAwait.completeFromRuntime(null));
+            assertThrows(IllegalStateException.class, () -> actor.send("forbidden"));
+
+            assertTrue(actor.cancel());
+            assertTrue(gates.cleanupEntered.await(3, TimeUnit.SECONDS),
+                    "stop must wake source work queued after closed=true");
+            assertFalse(actor.get_done().isDone());
+            gates.cleanupAwait.completeFromRuntime(null);
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(1, gates.cleanupStarts.get());
+            assertEquals(1, gates.cleanupCompletes.get());
+            assertEquals(1, gates.userMessages.get());
+        } finally {
+            gates.cleanupAwait.completeFromRuntime(null);
+            runtime.close();
+        }
     }
+
+
 }

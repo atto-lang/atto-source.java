@@ -237,9 +237,11 @@ public final class AsyncRuntime implements AutoCloseable {
     }
 
     @Override
-    public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        executor.shutdownNow();
+    public synchronized void close() {
+        // Admission is sealed on the first request, but it is not evidence of
+        // physical task/Truffle-carrier exit. A failed timeout is retryable;
+        // do not return successfully just because shutdown was requested.
+        if (closed.compareAndSet(false, true)) executor.shutdownNow();
 
         boolean interrupted = false;
         try {

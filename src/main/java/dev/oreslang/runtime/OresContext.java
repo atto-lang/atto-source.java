@@ -46,6 +46,12 @@ public final class OresContext implements AutoCloseable {
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
+    // Separate from the context monitor used by code/image registration: an
+    // unwinding guest continuation may still need that monitor while close()
+    // waits for its carrier to finish.
+    private final Object closeLock = new Object();
+    private Thread closeOwner;
+    private boolean resourcesRetired;
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
     // Exactly one immutable code image per linked source unit for all actor kinds.
     // Per-actor mutable heaps/closures are never published into this store.
@@ -425,36 +431,52 @@ public final class OresContext implements AutoCloseable {
         return Map.copyOf(descriptor);
     }
 
+    /**
+     * Stop admitting actor work, then drain all guest and async owners before
+     * invalidating any context-owned I/O, code images or collector state.
+     *
+     * A deadline is not quiescence. On a failed close these resources must
+     * remain intact for already-authorized CONTROL cleanup continuations;
+     * another host close can retry after those continuations actually finish.
+     */
     @Override
     public void close() {
-        nativeIo.close();
-        http.close();
-        RuntimeException failure = null;
-        try {
-            asyncRuntime.close();
-        } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
-        }
-        try {
-            actors.close();
-        } catch (RuntimeException actorFailure) {
-            if (failure == null) failure = actorFailure;
-            else failure.addSuppressed(actorFailure);
-        }
-        try {
-            vm.close();
-        } catch (RuntimeException vmFailure) {
-            if (failure == null) failure = vmFailure;
-            else failure.addSuppressed(vmFailure);
-        } finally {
-            synchronized (this) {
-                linkedCodeUnits.clear();
-                linkedImportResolutions.clear();
-                sharedCodeImages.close();
+        synchronized (closeLock) {
+            if (resourcesRetired) return;
+            if (closeOwner == Thread.currentThread()) {
+                throw new IllegalStateException(
+                        "OresContext close cannot be re-entered by its own cleanup callback");
             }
-            garbageCollector.close();
-            output.flush();
+            closeOwner = Thread.currentThread();
+            try {
+                // Three-way shutdown ordering:
+                // (1) seal HTTP admissions and request transport/actor aborts;
+                // (2) finalize the actors while their guest CONTROL and HTTP
+                // carrier dependencies remain available;
+                // (3) physically drain HTTP and retire the remaining runtime.
+                // A synchronous http.close() BEFORE actors.close() can wait
+                // forever on a persistent actor that only its runtime's stop
+                // lifecycle can finalize. The reverse ordering can strand an
+                // actor still awaiting its HTTP exchange's cancellation.
+                http.beginContextShutdown();
+                actors.close();
+                http.close();
+                vm.close();
+
+                // A settled/cancelled Future is not physical worker exit.
+                asyncRuntime.close();
+                nativeIo.close();
+                synchronized (this) {
+                    linkedCodeUnits.clear();
+                    linkedImportResolutions.clear();
+                    sharedCodeImages.close();
+                }
+                garbageCollector.close();
+                output.flush();
+                resourcesRetired = true;
+            } finally {
+                closeOwner = null;
+            }
         }
-        if (failure != null) throw failure;
     }
 }

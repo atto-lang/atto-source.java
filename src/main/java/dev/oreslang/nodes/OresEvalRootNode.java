@@ -47,6 +47,13 @@ public final class OresEvalRootNode extends RootNode {
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
+    /**
+     * Host lifecycle entry: run while the outer Polyglot Context is still
+     * entered and valid, BEFORE calling Context.close(). A failed drain is an
+     * error, not permission to dispose the outer context.
+     */
+    public static final String PREPARE_CONTEXT_DISPOSAL_COMMAND =
+            "__ores_internal_prepare_context_disposal__";
 
     private final Ast.Program program;
     private final String codeUnitId;
@@ -73,6 +80,10 @@ public final class OresEvalRootNode extends RootNode {
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
         CapabilityChecker.check(program, context.isolatePolicy(), context.permissionCheckMode());
+        if (isControl(arguments, PREPARE_CONTEXT_DISPOSAL_COMMAND)) {
+            context.close();
+            return null;
+        }
         if (arguments.length == 3
                 && REGISTER_IMPORT_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String importPath
@@ -101,7 +112,23 @@ public final class OresEvalRootNode extends RootNode {
                 && INVOKE_PUBLIC_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String functionName) {
             current.link();
-            return current.invokePublic(functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+            Object result = current.invokePublic(
+                    functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+            // Future is not a valid raw Truffle interop return value.
+            // Adapt only the public host boundary; guest execution retains
+            // the original scheduler-owned Future object.
+            if (result instanceof OresFuture<?>) return context.env().asGuestValue(result);
+            // A guest-owned Channel can be deliberately exported to an
+            // embedding host only with the explicit JAVA_INTEROP capability.
+            // Ordinary sandboxed contexts must not gain a mutable channel
+            // alias merely by returning one from a public source function.
+            if (result instanceof dev.oreslang.runtime.ChannelRuntime.Channel<?>) {
+                context.requireCapability(
+                        dev.oreslang.runtime.IsolatePolicy.Capability.JAVA_INTEROP,
+                        "export guest channel to host");
+                return context.env().asGuestValue(result);
+            }
+            return result;
         }
 
         // Backward-compatible single-source execution. Multi-file hosts use
@@ -143,6 +170,18 @@ public final class OresEvalRootNode extends RootNode {
         return cleanupFailure;
     }
 
+    /**
+     * Cancellation bypasses ordinary guest catch blocks. Errors raised from
+     * already-running cleanup may be handled by that cleanup's own catch,
+     * but they cannot let an enclosing user catch swallow cancellation.
+     */
+    static boolean shouldEnterSourceCatch(
+            Throwable failure, boolean cancellationRequested, boolean inCleanup) {
+        Objects.requireNonNull(failure, "failure");
+        return !(failure instanceof OresScheduler.TaskCancelledException)
+                && (!cancellationRequested || inCleanup);
+    }
+
     private static final class Evaluator
             implements ActorRuntime.ActorCodeExecutor {
         private final Ast.Program program;
@@ -158,6 +197,15 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+        // Module fields are static within this source evaluator/context.
+        // Re-evaluating field initializers on every member access creates
+        // different Channel/Future values for callers of the same declaration.
+        private final Object moduleFieldLock = new Object();
+        private final IdentityHashMap<Ast.FieldDecl, Object> moduleFieldValues =
+                new IdentityHashMap<>();
+        private final Set<Ast.FieldDecl> moduleFieldsInitializing =
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
@@ -2154,7 +2202,10 @@ public final class OresEvalRootNode extends RootNode {
                             env,
                             (t, flow) -> {
                                 if (flow.kind() == SourceFlowKind.THROW
-                                        && !(flow.failure() instanceof OresScheduler.TaskCancelledException)) {
+                                        && shouldEnterSourceCatch(
+                                                flow.failure(),
+                                                t.cancellationRequested,
+                                                t.cleanupInProgress())) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
@@ -7686,10 +7737,37 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
                     if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
-                    return eval(field.initializer(), new Env(null));
+                    return staticModuleField(module, field);
                 }
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
+        }
+
+        /**
+         * Each declared module field has one physical value per evaluator and
+         * Polyglot context. Initialization is serialized across guest carriers,
+         * including two concurrent actors resolving the same module member.
+         * Java's monitor is reentrant; a recursive initializer must be rejected
+         * rather than silently manufacturing multiple channel identities.
+         */
+        private Object staticModuleField(Ast.ModuleDecl module, Ast.FieldDecl field) {
+            synchronized (moduleFieldLock) {
+                if (moduleFieldValues.containsKey(field)) {
+                    return moduleFieldValues.get(field);
+                }
+                if (!moduleFieldsInitializing.add(field)) {
+                    throw new IllegalStateException(
+                            "recursive module field initializer: " + module.name()
+                                    + "." + field.name());
+                }
+                try {
+                    Object value = eval(field.initializer(), new Env(null));
+                    moduleFieldValues.put(field, value);
+                    return value;
+                } finally {
+                    moduleFieldsInitializing.remove(field);
+                }
+            }
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {

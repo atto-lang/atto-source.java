@@ -432,6 +432,93 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void terminalFutureObserverCannotCloseTheCarrierThatIsPublishingIt()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        OresFuture<Integer> awaited = new OresFuture<>();
+        CountDownLatch callbackFinished = new CountDownLatch(1);
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        try {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                if (resume.initial()) return OresScheduler.await(awaited);
+                return OresScheduler.done(42);
+            });
+            task.whenCompleteRuntime((value, failure) -> {
+                try {
+                    assertNull(failure);
+                    assertEquals(42, value);
+                    assertNull(OresScheduler.current(),
+                            "terminal observer runs after the guest binding exits");
+                    IllegalStateException denied = assertThrows(
+                            IllegalStateException.class, scheduler::close);
+                    assertTrue(denied.getMessage().contains("terminal Future callback"));
+                    assertFalse(scheduler.isClosed(),
+                            "rejected owner-carrier close must not seal admission");
+                } catch (Throwable testFailure) {
+                    observed.set(testFailure);
+                } finally {
+                    callbackFinished.countDown();
+                }
+            });
+            assertTrue(awaited.completeFromRuntime(1));
+            assertTrue(callbackFinished.await(3, TimeUnit.SECONDS),
+                    "a terminal observer must not deadlock its own carrier");
+            assertNull(observed.get(), String.valueOf(observed.get()));
+            assertEquals(42, task.get(5, TimeUnit.SECONDS));
+            assertEquals(7, scheduler.startSync(() -> 7).get(5, TimeUnit.SECONDS),
+                    "scheduler must remain usable after a rejected self-close");
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    @Test
+    void closeCallbackCannotReenterItsOwnHostCleanupDrain() throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch carrierEntered = new CountDownLatch(1);
+        CountDownLatch releaseCarrier = new CountDownLatch(1);
+        carrier.execute(() -> {
+            carrierEntered.countDown();
+            try {
+                releaseCarrier.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "reentrant-close-callback", 1, carrier, Runnable::run);
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        AtomicInteger observerCount = new AtomicInteger();
+        try {
+            assertTrue(carrierEntered.await(5, TimeUnit.SECONDS));
+            OresFuture<Integer> queued = scheduler.start(resume -> OresScheduler.done(42));
+            queued.whenCompleteRuntime((value, failure) -> {
+                observerCount.incrementAndGet();
+                try {
+                    assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+                    IllegalStateException denied = assertThrows(
+                            IllegalStateException.class, scheduler::close);
+                    assertTrue(denied.getMessage().contains("re-entered"),
+                            denied.getMessage());
+                } catch (Throwable problem) {
+                    observed.set(problem);
+                }
+            });
+            scheduler.close();
+            assertEquals(1, observerCount.get());
+            assertNull(observed.get(), String.valueOf(observed.get()));
+            assertTrue(queued.isCancelled());
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> queued.get(5, TimeUnit.SECONDS));
+        } finally {
+            releaseCarrier.countDown();
+            scheduler.close();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void cancellingUnclaimedQueuedTaskNeverEntersVmAndSettlesWithoutCarrier() throws Exception {
         ExecutorService carrier = Executors.newSingleThreadExecutor();
         CountDownLatch entered = new CountDownLatch(1);

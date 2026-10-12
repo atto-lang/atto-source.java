@@ -196,4 +196,70 @@ class AsyncNativeIoTest {
             assertEquals("hello\nposted\nredirect-not-followed\n", output.replace("\r", ""));
         } finally { server.stop(0); }
     }
+
+    @Test
+    void nativeIoCloseTimeoutRetainsRegisteredResourcesUntilActualWorkerExit() throws Exception {
+        AsyncNativeIo io = new AsyncNativeIo(1);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger resourceClose =
+                new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            io.register(resourceClose::incrementAndGet);
+            OresFuture<Integer> task = io.submit("blocking native operation", () -> {
+                entered.countDown();
+                while (release.getCount() > 0) {
+                    try {
+                        release.await();
+                    } catch (InterruptedException ignored) {
+                        // A native syscall/FFM entry might ignore interruption.
+                    }
+                }
+                return 9;
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            IllegalStateException deadline = assertThrows(
+                    IllegalStateException.class, io::close);
+            assertTrue(deadline.getMessage().contains("workers still own"),
+                    deadline.getMessage());
+            assertFalse(task.isDone(),
+                    "uncooperative native operation cannot be marked terminal");
+            assertEquals(0, resourceClose.get(),
+                    "registered resources must survive while worker owns them");
+            assertTrue(io.submit("late operation", () -> 1).isDone(),
+                    "close must seal new I/O admission despite failed drain");
+            release.countDown();
+            assertEquals(9, task.get(5, TimeUnit.SECONDS));
+            assertDoesNotThrow(io::close);
+            assertEquals(1, resourceClose.get(),
+                    "resource may be retired once and only after worker exit");
+            assertDoesNotThrow(io::close);
+            assertEquals(1, resourceClose.get());
+        } finally {
+            release.countDown();
+            io.close();
+        }
+    }
+
+    @Test
+    void nativeIoExplicitReleaseFailureKeepsReservationForRetry() throws Exception {
+        AsyncNativeIo io = new AsyncNativeIo(1);
+        java.util.concurrent.atomic.AtomicInteger attempts =
+                new java.util.concurrent.atomic.AtomicInteger();
+        io.register(() -> {
+            if (attempts.incrementAndGet() == 1) {
+                throw new IOException("transient native resource-close failure");
+            }
+        });
+        IllegalStateException failure = assertThrows(IllegalStateException.class, io::close);
+        assertTrue(failure.getMessage().contains("resources did not release"),
+                failure.getMessage());
+        assertEquals(1, attempts.get());
+        assertEquals(1, failure.getSuppressed().length);
+        assertInstanceOf(IOException.class, failure.getSuppressed()[0]);
+        assertDoesNotThrow(io::close, "resource must remain owned for retry");
+        assertEquals(2, attempts.get());
+        assertDoesNotThrow(io::close, "successful retirement is idempotent");
+        assertEquals(2, attempts.get());
+    }
 }

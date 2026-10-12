@@ -5873,11 +5873,12 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        // Source tasks retain their owned resources across failed cleanup
-        // drains. When there were no source tasks to unwind, preserve the
-        // older fail-closed revocation of shared handles even if a hostile
-        // host callback ignores shutdown interruption and runs too long.
-        if (!sourceCleanupPending || (stillRunning.isEmpty() && dispatchersTerminated)) {
+        // Actor state and native/shared reservations remain owned until
+        // physical carrier exit, regardless of whether source tasks exist.
+        // An emergency interrupt alone never proves that an actor holding
+        // a SyncCell or FFM loan has relinquished it. Retain on timeout and
+        // let a subsequent close reclaim only after observed quiescence.
+        if (stillRunning.isEmpty() && dispatchersTerminated && !interrupted) {
             for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
             actorGroups.clear();
             for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
@@ -6057,7 +6058,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** Dedicated bounded scheduler CONTROL lane, never user-callable. */
         private final ArrayDeque<SourceTaskCommand> sourceTaskMailbox = new ArrayDeque<>();
         /** Guarded by lifecycleLock; only actual source tasks retain this lane. */
-        private boolean sourceCleanupDraining;
+        /** Producer completions can schedule() without lifecycleLock. */
+        private volatile boolean sourceCleanupDraining;
         /** Actor single-writer lease only; safepoints still charge fuel. */
         private boolean sourceCleanupTurn;
         /** True while one source receive owns actor state across suspension. */
@@ -6873,6 +6875,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            boolean queuedOwnedCleanup;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -6895,13 +6898,21 @@ public final class ActorRuntime implements AutoCloseable {
                 toCancel.addAll(sourceTaskFutures);
                 pending = List.copyOf(toCancel);
                 pendingOperations.clear();
+                queuedOwnedCleanup = sourceCleanupDraining && !sourceTaskMailbox.isEmpty();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
 
-            // Cancellation removes channel/select waiter registrations before
-            // any future channel activity can revive work for this dead actor.
+            // Cancellation must be admitted before waking queued source
+            // commands: otherwise a never-entered guest task could run after
+            // stop() but before its Future receives the cancellation signal.
+            // This also detaches obsolete await registrations before dispatch.
             for (OresFuture<?> future : pending) future.cancel(false);
+
+            // A source resume queued after closed=true but before stop()
+            // could not schedule its own carrier. Wake it only after the
+            // cancellation requests above have settled admission.
+            if (queuedOwnedCleanup) schedule();
 
             for (ActorCell<?> child : descendants) {
                 child.cancel(new ActorCancelledException(

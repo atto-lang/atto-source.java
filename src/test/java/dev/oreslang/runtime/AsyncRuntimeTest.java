@@ -92,4 +92,46 @@ final class AsyncRuntimeTest {
         assertEquals(9, AsyncRuntime.await(ores));
     }
 
+
+    @Test
+    void failedAsyncCloseMustWaitForActualCarrierExitOnRetry() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger exits = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            OresFuture<Integer> future = runtime.submit(() -> {
+                entered.countDown();
+                try {
+                    while (release.getCount() != 0) {
+                        try {
+                            release.await();
+                        } catch (InterruptedException ignored) {
+                            // An uncooperative host operation cannot be retired early.
+                        }
+                    }
+                    return 7;
+                } finally {
+                    exits.incrementAndGet();
+                }
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            IllegalStateException incomplete = assertThrows(
+                    IllegalStateException.class, runtime::close);
+            assertTrue(incomplete.getMessage().contains("did not terminate"),
+                    incomplete.getMessage());
+            assertTrue(runtime.isClosed());
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> runtime.submit(() -> 1));
+            assertEquals(0, exits.get(), "timeout must not imply physical exit");
+            release.countDown();
+            assertDoesNotThrow(runtime::close,
+                    "retry must wait for the actual virtual carrier exit");
+            assertEquals(1, exits.get());
+            assertTrue(future.isDone() || runtime.isClosed());
+        } finally {
+            release.countDown();
+            runtime.close();
+        }
+    }
 }

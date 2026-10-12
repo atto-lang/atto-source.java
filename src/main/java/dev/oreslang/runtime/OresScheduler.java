@@ -41,6 +41,10 @@ public final class OresScheduler implements AutoCloseable {
     private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
     private static final ThreadLocal<Object> CURRENT_TASK_DOMAIN = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> SCHEDULER_CARRIER = new ThreadLocal<>();
+    // The physical carrier remains owned through post-guest terminal Future
+    // publication, after CURRENT has already been restored to its caller.
+    private static final ThreadLocal<OresScheduler> ACTIVE_CARRIER_OWNER =
+            new ThreadLocal<>();
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
 
     @FunctionalInterface
@@ -112,6 +116,9 @@ public final class OresScheduler implements AutoCloseable {
     private final ExecutorService ownedExecutor;
     private final TurnExecutor turnExecutor;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
+    // Guard re-entrant close from callbacks published synchronously while a
+    // host caller is draining queued/cancelled tasks. Guarded by this monitor.
+    private Thread activeCloseThread;
     private final AtomicBoolean closed = new AtomicBoolean();
     // Read/written only while holding this scheduler's synchronized close().
     // Retains the original failed-drain exception for concurrent host callers.
@@ -398,7 +405,9 @@ public final class OresScheduler implements AutoCloseable {
         // Existing admitted tasks may resume cancellation cleanup after close().
         executor.execute(() -> {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
+            OresScheduler priorOwner = ACTIVE_CARRIER_OWNER.get();
             SCHEDULER_CARRIER.set(Boolean.TRUE);
+            ACTIVE_CARRIER_OWNER.set(this);
             try {
                 // A queued cancellation may revoke its unclaimed carrier
                 // ticket. In that case the already-submitted Runnable is a
@@ -419,7 +428,12 @@ public final class OresScheduler implements AutoCloseable {
                 } else {
                     SCHEDULER_CARRIER.remove();
                 }
-                afterTurn.run();
+                try {
+                    afterTurn.run();
+                } finally {
+                    if (priorOwner == null) ACTIVE_CARRIER_OWNER.remove();
+                    else ACTIVE_CARRIER_OWNER.set(priorOwner);
+                }
             }
         });
     }
@@ -433,15 +447,23 @@ public final class OresScheduler implements AutoCloseable {
 
     @Override
     public synchronized void close() {
-        if (CURRENT.get() == this) {
+        if (CURRENT.get() == this || ACTIVE_CARRIER_OWNER.get() == this) {
             throw new IllegalStateException(
-                    "OresScheduler cannot be closed from one of its own task turns; "
-                            + "close it from an outside/root scheduler task");
+                    "OresScheduler cannot be closed from its own task turn or "
+                            + "terminal Future callback on an owned carrier; "
+                            + "close from an outside/root scheduler task");
         }
-        // close() is synchronized: concurrent host closers cannot observe a
-        // half-drained scheduler. The closed flag seals admissions, NOT the
-        // lifecycle of task-owned finally/defer continuations. A timed-out
-        // caller may retry after the outstanding cleanup Future settles.
+
+        if (activeCloseThread == Thread.currentThread()) {
+            throw new IllegalStateException(
+                    "OresScheduler close cannot be re-entered from a terminal "
+                            + "Future callback during its own cleanup drain");
+        }
+        activeCloseThread = Thread.currentThread();
+        try {
+        // Closed seals new admission; it is not a proof of quiescence.
+        // A failed first close can be retried after an owned defer/finally
+        // resolves. Concurrent close callers serialize on this monitor.
         if (!closed.get()) {
             Set<TaskRunner<?>> closingTasks;
             synchronized (tasks) {
@@ -464,37 +486,40 @@ public final class OresScheduler implements AutoCloseable {
                     TimeUnit.NANOSECONDS.timedWait(tasks, remaining);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    throw new java.util.concurrent.CancellationException(
-                            "interrupted while awaiting OresScheduler cleanup " + name);
+                    closeFailure = new IllegalStateException(
+                            "interrupted during cancellation cleanup drain in " + name,
+                            interrupted);
+                    throw (IllegalStateException) closeFailure;
                 }
             }
             if (!tasks.isEmpty()) {
-                // Never failTerminal() or shutdownNow() the owning carriers
-                // while a cleanup Future is still suspended. A terminal Future
-                // would lie about lexical cleanup, context ownership and
-                // resource release. Retain the live execution contexts for
-                // explicit escalation or a later successful close() retry.
-                throw new IllegalStateException(
-                        "OresScheduler " + name + " has unfinished cancellation cleanup");
+                // Do not failTerminal() unfinished guest finalizers or shut
+                // down the only carrier capable of re-entering them.
+                closeFailure = new IllegalStateException(
+                        "OresScheduler " + name + " still owns unfinished cancellation cleanup");
+                throw (IllegalStateException) closeFailure;
             }
         }
 
         if (ownedExecutor != null) {
-            // Graceful only after all logical contexts have retired. An
-            // interrupting shutdown would violate cleanup single ownership.
             ownedExecutor.shutdown();
             try {
                 if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException(
+                    closeFailure = new IllegalStateException(
                             "OresScheduler " + name + " carriers did not terminate");
+                    throw (IllegalStateException) closeFailure;
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
-                throw new java.util.concurrent.CancellationException(
-                        "interrupted while closing OresScheduler " + name);
+                closeFailure = new IllegalStateException(
+                        "interrupted while retiring OresScheduler " + name, interrupted);
+                throw (IllegalStateException) closeFailure;
             }
         }
         closeFailure = null;
+        } finally {
+            activeCloseThread = null;
+        }
     }
 
     private final class TaskRunner<T> implements OresFuture.TaggedRuntimeWaiter {
@@ -925,22 +950,24 @@ public final class OresScheduler implements AutoCloseable {
                     if (observed == TERMINAL) return;
                 } while (!phase.compareAndSet(observed, TERMINAL));
 
-                // Cleanup failure is the primary outcome, but losing the
-                // original cancellation hides the reason lexical finally/defer
-                // ran. Preserve that reason exactly once as suppressed evidence.
-                if (cancelRequested.get() && failure != cancellation
-                        && !(failure instanceof TaskCancelledException)) {
-                    boolean reasonAlreadyRecorded = false;
-                    for (Throwable earlier : failure.getSuppressed()) {
-                        if (earlier == cancellation
-                                || earlier instanceof TaskCancelledException) {
-                            reasonAlreadyRecorded = true;
+                // A lexical cleanup failure wins over cancellation, but the
+                // original cancellation must remain inspectable. Preserve it
+                // once, without self-suppression or duplicate suppressed
+                // reasons from nested defer/finally propagation.
+                // Cancellation is identified by this task's exact token,
+                // never merely by the exception class. A foreign task may
+                // throw its own cancellation during cleanup, and a shared
+                // cleanup error may be thrown by multiple cancelling tasks.
+                // Each owner must retain its own cancellation provenance.
+                if (cancelRequested.get() && failure != cancellation) {
+                    boolean alreadyPreserved = false;
+                    for (Throwable prior : failure.getSuppressed()) {
+                        if (prior == cancellation) {
+                            alreadyPreserved = true;
                             break;
                         }
                     }
-                    if (!reasonAlreadyRecorded) {
-                        failure.addSuppressed(cancellation);
-                    }
+                    if (!alreadyPreserved) failure.addSuppressed(cancellation);
                 }
                 terminalOutcome.compareAndSet(null,
                         failure == cancellation

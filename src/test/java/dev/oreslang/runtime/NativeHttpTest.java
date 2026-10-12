@@ -71,6 +71,48 @@ class NativeHttpTest {
             assertTrue(output.contains(expected), output);
     }
 
+    @Test void stoppingHttpListenerRetainsActorExchangeUntilCancelledCleanupFinishes()
+            throws Exception {
+        String output = run("""
+            define actor Holder as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                defer stdio.println("holder-cleanup");
+                self.send("armed");
+                val Channel<int> gate = Channel.new<int>(0);
+                const ignored = await (nb readch gate);
+                stdio.println("INVALID-work-resumed");
+                self.end();
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              val holder = spawn Holder();
+              await holder.ready;
+              holder.send(request.move_to(holder));
+              await holder.outputs.next();
+              await server.shutdown(0);
+              stdio.println("drained");
+              return;
+            }
+            """, port -> {
+            try {
+                var response = request(port, "GET", "/", "");
+                assertEquals(503, response.statusCode());
+            } catch (java.io.IOException expectedDisconnect) {
+                // HttpServer.stop(0) may close the pending request first.
+            }
+        });
+        assertTrue(output.contains("holder-cleanup"), output);
+        assertTrue(output.contains("drained"), output);
+        assertFalse(output.contains("INVALID-work-resumed"), output);
+        assertTrue(output.indexOf("holder-cleanup") < output.indexOf("drained"),
+                "HTTP shutdown may report success only after actor-owned cleanup");
+    }
+
     @Test void completionSurvivesMoveAndIncludesActorFinalization() throws Exception {
         String output = run("""
             define isoactor Owner as
@@ -145,6 +187,53 @@ class NativeHttpTest {
             """, port -> assertEquals("onetwo", request(port, "GET", "/", "").body()));
     }
 
+    @Test
+    void streamingResponseCancellationReleasesActorBeforeHttpDrain() throws Exception {
+        String output = run("""
+            define actor StreamHolder as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                defer stdio.println("stream-cleanup");
+                await request.start(200, "text/plain");
+                await request.write("first-chunk");
+                self.send("chunk-ready");
+                val Channel<int> gate = Channel.new<int>(0);
+                const ignored = await (nb readch gate);
+                await request.write("INVALID-late-chunk");
+                self.end();
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              val streamer = spawn StreamHolder();
+              await streamer.ready;
+              streamer.send(request.move_to(streamer));
+              await streamer.outputs.next();
+              stdio.println("stream-started");
+              await server.shutdown(0);
+              stdio.println("stream-drained");
+              return;
+            }
+            """, port -> {
+            try {
+                var response = request(port, "GET", "/", "");
+                assertEquals(200, response.statusCode());
+                assertFalse(response.body().contains("INVALID-late-chunk"));
+            } catch (java.io.IOException expectedDisconnect) {
+                // Transport stop may terminate a partially streamed response.
+            }
+        });
+        assertTrue(output.contains("stream-started"), output);
+        assertTrue(output.contains("stream-cleanup"), output);
+        assertTrue(output.contains("stream-drained"), output);
+        assertFalse(output.contains("INVALID-late-chunk"), output);
+        assertTrue(output.indexOf("stream-cleanup") < output.indexOf("stream-drained"),
+                "the actor's deferred cleanup must precede HTTP drain completion");
+    }
+
     @Test void ordinaryBorrowsStillCannotSpanActorAwait() {
         for (String binding : new String[] {
                 "val borrowed = rt borrow values;",
@@ -164,6 +253,126 @@ class NativeHttpTest {
                 """.formatted(binding);
             Exception error = assertThrows(Exception.class, () -> OresCompiler.parseAndTypeCheck(source));
             assertTrue(error.getMessage().contains("borrow"), error.getMessage());
+        }
+    }
+
+    @Test
+    void contextCloseDrainsAnUnansweredHttpExchangeBeforeRetirement() throws Exception {
+        CompletableFuture<Integer> port = new CompletableFuture<>();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public synchronized void write(byte[] bytes, int off, int len) {
+                super.write(bytes, off, len);
+                String printed = toString(StandardCharsets.UTF_8);
+                int newline = printed.indexOf('\n');
+                if (newline >= 0 && !port.isDone()) {
+                    port.complete(Integer.parseInt(printed.substring(0, newline).trim()));
+                }
+            }
+        };
+        try (Context context = IsolatePolicy.developer()
+                    .withCapabilities(IsolatePolicy.Capability.NETWORK)
+                    .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of())
+                    .out(output).build();
+             ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> request = workers.submit(() -> {
+                try {
+                    var response = request(port.get(5, TimeUnit.SECONDS), "GET", "/", "");
+                    // An exchange with no guest response must be aborted rather
+                    // than remaining owned after context close.
+                    assertEquals(503, response.statusCode());
+                } catch (java.io.IOException expectedDisconnect) {
+                    // JDK HttpServer.stop(0) can close an uncommitted connection
+                    // before a 503 header can be sent.
+                } catch (Exception failure) {
+                    throw new CompletionException(failure);
+                }
+            });
+            context.eval(Source.newBuilder(OresLanguage.ID, """
+                    pub async routine main(): void {
+                      val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+                      stdio.println(server.port);
+                      val request = await server.accept();
+                      stdio.println("accepted");
+                      return;
+                    }
+                    """, "shutdown-unanswered-http.ores").build());
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("accepted"));
+            assertDoesNotThrow(() -> { context.close(); },
+                    "context retirement must physically drain an unanswered exchange");
+            request.get(8, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void rejectedAbortAfterPartialStreamReclaimsSocketOnlyAfterCarrierExit()
+            throws Exception {
+        CompletableFuture<Integer> port = new CompletableFuture<>();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public synchronized void write(byte[] bytes, int off, int len) {
+                super.write(bytes, off, len);
+                String printed = toString(StandardCharsets.UTF_8);
+                int newline = printed.indexOf('\n');
+                if (newline >= 0 && !port.isDone())
+                    port.complete(Integer.parseInt(printed.substring(0, newline).trim()));
+            }
+        };
+        CompletableFuture<Void> injected =
+                NativeHttp.rejectFirstAbortInNextContextForTest();
+        try (Context context = IsolatePolicy.developer()
+                    .withCapabilities(IsolatePolicy.Capability.NETWORK)
+                    .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of())
+                    .out(output).build();
+             ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> client = workers.submit(() -> {
+                try {
+                    var response = request(port.get(5, TimeUnit.SECONDS), "GET", "/", "");
+                    assertEquals(200, response.statusCode());
+                    assertFalse(response.body().contains("INVALID-late-write"));
+                } catch (java.io.IOException expectedDisconnect) {
+                    // Closing the partially streamed socket can abort its body.
+                } catch (Exception failure) {
+                    throw new CompletionException(failure);
+                }
+            });
+            context.eval(Source.newBuilder(OresLanguage.ID, """
+                    define actor PausedStream as
+                      receive(ActorMail<String> mail): void {
+                        val exchange = http.claim(mail.value);
+                        defer stdio.println("stream-finalized");
+                        await exchange.start(200, "text/plain");
+                        await exchange.write("first-chunk");
+                        self.send("stream-ready");
+                        val Channel<int> gate = Channel.new<int>(0);
+                        const ignored = await (nb readch gate);
+                        await exchange.write("INVALID-late-write");
+                        self.end();
+                        return;
+                      }
+                    end
+                    pub async routine main(): void {
+                      val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+                      stdio.println(server.port);
+                      val exchange = await server.accept();
+                      val streamer = spawn PausedStream();
+                      await streamer.ready;
+                      streamer.send(exchange.move_to(streamer));
+                      await streamer.outputs.next();
+                      stdio.println("partial-stream-ready");
+                      return;
+                    }
+                    """, "rejected-stream-abort.ores").build());
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("partial-stream-ready"));
+            // Precisely one actor-completion abort dispatch is rejected.
+            // The host close must drain all former I/O carriers before its
+            // synchronous socket-close fallback and exchange release.
+            assertDoesNotThrow(() -> OresContextLifecycle.closeWhenQuiescent(context),
+                    "host disposal must preflight while the outer Polyglot context is live");
+            assertDoesNotThrow(() -> injected.get(5, TimeUnit.SECONDS),
+                    "only this HTTP runtime may consume its abort injection");
+            assertTrue(output.toString(StandardCharsets.UTF_8).contains("stream-finalized"));
+            client.get(8, TimeUnit.SECONDS);
+        } finally {
+            NativeHttp.clearNextContextFaultForTest();
         }
     }
 
