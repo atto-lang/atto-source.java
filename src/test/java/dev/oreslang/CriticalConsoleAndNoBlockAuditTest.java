@@ -23,13 +23,13 @@ final class CriticalConsoleAndNoBlockAuditTest {
                 "no_block");
         rejectEffect("fnc bad(): void requires no_block { stdio.print(1); return; }",
                 "no_block");
-        rejectEffect("fnc bad(): void using io { stdio.println(1); return; }",
+        rejectEffect("fnc bad(): void with io { stdio.println(1); return; }",
                 "effect block");
     }
 
     @Test void explicitIoAndBlockRowCanAdmitConsoleOutput() {
         var program = assertDoesNotThrow(() -> Parser.parse(
-                "fnc good(): void using io, block { stdio.println(1); return; }"));
+                "fnc good(): void with io, block { stdio.println(1); return; }"));
         assertDoesNotThrow(() -> DeclaredEffectVerifier.verify(program));
     }
 
