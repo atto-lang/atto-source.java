@@ -88,8 +88,8 @@ final class SerialActorCriticalAdmissionTest {
             """);
         assertThrows(IllegalArgumentException.class,
                 () -> ActorStateContract.verify(legacy));
-        // Legacy scalar fields remain supported for non-serial migration.
-        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
+        // Breaking pre-1.0 rule: every actor must use the sealed state aggregate.
+        assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(Parser.parse("""
             define actor Legacy as
                 let int count = 0;
                 receive(ActorMail<String> mail): void { return; }
