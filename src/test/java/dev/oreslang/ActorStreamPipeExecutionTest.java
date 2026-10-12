@@ -59,13 +59,26 @@ final class ActorStreamPipeExecutionTest {
         assertEquals("PIPE_15_RESULT_32", execute(source.replace(from,to)));
     }
 
-    @Test void staticResolutionDelimiterWorksForOrdinaryClassStaticFunctions() {
-        assertDoesNotThrow(() -> Parser.parse("""
+    @Test void staticResolutionDelimiterWorksForOrdinaryClassStaticFunctions() throws Exception {
+        assertEquals("42", execute("""
                 define class Utility as
                     static fnc answer(): int { return 42; }
                 end
-                pub fnc main(): int { return Utility::answer(); }
+                pub async routine main(): void {
+                    val Utility = 17;
+                    stdio.stdout.write(Utility::answer());
+                    return;
+                }
                 """));
+    }
+
+    @Test void staticDelimiterDisambiguatesShadowedActorUtils() throws Exception {
+        String source = program().replace(
+                "return ActorUtils::pipe(",
+                "val ActorUtils = 17;\n    return ActorUtils::pipe(");
+        assertEquals("PIPE_15_RESULT_32", execute(source));
+        assertThrows(PolyglotException.class,
+                () -> execute(source.replace("ActorUtils::pipe(", "ActorUtils.pipe(")));
     }
 
     @Test void rejectDuplicateActorCapabilityWithoutRunningGuestCallbacks() throws Exception {

@@ -3027,11 +3027,15 @@ public final class Parser {
                     && adjacent(peek(), tokens.get(current + 1))) {
                 advance();
                 advance();
-                // The explicit static-resolution spelling is lowered to
-                // the existing namespace/class member dispatch. In
-                // particular ActorUtils::pipe never resolves an instance.
+                // Never allow :: to silently fall back to an instance. The
+                // internal non-source identifier forces static namespace
+                // lookup even when a local value shadows the class name.
+                if (!(expr instanceof Ast.NameExpr namespace)) {
+                    throw error(previous(), "'::' requires a named static namespace");
+                }
                 String member = consumeMemberName();
-                expr = new Ast.MemberExpr(expr, member);
+                expr = new Ast.MemberExpr(
+                        new Ast.NameExpr("$static$" + namespace.name()), member);
             } else if (match(LBRACKET)) {
                 Ast.Expr index = parseExpression();
                 consume(RBRACKET, "expected ']' after index");

@@ -1761,6 +1761,22 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.NameExpr name) {
+            if (name.name().startsWith("$static$")) {
+                String namespace = name.name().substring("$static$".length());
+                if (namespace.equals("ActorUtils")) return new Named("$ActorUtils", List.of());
+                Ast.ClassDecl klass = findClass(namespace);
+                if (klass != null) {
+                    rejectUnimportedClassNamespace(klass);
+                    return new ClassNamespace(qualifiedClassName(klass));
+                }
+                Ast.ModuleDecl module = modules.get(namespace);
+                if (module != null) {
+                    rejectUnimportedModuleNamespace(namespace);
+                    return moduleShape(module);
+                }
+                throw new IllegalArgumentException(
+                        "unknown static namespace '" + namespace + "'");
+            }
             Env.Binding local = env.lookup(name.name());
             if (local != null) {
                 if (local.hasUninitializedFields()) {
@@ -2054,9 +2070,10 @@ public final class TypeChecker {
         if (expr instanceof Ast.CallExpr call) {
             if (call.callee() instanceof Ast.MemberExpr utility
                     && utility.receiver() instanceof Ast.NameExpr owner
-                    && owner.name().equals("ActorUtils")
-                    && utility.member().equals("pipe")
-                    && env.lookup("ActorUtils") == null) {
+                    && (owner.name().equals("$static$ActorUtils")
+                        || (owner.name().equals("ActorUtils")
+                            && env.lookup("ActorUtils") == null))
+                    && utility.member().equals("pipe")) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("ActorUtils::pipe is not generic");
                 }

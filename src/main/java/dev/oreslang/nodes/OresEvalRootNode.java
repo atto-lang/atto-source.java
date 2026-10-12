@@ -5748,6 +5748,19 @@ public final class OresEvalRootNode extends RootNode {
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
+                if (name.name().startsWith("$static$")) {
+                    String namespace = name.name().substring("$static$".length());
+                    if (namespace.equals("ActorUtils")) return ActorUtilsNamespace.INSTANCE;
+                    Ast.ClassDecl klass = findClass(namespace);
+                    if (klass != null) {
+                        requireLexicalClassAccess(env, klass);
+                        return new ClassFacade(this, klass);
+                    }
+                    Ast.ModuleDecl module = modules.get(namespace);
+                    if (module != null) return new ModuleFacade(this, module);
+                    throw new IllegalArgumentException(
+                            "unknown static namespace '" + namespace + "'");
+                }
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (messageTypes.enums().containsKey(name.name())) {

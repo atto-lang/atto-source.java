@@ -25,3 +25,12 @@ direct middle-stage ingress, duplicate registrations and early STOP through
 the same scheduler authority checks as the previous three-stage route.
 This gate is Java-first: native LLVM same-byte source acceptance and FD3
 runtime attestation are separate release requirements.
+
+## Static namespace disambiguation
+
+`Utility::answer()` and `ActorUtils::pipe(...)` resolve static
+namespaces *even if a local variable named `Utility` or `ActorUtils`
+exists*. This is enforced in the parser/typechecker and runtime with an
+internal, non-source static-namespace receiver; it never calls a shadowing
+instance's method. `Utility.answer()` uses ordinary lexical/instance
+lookup, and is therefore ambiguous if the value name shadows the class.
