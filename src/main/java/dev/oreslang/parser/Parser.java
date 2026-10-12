@@ -1222,8 +1222,15 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
-        // The 'do' prefix explicitly opts out of branch-result production.
-        // Keep this contextual so existing 'if ... do' and loop syntax survives.
+        // A 'do' dispatch is procedural: ReturnStmt inside its selected
+        // arm exits the enclosing callable, never a local arm-result boundary.
+        if (check(DO) && checkNext(SWITCH)) {
+            advance(); // do
+            advance(); // switch
+            Ast.SwitchStmt statement = parseSwitch();
+            match(SEMICOLON);
+            return statement;
+        }
         if (check(DO) && checkNext(MATCH)) {
             advance();
             advance();
@@ -1449,13 +1456,10 @@ public final class Parser {
     }
 
     /**
-     * A statement-only arm never returns from its enclosing callable. A
-     * terminal 'return expression;' evaluates then discards the expression;
-     * terminal 'return;' simply finishes the arm. Only an arm-local terminal
-     * return is safe to lower this way: reject all earlier or nested returns.
-     *
-     * This shared lowering keeps do match, do select and do nb select aligned
-     * without weakening lexical returns in legacy match/select statements.
+     * SELECT-specific compatibility lowering: select callbacks discard their
+     * terminal arm return. NEVER use this for do match/do switch, whose
+     * ReturnStmt must escape the enclosing callable. The distinct match/switch
+     * return destinations are part of the four-form language contract.
      */
     private void lowerDiscardedArmReturns(List<Ast.Stmt> body, String construct) {
         if (body.isEmpty()) return;
@@ -2131,12 +2135,10 @@ public final class Parser {
                 }
                 consume(RBRACE, "expected '}' after match arm block");
                 yieldsValue = !body.isEmpty() && body.getLast() instanceof Ast.ExprStmt && !lastTerminated;
-                // In value-producing 'match ... over', 'return' completes the
-                // match. In 'do match ... over', the same arm-local return
-                // evaluates and discards its value, without returning from
-                // the enclosing function. Legacy matches preserve old behavior.
+                // Value match collects ArmResult; do match keeps ReturnStmt
+                // intact to exit the enclosing callable. Never silently
+                // discard the return value in a procedural dispatch.
                 if (discardResult) {
-                    lowerDiscardedArmReturns(body, "do match");
                     yieldsValue = false;
                 } else if (valueContext && over) {
                     boolean hasResult = !body.isEmpty()
