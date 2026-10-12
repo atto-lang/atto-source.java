@@ -23,7 +23,7 @@ final class OresContextPhysicalEntryExecutionTest {
                     "pub fnc main(): int { return 1; }", "real-gate-root.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build());
             host.initialize(OresLanguage.ID);
-            OresContext owner = OresContext.singleHostOwnedContext();
+            OresContext owner = OresContext.forExactHostValueContext(host);
             var entered = new CountDownLatch(1);
             var turns = new AtomicInteger();
             OresFuture<Integer> future;
@@ -43,14 +43,14 @@ final class OresContextPhysicalEntryExecutionTest {
     }
 
     @Test
-    void multipleContextsOnOneHostThreadRejectAmbiguousEntry() throws Exception {
+    void multipleContextsOnOneHostThreadPreserveExactValueOwnership() throws Exception {
         try (Context first = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(true).build()) {
             first.parse(Source.newBuilder(OresLanguage.ID,
                     "pub fnc main(): int { return 1; }", "one.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build());
             first.initialize(OresLanguage.ID);
-            OresContext firstOwner = OresContext.singleHostOwnedContext();
+            OresContext firstOwner = OresContext.forExactHostValueContext(first);
             try (Context second = Context.newBuilder(OresLanguage.ID)
                     .allowAllAccess(true).build()) {
                 second.parse(Source.newBuilder(OresLanguage.ID,
@@ -58,11 +58,19 @@ final class OresContextPhysicalEntryExecutionTest {
                         .mimeType(OresLanguage.MIME_TYPE).build());
                 second.initialize(OresLanguage.ID);
                 assertThrows(SecurityException.class,
-                        OresContext::singleHostOwnedContext);
-                assertThrows(SecurityException.class,
-                        firstOwner::acquireScopedHostEntry);
+                        OresContext::singleHostOwnedContext,
+                        "unqualified thread-only selection must remain unavailable");
+                OresContext secondOwner = OresContext.forExactHostValueContext(second);
+                assertNotSame(firstOwner, secondOwner);
+                try (OresContext.HostEntryLease firstLease =
+                             firstOwner.acquireScopedHostEntry();
+                     OresContext.HostEntryLease secondLease =
+                             secondOwner.acquireScopedHostEntry()) {
+                    assertNotNull(firstLease);
+                    assertNotNull(secondLease);
+                }
             }
-            assertSame(firstOwner, OresContext.singleHostOwnedContext());
+            assertSame(firstOwner, OresContext.forExactHostValueContext(first));
             try (OresContext.HostEntryLease lease = firstOwner.acquireScopedHostEntry()) {
                 assertNotNull(lease);
             }
