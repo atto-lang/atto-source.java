@@ -52,6 +52,8 @@ public final class GpuBufferFence implements AutoCloseable {
     }
 
     private final State state;
+    // Protected exclusively by the shared State monitor, including in claimPair.
+    // No wrapper monitor is acquired, so moves and paired claims share one order.
     private boolean moved;
 
     public GpuBufferFence(Identity identity, long bytes) { this(new State(identity, bytes)); }
@@ -62,15 +64,15 @@ public final class GpuBufferFence implements AutoCloseable {
             throw new IllegalStateException("device ownership moved or buffer closed");
         }
     }
-    public synchronized Identity identity() {
+    public Identity identity() {
         synchronized (state) { active(); return state.identity; 
         }
     }
-    public synchronized long byteLength() {
+    public long byteLength() {
         synchronized (state) { active(); return state.bytes; 
         }
     }
-    public synchronized Status status() {
+    public Status status() {
         synchronized (state) { active(); return state.status; 
         }
     }
@@ -85,7 +87,7 @@ public final class GpuBufferFence implements AutoCloseable {
         }
     }
 
-    public synchronized GpuBufferFence take() {
+    public GpuBufferFence take() {
         synchronized (state) {
         active();
         if (state.status != Status.IDLE) {
@@ -144,7 +146,7 @@ public final class GpuBufferFence implements AutoCloseable {
         }
     }
 
-    synchronized Ticket beginCommand(Identity caller) {
+    Ticket beginCommand(Identity caller) {
         synchronized (state) {
         active();
         if (!state.identity.equals(caller)) throw new SecurityException("foreign device/tenant/generation");
@@ -168,7 +170,7 @@ public final class GpuBufferFence implements AutoCloseable {
      * prove native device-event completion and handle release.
      */
     /** Called ONLY after the device reports completion for this exact ticket. */
-    synchronized void complete(Ticket ticket, boolean success) {
+    void complete(Ticket ticket, boolean success) {
         synchronized (state) {
         active();
         if (state.status != Status.IN_FLIGHT || ticket != state.activeTicket) {
@@ -182,7 +184,7 @@ public final class GpuBufferFence implements AutoCloseable {
     }
 
     /** Cancel requires device synchronization; do not reuse or free prematurely. */
-    synchronized void cancelPending(Ticket ticket) {
+    void cancelPending(Ticket ticket) {
         synchronized (state) {
         active();
         if (state.status != Status.IN_FLIGHT || ticket != state.activeTicket) {
@@ -194,7 +196,7 @@ public final class GpuBufferFence implements AutoCloseable {
     }
 
     /** A cancelled kernel may still be running until its device fence completes. */
-    synchronized void acknowledgeCancelledDeviceEvent(Ticket ticket, Identity caller) {
+    void acknowledgeCancelledDeviceEvent(Ticket ticket, Identity caller) {
         synchronized (state) {
         active();
         if (!state.identity.equals(caller) || ticket != state.activeTicket
@@ -208,7 +210,7 @@ public final class GpuBufferFence implements AutoCloseable {
     }
 
     /** After backend confirms device quiescence and releases the opaque handle. */
-    synchronized void retireAfterBackendRelease(Identity caller) {
+    void retireAfterBackendRelease(Identity caller) {
         synchronized (state) {
         active();
         if (!state.identity.equals(caller)) throw new SecurityException("foreign device/tenant/generation");
@@ -219,7 +221,7 @@ public final class GpuBufferFence implements AutoCloseable {
         }
     }
 
-    @Override public synchronized void close() {
+    @Override public void close() {
         synchronized (state) {
         if (moved) return; // No ownership remains on the transferred wrapper.
         if (state.status != Status.CLOSED) {
