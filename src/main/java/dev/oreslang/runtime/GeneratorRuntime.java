@@ -192,6 +192,8 @@ public final class GeneratorRuntime {
     static <T> CertifiedHostIterator<T> certifiedHostIterator(
             HostGeneratorTurnPump pump, OresScheduler root, SchedulerFrame<T> frame) {
         Objects.requireNonNull(pump, "pump");
+        Objects.requireNonNull(frame, "frame");
+        pump.requireOwningScheduler(root);
         return new CertifiedHostIterator<>(
                 pump, schedulerBacked(root, pump.token(), frame));
     }
