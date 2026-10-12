@@ -114,10 +114,20 @@ public final class OresEvalRootNode extends RootNode {
             current.link();
             Object result = current.invokePublic(
                     functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
-            // Java Future is not a valid raw Truffle interop return value.
-            // Adapt only the public host-invocation boundary; guest dispatch
-            // continues receiving the original scheduler-owned OresFuture.
+            // Future is not a valid raw Truffle interop return value.
+            // Adapt only the public host boundary; guest execution retains
+            // the original scheduler-owned Future object.
             if (result instanceof OresFuture<?>) return context.env().asGuestValue(result);
+            // A guest-owned Channel can be deliberately exported to an
+            // embedding host only with the explicit JAVA_INTEROP capability.
+            // Ordinary sandboxed contexts must not gain a mutable channel
+            // alias merely by returning one from a public source function.
+            if (result instanceof dev.oreslang.runtime.ChannelRuntime.Channel<?>) {
+                context.requireCapability(
+                        dev.oreslang.runtime.IsolatePolicy.Capability.JAVA_INTEROP,
+                        "export guest channel to host");
+                return context.env().asGuestValue(result);
+            }
             return result;
         }
 
