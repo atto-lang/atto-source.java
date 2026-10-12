@@ -93,6 +93,43 @@ final class EnumPayloadDependenciesTest {
         assertTrue(error.getMessage().contains("duplicate enum declaration"), error.toString());
     }
 
+    @Test void exhaustiveThreeEnumDependencyGraphsAgreeWithTransitiveClosure() {
+        // This is bounded exhaustive graph checking (2^9 directed graphs),
+        // not a proof of arbitrary-size compiler implementation refinement.
+        for (int mask = 0; mask < (1 << 9); mask++) {
+            boolean[][] reachable = new boolean[3][3];
+            var decls = new java.util.ArrayList<Ast.Decl>();
+            for (int i = 0; i < 3; i++) {
+                var cases = new java.util.ArrayList<Ast.EnumCase>();
+                cases.add(new Ast.EnumCase("Empty", null, 1));
+                for (int j = 0; j < 3; j++) {
+                    if ((mask & (1 << (i * 3 + j))) != 0) {
+                        reachable[i][j] = true;
+                        cases.add(new Ast.EnumCase("To" + j,
+                                Ast.TypeRef.simple("E" + j), j + 2));
+                    }
+                }
+                decls.add(new Ast.EnumDecl("E" + i, cases));
+            }
+            for (int k = 0; k < 3; k++)
+                for (int i = 0; i < 3; i++)
+                    for (int j = 0; j < 3; j++)
+                        reachable[i][j] |= reachable[i][k] && reachable[k][j];
+            boolean cycle = reachable[0][0] || reachable[1][1] || reachable[2][2];
+            var ast = new Ast.Program(List.of(new Ast.ModuleDecl(
+                    Parser.ROOT_MODULE, decls)));
+            boolean rejected = false;
+            try {
+                EnumPayloadDependencies.check(ast);
+            } catch (IllegalArgumentException failure) {
+                assertTrue(failure.getMessage().contains(
+                        "unboxed recursive enum payload"), failure.toString());
+                rejected = true;
+            }
+            assertEquals(cycle, rejected, "directed adjacency mask " + mask);
+        }
+    }
+
     @Test void regularEnumsAndMatchPatternSpreadsRemainUnaffected() {
         var source = Parser.parse("""
             define enum Status as
