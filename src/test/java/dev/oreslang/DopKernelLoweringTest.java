@@ -36,6 +36,24 @@ final class DopKernelLoweringTest {
     }
 
     @Test
+    void zeroRowCpuLayoutIsAllowedButGpuDispatchMustFailClosed() {
+        for (var kind : DataOrientedLayout.Kind.values()) {
+            int lanes = kind == DataOrientedLayout.Kind.AOSOA ? 4 : 1;
+            var plan = new DataOrientedLayout.Plan(kind, 0, 2, 4, 16, lanes);
+            var kernel = new DopKernelIR.Kernel(plan, DopKernelIR.Element.F32,
+                    DopKernelIR.Op.SCALE, 2.0f, 0.0f);
+            try (var input = new DopKernelIR.HostBuffer(plan);
+                 var output = new DopKernelIR.HostBuffer(plan)) {
+                DopKernelIR.executeCpu(kernel, input, output);
+                assertEquals(0L, plan.byteLength());
+                assertThrows(IllegalArgumentException.class,
+                        () -> DopKernelIR.lowerOpenCl(kernel,
+                                new DopKernelIR.GpuTarget(64, 4096, 10, true)));
+            }
+        }
+    }
+
+    @Test
     void bufferOwnershipAndDeviceAdmissionFailClosed() {
         var plan = new DataOrientedLayout.Plan(DataOrientedLayout.Kind.SOA, 2, 1, 4, 8, 1);
         var kernel = new DopKernelIR.Kernel(plan, DopKernelIR.Element.F32,
