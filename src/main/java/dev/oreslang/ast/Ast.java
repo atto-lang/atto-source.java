@@ -274,6 +274,20 @@ public final class Ast {
         }
     }
 
+    /**
+     * Sealed actor state has a distinct AST node. It is not an ordinary
+     * ClassDecl.fields() collection: optimizers, inherited member resolution
+     * and ordinary actor field codegen must never see these storage slots.
+     *
+     * Source recognition does not enable guest execution. Backends must
+     * explicitly prove state initialization and reader/writer callback lowering.
+     */
+    public record ActorStateDecl(List<FieldDecl> fields) {
+        public ActorStateDecl {
+            fields = List.copyOf(fields);
+        }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -284,13 +298,27 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            ActorStateDecl actorState) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            if (actorState != null && actorKind == ActorKind.NONE) {
+                throw new IllegalArgumentException("sealed state is reserved for actors");
+            }
+        }
+
+        /** Compatibility constructor for the existing 10-argument class AST. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, null);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
