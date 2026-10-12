@@ -1993,18 +1993,37 @@ public final class TypeChecker {
         if (!currentMaySuspend) return false;
         if (expr instanceof Ast.AwaitExpr awaited
                 && awaited.expression() instanceof Ast.CallExpr call
-                && call.callee() instanceof Ast.NameExpr name
                 && call.arguments().isEmpty()
                 && !call.typeArgumentsPresent()) {
-            // Awaiting an arbitrary zero-arg name was previously admitted by
-            // AST shape alone. Require a real, unshadowed local async
-            // declaration, not a closure binding, imported alias, actor
-            // callable or user-provided object with a call operator.
-            if (env.lookup(name.name()) != null) return false;
-            Ast.FunctionDecl declared = findFunction(name.name(), 0);
-            return declared != null && declared.async() && !declared.generator()
-                    && declared.actorKind() == Ast.ActorKind.NONE
-                    && declared.genericParameters().isEmpty();
+            if (call.callee() instanceof Ast.NameExpr name) {
+                // A bare function name must resolve to an unshadowed local
+                // async declaration. Cross-file actor implicit lookups and
+                // arbitrary dynamic call operators remain forbidden.
+                if (env.lookup(name.name()) != null) return false;
+                Ast.FunctionDecl declared = findFunction(name.name(), 0);
+                return declared != null && declared.async() && !declared.generator()
+                        && declared.actorKind() == Ast.ActorKind.NONE
+                        && declared.genericParameters().isEmpty();
+            }
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr receiver
+                    && receiver.name().equals("self")
+                    && currentClassOwner != null
+                    && currentClassOwner.actorKind() != Ast.ActorKind.NONE) {
+                // Actor-local suspendable value matches must not launder
+                // implicit file/module callable access. Authorize only a
+                // statically declared, non-generic async method on this exact
+                // lexical actor. Runtime ticket and carrier checks remain
+                // independent obligations.
+                return currentClassOwner.methods().stream().anyMatch(method ->
+                        method.name().equals(member.member())
+                        && method.parameters().isEmpty()
+                        && method.genericParameters().isEmpty()
+                        && method.async()
+                        && !method.isStatic()
+                        && !method.isAbstract());
+            }
+            return false;
         }
         if (expr instanceof Ast.UnaryExpr unary)
             return switch (unary.operator()) {
