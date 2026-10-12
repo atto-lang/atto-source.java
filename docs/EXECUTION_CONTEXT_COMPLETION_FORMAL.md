@@ -147,3 +147,26 @@ and not JVM/LLVM compiler refinement. Source-level async task cancellation
 fencing, untrusted isolation, recover, and concurrent actor lifetime
 verification require their own tests. Until all concrete backends pass exact
 source CI, the implementation is an unverified draft.
+
+## October 11 admission and ownership audit
+
+The explicit-await admission is now backed by callable **resolution**, not
+merely a zero-argument call's AST shape. Before admitting an awaited expression
+inside a typed match, the checker requires a local named async function,
+no shadowing binding, no generic parameters, no actor or generator kind, and
+zero call arguments. This is intentionally a subset of legal `await` usage.
+
+A dedicated bounded explicit-state test,
+`FormalArmResultOwnershipModelCheckTest`, enumerates interleavings of nested
+frame entry, awaited suspension/resumption, cancellation, lexical cleanup and
+terminal publication. Its owner-ticket check enumerates task, incarnation
+and lexical frame identities, and exhibits a concrete counterexample for
+checking only the numeric frame ID. This is an **abstract contract check**,
+not a proof the current `SourceFlow` payload includes all three identities.
+The runtime currently stores only the task-local match frame ID; task/
+incarnation fencing is delegated to the containing source task/scheduler and
+requires a separate implementation refinement gate.
+
+Additional guest regression tests exercise `ARM_RESULT` through `try/finally`,
+`if` and awaited scalar arithmetic. Native and full JVM CI must be rerun on
+the exact new source and test tree before treating this audit as verified.
