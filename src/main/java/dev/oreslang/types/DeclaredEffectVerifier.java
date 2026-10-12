@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Conservative first-step effect admission for explicit `using` contracts.
+ * Conservative first-step effect admission for explicit `with` contracts.
  * It verifies syntactically proven operations only. Unknown calls fail closed
  * rather than manufacturing a safe effect summary. Eventually this will be
  * replaced by interprocedural typed effect inference in the shared IR.
@@ -31,7 +31,7 @@ public final class DeclaredEffectVerifier {
     }
 
     private static void check(String name, List<Ast.Annotation> annotations, Object body, boolean serial) {
-        Ast.Annotation using = null;
+        Ast.Annotation with = null;
         for (Ast.Annotation annotation : annotations) {
             if (annotation.name().equals("$requires$")) {
                 for (Ast.TypeRef requirement : annotation.arguments()) {
@@ -41,16 +41,18 @@ public final class DeclaredEffectVerifier {
                     }
                 }
             }
-            if (annotation.name().equals("$using$")) {
-                if (using != null) throw new IllegalArgumentException("duplicate using effect declaration");
-                using = annotation;
+            if (annotation.name().equals("$using$"))
+                throw new IllegalArgumentException("legacy using effect declaration is forbidden; use with");
+            if (annotation.name().equals("$with$")) {
+                if (with != null) throw new IllegalArgumentException("duplicate with effect declaration");
+                with = annotation;
             }
         }
         boolean hasRequirements = annotations.stream()
                 .anyMatch(annotation -> annotation.name().equals("$requires$"));
-        if (using == null && !hasRequirements) return;
+        if (with == null && !hasRequirements) return;
 
-        FunctionEffects allowed = using == null ? null : FunctionEffects.ofNames(using.arguments().stream()
+        FunctionEffects allowed = with == null ? null : FunctionEffects.ofNames(with.arguments().stream()
                 .map(Ast.TypeRef::name).toList());
         EnumSet<FunctionEffects.Effect> inferred =
                 EnumSet.noneOf(FunctionEffects.Effect.class);
@@ -75,7 +77,7 @@ public final class DeclaredEffectVerifier {
         for (FunctionEffects.Effect effect : inferred) {
             if (allowed != null && !allowed.contains(effect)) {
                 throw new IllegalArgumentException(name + " uses effect " + effect.sourceName()
-                        + " not permitted by its using signature");
+                        + " not permitted by its with signature");
             }
         }
     }
@@ -93,9 +95,9 @@ public final class DeclaredEffectVerifier {
                         || callback.parameters().size() != 1) {
                     throw new IllegalArgumentException("invalid handle_state effect callback");
                 }
-                if (!callback.explicitStateMode() || callback.nonLexical()) {
+                if (callback.nonLexical()) {
                     throw new IllegalArgumentException(
-                            "handle_state needs a lexical critical read or critical write callback");
+                            "handle_state needs a lexical state callback");
                 }
                 String name = callback.parameters().getFirst().name();
                 EnumSet<FunctionEffects.Effect> callbackEffects =
@@ -103,10 +105,11 @@ public final class DeclaredEffectVerifier {
                 collect(callback.expressionBody(), callbackEffects, name, callableName, serial);
                 collect(callback.blockBody(), callbackEffects, name, callableName, serial);
                 // Mode grants authority, using only constrains declared effects.
-                if (callback.criticalMode() == Ast.CriticalMode.READ
+                if ((callback.criticalMode() == Ast.CriticalMode.NONE
+                            || callback.criticalMode() == Ast.CriticalMode.READ)
                         && callbackEffects.contains(FunctionEffects.Effect.STATE_WRITE)) {
                     throw new IllegalArgumentException(
-                            "critical read cannot write state, regardless of using state.write");
+                            "read-only handle_state cannot write state, regardless of declared with effects");
                 }
                 effects.addAll(callbackEffects);
                 return;
@@ -126,7 +129,7 @@ public final class DeclaredEffectVerifier {
             // An unknown callee might suspend, allocate, perform I/O, or
             // mutate externally reachable memory. Require a trusted summary.
             throw new IllegalArgumentException(
-                    "cannot verify using effects of call in " + callableName
+                    "cannot verify with effects of call in " + callableName
                     + " without a trusted callee summary");
         }
         if (node instanceof Ast.AssignExpr assign) {
