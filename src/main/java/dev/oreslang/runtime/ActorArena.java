@@ -15,6 +15,9 @@ import java.util.Objects;
  */
 public final class ActorArena implements AutoCloseable {
     private final ActorRuntime.ActorMemorySlice owner;
+    // All persistent state objects inside this arena share one actor-scoped
+    // logical gate. This identity survives carrier migration.
+    private final CriticalGate criticalGate = new CriticalGate();
     private final ExplicitNativeI64Region persistent;
     private final ExplicitNativeI64Region scratch;
     private volatile ScratchTurn activeTurn;
@@ -44,6 +47,9 @@ public final class ActorArena implements AutoCloseable {
             throw failure;
         }
     }
+
+    /** Logical admission shared by source state and host native map views. */
+    public CriticalGate criticalGate() { return criticalGate; }
 
     /** Slots are opaque, owner-checked, generation-checked native handles. */
     public ExplicitNativeI64Region.Slot allocatePersistent(long value) {
