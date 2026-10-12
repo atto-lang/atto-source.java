@@ -23,7 +23,7 @@ final class UntrustedLogicalQuotaTest {
             AtomicReference<Throwable> secondRejected,
             AtomicReference<Throwable> physicalBudgetDenied,
             java.util.concurrent.CountDownLatch attempted,
-            OresFuture<Integer> wait) { }
+            OresFuture<Integer> waitFuture) { }
     private record NestedProbe(AtomicReference<OresFuture<Integer>> outerRef) { }
     private record FuelProbe(
             AtomicReference<OresFuture<Integer>> taskRef,
@@ -225,7 +225,7 @@ final class UntrustedLogicalQuotaTest {
                 SiblingProbe probe = siblingProbe;
                 if (message.equals("first")) {
                     probe.retained().set(turn.runtime().startActorTask(resume ->
-                            resume.initial() ? OresScheduler.<Integer>await(probe.wait())
+                            resume.initial() ? OresScheduler.<Integer>await(probe.waitFuture())
                                     : OresScheduler.done(7)));
                 } else if (message.equals("sibling")) {
                     try {
