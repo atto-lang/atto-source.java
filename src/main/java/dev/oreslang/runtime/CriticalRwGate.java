@@ -217,6 +217,15 @@ public final class CriticalRwGate implements AutoCloseable {
         }
     }
 
+    /**
+     * Legacy source `critical` is exclusively WRITE. Callers migrating from
+     * CriticalGate must use this ticket on the SAME object/static/file gate
+     * as the READ and WRITE modes; independent gates do not synchronize.
+     */
+    public Ticket newCriticalTicket() {
+        return newTicket(Mode.WRITE);
+    }
+
     public Ticket newTicket(Mode mode) {
         Objects.requireNonNull(mode, "mode");
         synchronized (coordinator) {
