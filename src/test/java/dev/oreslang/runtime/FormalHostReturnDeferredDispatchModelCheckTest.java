@@ -173,7 +173,9 @@ final class FormalHostReturnDeferredDispatchModelCheckTest {
         boolean returned = s.lastHostReturned;
         switch (e) {
             case BEGIN_HOST -> {
-                if (!dispatched && !retired && scopes < 2) {
+                // A close request permanently seals new host handoff
+                // admission. Existing cleanup may still finish and retire.
+                if (!closing && !dispatched && !retired && scopes < 2) {
                     scopes++;
                     opened = true;
                     returned = false;
@@ -271,5 +273,24 @@ final class FormalHostReturnDeferredDispatchModelCheckTest {
                 false, false, false, false);
         assertThrows(AssertionError.class, () -> gateInvariant(unsafe));
     }
+
+    @Test
+    void shutdownSealsNewHostHandoffWhilePreviouslyAdmittedCleanupCanDrain() {
+        GateState initial = GateState.initial();
+        GateState inHost = gateTransition(initial, GateEvent.BEGIN_HOST);
+        GateState queued = gateTransition(inHost, GateEvent.QUEUE_ROOT);
+        GateState closing = gateTransition(queued, GateEvent.REQUEST_CLOSE);
+        assertEquals(closing, gateTransition(closing, GateEvent.BEGIN_HOST),
+                "close must refuse another host admission");
+        GateState returned = gateTransition(closing, GateEvent.RETURN_HOST);
+        GateState running = gateTransition(returned, GateEvent.DISPATCH);
+        GateState entered = gateTransition(running, GateEvent.ENTER_GUEST);
+        GateState drained = gateTransition(entered, GateEvent.PHYSICAL_EXIT);
+        GateState retired = gateTransition(drained, GateEvent.RETIRE);
+        gateInvariant(retired);
+        assertTrue(retired.retired);
+        assertEquals(0, retired.scopes);
+    }
+
 
 }
