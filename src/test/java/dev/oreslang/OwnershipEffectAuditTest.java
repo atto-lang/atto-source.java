@@ -59,6 +59,40 @@ final class OwnershipEffectAuditTest {
                     "fnc good(): void using alloc { val value = " + expression + "; return; }")));
         }
     }
+    @Test void deferredCleanupMustContributeItsExecutedBodyEffects() {
+        reject("""
+                fnc bad(Channel<int> ch): void requires no_block {
+                  defer || -> { val int n = readch ch; return; };
+                  return;
+                }
+                """, "no_block");
+        reject("""
+                fnc bad(Channel<int> ch): void using alloc, suspend {
+                  defer || -> { val int n = readch ch; return; };
+                  return;
+                }
+                """, "effect block");
+        reject("""
+                fnc bad(): void requires no_block {
+                  defer || -> { unknown(); return; };
+                  return;
+                }
+                """, "trusted callee");
+        assertDoesNotThrow(() -> DeclaredEffectVerifier.verify(Parser.parse("""
+                fnc good(Channel<int> ch): void using alloc, suspend, block {
+                  defer || -> { val int n = readch ch; return; };
+                  return;
+                }
+                """)));
+        // An ordinary stored lambda is not executed merely by construction.
+        assertDoesNotThrow(() -> DeclaredEffectVerifier.verify(Parser.parse("""
+                fnc good(Channel<int> ch): void requires no_block {
+                  val callback = || -> { val int n = readch ch; return; };
+                  return;
+                }
+                """)));
+    }
+
     @Test void allocatingCallableBodyIsNotExecutedByClosureCreation() {
         assertDoesNotThrow(() -> DeclaredEffectVerifier.verify(Parser.parse(
                 "fnc good(): void using alloc { val f = || -> { unknown(); return; }; return; }")));
