@@ -141,11 +141,32 @@ final class SuspendableTypedValueMatchExecutionTest {
                         return await ready() + 35;
                       } else {
                         return 0;
-                      }
+                      } fi
                     }
                   };
                   stdio.println(answer);
                   stdio.println("after-match");
+                }
+                """));
+    }
+
+    @Test
+    void genuinelyPendingCooperativeFuturePreservesMatchFrameAndNoReplay() throws Exception {
+        assertEquals("producer\narm-cleanup\n42", run("""
+                async fnc ready(): int {
+                  stdio.println("producer");
+                  rt cooperate;
+                  return 7;
+                }
+                pub async fnc main(): void {
+                  const answer: int = match<ret=int> await ready() over {
+                    on 7 {
+                      defer stdio.println("arm-cleanup");
+                      return 42;
+                    }
+                    default { return 0; }
+                  };
+                  stdio.println(answer);
                 }
                 """));
     }
