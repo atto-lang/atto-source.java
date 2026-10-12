@@ -840,6 +840,25 @@ public final class TypeChecker {
     }
 
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        if (klass.concurrencySpec() != null) {
+            Ast.ActorConcurrencySpec limits = klass.concurrencySpec();
+            if (klass.actorKind() == Ast.ActorKind.NONE || klass.proxySpec() != null
+                    || (!limits.protocol().equals("actor")
+                        && klass.actorKind() != Ast.ActorKind.SHARED)) {
+                throw new IllegalArgumentException(
+                        "actor concurrency configuration requires an actor; "
+                        + "network protocol actors must currently be SHARED");
+            }
+            // The existing source actor receive scheduler has one suspended
+            // receive slot. Accepting >1 here would silently ignore the
+            // configured admission semantics and break actor state safety.
+            if (!limits.serial()) {
+                throw new IllegalArgumentException(
+                        "actor requestConcurrency/messageConcurrency > 1 requires "
+                        + "multi-continuation mailbox admission; current source actor "
+                        + "backend supports only strict (1,1) and will not ignore the policy");
+            }
+        }
         if (klass.proxySpec() != null) {
             Ast.ProxyActorSpec proxy = klass.proxySpec();
             if (klass.actorKind() != Ast.ActorKind.SHARED
@@ -936,6 +955,14 @@ public final class TypeChecker {
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
         for (Ast.FieldDecl field : klass.fields()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && (field.name().equals("requestConcurrency")
+                        || field.name().equals("messageConcurrency"))) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name() + "' cannot store '"
+                        + field.name() + "' as mutable/ordinary state; "
+                        + "declare a compile-time int concurrency setting instead");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
@@ -1945,6 +1972,14 @@ public final class TypeChecker {
                             + "' is declared but remote spawn is not executable yet: "
                             + "a verified service resolver, authenticated native transport, "
                             + "contract negotiation, and bounded stream bridge are required");
+                }
+                if (actorClass.concurrencySpec() != null
+                        && !actorClass.concurrencySpec().protocol().equals("actor")) {
+                    throw new IllegalArgumentException(
+                            "protocol actor '" + actorClass.name()
+                            + "' requires a native "
+                            + actorClass.concurrencySpec().protocol()
+                            + " request/session adapter; source mailbox spawn is not a network listener");
                 }
                 if (actorClass.actorKind() == Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(

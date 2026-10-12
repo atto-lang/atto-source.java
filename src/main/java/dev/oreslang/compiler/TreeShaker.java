@@ -600,7 +600,8 @@ public final class TreeShaker {
                         fields,
                         constructor,
                         methods,
-                        klass.proxySpec());
+                        klass.proxySpec(),
+                        klass.concurrencySpec());
             }
             return declaration;
         }

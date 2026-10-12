@@ -219,6 +219,64 @@ final class SourceActorSpawnExecutionTest {
                 run(program, "source-actor-suspending-receive.ores"));
     }
 
+    @Test
+    void serialActorRetainsRequestOrderingAcrossCooperativeSuspension() throws Exception {
+        String body = """
+                actor Worker as
+                    let int counter;
+                    on_start(): void {
+                        self.counter = 0;
+                        return;
+                    }
+                    receive(ActorMail<String> mail): void {
+                        if mail.value == "first"; do
+                            self.counter = 1;
+                            self.send("before");
+                            rt cooperate;
+                            self.send(self.counter);
+                            return;
+                        fi
+                        if mail.value == "second"; do
+                            self.counter = 2;
+                            self.send("second");
+                            self.end();
+                        fi
+                        return;
+                    }
+                end
+
+                pub async routine main(): void {
+                    val a = spawn Worker();
+                    await a.ready;
+                    a.send("first");
+                    a.send("second");
+                    val first = (await a.outputs.next()).value.unwrap();
+                    val second = (await a.outputs.next()).value.unwrap();
+                    val third = (await a.outputs.next()).value.unwrap();
+                    stdio.stdout.write(first.value);
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(second.value);
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(third.value);
+                    await a.done;
+                    return;
+                }
+                """;
+        for (String modifier : new String[] {
+                "serial",
+                "",
+        }) {
+            String statement = modifier.isEmpty()
+                    ? "define actor Worker as\n"
+                        + "int requestConcurrency = 1;\n"
+                        + "int messageConcurrency = 1;\n"
+                    : "define serial actor Worker as\n";
+            String program = body.replace("actor Worker as\n", statement);
+            assertEquals("before|1|second", run(program, "serial-execution.ores"),
+                    "a suspended serial handler must not admit another user message");
+        }
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source =

@@ -105,6 +105,11 @@ public final class Parser {
                     rootDeclarations.add(parseProxyActor(modifiers.visibility));
                     continue;
                 }
+                Ast.ClassDecl configuredActor = parseProtocolActorHeader(modifiers, annotations);
+                if (configuredActor != null) {
+                    rootDeclarations.add(configuredActor);
+                    continue;
+                }
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
                     continue;
@@ -295,6 +300,8 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "proxy actor declarations");
                 return parseProxyActor(modifiers.visibility);
             }
+            Ast.ClassDecl configuredActor = parseProtocolActorHeader(modifiers, annotations);
+            if (configuredActor != null) return configuredActor;
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
@@ -713,7 +720,41 @@ public final class Parser {
                 new Ast.ProxyActorSpec(contract, serviceKey, transport));
     }
 
+    /**
+     * Contextual declaration prefix: 'serial' is an exact alias for both
+     * admission limits equal to one, and http/tcp/websocket select a protocol
+     * adapter. The current native runtime only supports strict (1,1).
+     */
+    private Ast.ClassDecl parseProtocolActorHeader(
+            Modifiers modifiers, List<Ast.Annotation> annotations) {
+        boolean serial = matchContextualIdentifier("serial");
+        String protocol = null;
+        if (isContextualIdentifier("http")
+                || isContextualIdentifier("tcp")
+                || isContextualIdentifier("websocket")) {
+            protocol = advance().lexeme();
+        }
+        if (!serial && protocol == null) return null;
+        consume(ACTOR, "serial/http/tcp/websocket must modify an actor declaration");
+        if (modifiers.async || modifiers.generator || modifiers.structural
+                || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
+                || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+            throw error(previous(), "protocol actor permits only visibility modifiers");
+        }
+        rejectCallableStructuralAnnotation(annotations, "protocol actor declarations");
+        return parseActorClass(
+                Ast.ActorKind.SHARED, modifiers.visibility,
+                new Ast.ActorConcurrencySpec(protocol == null ? "actor" : protocol, 1, 1),
+                serial);
+    }
+
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
+        return parseActorClass(actorKind, visibility, null, false);
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility,
+            Ast.ActorConcurrencySpec policy, boolean declaredSerial) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -724,8 +765,44 @@ public final class Parser {
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        int requestConcurrency = policy == null ? 1 : policy.requestConcurrency();
+        int messageConcurrency = policy == null ? 1 : policy.messageConcurrency();
+        boolean requestDeclared = false;
+        boolean messageDeclared = false;
 
         while (!check(terminator) && !check(EOF)) {
+            if (isContextualIdentifier("int")
+                    && current + 1 < tokens.size()
+                    && (tokens.get(current + 1).lexeme().equals("requestConcurrency")
+                        || tokens.get(current + 1).lexeme().equals("messageConcurrency"))) {
+                advance(); // int
+                String key = consume(IDENT, "expected actor concurrency setting").lexeme();
+                consume(EQUAL, "actor concurrency settings require a positive integer constant");
+                Token raw = consume(INT, "actor concurrency setting must be a positive integer literal");
+                int value;
+                try {
+                    value = Integer.parseInt(raw.lexeme().replace("_", ""));
+                } catch (NumberFormatException overflow) {
+                    throw error(raw, "actor concurrency setting exceeds integer bounds");
+                }
+                if (value < 1 || value > 1024) {
+                    throw error(raw, "actor concurrency setting must be between 1 and 1024");
+                }
+                consume(SEMICOLON, "actor concurrency setting requires ';'");
+                if (key.equals("requestConcurrency")) {
+                    if (requestDeclared) throw error(raw, "duplicate requestConcurrency setting");
+                    requestDeclared = true;
+                    requestConcurrency = value;
+                } else {
+                    if (messageDeclared) throw error(raw, "duplicate messageConcurrency setting");
+                    messageDeclared = true;
+                    messageConcurrency = value;
+                }
+                if (declaredSerial && value != 1) {
+                    throw error(raw, "serial actor requires requestConcurrency = 1 and messageConcurrency = 1");
+                }
+                continue;
+            }
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
             if (isLegacyFnSpelling()) {
@@ -762,8 +839,14 @@ public final class Parser {
         consume(terminator, braceStyle
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
+        Ast.ActorConcurrencySpec configured =
+                policy == null && !requestDeclared && !messageDeclared ? null
+                : new Ast.ActorConcurrencySpec(
+                        policy == null ? "actor" : policy.protocol(),
+                        requestConcurrency, messageConcurrency);
         return new Ast.ClassDecl(
-                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+                name, visibility, false, actorKind, generics, parents, interfaces,
+                fields, null, methods, null, configured);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {

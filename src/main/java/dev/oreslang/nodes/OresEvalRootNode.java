@@ -5805,6 +5805,17 @@ public final class OresEvalRootNode extends RootNode {
                                 "ProxyActor requires authenticated remote transport; "
                                 + "local source-actor spawn is forbidden");
                     }
+                    if (actorClass.concurrencySpec() != null
+                            && !actorClass.concurrencySpec().protocol().equals("actor")) {
+                        throw new IllegalStateException(
+                                "protocol actor spawn requires a native request/session adapter");
+                    }
+                    if (actorClass.concurrencySpec() != null
+                            && !actorClass.concurrencySpec().serial()) {
+                        throw new IllegalStateException(
+                                "multi-request/multi-message actor admission is not "
+                                + "implemented by this source actor scheduler");
+                    }
                     ActorRuntime.ActorKind runtimeKind =
                             switch (actorClass.actorKind()) {
                                 case NONE -> throw new AssertionError(
