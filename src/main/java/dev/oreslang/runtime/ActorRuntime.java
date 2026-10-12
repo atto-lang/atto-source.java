@@ -6789,8 +6789,27 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void recordFinalizationFailure(Throwable failure) {
-            ref.terminationCause.compareAndSet(
-                    null, Objects.requireNonNull(failure, "finalization failure"));
+            Objects.requireNonNull(failure, "finalization failure");
+            // The first cause (often cancellation) is authoritative. Do not
+            // silently erase later failures from scheduler shutdown, guest
+            // state retirement, output close, or finalization hooks.
+            //
+            // CAS chooses the primary without racing a concurrent stop.
+            // Synchronization on the published Throwable serializes suppressed
+            // receipts from independent cleanup workers. Avoid self-suppression
+            // and duplicate reports from retried teardown paths.
+            Throwable primary = ref.terminationCause.get();
+            if (primary == null) {
+                if (ref.terminationCause.compareAndSet(null, failure)) return;
+                primary = ref.terminationCause.get();
+            }
+            if (primary == failure) return;
+            synchronized (primary) {
+                for (Throwable existing : primary.getSuppressed()) {
+                    if (existing == failure) return;
+                }
+                primary.addSuppressed(failure);
+            }
         }
 
         private void childFinalized(ActorCell<?> child) {
