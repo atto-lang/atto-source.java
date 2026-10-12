@@ -38,6 +38,8 @@ def check():
     rejected("uppercase digest", lambda x: x.update(source_sha256="A" * 64))
     rejected("short digest", lambda x: x["artifact"].update(file_sha256="bad"))
     rejected("zero-size artifact", lambda x: x["artifact"].update(size_bytes=0))
+    rejected("fractional artifact size", lambda x: x["artifact"].update(size_bytes=1.5))
+    rejected("non-lossless artifact size", lambda x: x["artifact"].update(size_bytes=9007199254740992))
     rejected("macro generation enabled", lambda x: x["policy"].update(runtime_macro_expansion=True))
     rejected("annotation generation enabled", lambda x: x["policy"].update(runtime_annotation_generation=True))
     rejected("runtime compilation enabled", lambda x: x["policy"].update(runtime_guest_compilation=True))
@@ -54,7 +56,7 @@ def check():
         pass
     else:
         raise AssertionError("duplicate JSON key escaped input admission")
-    print("AOT manifest V1 schema: valid fixture and 16 negative checks passed")
+    print("AOT manifest V1 schema: valid fixture and 18 negative checks passed")
 
 if __name__ == "__main__":
     check()
