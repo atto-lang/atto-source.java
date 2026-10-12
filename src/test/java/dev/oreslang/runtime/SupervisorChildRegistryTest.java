@@ -665,4 +665,34 @@ final class SupervisorChildRegistryTest {
                 registry.committedTransitions().stream()
                         .map(SupervisorChildRegistry.Transition::operation).toList());
     }
+    @Test
+    void stopHostInvocationMustBeClaimedOnlyOnceForExactTurn() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var actor = ActorRuntime.ActorId.create();
+        var child = registry.register(actor);
+        registry.finalized(child.child(), actor, 1);
+        var permit = registry.beginStop(child.child(), actor, 1, 91);
+        var foreign = new SupervisorChildRegistry.StopReservation(
+                permit.child(), actor, 1, 91, java.util.UUID.randomUUID());
+        assertThrows(IllegalStateException.class,
+                () -> registry.claimHostStopInvocation(foreign));
+        registry.claimHostStopInvocation(permit);
+        assertThrows(IllegalStateException.class,
+                () -> registry.claimHostStopInvocation(permit));
+        registry.markStopUncertain(permit);
+        assertThrows(IllegalStateException.class,
+                () -> registry.claimHostStopInvocation(permit));
+        var trace = registry.committedTransitions();
+        assertEquals(java.util.List.of("register", "finalize-asserted",
+                "stop.reserve", "stop.invoke-asserted", "stop.uncertain"),
+                trace.stream().map(SupervisorChildRegistry.Transition::operation).toList());
+        assertEquals(permit.nonce(), trace.get(3).stopPermit());
+        assertEquals(permit.turnGeneration(), trace.get(3).stopTurn());
+        assertEquals(1L, trace.stream()
+                .filter(t -> t.operation().equals("stop.invoke-asserted")).count());
+        assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                registry.snapshot(child.child()).phase());
+    }
+
 }
