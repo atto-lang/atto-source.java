@@ -42,6 +42,20 @@ final class ParserAnnotationRetentionGateTest {
     }
 
     @Test
+    void unimplementedCompilerAnnotationsCannotSilentlyBecomeNoOpMetadata() {
+        for (String annotation : new String[] {
+                "@derive(Eq)", "@repr(c)", "@align(64)", "@cfg(test)",
+                "@inline(always)", "@GenerateBuilder", "@GenerateSchema",
+                "@ActorMessage", "@RequiresState(read)", "@expand(aot)"
+        }) {
+            String source = annotation + "\n" + "define module demo as end";
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source), annotation);
+            assertTrue(ex.getMessage().contains("guest-AOT lowering"), ex.getMessage());
+        }
+    }
+
+    @Test
     void retainsSpecializedCallableAnnotationError() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("@structural define class Example as end"));
