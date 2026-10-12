@@ -9,4 +9,4 @@ javac -d "$work" \
     src/main/java/dev/oreslang/runtime/accel/QuantumCircuitIR.java \
     src/main/java/dev/oreslang/runtime/accel/GpuBufferFence.java \
     scripts/AcceleratorSafetySmoke.java
-java -cp "$work" AcceleratorSafetySmoke
+java -cp "$work" dev.oreslang.runtime.accel.AcceleratorSafetySmoke
