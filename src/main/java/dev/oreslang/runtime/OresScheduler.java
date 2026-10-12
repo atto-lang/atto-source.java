@@ -421,7 +421,9 @@ public final class OresScheduler implements AutoCloseable {
         for (TaskRunner<?> task : Set.copyOf(tasks)) {
             task.cancelFromSchedulerClose();
         }
-        tasks.clear();
+        // Do not clear tasks here: cancelled Futures may settle while guest
+        // carriers still execute. Each TaskRunner removes itself only after
+        // scheduler-confirmed quiescence, including during shutdown.
 
         if (ownedExecutor != null) {
             ownedExecutor.shutdownNow();
