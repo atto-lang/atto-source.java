@@ -23,6 +23,22 @@ final class UntrustedJitCodeUnitTest {
     }
 
     @Test
+    void utf8WireQuotaAndMalformedSurrogatesFailClosed() {
+        assertEquals("é".repeat(8192),
+                UntrustedJitCodeUnit.copyScalar("é".repeat(8192)));
+        assertThrows(SecurityException.class, () ->
+                UntrustedJitCodeUnit.copyScalar("é".repeat(8193)));
+        assertEquals("😀".repeat(4096),
+                UntrustedJitCodeUnit.copyScalar("😀".repeat(4096)));
+        assertThrows(SecurityException.class, () ->
+                UntrustedJitCodeUnit.copyScalar("😀".repeat(4097)));
+        assertThrows(SecurityException.class, () ->
+                UntrustedJitCodeUnit.copyScalar("\\uD800"));
+        assertThrows(SecurityException.class, () ->
+                UntrustedJitCodeUnit.copyScalar("\\uDC00"));
+    }
+
+    @Test
     void isolatedActorControlCommandsFailClosedInOrdinaryHostContext() {
         String code = """
                 define untrusted actor LocalSandbox as
