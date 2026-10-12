@@ -57,16 +57,22 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
 
         @Override public void close() {
             synchronized (ExplicitNativeI64Region.this) {
-                if (released.get()) return;
-                // Validate before marking the lease released. An accounting
-                // invariant failure must not poison the handle as "closed".
-                if (slotLoans[slot.index] <= 0 || loanCount <= 0) {
-                    throw new IllegalStateException("actor-native loan accounting underflow");
+                if (!released.get()) {
+                    // A released loan must decrement counts exactly once.
+                    if (slotLoans[slot.index] <= 0 || loanCount <= 0) {
+                        throw new IllegalStateException("actor-native loan accounting underflow");
+                    }
+                    slotLoans[slot.index]--;
+                    loanCount--;
+                    released.set(true);
                 }
-                slotLoans[slot.index]--;
-                loanCount--;
-                released.set(true);
-                if (closed.get() && loanCount == 0) finishPhysicalClose();
+                // A failed native close/accounting callback must be retryable
+                // by the *same* completion lease after logical release.
+                // Otherwise the retired actor may have no remaining carrier
+                // that can call region.retireFromActor() a second time.
+                if (closed.get() && loanCount == 0 && !physicalClosed.get()) {
+                    finishPhysicalClose();
+                }
             }
         }
     }
