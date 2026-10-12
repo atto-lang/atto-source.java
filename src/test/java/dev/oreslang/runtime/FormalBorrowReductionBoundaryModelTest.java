@@ -32,6 +32,11 @@ final class FormalBorrowReductionBoundaryModelTest {
     }
 
     private static State step(State s, Action action, boolean unsafeIgnoreLoans) {
+        return step(s, action, unsafeIgnoreLoans, false);
+    }
+
+    private static State step(
+            State s, Action action, boolean unsafeIgnoreLoans, boolean unsafeReplayEffects) {
         if (s.phase == Phase.CANCELLED) return null;
         return switch (action) {
             case BORROW_ORDINARY, BORROW_STATE, BORROW_NATIVE -> {
@@ -52,9 +57,9 @@ final class FormalBorrowReductionBoundaryModelTest {
                     ? new State(s.phase, s.loan, Math.min(2, s.workSinceYield + 1),
                             s.totalFuel + 1, s.resumes, s.externalEffects, true) : null;
             case COMPLETE_EXTERNAL_EFFECT -> s.phase == Phase.RUNNING
-                    && s.externalEffects == 0
+                    && s.externalEffects < (unsafeReplayEffects ? 2 : 1)
                     ? new State(s.phase, s.loan, s.workSinceYield, s.totalFuel,
-                            s.resumes, 1, true) : null;
+                            s.resumes, s.externalEffects + 1, true) : null;
             case REQUEST_PREEMPTION -> s.phase == Phase.RUNNING
                     && s.workSinceYield == 2
                     && s.resumes == 0
@@ -99,6 +104,11 @@ final class FormalBorrowReductionBoundaryModelTest {
     }
 
     private static Set<State> explore(boolean unsafeIgnoreLoans) {
+        return explore(unsafeIgnoreLoans, false);
+    }
+
+    private static Set<State> explore(
+            boolean unsafeIgnoreLoans, boolean unsafeReplayEffects) {
         Set<State> visited = new HashSet<>();
         ArrayDeque<State> queue = new ArrayDeque<>();
         State initial = State.initial();
@@ -107,7 +117,7 @@ final class FormalBorrowReductionBoundaryModelTest {
         while (!queue.isEmpty()) {
             State current = queue.removeFirst();
             for (Action action : Action.values()) {
-                State next = step(current, action, unsafeIgnoreLoans);
+                State next = step(current, action, unsafeIgnoreLoans, unsafeReplayEffects);
                 if (next != null && visited.add(next)) queue.addLast(next);
             }
         }
@@ -176,6 +186,26 @@ final class FormalBorrowReductionBoundaryModelTest {
         assertNotNull(cancelledReady);
         assertTrue(safety(cancelledReady));
         assertEquals(Phase.CANCELLED, cancelledReady.phase);
+    }
+
+    @Test
+    void replayMutationMustViolateExactlyOnceExternalEffectInvariant() {
+        Set<State> safe = explore(false, false);
+        assertTrue(safe.stream().allMatch(state -> state.externalEffects <= 1),
+                "safe transitions must never double-commit an external effect");
+
+        Set<State> replay = explore(false, true);
+        assertTrue(replay.stream().anyMatch(state ->
+                        state.externalEffects == 2 && !safety(state)),
+                "the intentionally replaying transition must be detected");
+
+        State once = new State(Phase.RUNNING, Loan.NONE, 0, 0, 0, 1, true);
+        assertNull(step(once, Action.COMPLETE_EXTERNAL_EFFECT, false, false),
+                "safe completion publication must consume its one-use token");
+        State duplicated = step(once, Action.COMPLETE_EXTERNAL_EFFECT, false, true);
+        assertNotNull(duplicated);
+        assertEquals(2, duplicated.externalEffects);
+        assertFalse(safety(duplicated));
     }
 
     @Test
