@@ -78,12 +78,13 @@ public final class SupervisorChildRegistry {
     }
 
     /**
+     * Host-internal registry transitions, deliberately package-private.
      * Registry-committed transitions only: NOT a full supervisor execution trace.
      * In particular, scheduler cleanup, CONTROL ownership and host STOP invocation
      * are not asserted by entries here. Each transition is captured under this
      * registry's own monitor, without invoking external observer callbacks.
      */
-    public record Transition(long sequence, String operation, Snapshot state,
+    record Transition(long sequence, String operation, Snapshot state,
                              UUID restartPermit, long stopTurn,
                              ActorRuntime.ActorId replacement) {}
     private static final int MAX_TRANSITIONS = 100_000;
@@ -91,13 +92,13 @@ public final class SupervisorChildRegistry {
     private boolean traceComplete = true;
 
     /** A dropped or failed transition permanently invalidates the audit history. */
-    public synchronized List<Transition> committedTransitions() {
+    synchronized List<Transition> committedTransitions() {
         if (!traceComplete)
             throw new IllegalStateException("incomplete supervisor registry audit trace");
         return List.copyOf(transitions);
     }
 
-    public synchronized boolean auditTraceComplete() { return traceComplete; }
+    synchronized boolean auditTraceComplete() { return traceComplete; }
 
     private void recordTransition(String operation, Snapshot state, UUID permit,
                                   long stopTurn, ActorRuntime.ActorId candidate) {
@@ -420,7 +421,7 @@ public final class SupervisorChildRegistry {
             children.put(child.logicalId(), finalized);
             throw admissionFailure;
         }
-        recordTransition("stop.reserve", stopping, reservation.nonce(),
+        recordTransition("stop.reserve", stopping, null,
                 reservation.turnGeneration(), null);
         return reservation;
     }
@@ -453,7 +454,7 @@ public final class SupervisorChildRegistry {
         StopReceipt updated = new StopReceipt(permit, StopReceiptStatus.APPLIED);
         stopReceipts.put(permit.child().logicalId(), updated);
         recordTransition("stop.applied", requireCurrent(permit.child()),
-                permit.nonce(), permit.turnGeneration(), null);
+                null, permit.turnGeneration(), null);
         return updated;
     }
 
@@ -471,7 +472,7 @@ public final class SupervisorChildRegistry {
         StopReceipt updated = new StopReceipt(permit, StopReceiptStatus.UNCERTAIN);
         stopReceipts.put(permit.child().logicalId(), updated);
         recordTransition("stop.uncertain", requireCurrent(permit.child()),
-                permit.nonce(), permit.turnGeneration(), null);
+                null, permit.turnGeneration(), null);
         return updated;
     }
 
@@ -488,7 +489,7 @@ public final class SupervisorChildRegistry {
         children.put(permit.child().logicalId(), stopped);
         stopReceipts.put(permit.child().logicalId(), acknowledged);
         stopReservations.remove(permit.child().logicalId());
-        recordTransition("stop.ack-applied", stopped, permit.nonce(),
+        recordTransition("stop.ack-applied", stopped, null,
                 permit.turnGeneration(), null);
         return stopped;
     }
@@ -522,7 +523,7 @@ public final class SupervisorChildRegistry {
         children.put(permit.child().logicalId(), stopped);
         stopReceipts.put(permit.child().logicalId(), acknowledged);
         stopReservations.remove(permit.child().logicalId());
-        recordTransition("stop.ack-reconciled", stopped, permit.nonce(),
+        recordTransition("stop.ack-reconciled", stopped, null,
                 permit.turnGeneration(), null);
         return stopped;
     }
@@ -568,7 +569,7 @@ public final class SupervisorChildRegistry {
         children.put(permit.child().logicalId(), stopped);
         stopReceipts.put(permit.child().logicalId(), acknowledged);
         stopReservations.remove(permit.child().logicalId());
-        recordTransition("stop.ack-host", stopped, permit.nonce(),
+        recordTransition("stop.ack-host", stopped, null,
                 permit.turnGeneration(), null);
         return stopped;
     }
