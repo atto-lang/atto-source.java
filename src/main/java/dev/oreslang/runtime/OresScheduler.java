@@ -98,6 +98,8 @@ public final class OresScheduler implements AutoCloseable {
     private final ExecutorService ownedExecutor;
     private final TurnExecutor turnExecutor;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
+    /** Linearizes new task admission with scheduler shutdown. */
+    private final Object taskAdmissionLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong watchdogOverruns = new AtomicLong();
 
@@ -318,16 +320,20 @@ public final class OresScheduler implements AutoCloseable {
     <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(onQuiescent, "onQuiescent");
-        ensureOpen();
-
-        TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent);
-        tasks.add(runner);
-        try {
-            runner.scheduleInitial();
-        } catch (RuntimeException | Error failure) {
-            runner.failBeforeStart(failure);
+        // The open-state check, live-set registration and first enqueue are
+        // one admission operation. close() takes its snapshot under this same
+        // lock so no task can escape the cancellation/retirement fence.
+        synchronized (taskAdmissionLock) {
+            ensureOpen();
+            TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent);
+            tasks.add(runner);
+            try {
+                runner.scheduleInitial();
+            } catch (RuntimeException | Error failure) {
+                runner.failBeforeStart(failure);
+            }
+            return runner.completion;
         }
-        return runner.completion;
     }
 
     /**
@@ -416,9 +422,13 @@ public final class OresScheduler implements AutoCloseable {
                     "OresScheduler cannot be closed from one of its own task turns; "
                             + "close it from an outside/root scheduler task");
         }
-        if (!closed.compareAndSet(false, true)) return;
+        final Set<TaskRunner<?>> admitted;
+        synchronized (taskAdmissionLock) {
+            if (!closed.compareAndSet(false, true)) return;
+            admitted = Set.copyOf(tasks);
+        }
 
-        for (TaskRunner<?> task : Set.copyOf(tasks)) {
+        for (TaskRunner<?> task : admitted) {
             task.cancelFromSchedulerClose();
         }
         // Do not clear tasks here: cancelled Futures may settle while guest
