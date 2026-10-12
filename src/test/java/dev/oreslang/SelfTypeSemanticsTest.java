@@ -157,7 +157,7 @@ final class SelfTypeSemanticsTest {
     }
 
     @Test
-    void contextualBoundMethodExtractionKeepsSelfPolymorphic() throws Exception {
+    void directSelfMethodInvocationKeepsSelfPolymorphic() throws Exception {
         String output = run("""
                 define module m
                   define class Base as
@@ -172,8 +172,10 @@ final class SelfTypeSemanticsTest {
                     }
 
                     pub via_callback(): int {
-                      val Fnc<self> callback = self.same;
-                      return callback().child_only();
+                      // self is a borrowed receiver and cannot be captured
+                      // by a heap-owned closure. Direct dispatch preserves
+                      // concrete child self typing without escaping that loan.
+                      return self.same().child_only();
                     }
                   end
                 end
