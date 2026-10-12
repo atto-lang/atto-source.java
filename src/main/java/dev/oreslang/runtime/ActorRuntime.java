@@ -63,6 +63,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
+    private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
     private static final long UNTRUSTED_MIN_FUEL = 256L;
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
@@ -1486,6 +1488,13 @@ public final class ActorRuntime implements AutoCloseable {
         // is still suspended.
         UntrustedLogicalQuota inheritedQuota = CURRENT_UNTRUSTED_QUOTA.get();
         synchronized (cell.lifecycleLock) {
+            // Unlike the physical-cohort count, this remains charged while a
+            // terminal Future subscriber is blocked AFTER guest quiescence.
+            if (cell.activeUntrustedTimedAdmissions >=
+                    UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS) {
+                throw new RejectedExecutionException(
+                        "untrusted actor timed source-task admission is full");
+            }
             if (inheritedQuota == null) {
                 if (cell.activeUntrustedSourceQuota != null) {
                     throw new SecurityException(
@@ -1518,9 +1527,22 @@ public final class ActorRuntime implements AutoCloseable {
                         "untrusted actor logical source-task cohort is full");
             }
             cell.activeUntrustedSourceTaskCount++;
+            cell.activeUntrustedTimedAdmissions++;
         }
 
         UntrustedLogicalQuota quota = inheritedQuota;
+        AtomicBoolean releasedTimedAdmission = new AtomicBoolean();
+        Runnable releaseTimedAdmissionOnce = () -> {
+            if (releasedTimedAdmission.compareAndSet(false, true)) {
+                synchronized (cell.lifecycleLock) {
+                    if (cell.activeUntrustedTimedAdmissions <= 0) {
+                        throw new IllegalStateException(
+                                "untrusted timed source-task admission underflow");
+                    }
+                    cell.activeUntrustedTimedAdmissions--;
+                }
+            }
+        };
         AtomicBoolean released = new AtomicBoolean();
         Runnable retireOnce = () -> {
             if (released.compareAndSet(false, true)) {
@@ -1551,12 +1573,17 @@ public final class ActorRuntime implements AutoCloseable {
             }, retireOnce, quota.remainingWallNanos(),
                     new UntrustedActorQuotaExceededException(
                             UntrustedActorQuotaExceededException.Resource.WALL_TIME,
-                            "untrusted logical task exceeded wall-time budget while suspended"));
+                            "untrusted logical task exceeded wall-time budget while suspended"),
+                    releaseTimedAdmissionOnce);
         } catch (RuntimeException | Error failure) {
             // No task was admitted. Release the pre-reserved quota slot.
             // The scheduler's own retirement callback also claims this
             // once, including a failure published before start() returns.
-            retireOnce.run();
+            try {
+                retireOnce.run();
+            } finally {
+                releaseTimedAdmissionOnce.run();
+            }
             throw failure;
         }
         // A caller may cancel the Future while the source turn is still
@@ -6397,6 +6424,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** One live logical quota cohort per untrusted actor. Guarded by lifecycleLock. */
         private volatile UntrustedLogicalQuota activeUntrustedSourceQuota;
         private int activeUntrustedSourceTaskCount;
+        /** Timed admission persists until terminal callbacks drain. */
+        private int activeUntrustedTimedAdmissions;
         private Behavior<M> behavior;
 
         private ActorCell(
