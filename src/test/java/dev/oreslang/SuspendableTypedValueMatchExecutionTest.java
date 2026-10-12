@@ -108,6 +108,79 @@ final class SuspendableTypedValueMatchExecutionTest {
     }
 
     @Test
+    void awaitedArmReturnThroughTryFinallyRetainsLexicalOwner() throws Exception {
+        assertEquals("finally-once\\nouter-cleanup\\n42", run("""
+                async fnc ready(): int { return 7; }
+                pub async fnc main(): void {
+                  const answer: int = match<ret=int> 7 over {
+                    default {
+                      defer stdio.println("outer-cleanup");
+                      try {
+                        return (await ready()) + 35;
+                      } catch (err) {
+                        return 0;
+                      } finally {
+                        stdio.println("finally-once");
+                      }
+                    }
+                  };
+                  stdio.println(answer);
+                }
+                """));
+    }
+
+    @Test
+    void nestedIfAndAwaitedResultDoNotEscapeEnclosingCallable() throws Exception {
+        assertEquals("selected\\n42\\nafter-match", run("""
+                async fnc ready(): int { return 7; }
+                pub async fnc main(): void {
+                  const answer: int = match<ret=int> 7 over {
+                    default {
+                      if true {
+                        defer stdio.println("selected");
+                        return await ready() + 35;
+                      } else {
+                        return 0;
+                      }
+                    }
+                  };
+                  stdio.println(answer);
+                  stdio.println("after-match");
+                }
+                """));
+    }
+
+    @Test
+    void awaitedCallableAdmissionRequiresUnshadowedLocalAsyncDeclaration() {
+        // A synchronous trampoline may return a Future, but is not covered
+        // by the narrow direct-async declaration proof in this milestone.
+        IllegalArgumentException trampoline = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                async fnc ready(): int { return 7; }
+                fnc relay(): Future<int> { return ready(); }
+                pub async fnc main(): void {
+                  const answer: int = match<ret=int> await relay() over {
+                    default { return 7; }
+                  };
+                  stdio.println(answer);
+                }
+                """));
+        assertTrue(trampoline.getMessage().contains("pure scalar expression")
+                        || trampoline.getMessage().contains("local callable"),
+                trampoline.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                async fnc ready(): int { return 7; }
+                pub async fnc main(): void {
+                  const ready: int = 7;
+                  const answer: int = match<ret=int> await ready() over {
+                    default { return 7; }
+                  };
+                  stdio.println(answer);
+                }
+                """));
+    }
+
+    @Test
     void rejectsImplicitAsyncEffectsAndSyncAwaitInTypedMatch() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 async fnc ready(): int { return 7; }
