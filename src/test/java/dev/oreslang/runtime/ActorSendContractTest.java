@@ -240,4 +240,109 @@ final class ActorSendContractTest {
         }
     }
 
+    @Test
+    void terminationFuturesPublishOutsideLifecycleMonitorExactlyOnce() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                entered.countDown();
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("held actor timed out");
+                }
+            });
+            ref.send(1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((java.util.Map<?, ?>) actorsField.get(runtime)).get(ref.id());
+            assertNotNull(cell);
+            var lockField = cell.getClass().getDeclaredField("lifecycleLock");
+            lockField.setAccessible(true);
+            Object actorMonitor = lockField.get(cell);
+
+            AtomicInteger callbackCount = new AtomicInteger();
+            AtomicInteger callbackWhileLocked = new AtomicInteger();
+            CountDownLatch observed = new CountDownLatch(1);
+            ref.getDone().whenCompleteRuntime((value, error) -> {
+                callbackCount.incrementAndGet();
+                if (Thread.holdsLock(actorMonitor)) callbackWhileLocked.incrementAndGet();
+                observed.countDown();
+            });
+
+            Thread first = new Thread(ref::stop, "actor-finalize-first-stop");
+            Thread second = new Thread(ref::stop, "actor-finalize-racing-stop");
+            first.start();
+            second.start();
+            try {
+                assertFalse(observed.await(75, TimeUnit.MILLISECONDS),
+                        "a running actor may not publish DONE before carrier exit");
+            } finally {
+                release.countDown();
+                first.join(5_000);
+                second.join(5_000);
+            }
+            assertFalse(first.isAlive());
+            assertFalse(second.isAlive());
+            assertTrue(observed.await(5, TimeUnit.SECONDS));
+            assertEquals(0, callbackWhileLocked.get(),
+                    "DONE must be delivered after releasing actor lifecycle monitor");
+            assertEquals(1, callbackCount.get(), "DONE must settle exactly once");
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void initializationFailureReadyCallbacksNeverHoldActorMonitor() throws Exception {
+        CountDownLatch enteredFactory = new CountDownLatch(1);
+        CountDownLatch releaseFactory = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(() -> {
+                enteredFactory.countDown();
+                try {
+                    if (!releaseFactory.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("factory timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("factory interrupted", interrupted);
+                }
+                throw new IllegalStateException("expected initialization rejection");
+            });
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((java.util.Map<?, ?>) actorsField.get(runtime)).get(ref.id());
+            assertNotNull(cell);
+            var lockField = cell.getClass().getDeclaredField("lifecycleLock");
+            lockField.setAccessible(true);
+            Object actorMonitor = lockField.get(cell);
+
+            AtomicInteger callbackWhileLocked = new AtomicInteger();
+            AtomicInteger readyCount = new AtomicInteger();
+            CountDownLatch readyObserved = new CountDownLatch(1);
+            ref.getReady().whenCompleteRuntime((value, error) -> {
+                readyCount.incrementAndGet();
+                if (Thread.holdsLock(actorMonitor)) callbackWhileLocked.incrementAndGet();
+                readyObserved.countDown();
+            });
+            try {
+                assertTrue(enteredFactory.await(5, TimeUnit.SECONDS));
+                assertFalse(readyObserved.await(30, TimeUnit.MILLISECONDS));
+            } finally {
+                releaseFactory.countDown();
+            }
+            assertTrue(readyObserved.await(5, TimeUnit.SECONDS));
+            assertEquals(0, callbackWhileLocked.get());
+            assertEquals(1, readyCount.get());
+            assertThrows(ExecutionException.class, () -> ref.getReady().get(5, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class, () -> ref.getDone().get(5, TimeUnit.SECONDS));
+        } finally {
+            releaseFactory.countDown();
+        }
+    }
+
 }
