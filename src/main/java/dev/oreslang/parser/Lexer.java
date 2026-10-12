@@ -9,8 +9,15 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Lexer {
     private static final Map<String, Token.Type> KEYWORDS = new HashMap<>();
+    private static final List<String> HYPHENATED_KEYWORDS = List.of(
+            "critical-read", "critical-write", "transform-pipe", "nb-select");
 
     static {
+        KEYWORDS.put("critical", CRITICAL);
+        KEYWORDS.put("critical-read", CRITICAL_READ);
+        KEYWORDS.put("critical-write", CRITICAL_WRITE);
+        KEYWORDS.put("transform-pipe", TRANSFORM_PIPE);
+        KEYWORDS.put("nb-select", NB_SELECT);
         KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE); KEYWORDS.put("contract", CONTRACT); KEYWORDS.put("conforms", CONFORMS); KEYWORDS.put("namespace", NAMESPACE);
         KEYWORDS.put("import", IMPORT); KEYWORDS.put("from", FROM); KEYWORDS.put("as", AS);
         KEYWORDS.put("extends", EXTENDS); KEYWORDS.put("implements", IMPLEMENTS);
@@ -150,6 +157,21 @@ public final class Lexer {
     private void identifier() {
         while (isIdentPart(peek())) advance();
         String text = source.substring(start, current);
+        // Only the four reserved hyphenated spellings join across ASCII '-'.
+        // Ordinary 'left-right' stays IDENT MINUS IDENT.
+        if (peek() == '-') {
+            for (String keyword : HYPHENATED_KEYWORDS) {
+                if (keyword.startsWith(text + "-") && source.startsWith(keyword, start)) {
+                    int end = start + keyword.length();
+                    if (end >= source.length() || (!isIdentPart(source.charAt(end))
+                            && source.charAt(end) != '-')) {
+                        while (current < end) advance();
+                        add(KEYWORDS.get(keyword));
+                        return;
+                    }
+                }
+            }
+        }
         add(KEYWORDS.getOrDefault(text, IDENT));
     }
 
