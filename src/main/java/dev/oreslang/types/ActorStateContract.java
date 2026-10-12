@@ -63,7 +63,7 @@ public final class ActorStateContract {
             // Legacy scalar actor fields are not the one-state aggregate
             // contract. Serial actors with no storage are valid, but serial
             // actors with storage must declare precisely one state schema.
-            if (klass.serial() && !klass.fields().isEmpty()) {
+            if (!klass.fields().isEmpty()) {
                 throw new IllegalArgumentException(
                         "serial actor '" + klass.name()
                         + "' must use one state { ... } aggregate; legacy fields are forbidden");
@@ -116,14 +116,17 @@ public final class ActorStateContract {
                     || lambda.parameters().size() != 1) {
                 throw new IllegalArgumentException("self.handle_state expects exactly one single-argument lambda");
             }
-            if (!lambda.explicitStateMode()) {
-                throw new IllegalArgumentException(
-                        "handle_state requires explicit critical read or critical write");
-            }
+            Ast.CriticalMode loanMode = switch (lambda.criticalMode()) {
+                case NONE, READ -> Ast.CriticalMode.READ;
+                case EXCLUSIVE, WRITE -> Ast.CriticalMode.WRITE;
+            };
+            // No nested state loan may reenter an already borrowed map,
+            // including read/read with a shadowed lambda parameter.
+            if (activeAccess != null)
+                throw new IllegalArgumentException("nested actor state loan is forbidden");
             if (accessMode == Ast.CriticalMode.READ
-                    && lambda.criticalMode() == Ast.CriticalMode.WRITE) {
+                    && loanMode == Ast.CriticalMode.WRITE)
                 throw new IllegalArgumentException("cannot upgrade an active read loan to write");
-            }
             if (lambda.nonLexical()) {
                 throw new IllegalArgumentException(
                         "critical handle_state callback must keep its lexical actor scope");
@@ -136,11 +139,17 @@ public final class ActorStateContract {
             if (variable.equals("self")) {
                 throw new IllegalArgumentException("actor state access parameter cannot shadow self");
             }
-            visit(lambda.expressionBody(), actor, keys, variable, false, instanceMethod, lambda.criticalMode());
-            visit(lambda.blockBody(), actor, keys, variable, false, instanceMethod, lambda.criticalMode());
+            visit(lambda.expressionBody(), actor, keys, variable, false, instanceMethod, loanMode);
+            visit(lambda.blockBody(), actor, keys, variable, false, instanceMethod, loanMode);
             return;
         }
-        // The state mode is a capability; 'using state.write' never upgrades read.
+        if (activeAccess != null
+                && (node instanceof Ast.AwaitExpr || node instanceof Ast.SelectStmt
+                    || node instanceof Ast.DynamicSelectExpr || node instanceof Ast.ChannelOpExpr)) {
+            throw new IllegalArgumentException(
+                    "actor state loan cannot cross await, select, or suspension");
+        }
+        // The state mode is a capability; using never upgrades read.
         if (activeAccess != null && accessMode == Ast.CriticalMode.READ
                 && node instanceof Ast.AssignExpr assign
                 && referencesAccess(assign.target(), activeAccess)) {
