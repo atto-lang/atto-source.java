@@ -565,6 +565,9 @@ public final class OresMutex {
             private final Object ownerDomain;
             private final boolean enforceOwnerDomain;
             private final GuardFuture<T> future;
+            // Once claimed (by a terminal failure or handoff) admission quota
+            // must be returned before callers can observe the settled Future.
+            private final AtomicBoolean admissionSettled = new AtomicBoolean();
 
             private AsyncWaiter(
                     Object ownerDomain,
@@ -583,11 +586,18 @@ public final class OresMutex {
          * one atomic decision. A dequeued waiter is already committed to
          * handoff (including the poisoned failure path).
          */
+        private void settleWaiterAdmission(AsyncWaiter waiter) {
+            if (!waiter.admissionSettled.compareAndSet(false, true)) return;
+            releaseAsyncWaiter();
+            releaseGlobalAsyncWaiter();
+        }
+
         private boolean revokeQueuedWaiter(AsyncWaiter waiter) {
             synchronized (asyncQueueLock) {
                 if (!asyncQueue.remove(waiter)) return false;
                 endWait(waiter.ownerDomain);
                 releaseDomain(waiter.ownerDomain);
+                settleWaiterAdmission(waiter);
                 return true;
             }
         }
@@ -613,6 +623,7 @@ public final class OresMutex {
                         // removed from the queue, this path owns wait/domain cleanup.
                         endWait(candidate.ownerDomain);
                         releaseDomain(candidate.ownerDomain);
+                        settleWaiterAdmission(candidate);
                     }
 
                     if (waiter == null) {
@@ -632,6 +643,7 @@ public final class OresMutex {
                 if (poisoned.get()) {
                     endWait(waiter.ownerDomain);
                     releaseDomain(waiter.ownerDomain);
+                    settleWaiterAdmission(waiter);
                     waiter.future.failFromRuntime(new PoisonedMutexException());
                     continue;
                 }
@@ -641,6 +653,7 @@ public final class OresMutex {
                 SharedGuard guard = new SharedGuard(
                         waiter.ownerDomain,
                         waiter.enforceOwnerDomain);
+                settleWaiterAdmission(waiter);
                 if (waiter.future.completeFromRuntime(guard)) return;
 
                 // Cancellation won after dequeue but before completion.
@@ -757,16 +770,9 @@ public final class OresMutex {
             future.revokeQueuedWaiter = () -> revokeQueuedWaiter(waiter);
 
             future.whenComplete((ignored, failure) -> {
-                boolean removed;
-                synchronized (asyncQueueLock) {
-                    removed = asyncQueue.remove(waiter);
-                }
-                if (removed) {
-                    endWait(ownerDomain);
-                    releaseDomain(ownerDomain);
-                }
-                releaseAsyncWaiter();
-                releaseGlobalAsyncWaiter();
+                // Defensive one-shot fallback for unexpected completion paths.
+                // Normal publication always settles admission first.
+                settleWaiterAdmission(waiter);
             });
 
             boolean acquired = false;
@@ -804,9 +810,11 @@ public final class OresMutex {
 
             if (waitFailure != null) {
                 releaseDomain(ownerDomain);
+                settleWaiterAdmission(waiter);
                 future.failFromRuntime(waitFailure);
             } else if (poisonedNow) {
                 releaseDomain(ownerDomain);
+                settleWaiterAdmission(waiter);
                 future.failFromRuntime(new PoisonedMutexException());
             } else if (acquired) {
                 try {
@@ -814,12 +822,14 @@ public final class OresMutex {
                     SharedGuard guard = new SharedGuard(
                             ownerDomain,
                             enforceOwnerDomain);
+                    settleWaiterAdmission(waiter);
                     if (!future.completeFromRuntime(guard)) {
                         guard.releaseFromRuntime();
                     }
                 } catch (RuntimeException | Error failure) {
                     releaseDomain(ownerDomain);
                     releasePermitOrHandoff();
+                    settleWaiterAdmission(waiter);
                     future.failFromRuntime(failure);
                 }
             }
