@@ -77,6 +77,11 @@ final class HostGeneratorTurnPump implements AutoCloseable {
     private final ArrayDeque<Request<?>> pending = new ArrayDeque<>();
     private Request<?> active;
     private boolean sealed;
+    // A starter may throw *after* launching a producer but before returning
+    // its physical-exit receipt. Without that receipt there is no proof of
+    // quiescence. Permanently quarantine this incarnation; retries may not
+    // claim retirement from the absence of an active queue entry.
+    private boolean unprovenPhysicalExit;
 
     HostGeneratorTurnPump(UUID contextId, BooleanSupplier ownerTurnAuthorized) {
         this(contextId, ownerTurnAuthorized, () -> { }, DEFAULT_CAPACITY);
@@ -185,11 +190,12 @@ final class HostGeneratorTurnPump implements AutoCloseable {
                 if (active != selected) {
                     throw new IllegalStateException("generator reservation changed owner", failure);
                 }
+                unprovenPhysicalExit = true;
                 active = null;
             }
             // A starter that throws could have partially launched guest work
-            // but supplied no physical-exit barrier. Poison the queue instead
-            // of admitting another turn without proof of physical cleanup.
+            // but supplied no physical-exit barrier. Poison the queue AND
+            // retain a permanent quarantine, not merely a canceled Future.
             seal();
             selected.future.failFromRuntime(failure);
             return true;
@@ -346,7 +352,7 @@ final class HostGeneratorTurnPump implements AutoCloseable {
 
     boolean isQuiescent() {
         synchronized (gate) {
-            return active == null && pending.isEmpty();
+            return active == null && pending.isEmpty() && !unprovenPhysicalExit;
         }
     }
 
@@ -357,7 +363,8 @@ final class HostGeneratorTurnPump implements AutoCloseable {
     void requireQuiescent() {
         if (!isQuiescent()) {
             throw new IllegalStateException(
-                    "generator host turn still owns unfinished physical guest cleanup");
+                    "generator host turn lacks a complete physical guest exit receipt "
+                    + "(active, pending or indeterminate starter failure)");
         }
     }
 

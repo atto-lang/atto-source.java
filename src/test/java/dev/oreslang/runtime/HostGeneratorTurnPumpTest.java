@@ -282,7 +282,10 @@ final class HostGeneratorTurnPumpTest {
                 "unknown partial startup cannot admit the next producer");
         assertEquals(0, laterStarts.get());
         assertFalse(pump.dispatchOne());
-        pump.close();
+        assertFalse(pump.isQuiescent(),
+                "a starter that threw without an exit receipt is quarantined");
+        assertThrows(IllegalStateException.class, pump::close,
+                "physical context retirement must remain blocked after unknown startup");
     }
 
     @Test
