@@ -62,6 +62,8 @@ public final class IncrementalCompiler {
         Map<String, Map<String, String>> normalizedImportResolutions =
                 normalizeImportResolutions(importResolutions);
         ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions);
+        Map<String, Map<String, Ast.FunctionDecl>> borrowedImportSignatures =
+                resolveImportedFunctionSignatures(parsed, normalizedImportResolutions);
         Map<String, Set<String>> dependencies =
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
         List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
@@ -104,7 +106,8 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            Ast.Program checked = OresCompiler.parseAndTypeCheck(
+                    normalized.get(id), borrowedImportSignatures.getOrDefault(id, Map.of()));
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
@@ -125,6 +128,58 @@ public final class IncrementalCompiler {
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
                 initializationGroups);
+    }
+
+    /**
+     * Resolve borrowed-call signatures from exact linked source units, after
+     * ImportGraph has validated selector names and source identities. A host,
+     * wildcard or unresolved package import never acquires an implicit loan
+     * lifetime contract. Runtime parsing uses this same mapping only inside
+     * the trusted linked-program admission scope.
+     */
+    public static Map<String, Map<String, Ast.FunctionDecl>> resolveImportedFunctionSignatures(
+            Map<String, Ast.Program> programs,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Map<String, Ast.FunctionDecl>> result = new LinkedHashMap<>();
+        for (Map.Entry<String, Ast.Program> source : programs.entrySet()) {
+            LinkedHashMap<String, Ast.FunctionDecl> functions = new LinkedHashMap<>();
+            for (Ast.ImportDecl imported : source.getValue().imports()) {
+                if (imported.kind() != Ast.ImportKind.FUNCTION || imported.wildcard()
+                        || ImportRules.isJavaPath(imported.path())) continue;
+                String targetId = ImportGraph.resolveImportUnitId(
+                        source.getKey(), imported, programs.keySet(), importResolutions);
+                if (targetId == null) continue;
+                Ast.Program target = programs.get(targetId);
+                if (target == null) continue;
+                for (String sourceName : imported.names()) {
+                    Ast.FunctionDecl found = null;
+                    for (Ast.ModuleDecl module : target.modules()) {
+                        for (Ast.Decl decl : module.declarations()) {
+                            if (decl instanceof Ast.FunctionDecl fn
+                                    && fn.name().equals(sourceName)
+                                    && fn.kind() == Ast.CallableKind.FNC
+                                    && fn.visibility() == Ast.Visibility.PUBLIC
+                                    && fn.actorKind() == Ast.ActorKind.NONE
+                                    && fn.genericParameters().isEmpty()) {
+                                if (found != null) throw new IllegalArgumentException(
+                                        "ambiguous linked function import '" + sourceName + "'");
+                                found = fn;
+                            }
+                        }
+                    }
+                    if (found == null) {
+                        throw new IllegalArgumentException(
+                                "linked borrowed-call target '" + sourceName + "' is not an exported fnc");
+                    }
+                    String local = ImportRules.localName(imported, sourceName);
+                    if (functions.putIfAbsent(local, found) != null) {
+                        throw new IllegalArgumentException("duplicate linked function binding '" + local + "'");
+                    }
+                }
+            }
+            result.put(source.getKey(), Map.copyOf(functions));
+        }
+        return Map.copyOf(result);
     }
 
     public synchronized void clear() {
