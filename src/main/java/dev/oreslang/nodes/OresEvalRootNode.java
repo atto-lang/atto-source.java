@@ -3360,6 +3360,13 @@ public final class OresEvalRootNode extends RootNode {
                                             set.selectAsync(policy);
                                     if (selected.mode()
                                             == Ast.WaitMode.NONBLOCKING) {
+                                        // The wrapper below is a separate
+                                        // Future-chain task. Own the actual
+                                        // producer-side select registration
+                                        // so STOP cancels its pending arms.
+                                        if (ActorRuntime.inActorExecution()) {
+                                            context.actors().ownCurrentActorFuture(future);
+                                        }
                                         continuation.accept(
                                                 t,
                                                 wrapFutureSome(future),
@@ -6430,6 +6437,9 @@ public final class OresEvalRootNode extends RootNode {
                 OresFuture<ChannelRuntime.SelectResult> future =
                         set.selectAsync(policy);
                 if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    if (ActorRuntime.inActorExecution()) {
+                        context.actors().ownCurrentActorFuture(future);
+                    }
                     return wrapFutureSome(future);
                 }
                 return new OptionValue(
