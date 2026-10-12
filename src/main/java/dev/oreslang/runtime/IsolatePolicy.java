@@ -230,7 +230,7 @@ public record IsolatePolicy(
             hostAccess = explicitHostAccess(hostClasses);
         } else {
             hostAccess = adversarial
-                    ? HostAccess.newBuilder(HostAccess.NONE).allowMutableTargetMappings().methodScoping(true).build()
+                    ? HostAccess.UNTRUSTED
                     : HostAccess.NONE;
         }
 
