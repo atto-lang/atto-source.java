@@ -6,6 +6,7 @@ import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.OresFuture;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
+import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Value;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -120,8 +121,12 @@ final class HostFutureBridgeExecutionTest {
                     PROGRAM, "forged-host-bridge.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build());
             parsed.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
-            assertThrows(SecurityException.class, () -> parsed.execute(
-                    OresEvalRootNode.INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND, "work"));
+            PolyglotException rejection = assertThrows(PolyglotException.class,
+                    () -> parsed.execute(
+                            OresEvalRootNode.INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND, "work"));
+            assertTrue(rejection.getMessage().contains(
+                    "host Future handoff requires a matching scoped invocation"),
+                    "forged control command must fail at admission, not during guest task");
             assertEquals("", output.toString(),
                     "unauthenticated control command must be rejected before scheduling");
         }
@@ -136,11 +141,15 @@ final class HostFutureBridgeExecutionTest {
                     PROGRAM, "host-bridged-sync.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build());
             parsed.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
-            assertThrows(IllegalArgumentException.class,
+            PolyglotException first = assertThrows(PolyglotException.class,
                     () -> OresHostFutureBridge.invokePublicFuture(parsed, "ordinary"));
-            assertThrows(IllegalArgumentException.class,
+            assertTrue(first.getMessage().contains(
+                    "host Future handoff requires an async public function"));
+            PolyglotException second = assertThrows(PolyglotException.class,
                     () -> OresHostFutureBridge.invokePublicFuture(parsed, "ordinary"),
                     "failed invocation must not retain a prior host capture scope");
+            assertTrue(second.getMessage().contains(
+                    "host Future handoff requires an async public function"));
         }
     }
 }
