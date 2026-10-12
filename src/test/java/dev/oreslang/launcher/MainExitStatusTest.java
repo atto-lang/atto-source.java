@@ -64,6 +64,23 @@ final class MainExitStatusTest {
         assertEquals(2, exit("pub routine main(): void { process.exit(2); }"));
     }
 
+    @Test void firstExplicitExitWinsAcrossDeferredExit() throws Exception {
+        assertEquals(7, exit("""
+                pub routine main(): void {
+                    defer std.process.exit(5);
+                    std.process.exit(7);
+                }
+                """));
+    }
+
+    @Test void deferCanRequestExitOnNormalVoidReturn() throws Exception {
+        assertEquals(9, exit("""
+                pub routine main(): void {
+                    defer std.process.exit(9);
+                }
+                """));
+    }
+
     @Test void explicitProcessExitInsideAsyncMainIsNotProcessGlobal() throws Exception {
         assertEquals(13, exit("pub async routine main(): void { std.process.exit(13); }"));
     }
