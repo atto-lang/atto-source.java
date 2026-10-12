@@ -38,6 +38,33 @@ final class StreamOperatorPortContractTest {
                 "typed pipe ports are compatible"), "must not claim execution readiness");
     }
 
+    @Test void actorUtilsBothSpellingsShareFifteenStageValidation() {
+        StringBuilder declarations = new StringBuilder();
+        var stages = new java.util.ArrayList<String>();
+        for (int i = 0; i < 15; i++) {
+            declarations.append(stage("Stage" + i, "int", "int", "1"));
+            stages.add("spawn Stage" + i + "()");
+        }
+        for (String delimiter : new String[]{".", "::"}) {
+            String source = declarations + "pub fnc make_actor_pipeline(): ActorStream<int, int> { return ActorUtils"
+                    + delimiter + "pipe(" + String.join(", ", stages) + "); }";
+            assertTrue(rejected(source).getMessage().contains("typed pipe ports are compatible"));
+        }
+    }
+
+    @Test void actorUtilsReportsBadArityAndLatePortMismatch() {
+        for (String delimiter : new String[]{".", "::"}) {
+            assertTrue(rejected("pub routine main(): void { const flow = ActorUtils"
+                    + delimiter + "pipe(1); return; }").getMessage().contains("at least two stages"));
+            String source = stage("First", "int", "int", "1")
+                    + stage("Second", "int", "int", "1")
+                    + stage("Third", "String", "int", "1")
+                    + "pub routine main(): void { const flow = ActorUtils" + delimiter
+                    + "pipe(spawn First(), spawn Second(), spawn Third()); return; }";
+            assertTrue(rejected(source).getMessage().contains("pipe port type mismatch"));
+        }
+    }
+
     @Test void rejectsMismatchedPortBeforeGraphAdmission() {
         String source = stage("Parse", "String", "int", "1")
                 + stage("Validate", "String", "bool", "true")

@@ -839,7 +839,9 @@ public final class Ast {
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
-    public record NameExpr(String name) implements Expr { }
+    public record NameExpr(String name, boolean namespaceOnly) implements Expr {
+        public NameExpr(String name) { this(name, false); }
+    }
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }

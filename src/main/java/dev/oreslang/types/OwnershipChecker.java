@@ -693,7 +693,7 @@ public final class OwnershipChecker {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
         if (expr instanceof Ast.NameExpr name) {
-            VarState state = scope.lookup(name.name());
+            VarState state = name.namespaceOnly() ? null : scope.lookup(name.name());
             if (state == null && name.name().equals("None")) {
                 return new ValueInfo(
                         new Ast.TypeRef("Option", List.of(Ast.TypeRef.inferred()), false),
@@ -870,7 +870,7 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.MemberExpr member) {
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
-                VarState receiverState = scope.lookup(receiverName.name());
+                VarState receiverState = receiverName.namespaceOnly() ? null : scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
                     requireUsable(receiverState, receiverName.name(), false);
                     Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
@@ -1240,7 +1240,7 @@ public final class OwnershipChecker {
             }
 
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
-                VarState receiverState = scope.lookup(receiverName.name());
+                VarState receiverState = receiverName.namespaceOnly() ? null : scope.lookup(receiverName.name());
                 if (receiverState != null) {
                     requireUsable(receiverState, receiverName.name(), false);
                     Ast.TypeRef receiverType = receiverState.type;
@@ -1369,7 +1369,7 @@ public final class OwnershipChecker {
                 }
                 boolean protectedReceiver = false;
                 if (member.receiver() instanceof Ast.NameExpr receiverName) {
-                    VarState receiverState = scope.lookup(receiverName.name());
+                    VarState receiverState = receiverName.namespaceOnly() ? null : scope.lookup(receiverName.name());
                     protectedReceiver = receiverState != null && isScopedMutexReceiver(receiverState);
                 }
                 Map<String, Ast.TypeRef> ownerBindings = genericBindings(
@@ -1944,7 +1944,7 @@ public final class OwnershipChecker {
 
     private void scanExpr(Ast.Expr expr, Set<String> locals, Scope outer, String recursiveBinding, CaptureSet captures, boolean write) {
         if (expr instanceof Ast.NameExpr name) {
-            if (name.name().equals(recursiveBinding)) return;
+            if (name.namespaceOnly() || name.name().equals(recursiveBinding)) return;
             if (!locals.contains(name.name())) {
                 VarState state = outer.lookup(name.name());
                 if (state != null) captures.add(name.name(), state, write);
@@ -2208,7 +2208,7 @@ public final class OwnershipChecker {
 
     private Ast.ClassDecl classNamespaceOf(Ast.Expr expr, Scope scope) {
         if (expr instanceof Ast.NameExpr name) {
-            if (scope.lookup(name.name()) != null) return null;
+            if (!name.namespaceOnly() && scope.lookup(name.name()) != null) return null;
             return findClass(name.name());
         }
         if (expr instanceof Ast.MemberExpr member
@@ -2222,7 +2222,7 @@ public final class OwnershipChecker {
     private Ast.TypeRef receiverType(Ast.Expr receiver, Scope scope) {
         Ast.TypeRef type = null;
         if (receiver instanceof Ast.NameExpr name) {
-            VarState state = scope.lookup(name.name());
+            VarState state = name.namespaceOnly() ? null : scope.lookup(name.name());
             if (state != null) type = state.type;
         } else if (receiver instanceof Ast.NewExpr created) type = created.type();
         if (type == null) return null;
@@ -2380,7 +2380,7 @@ public final class OwnershipChecker {
     private Ast.TypeRef syntacticType(Ast.Expr expr, Scope scope) {
         if (expr instanceof Ast.LiteralExpr literal) return inferLiteralType(literal.value());
         if (expr instanceof Ast.NameExpr name) {
-            VarState state = scope.lookup(name.name());
+            VarState state = name.namespaceOnly() ? null : scope.lookup(name.name());
             return state == null ? Ast.TypeRef.inferred() : state.type;
         }
         if (expr instanceof Ast.NewExpr created) return created.type();

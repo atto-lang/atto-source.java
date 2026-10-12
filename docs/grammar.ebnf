@@ -282,7 +282,7 @@ postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ call_argument_list ] ")" ;
 call_argument_list = call_argument { "," call_argument } ;
 call_argument   = [ "..." ] expression ;
-member_suffix   = "." member_name ;
+member_suffix   = ("." | "::") member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
                 | "match" | "matches" | "eq" | "neq" | "is" | "when"
                 | "case" | "default" | "first" | "switch"
@@ -627,3 +627,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Class fields declared val/const are immutable; field mutation requires let
      plus mutable owner access.
 *)
+
+(* :: selects a declared class/module namespace and bypasses local value shadowing.
+   Its receiver must be a namespace path, not an arbitrary expression.
+   ActorUtils.pipe(a,b,...) and ActorUtils::pipe(a,b,...) validate the same
+   left-associated typed actor topology as a pipe b pipe ... .
+   Java source ActorStream execution remains unavailable. *)

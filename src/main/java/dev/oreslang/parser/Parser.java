@@ -3048,6 +3048,9 @@ public final class Parser {
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
+            } else if (match(DOUBLE_COLON)) {
+                String namespace = staticNamespaceName(expr);
+                expr = new Ast.MemberExpr(new Ast.NameExpr(namespace, true), consumeMemberName());
             } else if (match(DOT)) {
                 String member = consumeMemberName();
                 expr = new Ast.MemberExpr(expr, member);
@@ -3058,6 +3061,13 @@ public final class Parser {
             } else break;
         }
         return expr;
+    }
+
+    private String staticNamespaceName(Ast.Expr expr) {
+        if (expr instanceof Ast.NameExpr name) return name.name();
+        if (expr instanceof Ast.MemberExpr member)
+            return staticNamespaceName(member.receiver()) + "." + member.member();
+        throw error(previous(), "'::' requires a class or module namespace");
     }
 
     private List<Ast.TypeRef> parseCallTypeArguments() {

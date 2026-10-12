@@ -1894,7 +1894,7 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.NameExpr name) {
-            Env.Binding local = env.lookup(name.name());
+            Env.Binding local = name.namespaceOnly() ? null : env.lookup(name.name());
             if (local != null) {
                 if (local.hasUninitializedFields()) {
                     throw new IllegalArgumentException(
@@ -2178,6 +2178,21 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr pipe
+                    && pipe.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("ActorUtils") && pipe.member().equals("pipe")
+                    && (namespace.namespaceOnly() || env.lookup("ActorUtils") == null)
+                    && !classes.containsKey("ActorUtils") && !modules.containsKey("ActorUtils")) {
+                if (call.typeArgumentsPresent())
+                    throw new IllegalArgumentException("ActorUtils.pipe infers port types; explicit type arguments are unsupported");
+                if (call.arguments().size() < 2)
+                    throw new IllegalArgumentException("ActorUtils.pipe requires at least two stages");
+                Ast.Expr graph = call.arguments().getFirst();
+                for (int i = 1; i < call.arguments().size(); i++)
+                    graph = new Ast.BinaryExpr("pipe", graph, call.arguments().get(i));
+                return typeOf(graph, env, generics, self);
+            }
+
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -2248,7 +2263,7 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
-                    && env.lookup(namespace.name()) == null
+                    && (namespace.namespaceOnly() || env.lookup(namespace.name()) == null)
                     && modules.containsKey(namespace.name())) {
                 rejectUnimportedModuleNamespace(namespace.name());
                 int arity = fixedCallArity(
@@ -2974,7 +2989,7 @@ public final class TypeChecker {
                                 + " must be called so arity can select the scalar or list overload");
             }
             if (member.receiver() instanceof Ast.NameExpr namespace
-                    && env.lookup(namespace.name()) == null
+                    && (namespace.namespaceOnly() || env.lookup(namespace.name()) == null)
                     && modules.containsKey(namespace.name())) {
                 rejectUnimportedModuleNamespace(namespace.name());
                 Ast.FunctionDecl moduleFunction = findSingleQualifiedFunction(
@@ -4598,7 +4613,7 @@ public final class TypeChecker {
             Type self,
             boolean writing) {
         Type rawReceiver;
-        if (member.receiver() instanceof Ast.NameExpr name && env.lookup(name.name()) != null) {
+        if (member.receiver() instanceof Ast.NameExpr name && !name.namespaceOnly() && env.lookup(name.name()) != null) {
             Env.Binding binding = env.lookup(name.name());
             if (!writing && binding.isUninitialized(member.member())) {
                 throw new IllegalArgumentException(
