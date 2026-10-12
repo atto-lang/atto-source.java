@@ -98,6 +98,52 @@ final class ExplicitNativeI64RegionTest {
     }
 
     @Test
+    void physicalCloseRetriesAfterCleanupCallbackThrows() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "JDK25 FFM required");
+        var problem = new AtomicReference<Throwable>();
+        var completed = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnPrivate(() -> (message, ctx) -> {
+                try {
+                    var memory = ctx.actorOwnedMemory().orElseThrow();
+                    long before = memory.usedBytes();
+                    // This reservation uses the actor's normal logical budget
+                    // while probing an injected onRetired callback exception.
+                    // FFM itself is REAL; the native Arena must close once.
+                    var reservation = memory.reserveHeap(8L);
+                    var failOnce = new java.util.concurrent.atomic.AtomicBoolean(true);
+                    var region = new ExplicitNativeI64Region(1, reservation,
+                            memory::requireOwnerActive, () -> {
+                                if (failOnce.getAndSet(false)) {
+                                    throw new IllegalStateException("injected unregister fault");
+                                }
+                            });
+                    var slot = region.allocate(42);
+                    assertEquals(42, region.read(slot));
+                    assertThrows(IllegalStateException.class, region::retireFromActor);
+                    assertTrue(region.closed());
+                    assertFalse(region.physicallyClosed(),
+                            "callback failure must not report complete cleanup");
+                    assertEquals(before, memory.usedBytes(),
+                            "reservation is already released before unregister retry");
+                    region.retireFromActor();
+                    region.retireFromActor();
+                    assertTrue(region.physicallyClosed());
+                    assertEquals(before, memory.usedBytes());
+                    assertThrows(IllegalStateException.class, () -> region.read(slot));
+                } catch (Throwable err) {
+                    problem.compareAndSet(null, err);
+                } finally {
+                    completed.countDown();
+                }
+            });
+            actor.send("test");
+            assertTrue(completed.await(20, TimeUnit.SECONDS));
+            if (problem.get() != null) fail(problem.get());
+        }
+    }
+
+    @Test
     void rejectsUnsupportedPhysicalArenaInsteadOfManagedFallback() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var ref = runtime.<String>spawnPrivate(() -> (mail, ctx) -> {});
