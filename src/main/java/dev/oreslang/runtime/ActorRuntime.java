@@ -6487,11 +6487,18 @@ public final class ActorRuntime implements AutoCloseable {
                         if (carrierEntered) carrierActive = false;
                         if (scheduled.get()) scheduled.set(false);
                         if (stopped.get() && activeTurns == 0) finalizeStopLocked();
-                        reschedule = !stopped.get()
-                                && !forceKillFenced
+                        // A host stop can arrive after runBatchEntered()
+                        // releases the actor lease but before TurnExecutor
+                        // returns. The existing scheduled bit prevented stop()
+                        // from enqueueing its reserved teardown turn. Preserve
+                        // that pending lifecycle wake across this boundary;
+                        // otherwise done() can remain pending forever.
+                        reschedule = !forceKillFenced
                                 && !closed.get()
                                 && !finalized
-                                && hasQueuedWorkLocked();
+                                && (stopped.get()
+                                        ? gracefulTeardownPending
+                                        : hasQueuedWorkLocked());
                         lifecycleLock.notifyAll();
                     }
                 } finally {
