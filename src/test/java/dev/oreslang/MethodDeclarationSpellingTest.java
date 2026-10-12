@@ -106,6 +106,65 @@ final class MethodDeclarationSpellingTest {
     }
 
     @Test
+    void semicolonFreeFinalFieldsAcceptOnlyActualMemberBoundaries() {
+        Ast.ClassDecl actor = assertInstanceOf(Ast.ClassDecl.class, Parser.parse("""
+                define actor ConnectionActor as
+                    final rooms: Map<int, int>
+                    suspend method join_room(): void { return; }
+                    final other: int
+                    fnc leave_room(): void { return; }
+                end
+                """).modules().getFirst().declarations().getFirst());
+        assertEquals(2, actor.fields().size());
+        assertEquals(2, actor.methods().size());
+        assertTrue(actor.methods().getFirst().suspends());
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor Bad as
+                    final rooms: Map<int, int> suspend fnc join(): void { return; }
+                end
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor Bad as
+                    final rooms: Map<int, int>
+                    nonsensical identifier
+                end
+                """));
+    }
+
+    @Test
+    void typedCallbackNeverImplicitlyBindsInstanceButStaticRemainsReifiable() {
+        IllegalArgumentException bound = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Worker as
+                            pub method work(int value): int { return value; }
+                            pub static fnc reusable(int value): int { return value; }
+                        end
+                        fnc apply(Fnc<int, int> action, int value): int {
+                            return action(value);
+                        }
+                        fnc bad(): int {
+                            val worker = new Worker();
+                            return apply(worker.work, 1);
+                        }
+                        """)));
+        assertTrue(bound.getMessage().contains("direct-call-only"), bound::getMessage);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Worker as
+                    pub method work(int value): int { return value; }
+                    pub static fnc reusable(int value): int { return value; }
+                end
+                fnc apply(Fnc<int, int> action, int value): int {
+                    return action(value);
+                }
+                fnc good(): int {
+                    val worker = new Worker();
+                    return apply(|int value| -> { return worker.work(value); }, 1)
+                           + apply(Worker.reusable, 2);
+                }
+                """)));
+    }
+
+    @Test
     void doesNotReinterpretAnOrdinarySuspendMethodNameAsModifier() {
         Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
                 Parser.parse("""
