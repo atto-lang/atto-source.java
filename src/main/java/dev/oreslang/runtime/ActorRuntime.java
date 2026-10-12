@@ -1986,6 +1986,12 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
         private final AtomicReference<GroupMailmanState<?>> mailmanState = new AtomicReference<>();
+        // Separate from membership, event bus, Mailman and user-data channels.
+        // A failure is admitted once per actor and cannot be delayed by data mail.
+        private final Object memberFailureLock = new Object();
+        private final ArrayDeque<ActorFailureNotice> memberFailureControl = new ArrayDeque<>();
+        private OresFuture<ActorFailureNotice> memberFailureWaiter;
+        private IllegalStateException memberFailureOverflow;
         private UUID joinSecret = UUID.randomUUID();
 
         private ActorGroup(
@@ -2026,6 +2032,55 @@ public final class ActorRuntime implements AutoCloseable {
         public Set<ActorId> memberIds() {
             requireObserver("inspect ActorGroup membership");
             return Set.copyOf(members);
+        }
+
+        /**
+         * Wait for a member's exceptional termination on the group supervisor
+         * CONTROL lane, independent of ordinary user mail and Mailman output.
+         * Only the creator or host supervisor can consume notices. One pending
+         * reader per group prevents a competing consumer from stealing events.
+         *
+         * The returned Future is runtime-owned and supports actor suspension;
+         * callers must never block a carrier with Future.get().
+         */
+        public OresFuture<ActorFailureNotice> nextMemberFailure() {
+            requireManager("observe ActorGroup member failures");
+            synchronized (memberFailureLock) {
+                requireOpen();
+                if (memberFailureOverflow != null) {
+                    return OresFuture.failed(memberFailureOverflow);
+                }
+                if (memberFailureWaiter != null) {
+                    throw new IllegalStateException(
+                            "only one pending ActorGroup failure reader is allowed");
+                }
+                ActorFailureNotice queued = memberFailureControl.pollFirst();
+                if (queued != null) return OresFuture.completed(queued);
+                memberFailureWaiter = new OresFuture<>(() -> false, () -> { });
+                return memberFailureWaiter;
+            }
+        }
+
+        private void recordMemberFailure(ActorFailureNotice notice) {
+            OresFuture<ActorFailureNotice> waiting = null;
+            synchronized (memberFailureLock) {
+                if (groupClosed.get() || closed.get() || memberFailureOverflow != null) return;
+                if (memberFailureWaiter != null) {
+                    waiting = memberFailureWaiter;
+                    memberFailureWaiter = null;
+                } else if (memberFailureControl.size() >= memberLimit) {
+                    // Never silently drop safety-critical notifications. A
+                    // failure storm exceeds a bounded group lifecycle budget.
+                    memberFailureOverflow = new IllegalStateException(
+                            "ActorGroup supervisor CONTROL overflow: " + id);
+                    memberFailureControl.clear();
+                } else {
+                    memberFailureControl.addLast(notice);
+                }
+            }
+            // Completion invokes only enqueue-only runtime callbacks. Never
+            // settle under the group's queue lock or the failed actor's lock.
+            if (waiting != null) waiting.completeFromRuntime(notice);
         }
 
         int eventTopicLimit() { return eventTopicLimit; }
@@ -2269,6 +2324,16 @@ public final class ActorRuntime implements AutoCloseable {
                 // Revocation is part of close: even a capability held by code
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
+            }
+            OresFuture<ActorFailureNotice> abandoned;
+            synchronized (memberFailureLock) {
+                abandoned = memberFailureWaiter;
+                memberFailureWaiter = null;
+                memberFailureControl.clear();
+            }
+            if (abandoned != null) {
+                abandoned.failFromRuntime(
+                        new IllegalStateException("ActorGroup closed: " + id));
             }
             GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
             if (mailman != null) mailman.close();
@@ -6541,6 +6606,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            List<ActorGroup> failureGroups = List.of();
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -6554,6 +6620,15 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
+                if (recordCause && cause != null
+                        && !(cause instanceof ActorCancelledException)
+                        && !(cause instanceof ActorCancellationSignal)) {
+                    // Snapshot before finalizeStopLocked() removes group
+                    // membership. Delivery happens outside all actor locks.
+                    failureGroups = actorGroups.values().stream()
+                            .filter(group -> group.members.contains(ref.id()))
+                            .toList();
+                }
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
@@ -6571,6 +6646,9 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorFailureNotice notice = failureNotice(ref.id(), cause);
                 ref.failureNoticeFuture.completeFromRuntime(notice);
                 if (parent != null) parent.enqueueChildFailure(notice);
+                for (ActorGroup group : failureGroups) {
+                    group.recordMemberFailure(notice);
+                }
             }
 
             OresFuture<ActorFailureNotice> abandoned;

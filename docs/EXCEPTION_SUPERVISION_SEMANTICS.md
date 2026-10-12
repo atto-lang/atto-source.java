@@ -119,10 +119,21 @@ does not unblock the failed actor, and cannot suppress the audit event.
 * Actor class methods spelled `on_throw`, `on_throws`, `on_raise`,
   `on_panic` or `on_recover` currently fail closed in the Java parser; an
   ordinary user method must not masquerade as a checked supervisor handler.
-* ActorGroup-level supervision dispatch, CONTROL scheduling reservation,
-  checked `on_*` handlers, source `throw/raise/panic/recover` lowering,
-  exhaustive effect checking and full cross-suspension cleanup audit remain
-  future implementation work.
+* The host-managed `ActorGroup.nextMemberFailure()` CONTROL inbox now
+  receives each exceptional member termination independently of data mail,
+  Mailman output and final membership removal. Only the creator or host
+  manager may observe notices; one pending reader is allowed. Its queue
+  is bounded by group membership capacity, and a failure storm causes a
+  sticky, explicit overflow error rather than silently losing notices.
+  A group close fails its pending reader, while ordinary actor stops do
+  not generate false failure events. Regression tests exercise an already
+  saturated ordinary mailbox, member teardown, authorization, overflow
+  and a healthy sibling alongside a failed worker.
+* This is host/runtime `Future` delivery, not yet automatic actor `on_*`
+  dispatch. Reserved CONTROL scheduling credits, checked source
+  `on_throw/on_raise/on_panic` handlers, source
+  `throw/raise/panic/recover` lowering, exhaustive effect checking and
+  full cross-suspension cleanup audit remain future implementation work.
 
 **LLVM native**
 
