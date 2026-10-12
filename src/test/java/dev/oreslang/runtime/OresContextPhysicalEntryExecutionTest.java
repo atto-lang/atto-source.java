@@ -22,6 +22,7 @@ final class OresContextPhysicalEntryExecutionTest {
             host.parse(Source.newBuilder(OresLanguage.ID,
                     "pub fnc main(): int { return 1; }", "real-gate-root.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build());
+            host.initialize(OresLanguage.ID);
             OresContext owner = OresContext.singleHostOwnedContext();
             var entered = new CountDownLatch(1);
             var turns = new AtomicInteger();
@@ -48,12 +49,14 @@ final class OresContextPhysicalEntryExecutionTest {
             first.parse(Source.newBuilder(OresLanguage.ID,
                     "pub fnc main(): int { return 1; }", "one.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build());
+            first.initialize(OresLanguage.ID);
             OresContext firstOwner = OresContext.singleHostOwnedContext();
             try (Context second = Context.newBuilder(OresLanguage.ID)
                     .allowAllAccess(true).build()) {
                 second.parse(Source.newBuilder(OresLanguage.ID,
                         "pub fnc main(): int { return 2; }", "two.ores")
                         .mimeType(OresLanguage.MIME_TYPE).build());
+                second.initialize(OresLanguage.ID);
                 assertThrows(SecurityException.class,
                         OresContext::singleHostOwnedContext);
                 assertThrows(SecurityException.class,
