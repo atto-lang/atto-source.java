@@ -5,7 +5,8 @@ function safe(n,name){if(!Number.isSafeInteger(n)||n<0)throw new RangeError(name
 export function validateTensor(t,{acrossActor=false,allowGpu=false}={}){
  if(!t||typeof t!=="object"||Array.isArray(t))throw new TypeError("tensor object required");
  const keys=["dtype","shape","strides","byte_length","layout","device","ownership","lifetime"];
- if(Object.keys(t).sort().join(",")!==keys.sort().join(","))throw new TypeError("unknown or missing tensor fields");
+ const own=Object.keys(t),expected=new Set(keys);
+ if(own.length!==keys.length||own.some(k=>!expected.has(k))||keys.some(k=>!Object.hasOwn(t,k)))throw new TypeError("unknown or missing tensor fields");
  const width=Object.hasOwn(widths,t.dtype)?widths[t.dtype]:null;if(!width)throw new TypeError("unsupported dtype");
  if(!Array.isArray(t.shape)||!Array.isArray(t.strides)||t.shape.length<1||t.shape.length>8||t.shape.length!==t.strides.length)throw new RangeError("rank mismatch");
  if(!["row_major","column_major","strided"].includes(t.layout))throw new TypeError("layout");
