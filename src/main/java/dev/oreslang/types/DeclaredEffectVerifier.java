@@ -146,6 +146,19 @@ public final class DeclaredEffectVerifier {
             collect(await.expression(), effects, stateAccess, callableName, serial);
             return;
         }
+        // SourceTask may lower a loop backedge into a continuation handoff,
+        // even when no explicit rt cooperate appears in its body. This must
+        // appear in the caller's using-effect upper bound. The sealed inline
+        // handle_state callback runs synchronously and is deliberately exempt:
+        // its state loan is not suspendable until generation-fenced lowering
+        // exists, and admission separately rejects explicit suspension there.
+        if (stateAccess == null
+                && (node instanceof Ast.ForStmt
+                    || node instanceof Ast.ForOfStmt
+                    || node instanceof Ast.ForOfDestructureStmt
+                    || node instanceof Ast.LoopStmt)) {
+            effects.add(FunctionEffects.Effect.SUSPEND);
+        }
         if (node instanceof Ast.NewExpr || node instanceof Ast.ListExpr
                 || node instanceof Ast.TupleExpr || node instanceof Ast.ObjectExpr) {
             effects.add(FunctionEffects.Effect.ALLOC);
