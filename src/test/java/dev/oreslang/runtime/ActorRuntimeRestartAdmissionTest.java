@@ -44,7 +44,7 @@ final class ActorRuntimeRestartAdmissionTest {
             var permit = group.reserveFinalizedRestart(
                     original.child(), failed.id(), original.incarnation());
             ActorRuntime.ActorRef<Integer> next = group.spawnUnpublishedRestartCandidate(
-                    ActorRuntime.ActorKind.PRIVATE,
+                    permit, ActorRuntime.ActorKind.PRIVATE,
                     IsolatePolicy.developer(),
                     context -> (value, turn) -> turn.self().stop());
 
@@ -77,7 +77,7 @@ final class ActorRuntimeRestartAdmissionTest {
             java.util.concurrent.atomic.AtomicInteger initialized =
                     new java.util.concurrent.atomic.AtomicInteger();
             ActorRuntime.ActorRef<Integer> hidden = group.spawnUnpublishedRestartCandidate(
-                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    permit, ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
                     context -> {
                         initialized.incrementAndGet();
                         return (value, turn) -> {};
@@ -108,7 +108,7 @@ final class ActorRuntimeRestartAdmissionTest {
             waitForFinalized(group, original.child());
             var permit = group.reserveFinalizedRestart(original.child(), failed.id(), 1);
             ActorRuntime.ActorRef<Integer> candidate = group.spawnUnpublishedRestartCandidate(
-                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    permit, ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
                     context -> (value, turn) -> {});
             CountDownLatch start = new CountDownLatch(1);
             CountDownLatch bothReady = new CountDownLatch(2);
@@ -172,7 +172,7 @@ final class ActorRuntimeRestartAdmissionTest {
 
             var permit = group.reserveFinalizedRestart(old.child(), failed.id(), 1);
             ActorRuntime.ActorRef<Integer> next = group.spawnUnpublishedRestartCandidate(
-                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    permit, ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
                     context -> (value, turn) -> {});
             next.stop();
             assertTrue(next.awaitTermination(5, TimeUnit.SECONDS));
