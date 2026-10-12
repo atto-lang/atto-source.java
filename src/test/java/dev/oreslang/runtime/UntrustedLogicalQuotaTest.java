@@ -38,6 +38,29 @@ final class UntrustedLogicalQuotaTest {
     private static volatile FuelProbe fuelProbe;
     private static volatile DeadlineProbe deadlineProbe;
 
+    /** Static nested task avoids capturing the enclosing test instance. */
+    private static final class NestedSourceQuotaTask implements OresScheduler.Task<Integer> {
+        private final ActorRuntime runtime;
+        private OresFuture<Integer> child;
+
+        private NestedSourceQuotaTask(ActorRuntime runtime) {
+            this.runtime = runtime;
+        }
+
+        @Override
+        public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+            runtime.schedulerSafepoint();
+            if (resume.initial()) {
+                child = runtime.startActorTask(next -> {
+                    runtime.schedulerSafepoint();
+                    return OresScheduler.done(7);
+                });
+                return OresScheduler.await(child);
+            }
+            return OresScheduler.done((Integer) resume.value());
+        }
+    }
+
     @Test
     void fuelDebtSurvivesAnyNumberOfCooperateHandoffs() {
         AtomicLong wall = new AtomicLong();
@@ -273,24 +296,8 @@ final class UntrustedLogicalQuotaTest {
         nestedProbe = new NestedProbe(outerRef);
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<String>spawnUntrusted(context -> (message, turn) ->
-                    nestedProbe.outerRef().set(turn.runtime().startActorTask(new OresScheduler.Task<>() {
-                        private OresFuture<Integer> child;
-
-                        @Override
-                        public OresScheduler.Step<Integer> resume(
-                                OresScheduler.Resume resume) {
-                            turn.runtime().schedulerSafepoint();
-                            if (resume.initial()) {
-                                child = turn.runtime().startActorTask(
-                                        next -> {
-                                            turn.runtime().schedulerSafepoint();
-                                            return OresScheduler.done(7);
-                                        });
-                                return OresScheduler.await(child);
-                            }
-                            return OresScheduler.done((Integer) resume.value());
-                        }
-                    })));
+                    nestedProbe.outerRef().set(turn.runtime().startActorTask(
+                            new NestedSourceQuotaTask(turn.runtime()))));
             actor.send("nested");
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             while (outerRef.get() == null && System.nanoTime() < deadline) {
