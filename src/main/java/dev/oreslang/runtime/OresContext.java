@@ -430,6 +430,25 @@ public final class OresContext implements AutoCloseable {
                         vm.rootScheduler(), hostGeneratorTurns.token(), frame));
     }
 
+    /**
+     * Host-only typed AST entry: called after a one-use scoped generator
+     * command has been authenticated by the Truffle root. No work starts here.
+     */
+    public GeneratorRuntime.HostPullSession openStagedSourceGenerator(
+            dev.oreslang.ast.Ast.Program program, String function,
+            java.util.Map<String, ?> arguments) {
+        if (isolatedRootTurns != null) {
+            throw new UnsupportedOperationException(
+                    "strict isolation requires caller-thread host-turn admission");
+        }
+        GeneratorRuntime.SourceLowering frame =
+                GeneratorRuntime.SourceLowering.compile(program, function, arguments);
+        return new GeneratorRuntime.HostPullSession(
+                hostGeneratorTurns,
+                GeneratorRuntime.schedulerBacked(
+                        vm.rootScheduler(), hostGeneratorTurns.token(), frame));
+    }
+
     /** Neither a scheduler binding nor a guest-entry lease alone suffices. */
     static boolean generatorRootTurnAuthorized(
             boolean rootSchedulerBound, boolean rootGuestPhysicallyEntered) {
