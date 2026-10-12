@@ -113,6 +113,37 @@ final class SelectCompiledWhilePlanTest {
     }
 
     @Test
+    void mixedReadWriteWhileSelectKeepsFairnessWithoutCachingWritePayload()
+            throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val Channel<int> input = Channel.new<int>(1);
+                  val Channel<int> output = Channel.new<int>(1);
+                  writech input, 8;
+                  let int turns = 0;
+                  while turns < 6 {
+                    select {
+                      when readch input: let event {
+                        stdio.stdout.write("R");
+                        writech input, event;
+                      }
+                      when writech output, turns: {
+                        stdio.stdout.write("W");
+                        stdio.stdout.write(readch output);
+                      }
+                    }
+                    turns = turns + 1;
+                  }
+                  return;
+                }
+                """;
+        // Write payloads must be re-evaluated after every new loop turn.
+        // FAIR must rotate only on actual wins, not ticket allocation.
+        assertEquals("RW1RW3RW5",
+                SelectNestedReturnContractTest.run(source));
+    }
+
+    @Test
     void compiledWhileSelectReevaluatesChangedChannelBinding()
             throws Exception {
         String source = """
