@@ -1,5 +1,13 @@
 # Oreslang actor state: with / using / critical (pre-1.0 normative contract)
 
+> **Pre-1.0 design update (2026-10-12):** The normative contract is
+> [WITH_USING_STATE_CONTRACT.md](WITH_USING_STATE_CONTRACT.md):
+> `with` declares permitted effects, `using` acquires lexical capabilities,
+> `self.handle_state(|state|...)` reads by default, and `critical`
+> grants exclusive write access. Historical syntax discussions below
+> are retained for audit history but are superseded where they disagree.
+
+
 ## Three distinct responsibilities
 
 1. `with` on a function or actor method declares an upper bound on effects
