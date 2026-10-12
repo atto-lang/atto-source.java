@@ -268,6 +268,17 @@ public final class MacroExpander {
                 throw fail(token, "only expression macro bodies are supported");
             }
         }
+        // Unused arguments would be erased before the parser, type checker and
+        // ownership checker ever saw their tokens. Until captures are parsed
+        // as typed AST fragments, require each capture exactly once: neither
+        // duplicating a side effect nor hiding invalid code is permissible.
+        for (Parameter parameter : params) {
+            if (useCounts.get(parameter.name) == 0) {
+                throw fail(template.getFirst(),
+                        "unused macro capture $" + parameter.name
+                                + " would discard unchecked source; use every capture exactly once");
+            }
+        }
     }
 
     private static List<Token> expandTokens(List<Token> input, Map<String, Definition> definitions,
