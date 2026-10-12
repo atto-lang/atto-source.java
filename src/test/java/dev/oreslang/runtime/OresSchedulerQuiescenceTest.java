@@ -645,6 +645,135 @@ final class OresSchedulerQuiescenceTest {
         }
     }
 
+
+    @Test
+    void globalTimedAdmissionStaysBoundedThroughBlockedFutureNotifications()
+            throws Exception {
+        int before = OresScheduler.availableWallDeadlineAdmissions();
+        assertTrue(before >= 2, "expected admission capacity for timed tasks");
+        CountDownLatch notificationEntered = new CountDownLatch(1);
+        CountDownLatch releaseNotification = new CountDownLatch(1);
+        java.util.List<OresFuture<Integer>> admitted = new java.util.ArrayList<>();
+        OresFuture<Integer> unresolved = new OresFuture<>();
+        OresScheduler scheduler = new OresScheduler(1);
+        Thread cancelling = null;
+        try {
+            for (int i = 0; i < before; i++) {
+                admitted.add(scheduler.startWithWallDeadline(
+                        resume -> OresScheduler.await(unresolved),
+                        () -> { },
+                        TimeUnit.SECONDS.toNanos(30),
+                        new IllegalStateException("quota " + i)));
+            }
+            assertEquals(0, OresScheduler.availableWallDeadlineAdmissions(),
+                    "global timed admission must have a fixed upper bound");
+            OresFuture<Integer> first = admitted.get(0);
+            first.whenCompleteRuntime((value, failure) -> {
+                notificationEntered.countDown();
+                try {
+                    releaseNotification.await(3, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            cancelling = Thread.ofVirtual().start(() -> first.cancel(false));
+            assertTrue(notificationEntered.await(2, TimeUnit.SECONDS));
+            assertTrue(first.isDone(),
+                    "terminal state may be visible while a subscriber is blocked");
+            assertEquals(0, OresScheduler.availableWallDeadlineAdmissions(),
+                    "settlement must not reuse a slot until subscribers drain");
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    java.util.concurrent.RejectedExecutionException.class,
+                    () -> scheduler.startWithWallDeadline(
+                            resume -> OresScheduler.done(5),
+                            () -> { },
+                            TimeUnit.SECONDS.toNanos(30),
+                            new IllegalStateException("overload")));
+            releaseNotification.countDown();
+            cancelling.join(3_000);
+            assertFalse(cancelling.isAlive());
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (OresScheduler.availableWallDeadlineAdmissions() == 0
+                    && System.nanoTime() < until) Thread.sleep(1);
+            assertTrue(OresScheduler.availableWallDeadlineAdmissions() >= 1,
+                    "a drained cancellation must restore a global slot");
+            OresFuture<Integer> successor = scheduler.startWithWallDeadline(
+                    resume -> OresScheduler.done(7),
+                    () -> { },
+                    TimeUnit.SECONDS.toNanos(30),
+                    new IllegalStateException("unexpected expiration"));
+            assertEquals(7, successor.get(3, TimeUnit.SECONDS));
+        } finally {
+            releaseNotification.countDown();
+            if (cancelling != null) cancelling.join(3_000);
+            for (OresFuture<Integer> future : admitted) future.cancel(false);
+            scheduler.close();
+        }
+        assertEquals(before, OresScheduler.availableWallDeadlineAdmissions(),
+                "shutdown must release all timed admission reservations");
+    }
+
+    @Test
+    void wallDeadlineCompletionCancellationAndShutdownRaceRetiresExactlyOnce()
+            throws Exception {
+        int before = OresScheduler.availableWallDeadlineAdmissions();
+        int count = 30;
+        CountDownLatch retired = new CountDownLatch(count);
+        java.util.concurrent.atomic.AtomicIntegerArray retireCounts =
+                new java.util.concurrent.atomic.AtomicIntegerArray(count);
+        java.util.List<OresFuture<Integer>> results = new java.util.ArrayList<>();
+        java.util.List<OresFuture<Integer>> producers = new java.util.ArrayList<>();
+        java.util.List<Thread> competitors = new java.util.ArrayList<>();
+        OresScheduler scheduler = new OresScheduler(4);
+        try {
+            for (int i = 0; i < count; i++) {
+                final int index = i;
+                OresFuture<Integer> producer = new OresFuture<>();
+                producers.add(producer);
+                results.add(scheduler.startWithWallDeadline(
+                        resume -> resume.initial()
+                                ? OresScheduler.<Integer>await(producer)
+                                : OresScheduler.done(17),
+                        () -> {
+                            retireCounts.incrementAndGet(index);
+                            retired.countDown();
+                        },
+                        TimeUnit.MILLISECONDS.toNanos(150),
+                        new IllegalStateException("expired " + index)));
+            }
+            for (int i = 0; i < count; i++) {
+                final int index = i;
+                if (i % 3 == 0) {
+                    competitors.add(Thread.ofVirtual().start(() ->
+                            results.get(index).cancel(false)));
+                } else if (i % 3 == 1) {
+                    competitors.add(Thread.ofVirtual().start(() ->
+                            producers.get(index).completeFromRuntime(17)));
+                }
+            }
+            for (Thread thread : competitors) thread.join(3_000);
+            for (OresFuture<Integer> future : results) {
+                try {
+                    future.get(3, TimeUnit.SECONDS);
+                } catch (java.util.concurrent.ExecutionException
+                        | java.util.concurrent.CancellationException expected) {
+                    // Success, cancellation and timeout may win the race.
+                }
+            }
+            assertTrue(retired.await(3, TimeUnit.SECONDS));
+            for (int i = 0; i < count; i++) {
+                assertEquals(1, retireCounts.get(i),
+                        "exactly-once physical retirement of task " + i);
+                assertEquals(0, producers.get(i).pendingRuntimeWaiterCount(),
+                        "terminal task " + i + " must detach its producer await");
+            }
+        } finally {
+            scheduler.close();
+        }
+        assertEquals(before, OresScheduler.availableWallDeadlineAdmissions(),
+                "all deadline reservations must be released across races");
+    }
+
     @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
