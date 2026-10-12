@@ -242,13 +242,17 @@ carrier is executing, retires its quota slot without another actor turn.
 An active guest turn may have its completion suppressed immediately but
 **must exit its physical carrier before its memory/quota can be released**.
 
-Timed source tasks now acquire one of **256 process-wide timed-admission
-reservations** before admission. The admission is fail-closed when those
-slots are full; a rejected task does not receive a budget or enter the
-actor's scheduler. A reservation is held until **both** physical task
-quiescence and the winning Future's synchronous subscriber notification
-drain have completed. Cancellation or visible Future settlement alone cannot
-recycle a reservation while a host callback remains blocked.
+Timed UNTRUSTED source tasks acquire both a **32-per-actor admission**
+and one of **256 process-wide timed-admission reservations** before admission.
+Admission is fail-closed when either limit is full, preventing a single actor
+from monopolizing all process-wide notifier capacity. A rejected task does
+not receive a new quota or enter the scheduler. Actor-local reservations
+are held through the winning Future's subscriber notification drain,
+even after the physical guest and logical cohort have retired. The global
+reservation is held until **both** physical task quiescence and the Future's
+synchronous subscriber notification drain have completed. Visible
+cancellation or Future settlement alone cannot recycle either reservation
+while a host callback remains blocked.
 
 Deadline task revocation runs on dedicated host timer workers; potentially
 blocking actor retirement and synchronous Future notifications run on a
