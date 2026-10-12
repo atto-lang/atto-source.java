@@ -97,7 +97,6 @@ public final class NativeHttp implements AutoCloseable {
         synchronized boolean claimIfOpen(String token, V value) {
             return !sealed && entries.remove(token, value);
         }
-        V remove(String token) { return entries.remove(token); }
         boolean remove(String token, V value) { return entries.remove(token, value); }
         int size() { return entries.size(); }
         /** Non-sealing snapshot for listener-scoped retirement. */
