@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.MacroExpander;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
@@ -28,6 +29,7 @@ import java.util.Set;
  */
 public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
+    private final Map<String, MacroExpander.Snapshot> macroSnapshots = new LinkedHashMap<>();
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -50,13 +52,17 @@ public final class IncrementalCompiler {
         Map<String, String> hashes = new LinkedHashMap<>();
         Map<String, String> abiHashes = new LinkedHashMap<>();
         Map<String, Ast.Program> parsed = new LinkedHashMap<>();
+        Map<String, MacroExpander.Snapshot> nextMacroSnapshots = new LinkedHashMap<>();
 
         // Parse the complete source set before resolving imports. This is the
         // first half of cycle tolerance: A may name B while B names A because
         // neither unit is recursively compiled while discovering the other.
         for (Map.Entry<String, String> entry : normalized.entrySet()) {
             hashes.put(entry.getKey(), digest(entry.getValue()));
-            Ast.Program program = AnnotationExpander.expand(Parser.parse(entry.getValue()));
+            Parser.MacroParseResult expanded = Parser.parseWithMacroSnapshot(
+                    entry.getValue(), macroSnapshots.get(entry.getKey()));
+            Ast.Program program = AnnotationExpander.expand(expanded.program());
+            nextMacroSnapshots.put(entry.getKey(), expanded.snapshot());
             parsed.put(entry.getKey(), program);
             abiHashes.put(entry.getKey(), abiDigest(program));
         }
@@ -138,6 +144,8 @@ public final class IncrementalCompiler {
 
         cache.keySet().retainAll(normalized.keySet());
         cache.putAll(next);
+        macroSnapshots.keySet().retainAll(normalized.keySet());
+        macroSnapshots.putAll(nextMacroSnapshots);
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
@@ -202,6 +210,7 @@ public final class IncrementalCompiler {
     }
 
     public synchronized void clear() {
+        macroSnapshots.clear();
         cache.clear();
     }
 
