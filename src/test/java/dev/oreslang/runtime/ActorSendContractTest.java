@@ -500,4 +500,35 @@ final class ActorSendContractTest {
         }
     }
 
+    @Test
+    void awaitTerminationRequiresDoneEvenAfterRegistryEntryDisappears() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            // Reproduce the unregister -> DONE publication window precisely.
+            // We restore the entry before stopping so no live actor is lost.
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Map<ActorRuntime.ActorId, Object> actors =
+                    (java.util.Map<ActorRuntime.ActorId, Object>) actorsField.get(runtime);
+            Object cell = actors.remove(actor.id());
+            assertNotNull(cell);
+            try {
+                int before = actor.getDone().pendingRuntimeWaiterCount();
+                assertFalse(actor.awaitTermination(25, TimeUnit.MILLISECONDS),
+                        "registry removal does not mean DONE was published");
+                assertEquals(before, actor.getDone().pendingRuntimeWaiterCount(),
+                        "timed-out awaitTermination must detach its waiter");
+            } finally {
+                assertNull(actors.put(actor.id(), cell));
+            }
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            actor.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
 }
