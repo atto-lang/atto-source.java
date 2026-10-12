@@ -86,10 +86,16 @@ final class SerialExecutionTicket {
             Object executingIncarnation,
             SerialActorAdmission.Lease activeReceive) {
         if (retired.get()) throw new RetiredTaskException();
-        if (!actorAlive.getAsBoolean()
-                || !actorId.equals(executingActorId)
+        // A foreign actor/incarnation is an authority violation even if the
+        // source actor happens to have stopped. A correctly issued ticket
+        // revoked by STOP is instead a benign retired continuation to drop:
+        // normal cancellation must not poison the old actor's done() result.
+        if (!actorId.equals(executingActorId)
                 || incarnation != executingIncarnation) {
-            throw new IllegalStateException("stale or foreign actor continuation ticket");
+            throw new IllegalStateException("foreign actor continuation ticket");
+        }
+        if (!actorAlive.getAsBoolean()) {
+            throw new RetiredTaskException();
         }
         // A finished receive can leave an already-queued continuation behind
         // before the scheduler's own terminal callback retires the ticket.
