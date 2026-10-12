@@ -6289,8 +6289,26 @@ public final class ActorRuntime implements AutoCloseable {
                 // reachable. Its failure must be observable from actor.done.
                 recordFinalizationFailure(exitFailure);
             }
-            unregisterActor(this);
-            if (parent != null) parent.childFinalized(this);
+            // Neither ActorGroup deregistration nor parent bookkeeping may
+            // strand the runtime-owned done observer after we already
+            // irreversibly committed finalized=true. Preserve the failure
+            // and continue remaining retirement notification steps.
+            try {
+                unregisterActor(this);
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                throw fatal;
+            } catch (Throwable unregisterFailure) {
+                recordFinalizationFailure(unregisterFailure);
+            }
+            if (parent != null) {
+                try {
+                    parent.childFinalized(this);
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable parentFailure) {
+                    recordFinalizationFailure(parentFailure);
+                }
+            }
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
                 // Preserve the initializer failure as the direct cause of
