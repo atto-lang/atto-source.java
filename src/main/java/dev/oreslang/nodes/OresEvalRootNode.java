@@ -4601,11 +4601,15 @@ public final class OresEvalRootNode extends RootNode {
         private static final int MAX_CLEANUP_SUPPRESSED = 64;
 
         private static void suppressCleanupFailure(Throwable primary, Throwable secondary) {
-            // An untrusted source may register many failing defers. Preserve the
-            // primary control channel without unbounded diagnostic allocations.
-            if (primary != secondary
-                    && primary.getSuppressed().length < MAX_CLEANUP_SUPPRESSED) {
-                primary.addSuppressed(secondary);
+            // A Throwable can be observed by multiple task completions. Bound
+            // both the check and the insertion atomically, exactly as source
+            // trace recording does; otherwise concurrent cleanup can overrun
+            // the diagnostic quota on a shared failure.
+            if (primary == secondary) return;
+            synchronized (primary) {
+                if (primary.getSuppressed().length < MAX_CLEANUP_SUPPRESSED) {
+                    primary.addSuppressed(secondary);
+                }
             }
         }
 
