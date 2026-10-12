@@ -64,7 +64,16 @@ final class SerialHttpStalledActorTest {
                   stdio.println(server.transfer_backlog);
                   stdio.println(server.tombstones);
                   stdio.println(server.transfer_rejected);
+                  // Ordinary user mail must survive selective HTTP retirement.
+                  handler.send("unrelated-user-mail");
                   await server.shutdown(0);
+                  stdio.println("POST_SHUTDOWN");
+                  stdio.println(server.active);
+                  stdio.println(server.transfer_backlog);
+                  stdio.println(server.tombstones);
+                  // A listener shutdown is not a cancellation of this actor.
+                  handler.send("still-alive-user-mail");
+                  stdio.println("ACTOR_PRESERVED");
                   return;
                 }
                 """;
@@ -131,5 +140,12 @@ final class SerialHttpStalledActorTest {
                 "the actor retains exactly the bounded unclaimed tombstone set");
         assertEquals(Integer.toString(capacity), lines.get(marker + 3));
         assertEquals(Integer.toString(attempts - capacity), lines.get(marker + 4));
+        int stoppedAt = lines.indexOf("POST_SHUTDOWN");
+        assertTrue(stoppedAt > marker, () -> "missing shutdown drain: " + lines);
+        assertEquals("0", lines.get(stoppedAt + 1), "no active HTTP after shutdown");
+        assertEquals("0", lines.get(stoppedAt + 2), "queued HTTP leases reclaimed");
+        assertEquals("0", lines.get(stoppedAt + 3), "queued tombstone counters reclaimed");
+        assertEquals("ACTOR_PRESERVED", lines.get(stoppedAt + 4),
+                "listener shutdown must not cancel the persistent actor");
     }
 }
