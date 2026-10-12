@@ -1,9 +1,6 @@
 package dev.oreslang.net;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-
 /**
  * JNI boundary for Oreslang networking.
  *
@@ -27,18 +24,27 @@ final class NativeSocketBridge {
     private static void loadNativeLibrary() {
         String explicit = System.getProperty("ores.net.native.path");
         if (explicit != null && !explicit.isBlank()) {
-            System.load(Path.of(explicit).toAbsolutePath().normalize().toString());
+            System.load(explicit);
             return;
         }
 
-        Path local = Path.of("target", "native", System.mapLibraryName(LIBRARY))
-                .toAbsolutePath().normalize();
-        if (Files.isRegularFile(local)) {
-            System.load(local.toString());
+        String separator = System.getProperty("file.separator", "/");
+        String local = System.getProperty("user.dir", ".")
+                + separator + "target"
+                + separator + "native"
+                + separator + System.mapLibraryName(LIBRARY);
+        try {
+            System.load(local);
             return;
+        } catch (UnsatisfiedLinkError localFailure) {
+            try {
+                System.loadLibrary(LIBRARY);
+                return;
+            } catch (UnsatisfiedLinkError pathFailure) {
+                pathFailure.addSuppressed(localFailure);
+                throw pathFailure;
+            }
         }
-
-        System.loadLibrary(LIBRARY);
     }
 
     private static native long connect(String host, int port, int timeoutMillis) throws IOException;
@@ -72,10 +78,24 @@ final class NativeSocketBridge {
     private static native void setSoTimeout(long fd, int timeoutMillis) throws IOException;
     private static native int getSoTimeout(long fd) throws IOException;
     private static native void setSendTimeout(long fd, int timeoutMillis) throws IOException;
+    private static native int getSendTimeout(long fd) throws IOException;
 
+
+    private static NativeSocketHandle wrapFd(long fd) throws IOException {
+        try {
+            return new NativeSocketHandle(fd);
+        } catch (RuntimeException | Error failure) {
+            try {
+                close(fd);
+            } catch (IOException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
+            throw failure;
+        }
+    }
 
     static NativeSocketHandle connectHandle(String host, int port, int timeoutMillis) throws IOException {
-        return new NativeSocketHandle(connect(host, port, timeoutMillis));
+        return wrapFd(connect(host, port, timeoutMillis));
     }
 
     static NativeSocketHandle listenHandle(
@@ -83,11 +103,11 @@ final class NativeSocketBridge {
             int port,
             int backlog,
             boolean reuseAddress) throws IOException {
-        return new NativeSocketHandle(listen(host, port, backlog, reuseAddress));
+        return wrapFd(listen(host, port, backlog, reuseAddress));
     }
 
     static NativeSocketHandle accept(NativeSocketHandle listener) throws IOException {
-        return listener.withFd(fd -> new NativeSocketHandle(accept(fd)));
+        return listener.withFd(fd -> wrapFd(accept(fd)));
     }
 
     static int read(
@@ -186,6 +206,10 @@ final class NativeSocketBridge {
         return handle.withFd(NativeSocketBridge::getSoTimeout);
     }
 
+    static int getSendTimeout(NativeSocketHandle handle) throws IOException {
+        return handle.withFd(NativeSocketBridge::getSendTimeout);
+    }
+
     static void setActorIoTimeout(
             NativeSocketHandle handle,
             int timeoutMillis) throws IOException {
@@ -194,8 +218,18 @@ final class NativeSocketBridge {
                     "actor I/O timeout must be positive and bounded");
         }
         handle.withFdVoid(fd -> {
-            setSoTimeout(fd, timeoutMillis);
+            int previousSendTimeout = getSendTimeout(fd);
             setSendTimeout(fd, timeoutMillis);
+            try {
+                setSoTimeout(fd, timeoutMillis);
+            } catch (IOException receiveTimeoutFailure) {
+                try {
+                    setSendTimeout(fd, previousSendTimeout);
+                } catch (IOException rollbackFailure) {
+                    receiveTimeoutFailure.addSuppressed(rollbackFailure);
+                }
+                throw receiveTimeoutFailure;
+            }
         });
     }
 }

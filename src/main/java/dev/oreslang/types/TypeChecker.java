@@ -483,7 +483,8 @@ public final class TypeChecker {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")
-                    || name.name().equals("net") || name.name().equals("http")) {
+                    || name.name().equals("net") || name.name().equals("http")
+                    || name.name().equals("native_net")) {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
@@ -762,7 +763,12 @@ public final class TypeChecker {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
             }
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("native_net")) {
+                return nativeNetMember(member.member());
+            }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            Type primitiveMember = builtinPrimitiveMember(deref(receiver), member.member());
+            if (primitiveMember != null) return primitiveMember;
             Type sumReceiver = deref(receiver);
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
             if (sumMember != null) return sumMember;
@@ -1044,6 +1050,42 @@ public final class TypeChecker {
         return type instanceof Borrow borrow ? borrow.target() : type;
     }
 
+    private Type nativeNetMember(String name) {
+        Type handle = new Named("NativeSocketHandle", List.of());
+        Type borrowedHandle = new Borrow(handle, false);
+        Type bytes = new ListType(Primitive.INT);
+        return switch (name) {
+            case "connect" -> new Function(
+                    List.of(Primitive.STRING, Primitive.INT, Primitive.INT),
+                    handle);
+            case "listen" -> new Function(
+                    List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.BOOL),
+                    handle);
+            case "accept" -> new Function(List.of(borrowedHandle), handle);
+            case "read" -> new Function(
+                    List.of(borrowedHandle, new Borrow(bytes, true), Primitive.INT, Primitive.INT),
+                    Primitive.INT);
+            case "read_some" -> new Function(
+                    List.of(borrowedHandle, Primitive.INT),
+                    bytes);
+            case "write" -> new Function(
+                    List.of(borrowedHandle, new Borrow(bytes, false), Primitive.INT, Primitive.INT),
+                    Primitive.INT);
+            case "shutdown_input", "shutdown_output" ->
+                    new Function(List.of(borrowedHandle), Primitive.VOID);
+            case "close" -> new Function(List.of(handle), Primitive.VOID);
+            case "is_open" -> new Function(List.of(borrowedHandle), Primitive.BOOL);
+            case "remote_address", "local_address" ->
+                    new Function(List.of(borrowedHandle), Primitive.STRING);
+            case "remote_port", "local_port" ->
+                    new Function(List.of(borrowedHandle), Primitive.INT);
+            case "resolve_all" ->
+                    new Function(List.of(Primitive.STRING), new ListType(Primitive.STRING));
+            default -> throw new IllegalArgumentException(
+                    "unknown native_net primitive '" + name + "'");
+        };
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         Type receiver = unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self)));
         if (receiver instanceof Record record) {
@@ -1105,6 +1147,10 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
+        if (named.name().equals("NativeSocketHandle")) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport NativeSocketHandle across an actor boundary; transfer transport ownership through the runtime");
+        }
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
@@ -1174,6 +1220,7 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
+        if (named.name().equals("NativeSocketHandle")) return false;
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
@@ -1281,6 +1328,64 @@ public final class TypeChecker {
                 case "unwrap_safe" -> new Function(List.of(), named);
                 case "expect" -> new Function(List.of(Primitive.STRING), ok);
                 case "unwrap_or" -> new Function(List.of(ok), ok);
+                default -> null;
+            };
+        }
+        return null;
+    }
+
+    private Type builtinPrimitiveMember(Type receiver, String member) {
+        if (receiver == Primitive.STRING || receiver instanceof StringLiteral) {
+            return switch (member) {
+                case "length" -> Primitive.INT;
+                case "index_of" -> new Function(
+                        List.of(Primitive.STRING, Primitive.INT),
+                        Primitive.INT);
+                case "last_index_of" -> new Function(
+                        List.of(Primitive.STRING),
+                        Primitive.INT);
+                case "slice" -> new Function(
+                        List.of(Primitive.INT, Primitive.INT),
+                        Primitive.STRING);
+                case "starts_with", "ends_with", "contains" ->
+                        new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                case "lower_ascii", "trim_ascii" ->
+                        new Function(List.of(), Primitive.STRING);
+                case "split" -> new Function(
+                        List.of(Primitive.STRING),
+                        new ListType(Primitive.STRING));
+                case "char_code_at" -> new Function(
+                        List.of(Primitive.INT),
+                        Primitive.INT);
+                case "to_latin1_bytes" -> new Function(
+                        List.of(),
+                        new ListType(Primitive.INT));
+                default -> null;
+            };
+        }
+        if (receiver == Primitive.INT
+                || receiver == Primitive.FLOAT
+                || receiver == Primitive.DECIMAL) {
+            if (member.equals("to_string")) {
+                return new Function(List.of(), Primitive.STRING);
+            }
+        }
+        if (receiver instanceof ListType list) {
+            return switch (member) {
+                case "length" -> Primitive.INT;
+                case "push" -> new Function(
+                        List.of(list.element()),
+                        Primitive.VOID);
+                case "slice" -> new Function(
+                        List.of(Primitive.INT, Primitive.INT),
+                        new ListType(list.element()));
+                case "to_latin1_string" -> {
+                    requireAssignable(
+                            list.element(),
+                            Primitive.INT,
+                            "Array.to_latin1_string element");
+                    yield new Function(List.of(), Primitive.STRING);
+                }
                 default -> null;
             };
         }
