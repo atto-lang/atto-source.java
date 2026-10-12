@@ -1759,7 +1759,12 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
-                            if (currentFlow.failure() != null) {
+                            // Resumed cleanup can report the same Throwable as
+                            // the pending body failure. Java forbids a failure
+                            // from suppressing itself; retain original identity
+                            // and continue unwinding the remaining defers.
+                            if (currentFlow.failure() != null
+                                    && failure != currentFlow.failure()) {
                                 failure.addSuppressed(currentFlow.failure());
                             }
                             runOneDefer(
