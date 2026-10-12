@@ -535,6 +535,64 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
+    void suspendedTryCatchStillRecoversOrdinaryCastAndRunsFinallyOnce() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                async fnc answer(): int { return 11; }
+                async fnc recover(): int {
+                  val int seed = await answer();
+                  val Animal animal = new Cat();
+                  let mut int status = 0;
+                  try {
+                    val Dog dog = animal as Dog;
+                    status = 1;
+                  } catch (err) {
+                    status = seed;
+                  } finally {
+                    status = status + 1;
+                  }
+                  return status;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(await recover());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("12", run(source));
+    }
+
+    @Test
+    void suspendedTryCatchCannotSwallowUnclassifiedArithmeticFault() throws Exception {
+        String source = """
+                async fnc answer(): int { return 11; }
+                async fnc unsafe(int divisor): int {
+                  val int seed = await answer();
+                  try {
+                    return seed % divisor;
+                  } catch (err) {
+                    return 7;
+                  } finally {
+                    val int finalization = seed + 1;
+                  }
+                }
+                pub fnc main(): void {
+                  val int ignored = await unsafe(0);
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertThrows(PolyglotException.class, () -> run(source));
+    }
+
+    @Test
     void expressionTrapIsNotSilentlyAcceptedBeforeItsEffectLoweringExists() {
         String[] sources = {
                 """
