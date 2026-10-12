@@ -1150,16 +1150,18 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable release,
             Runnable continuation,
             ActorId sender,
-            long sequence) implements AutoCloseable {
+            long sequence,
+            boolean httpTransfer) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
                 ActorId sender,
-                long sequence) {
+                long sequence,
+                boolean httpTransfer) {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            return new MessageEnvelope(value, release, null, sender, sequence, httpTransfer);
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -1168,7 +1170,8 @@ public final class ActorRuntime implements AutoCloseable {
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L);
+                    -1L,
+                    false);
         }
 
         private boolean isContinuation() {
@@ -4472,8 +4475,40 @@ public final class ActorRuntime implements AutoCloseable {
         return new ActorTerminatedException(ref.id(), ref.kind(), ref.terminationCause.get());
     }
 
+    public void sendHttpTransfer(ActorRef<Object> ref, String token) {
+        requireSupervisorContext("send HTTP transfer mail");
+        Objects.requireNonNull(token, "HTTP transfer token");
+        sendEnvelope(ref, token, true);
+    }
+
+    /**
+     * Remove an undispatched HTTP-origin message from exactly one actor
+     * incarnation. Ordinary string messages, including identical strings,
+     * are never selected. Already delivered mail remains untouched.
+     */
     @SuppressWarnings("unchecked")
+    public boolean retireQueuedHttpTransfer(ActorRef<?> ref, String token) {
+        requireSupervisorContext("retire HTTP transfer mail");
+        Objects.requireNonNull(ref, "destination actor");
+        Objects.requireNonNull(token, "HTTP transfer token");
+        if (!ref.ownedBy(this))
+            throw new IllegalArgumentException("HTTP transfer actor belongs to another runtime");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.ref != ref) return false;
+        return cell.mailbox.removeBufferedIf(
+                envelope -> envelope.httpTransfer() && token.equals(envelope.value()),
+                envelope -> {
+                    cell.releaseMailboxSlot(false);
+                    envelope.close();
+                });
+    }
+
     public <M> void send(ActorRef<M> ref, M message) {
+        sendEnvelope(ref, message, false);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> void sendEnvelope(ActorRef<M> ref, M message, boolean httpTransfer) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -4576,7 +4611,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 exhausted);
                     }
                     envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
+                            prepared, release, sender, sequence, httpTransfer);
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
                     }
