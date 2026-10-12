@@ -45,6 +45,8 @@ final class ExplicitNativeConcurrentLoanReleaseTest {
             assertTrue(region.get().closed(), "STOP must fence FFM reads");
             assertFalse(actor.get_done().isDone(),
                     "physical done must wait for all native loans");
+            assertFalse(actor.get_shutdown_result().isDone(),
+                    "logical shutdown outcome must not pretend native release succeeded");
 
         assertNotNull(region.get());
         assertTrue(region.get().closed());
@@ -76,6 +78,7 @@ final class ExplicitNativeConcurrentLoanReleaseTest {
                 "native bytes must be refunded exactly once, after the last loan");
             stopping.get(5, TimeUnit.SECONDS);
             actor.get_done().get(5, TimeUnit.SECONDS);
+            actor.get_shutdown_result().get(5, TimeUnit.SECONDS);
         } finally {
             try { runtime.close(); } catch (IllegalStateException incomplete) {
                 if (error.get() == null) throw incomplete;
