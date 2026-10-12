@@ -68,6 +68,15 @@ public final class ActorStateContract {
                         "serial actor '" + klass.name()
                         + "' must use one state { ... } aggregate; legacy fields are forbidden");
             }
+            // Storage-free actors still require sealed member and effect checks.
+            // A missing schema cannot authorize a handle_state call.
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.name().equals("handle_state")) {
+                    throw new IllegalArgumentException("handle_state is a sealed actor intrinsic");
+                }
+                visit(method.body(), klass.name(), null, null, false,
+                        !method.isStatic(), Ast.CriticalMode.NONE);
+            }
             return;
         } // migration: non-serial legacy actor fields retain old behavior
         if (klass.fields().size() != 1) {
@@ -116,13 +125,17 @@ public final class ActorStateContract {
                     || lambda.parameters().size() != 1) {
                 throw new IllegalArgumentException("self.handle_state expects exactly one single-argument lambda");
             }
-            if (!lambda.explicitStateMode()) {
-                throw new IllegalArgumentException(
-                        "handle_state requires explicit critical read or critical write");
+            if (keys == null) {
+                throw new IllegalArgumentException("self.handle_state requires a declared actor state schema");
             }
-            if (accessMode == Ast.CriticalMode.READ
-                    && lambda.criticalMode() == Ast.CriticalMode.WRITE) {
-                throw new IllegalArgumentException("cannot upgrade an active read loan to write");
+            // An unmarked callback is READ. Both 'critical' and
+            // 'critical write' request WRITE, never inferred from 'with'.
+            Ast.CriticalMode loanMode = switch (lambda.criticalMode()) {
+                case NONE, READ -> Ast.CriticalMode.READ;
+                case EXCLUSIVE, WRITE -> Ast.CriticalMode.WRITE;
+            };
+            if (activeAccess != null) {
+                throw new IllegalArgumentException("nested actor state loan is forbidden");
             }
             if (lambda.nonLexical()) {
                 throw new IllegalArgumentException(
@@ -136,9 +149,20 @@ public final class ActorStateContract {
             if (variable.equals("self")) {
                 throw new IllegalArgumentException("actor state access parameter cannot shadow self");
             }
-            visit(lambda.expressionBody(), actor, keys, variable, false, instanceMethod, lambda.criticalMode());
-            visit(lambda.blockBody(), actor, keys, variable, false, instanceMethod, lambda.criticalMode());
+            visit(lambda.expressionBody(), actor, keys, variable, false, instanceMethod, loanMode);
+            visit(lambda.blockBody(), actor, keys, variable, false, instanceMethod, loanMode);
             return;
+        }
+        // Never retain a live state loan through a suspension or implicit
+        // carrier handoff. An effect row cannot permit an escaped loan.
+        if (activeAccess != null
+                && (node instanceof Ast.AwaitExpr
+                    || node instanceof Ast.SelectStmt
+                    || node instanceof Ast.DynamicSelectExpr
+                    || node instanceof Ast.ChannelOpExpr
+                    || (node instanceof Ast.RuntimeCallExpr operation
+                        && operation.operation().equals("cooperate")))) {
+            throw new IllegalArgumentException("actor state loan cannot cross suspension");
         }
         // The state mode is a capability; 'using state.write' never upgrades read.
         if (activeAccess != null && accessMode == Ast.CriticalMode.READ
