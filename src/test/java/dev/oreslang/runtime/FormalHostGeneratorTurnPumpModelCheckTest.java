@@ -471,4 +471,111 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         FrameState overlapping = new FrameState(2, 2, true, true, false);
         assertThrows(AssertionError.class, () -> invariantFrame(overlapping));
     }
+
+    /**
+     * Exhaustive finite-state abstraction of the *admitted whole-body* source
+     * try/empty-catch/literal-finally generator. It does not prove Truffle
+     * implementation refinement; concrete HostGeneratorTurnPumpTest checks
+     * source AST lowering and scheduler cancellation on the actual runtime.
+     */
+    private enum LexicalEvent {
+        FIRST_YIELD, BEGIN_AWAIT, AWAIT_SUCCEEDED, AWAIT_REJECTED,
+        CANCEL_PUBLIC, NEXT_PULL, RETIRE
+    }
+
+    private record LexicalState(int phase, int cleanupRuns, boolean caughtError,
+            boolean cancelled, boolean retired) {
+        static LexicalState initial() { return new LexicalState(0, 0, false, false, false); }
+    }
+
+    private static LexicalState lexicalStep(LexicalState s, LexicalEvent e) {
+        if (s.retired || s.phase == 4 && e != LexicalEvent.RETIRE) return s;
+        int phase = s.phase;
+        int cleanup = s.cleanupRuns;
+        boolean caught = s.caughtError, cancelled = s.cancelled, retired = s.retired;
+        switch (e) {
+            case FIRST_YIELD -> {
+                if (phase == 0) phase = 1;
+            }
+            case BEGIN_AWAIT -> {
+                if (phase == 1) phase = 2;
+            }
+            case AWAIT_SUCCEEDED -> {
+                if (phase == 2) phase = 3;
+            }
+            case AWAIT_REJECTED -> {
+                if (phase == 2) {
+                    // Empty catch consumes rejection, and finally runs.
+                    phase = 4;
+                    caught = true;
+                    cleanup++;
+                }
+            }
+            case CANCEL_PUBLIC -> {
+                if (phase != 4) {
+                    phase = 4;
+                    cancelled = true;
+                    cleanup++;
+                }
+            }
+            case NEXT_PULL -> {
+                if (phase == 3) {
+                    phase = 4;
+                    cleanup++;
+                }
+            }
+            case RETIRE -> {
+                if (phase == 4 && cleanup == 1) retired = true;
+            }
+        }
+        return new LexicalState(phase, cleanup, caught, cancelled, retired);
+    }
+
+    private static void invariantLexical(LexicalState s) {
+        assertTrue(s.phase >= 0 && s.phase <= 4);
+        assertTrue(s.cleanupRuns >= 0 && s.cleanupRuns <= 1,
+                "finally was executed twice");
+        if (s.phase < 4) assertEquals(0, s.cleanupRuns,
+                "finally escaped lexical scope before generator exit");
+        if (s.phase == 4) assertEquals(1, s.cleanupRuns,
+                "generator terminated without finally");
+        if (s.caughtError) assertTrue(s.phase == 4 && !s.cancelled,
+                "empty catch must terminate after consuming await rejection");
+        if (s.retired) assertTrue(s.phase == 4 && s.cleanupRuns == 1,
+                "physical retirement preceded source cleanup");
+    }
+
+    @Test
+    void boundedWholeBodyGeneratorCatchFinallyPreservesExitInvariants() {
+        Set<LexicalState> visited = new HashSet<>();
+        ArrayDeque<LexicalState> queue = new ArrayDeque<>();
+        LexicalState initial = LexicalState.initial();
+        visited.add(initial);
+        queue.add(initial);
+        boolean sawCaught = false, sawCancellation = false, sawNormal = false;
+        while (!queue.isEmpty()) {
+            LexicalState state = queue.removeFirst();
+            invariantLexical(state);
+            sawCaught |= state.caughtError;
+            sawCancellation |= state.cancelled;
+            sawNormal |= state.retired && !state.caughtError && !state.cancelled;
+            for (LexicalEvent event : LexicalEvent.values()) {
+                LexicalState next = lexicalStep(state, event);
+                invariantLexical(next);
+                if (visited.add(next)) queue.addLast(next);
+            }
+        }
+        assertTrue(visited.size() >= 9, "lexical model exploration collapsed");
+        assertTrue(sawCaught && sawCancellation && sawNormal,
+                "missed caught rejection, cancellation or normal retirement");
+    }
+
+    @Test
+    void unsafeEarlyOrMissingFinallyFailsLexicalInvariant() {
+        assertThrows(AssertionError.class, () ->
+                invariantLexical(new LexicalState(1, 1, false, false, false)));
+        assertThrows(AssertionError.class, () ->
+                invariantLexical(new LexicalState(4, 0, true, false, true)));
+    }
+
 }
