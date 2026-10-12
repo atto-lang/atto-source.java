@@ -61,11 +61,21 @@ public final class QuantumCircuitIR {
             this.qubits = qubits;
             this.classicalBits = classicalBits;
         }
-        public Builder x(int target) { gates.add(new Gate(Op.X, target, -1, -1)); return this; }
-        public Builder h(int target) { gates.add(new Gate(Op.H, target, -1, -1)); return this; }
-        public Builder cx(int control, int target) { gates.add(new Gate(Op.CX, target, control, -1)); return this; }
+        private Builder append(Gate gate) {
+            // Enforce the circuit quota before retaining another Gate. A
+            // guest must not build an unbounded intermediate gate list and
+            // rely on the Circuit constructor to reject it only at build().
+            if (gates.size() >= 1024) {
+                throw new IllegalArgumentException("circuit exceeds gate quota");
+            }
+            gates.add(gate);
+            return this;
+        }
+        public Builder x(int target) { return append(new Gate(Op.X, target, -1, -1)); }
+        public Builder h(int target) { return append(new Gate(Op.H, target, -1, -1)); }
+        public Builder cx(int control, int target) { return append(new Gate(Op.CX, target, control, -1)); }
         public Builder measure(int qubit, int classicalBit) {
-            gates.add(new Gate(Op.MEASURE, qubit, -1, classicalBit)); return this;
+            return append(new Gate(Op.MEASURE, qubit, -1, classicalBit));
         }
         public Circuit build() { return new Circuit(qubits, classicalBits, gates); }
     }
@@ -144,16 +154,33 @@ public final class QuantumCircuitIR {
         if (shots < 0 || shots > 1_000_000) throw new IllegalArgumentException("shot quota exceeded");
         double[] probabilities = simulateProbabilities(circuit);
         long[] counts = new long[probabilities.length];
+        // Precompute a monotone CDF once. Linear scanning for every shot
+        // costs O(shots * 2^classicalBits), up to 65,536,000,000 probes in
+        // this admitted 16-bit / 1M-shot profile: a denial-of-service risk.
+        double[] cdf = new double[probabilities.length];
+        double total = 0.0;
+        for (int i = 0; i < probabilities.length; i++) {
+            if (!Double.isFinite(probabilities[i]) || probabilities[i] < 0.0) {
+                throw new IllegalStateException("invalid simulated probability");
+            }
+            total += probabilities[i];
+            cdf[i] = total;
+        }
+        if (!Double.isFinite(total) || total <= 0.0) {
+            throw new IllegalStateException("invalid simulated probability mass");
+        }
         Random random = new Random(seed);
         for (int shot = 0; shot < shots; shot++) {
-            double value = random.nextDouble();
-            double cumul = 0.0;
-            int outcome = probabilities.length - 1;
-            for (int i = 0; i < probabilities.length; i++) {
-                cumul += probabilities[i];
-                if (value < cumul) { outcome = i; break; }
+            double value = random.nextDouble() * total;
+            // Upper bound: cdf[outcome] must strictly exceed value. Equal
+            // prefix sums represent impossible outcomes and are skipped.
+            int low = 0, high = cdf.length - 1;
+            while (low < high) {
+                int mid = low + (high - low) / 2;
+                if (value < cdf[mid]) high = mid;
+                else low = mid + 1;
             }
-            counts[outcome]++;
+            counts[low]++;
         }
         return counts;
     }
