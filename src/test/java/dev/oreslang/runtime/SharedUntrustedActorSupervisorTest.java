@@ -59,6 +59,19 @@ final class SharedUntrustedActorSupervisorTest {
     }
 
     @Test
+    @org.junit.jupiter.api.condition.DisabledIfEnvironmentVariable(
+            named="ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches="true")
+    void missingIsolateImageDoesNotFallBackToTrustedJvm() {
+        // CI's host-only job deliberately has no Oreslang language isolate.
+        // A failed native Engine build must not run this actor in the host JVM.
+        try (var host = new SharedUntrustedActorSupervisor(256L << 20, 1)) {
+            assertThrows(RuntimeException.class,
+                    () -> host.spawn(WORKER, "no-image", "IsolatedWorker"));
+            assertEquals(0, host.activeActors());
+        }
+    }
+
+    @Test
     @EnabledIfEnvironmentVariable(named="ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches="true")
     void sourceActorsShareONEIsolateCollectorButKeepDifferentContexts() throws Exception {
         try (var host = new SharedUntrustedActorSupervisor(256L << 20, 2);
