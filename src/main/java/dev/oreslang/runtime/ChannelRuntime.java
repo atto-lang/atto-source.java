@@ -376,25 +376,10 @@ public final class ChannelRuntime {
             return registration.tryNow();
         }
 
-        private int[] initialOrder(SelectPolicy policy) {
-            int count = cases.size();
-            int[] order = new int[count];
-
-            if (policy == SelectPolicy.PRIORITY) {
-                for (int i = 0; i < count; i++) order[i] = i;
-                return order;
-            }
-
-            if (policy == SelectPolicy.FAIR) {
-                int start = Math.floorMod(fairCursor.get(), count);
-                for (int i = 0; i < count; i++) {
-                    order[i] = (start + i) % count;
-                }
-                return order;
-            }
-
-            for (int i = 0; i < count; i++) order[i] = i;
-            for (int i = count - 1; i > 0; i--) {
+        private int[] randomizedOrder() {
+            int[] order = new int[cases.size()];
+            for (int i = 0; i < order.length; i++) order[i] = i;
+            for (int i = order.length - 1; i > 0; i--) {
                 int j = ThreadLocalRandom.current().nextInt(i + 1);
                 int tmp = order[i];
                 order[i] = order[j];
@@ -509,7 +494,10 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        private final int[] order;
+        // FAIR/PRIORITY compute arm indexes without allocation per invocation;
+        // RANDOM retains a shuffled order for this selection generation.
+        private final int[] randomOrder;
+        private final int admissionStart;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
         private final int defaultIndex;
@@ -527,15 +515,27 @@ public final class ChannelRuntime {
          * Called only under COORDINATOR during arbitration.
          */
         private int arbitrationIndex(int position) {
-            if (policy != SelectPolicy.FAIR) return order[position];
+            if (policy == SelectPolicy.PRIORITY) return position;
+            if (policy == SelectPolicy.RANDOM) return randomOrder[position];
             return (int) ((Math.floorMod(set.fairCursor.get(), set.cases.size())
                     + (long) position) % set.cases.size());
+        }
+
+        private int admissionIndex(int position) {
+            if (policy == SelectPolicy.PRIORITY) return position;
+            if (policy == SelectPolicy.RANDOM) return randomOrder[position];
+            return (int) ((admissionStart + (long) position) % set.cases.size());
         }
 
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
             this.policy = policy;
-            this.order = set.initialOrder(policy);
+            this.admissionStart = policy == SelectPolicy.FAIR
+                    ? Math.floorMod(set.fairCursor.get(), set.cases.size())
+                    : 0;
+            this.randomOrder = policy == SelectPolicy.RANDOM
+                    ? set.randomizedOrder()
+                    : null;
 
             int foundDefault = -1;
             for (int i = 0; i < set.cases.size(); i++) {
@@ -608,7 +608,8 @@ public final class ChannelRuntime {
         selection.registered = true;
         ACTIVE.add(selection);
 
-        for (int index : selection.order) {
+        for (int position = 0; position < selection.set.cases.size(); position++) {
+            int index = selection.admissionIndex(position);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -725,7 +726,7 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int position = 0; position < selection.order.length; position++) {
+        for (int position = 0; position < selection.set.cases.size(); position++) {
             int index = selection.arbitrationIndex(position);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
@@ -763,7 +764,7 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int position = 0; position < selection.order.length; position++) {
+        for (int position = 0; position < selection.set.cases.size(); position++) {
             int index = selection.arbitrationIndex(position);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
