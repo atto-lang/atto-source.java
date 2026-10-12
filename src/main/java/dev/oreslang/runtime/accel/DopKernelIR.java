@@ -180,7 +180,10 @@ public final class DopKernelIR {
         Objects.requireNonNull(kernel);
         Objects.requireNonNull(target);
         var p = kernel.layout();
-        if (!target.float32() || p.byteLength() > target.maximumBufferBytes()
+        // A zero-row DOP buffer is legitimate for CPU calculations, but a
+        // zero-sized GPU launch/allocation cannot satisfy device-fence admission.
+        if (p.rows() == 0 || p.byteLength() == 0 || !target.float32()
+                || p.byteLength() > target.maximumBufferBytes()
                 || p.rows() > target.maximumRows()) {
             throw new IllegalArgumentException("requested device cannot admit kernel layout/effect");
         }
