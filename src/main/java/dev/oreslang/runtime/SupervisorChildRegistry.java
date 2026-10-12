@@ -141,6 +141,9 @@ public final class SupervisorChildRegistry {
     private final Map<ActorRuntime.ActorId, UUID> stagedActors = new HashMap<>();
     private boolean restartClosed;
     private final Map<UUID, StopReservation> stopReservations = new HashMap<>();
+    // Exact, one-use host invocation claim, bounded by logical children.
+    // Does not assert that an external effect succeeded.
+    private final Set<UUID> invokedStops = new HashSet<>();
     /** Per logical-child ledger: bounded by the existing child registry. */
     private final Map<UUID, StopReceipt> stopReceipts = new HashMap<>();
     // ActorId must not be recycled (A -> B -> A is another form of ABA).
@@ -437,6 +440,25 @@ public final class SupervisorChildRegistry {
         return reservation;
     }
 
+    /**
+     * Source compiler's actual host-effect entry boundary. Claim before
+     * invoking the external STOP callback, never on Future completion.
+     * Only the original PENDING turn can enter, exactly once; an uncertain
+     * outcome cannot be replayed as a new effect.
+     */
+    synchronized void claimHostStopInvocation(StopReservation permit) {
+        StopReceipt receipt = requireStopReceipt(permit);
+        if (receipt.status() != StopReceiptStatus.PENDING
+                || invokedStops.contains(permit.child().logicalId())) {
+            throw new IllegalStateException("STOP host effect was already invoked or classified");
+        }
+        if (!invokedStops.add(permit.child().logicalId())) {
+            throw new IllegalStateException("STOP host invocation replay");
+        }
+        recordStopTransition("stop.invoke-asserted",
+                requireCurrent(permit.child()), permit);
+    }
+
     /** A host receipt is trusted only for the exact reserved CONTROL turn. */
     public synchronized StopReceipt stopReceipt(ChildId child) {
         requireCurrent(child);
@@ -597,6 +619,7 @@ public final class SupervisorChildRegistry {
             throw new IllegalStateException("cannot retire active/restartable child");
         children.remove(child.logicalId());
         stopReceipts.remove(child.logicalId());
+        invokedStops.remove(child.logicalId());
         recordTransition("retire-stopped", state, null, 0L, null);
     }
 
