@@ -121,8 +121,10 @@ public final class OresEvalRootNode extends RootNode {
             boolean bridged = futureBridgeCommand;
             current.link();
             Object result = current.invokePublic(
-                    functionName, java.util.Arrays.copyOfRange(
-                            arguments, bridged ? 3 : 2, arguments.length));
+                    functionName,
+                    java.util.Arrays.copyOfRange(
+                            arguments, bridged ? 3 : 2, arguments.length),
+                    bridged);
             if (bridged) {
                 if (!(result instanceof OresFuture<?> future)) {
                     throw new IllegalArgumentException(
@@ -733,10 +735,22 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invokePublic(String name, Object[] arguments) {
+            return invokePublic(name, arguments, false);
+        }
+
+        private Object invokePublic(
+                String name, Object[] arguments, boolean requireAsync) {
             Ast.FunctionDecl fn = findFunction(name, arguments.length);
             if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export public function '" + name + "'");
+            }
+            // Reject unsupported synchronous functions BEFORE any guest body
+            // executes. Otherwise the host Future bridge may throw after
+            // running user side effects and misreporting a rejected request.
+            if (requireAsync && !fn.async()) {
+                throw new IllegalArgumentException(
+                        "host Future handoff requires an async public function: " + name);
             }
             Object result = callFunction(fn, java.util.Arrays.asList(arguments));
             return result instanceof HostObjectFacade host ? host.value() : result;
