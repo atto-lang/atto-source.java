@@ -24,6 +24,7 @@ import static dev.oreslang.parser.Token.Type.*;
 public final class MacroExpander {
     private static final int MAX_DEFINITIONS = 256;
     private static final int MAX_DEPTH = 32;
+    private static final int MAX_MACRO_GROUP_DEPTH = 128;
     private static final int MAX_OUTPUT_TOKENS = 50_000;
     // A token-only implementation cannot yet prove a generated statement, control
     // delimiter, declaration, or implicit receiver is hygienic. Keep templates
@@ -386,8 +387,12 @@ public final class MacroExpander {
         ArrayDeque<Token.Type> stack = new ArrayDeque<>();
         for (int i = start; i < tokens.size(); i++) {
             Token.Type type = tokens.get(i).type();
-            if (opening(type)) stack.push(closing(type));
-            else if (type == RPAREN || type == RBRACE || type == RBRACKET) {
+            if (opening(type)) {
+                if (stack.size() >= MAX_MACRO_GROUP_DEPTH) {
+                    throw fail(tokens.get(i), "macro delimiter nesting depth exceeded");
+                }
+                stack.push(closing(type));
+            } else if (type == RPAREN || type == RBRACE || type == RBRACKET) {
                 if (stack.isEmpty() || stack.pop() != type) {
                     throw fail(tokens.get(i), "mismatched macro delimiters");
                 }
