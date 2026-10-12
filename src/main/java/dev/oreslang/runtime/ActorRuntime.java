@@ -6760,11 +6760,38 @@ public final class ActorRuntime implements AutoCloseable {
                     finalized = true;
                     lifecycleLock.notifyAll();
                 }
-                // Publish physical stop before ready/done observers run. An
-                // observer may synchronously call awaitTermination(), and must
-                // not deadlock on the same finalization thread.
-                ref.physicalTerminationFuture.completeFromRuntime(null);
+                // A terminal observer may synchronously await a *different*
+                // actor Future. Publishing physical termination before done()
+                // used to invoke that observer on this thread while done was
+                // still pending, permanently deadlocking the finalizer.
+                //
+                // First settle every host-visible terminal state, without
+                // delivering any existing callbacks. In particular, physical
+                // publication is prepared LAST so anyone observing physical
+                // terminality must also see ready/done already settled.
+                // Only then deliver callbacks with no lifecycle lock held.
+                Throwable terminal = ref.terminationCause.get();
+                Runnable notifyReady = !ref.readyFuture.isDone()
+                        ? ref.readyFuture.prepareFailureFromRuntime(
+                                terminal == null
+                                        ? new ActorTerminatedException(ref.id(), kind, null)
+                                        : terminal)
+                        : () -> { };
+                Runnable notifyDone = terminal == null
+                        ? ref.doneFuture.prepareCompleteFromRuntime(null)
+                        : ref.doneFuture.prepareFailureFromRuntime(terminal);
+                Runnable notifyPhysical =
+                        ref.physicalTerminationFuture.prepareCompleteFromRuntime(null);
                 ref.finalizationOwnerThread = null;
+                try {
+                    notifyReady.run();
+                } finally {
+                    try {
+                        notifyDone.run();
+                    } finally {
+                        notifyPhysical.run();
+                    }
+                }
                 // Parent may begin physical finalization only after this
                 // child's own physical barrier has settled. Otherwise parent
                 // done() could precede a descendant's final cleanup.
@@ -6775,15 +6802,6 @@ public final class ActorRuntime implements AutoCloseable {
                         recordFinalizationFailure(failure);
                     }
                 }
-                Throwable terminal = ref.terminationCause.get();
-                if (!ref.readyFuture.isDone()) {
-                    ref.readyFuture.failFromRuntime(
-                            terminal == null
-                                    ? new ActorTerminatedException(ref.id(), kind, null)
-                                    : terminal);
-                }
-                if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-                else ref.doneFuture.failFromRuntime(terminal);
                 finalizedFuture.completeFromRuntime(null);
             }
         }
