@@ -46,6 +46,10 @@ public final class TypeChecker {
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+    /** Lexical compile-time type aliases local to the block currently being checked. */
+    private Env currentTypeScope;
+    /** Names declared by named inference, including aliases not yet initialized. */
+    private final Set<String> inferredTypeNames = new HashSet<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
@@ -1328,7 +1332,21 @@ public final class TypeChecker {
 
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
         Env env = new Env(parent);
-        for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+        Env previousTypeScope = currentTypeScope;
+        currentTypeScope = env;
+        try {
+            // Reserve names before checking any initializer, so a use before the
+            // declaration cannot silently resolve as an unrelated nominal type.
+            for (Ast.Stmt stmt : body) {
+                if (stmt instanceof Ast.BindingStmt binding && binding.inferredTypeName() != null) {
+                    inferredTypeNames.add(binding.inferredTypeName());
+                    env.reserveInferredType(binding.inferredTypeName());
+                }
+            }
+            for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+        } finally {
+            currentTypeScope = previousTypeScope;
+        }
     }
 
     private void checkLoopBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
@@ -1366,7 +1384,9 @@ public final class TypeChecker {
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.BindingStmt binding) {
-            Type declaredAhead = binding.declaredType() == null ? null : resolve(binding.declaredType(), generics, self);
+            boolean namedInference = binding.inferredTypeName() != null;
+            Type declaredAhead = namedInference || binding.declaredType() == null
+                    ? null : resolve(binding.declaredType(), generics, self);
             if (binding.declaredType() != null && binding.initializer() instanceof Ast.ListExpr listLiteral) {
                 validateSequenceLiteralAgainstDeclared(binding.declaredType(), listLiteral, env, generics, self);
             }
@@ -1406,6 +1426,40 @@ public final class TypeChecker {
                         "infer struct values are closed and readonly; they cannot be bound with mutable referent access");
             }
 
+            if (namedInference) {
+                String name = binding.inferredTypeName();
+                if (generics.contains(name)
+                        || Set.of(
+                                "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                                "int", "uint", "bigint", "f32", "f64", "float", "decimal",
+                                "complex64", "complex128", "complex", "bool", "Bool",
+                                "boolean", "string", "String", "void", "null", "self",
+                                "Tuple", "Array", "List", "Vector", "Slice",
+                                "FixedArray", "FixedList", "DynamicStruct", "Option",
+                                "Result", "Future", "ActorId", "ActorKind",
+                                "ActorMail", "ActorOutput", "ActorOutputStream",
+                                "MutexGuard", "Mutex", "SharedMutex", "Channel",
+                                "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
+                                "IteratorResult", "Fnc", "Function").contains(name)
+                        || findClass(name) != null || findInterface(name) != null
+                        || findTypeAlias(name) != null || modules.containsKey(name)) {
+                    throw new IllegalArgumentException(
+                            "inferred type name '" + name + "' conflicts with an existing type or namespace");
+                }
+                if (!(actual instanceof Record || actual instanceof Tuple)) {
+                    throw new IllegalArgumentException(
+                            "infer<" + name + "> requires an inferred struct or finite tuple");
+                }
+                // String literals infer their general field/slot type, not a
+                // value-dependent singleton. Preserve all nested ownership/readonly
+                // qualifiers; only widen the top-level string literal slots.
+                if (actual instanceof Tuple tuple) {
+                    actual = new Tuple(
+                            tuple.elements().stream().map(this::widenCollectionElement).toList(),
+                            tuple.kind());
+                }
+                env.defineInferredType(name, actual);
+            }
             Type declared = declaredAhead == null
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
@@ -3076,7 +3130,17 @@ public final class TypeChecker {
             }
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
-            if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+            if (receiver instanceof Tuple tuple) {
+                Long constant = constantTupleIndex(indexed.index());
+                if (constant != null) {
+                    if (constant < 0 || constant >= tuple.elements().size()) {
+                        throw new IllegalArgumentException(
+                                "tuple index " + constant + " outside arity " + tuple.elements().size());
+                    }
+                    return tuple.elements().get(constant.intValue());
+                }
+                return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+            }
             throw new IllegalArgumentException(
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
@@ -5336,6 +5400,20 @@ public final class TypeChecker {
         return iterableElementType(iterable);
     }
 
+    /** Folds trivial signed integer literals without performing guest arithmetic. */
+    private Long constantTupleIndex(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long index) return index;
+        if (expression instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long index) {
+            if (index == Long.MIN_VALUE) return null;
+            return -index;
+        }
+        return null;
+    }
+
     private Type widenCollectionElement(Type type) {
         return type instanceof StringLiteral ? Primitive.STRING : type;
     }
@@ -6942,6 +7020,18 @@ public final class TypeChecker {
             return new Record(members, ref.isReadonlyRecordType());
         }
         if (generics.contains(ref.name())) return new Generic(ref.name());
+        Type scopedType = currentTypeScope == null ? null : currentTypeScope.lookupInferredType(ref.name());
+        if (scopedType != null) {
+            if (!ref.arguments().isEmpty() || ref.inferArguments()) {
+                throw new IllegalArgumentException(
+                        "inferred type alias '" + ref.name() + "' does not accept generic arguments");
+            }
+            return scopedType;
+        }
+        if (inferredTypeNames.contains(ref.name())) {
+            throw new IllegalArgumentException(
+                    "inferred type alias '" + ref.name() + "' is out of scope or used before initialization");
+        }
 
         rejectUnimportedTypeDependency(ref.name());
 
@@ -7460,6 +7550,28 @@ public final class TypeChecker {
         private final boolean descendantsNonLexical;
         private final boolean deferredCaptureBoundary;
         private final Map<String, Binding> bindings = new HashMap<>();
+        private final Map<String, Type> inferredTypes = new HashMap<>();
+        private final Set<String> reservedInferredNames = new HashSet<>();
+        private void reserveInferredType(String name) {
+            if (hasReservedInferredType(name) || lookupInferredType(name) != null
+                    || !reservedInferredNames.add(name)) {
+                throw new IllegalArgumentException("duplicate or shadowed inferred type '" + name + "'");
+            }
+        }
+        private boolean hasReservedInferredType(String name) {
+            return reservedInferredNames.contains(name)
+                    || parent != null && parent.hasReservedInferredType(name);
+        }
+        private void defineInferredType(String name, Type type) {
+            if (!reservedInferredNames.contains(name)
+                    || inferredTypes.putIfAbsent(name, type) != null) {
+                throw new IllegalArgumentException("duplicate or shadowed inferred type '" + name + "'");
+            }
+        }
+        private Type lookupInferredType(String name) {
+            Type local = inferredTypes.get(name);
+            return local != null ? local : parent == null ? null : parent.lookupInferredType(name);
+        }
         private Env(Env parent) {
             this(
                     parent,
