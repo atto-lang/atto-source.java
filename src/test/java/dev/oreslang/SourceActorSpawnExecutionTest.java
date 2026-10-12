@@ -451,6 +451,40 @@ final class SourceActorSpawnExecutionTest {
                 rejected.getMessage());
     }
 
+    @Test
+    void compiledPipelineFailsSourceWhenSinkTerminatesBeforeBackwardReply() throws Exception {
+        String source = java.nio.file.Files.readString(
+                java.nio.file.Path.of("examples/actor-pipeline-bidirectional.ores"));
+        String invalid = source.replace(
+                "self.value = n + 3;\n                self.backward(Signal.Result(self.value));",
+                "self.value = n + 3;");
+        assertNotEquals(source, invalid);
+        org.graalvm.polyglot.PolyglotException failure =
+                org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(
+                        java.time.Duration.ofSeconds(8),
+                        () -> assertThrows(org.graalvm.polyglot.PolyglotException.class,
+                                () -> run(invalid, "pipeline-sink-premature-end.ores")));
+        assertTrue(failure.toString().contains("pipeline stage terminated"),
+                failure.toString());
+    }
+
+    @Test
+    void compiledPipelineFailsSourceWhenTransformStopsBeforeForward() throws Exception {
+        String source = java.nio.file.Files.readString(
+                java.nio.file.Path.of("examples/actor-pipeline-bidirectional.ores"));
+        String invalid = source.replace(
+                "self.value = n * 2;\n                self.forward(Signal.Data(self.value));",
+                "self.value = n * 2;\n                self.end();");
+        assertNotEquals(source, invalid);
+        org.graalvm.polyglot.PolyglotException failure =
+                org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(
+                        java.time.Duration.ofSeconds(8),
+                        () -> assertThrows(org.graalvm.polyglot.PolyglotException.class,
+                                () -> run(invalid, "pipeline-transform-premature-end.ores")));
+        assertTrue(failure.toString().contains("pipeline stage terminated"),
+                failure.toString());
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source =
