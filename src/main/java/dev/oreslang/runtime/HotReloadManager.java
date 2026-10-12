@@ -317,15 +317,19 @@ public final class HotReloadManager implements AutoCloseable {
             if (closed.get()) throw new IllegalStateException("generation is closed");
             if (!started.compareAndSet(false, true)) throw new IllegalStateException("generation already started");
             if (group != null) {
-                try {
-                    // Untrusted actor hot-loading is not authorization to run
-                    // an arbitrary top-level main with the group's long-lived
-                    // cumulative CPU budget. Link and initialize only; actor
-                    // messages are admitted separately through the isolated
-                    // source actor control plane with per-actor turn quotas.
+                try (GuestAdmissionDeadline admission = new GuestAdmissionDeadline(
+                        java.time.Duration.ofSeconds(30), group::close)) {
+                    // Untrusted actor hot-loading must not execute arbitrary
+                    // top-level main under the long Context CPU quota.
+                    // Parse/link/static initialization is also time bounded:
+                    // an infinite initializer triggers Context.close(true)
+                    // from outside the guest execution monitor.
                     Value parsed = context.parse(source);
                     parsed.execute(dev.oreslang.nodes.OresEvalRootNode.LINK_ONLY_COMMAND);
                     parsed.execute(dev.oreslang.nodes.OresEvalRootNode.INIT_ONLY_COMMAND);
+                    if (!admission.commitIfLive()) {
+                        throw new IllegalStateException("untrusted hot-load admission deadline expired");
+                    }
                     return null;
                 } catch (RuntimeException guestFailure) {
                     try { close(); } catch (RuntimeException ignored) {
