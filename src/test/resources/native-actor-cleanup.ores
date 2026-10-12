@@ -1,0 +1,21 @@
+define actor Worker as
+  receive(ActorMail<String> mail): void {
+    self.send("before|");
+    self.endWithCleanup(|| -> {
+      self.send("cleanup");
+    });
+    self.send("after|");
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn Worker();
+  await worker.ready;
+  worker.send("go");
+  for await const output of worker.outputs {
+    stdio.stdout.write(output.value);
+  }
+  await worker.done;
+  return;
+}
