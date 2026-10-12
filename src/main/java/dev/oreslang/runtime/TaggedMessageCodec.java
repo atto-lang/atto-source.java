@@ -98,6 +98,60 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         }
     }
 
+    /**
+     * Data-only preflight view of an *already decoded, schema-authenticated*
+     * tagged value. ActorRuntime accounts and capability-checks this
+     * projection before queue admission, while the mailbox stores only the
+     * owned binary frame and later decodes the original nominal values on
+     * the receiving actor lane. Never call this on an untrusted host value
+     * instead of invoking the compiled codec first.
+     */
+    public static Object preflightProjection(TaggedValue trustedDecoded) {
+        Objects.requireNonNull(trustedDecoded, "decoded enum");
+        return project(trustedDecoded, new java.util.IdentityHashMap<>(),
+                new int[]{0}, 0);
+    }
+
+    private static Object project(Object value,
+                                  java.util.IdentityHashMap<Object, Boolean> visiting,
+                                  int[] nodes, int depth) {
+        if (depth > MessagePackCollectionCodec.MAX_DEPTH
+                || ++nodes[0] > MessagePackCollectionCodec.MAX_NODES) {
+            throw new IllegalArgumentException("enum actor preflight exceeds depth/node quota");
+        }
+        if (value instanceof TaggedValue nested) {
+            if (visiting.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("cyclic tagged actor value");
+            }
+            try {
+                if (nested.payload() == null)
+                    return List.of(nested.enumName(), (long) nested.tag());
+                return List.of(nested.enumName(), (long) nested.tag(),
+                        project(nested.payload(), visiting, nodes, depth + 1));
+            } finally {
+                visiting.remove(value);
+            }
+        }
+        if (value instanceof List<?> list) {
+            if (visiting.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("cyclic tagged actor collection");
+            }
+            try {
+                java.util.ArrayList<Object> copy = new java.util.ArrayList<>(list.size());
+                for (Object item : list) {
+                    copy.add(project(item, visiting, nodes, depth + 1));
+                }
+                return List.copyOf(copy);
+            } finally {
+                visiting.remove(value);
+            }
+        }
+        // The decoder produced this scalar from a compiler-closed wire shape.
+        // Any unexpected host reference still fails the ActorRuntime
+        // capability/Sendable validation against the returned projection.
+        return value;
+    }
+
     @Override
     public byte[] encode(Object value) {
         if (!(value instanceof TaggedValue tagged)) {
