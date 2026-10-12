@@ -296,6 +296,13 @@ before quiescence and notification completion, and executing already-retired
 guest state. Negative-model mutations verify that its assertions actually
 detect illegal states.
 
+The live `UntrustedLogicalQuotaTest` actor single-writer regression drives
+six nested source continuations through repeated `cooperate` handoffs,
+interleaves eight ordinary actor messages, and verifies the observed
+maximum number of simultaneously executing guest turns remains one.
+This exercises the actual actor mailbox and source dispatcher (including
+handoff between physical carriers), rather than only the model's guards.
+
 The model is an **independent, bounded reference specification**. Passing
 its exploration does not prove that production CAS operations linearize
 according to those transitions, and does not establish a hard interrupt
