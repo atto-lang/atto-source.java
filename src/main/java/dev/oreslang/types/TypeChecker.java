@@ -867,6 +867,16 @@ public final class TypeChecker {
     }
 
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        // Role signatures parse, but Java's live mailbox still dispatches
+        // only receive(ActorMail<T>). Treating receive_forward/backward as
+        // ordinary methods would silently drop guest DATA. Reject before
+        // codegen until authenticated two-direction ingress and state loans
+        // are wired through the actor scheduler.
+        if (klass.pipeTransformSpec() != null) {
+            throw new IllegalArgumentException(
+                    "transform pipe actor requires Java directional DATA ingress "
+                    + "dispatcher and typed port lowering (not implemented)");
+        }
         if (inheritsBuiltinSerialActor(klass, new HashSet<>())) {
             if (klass.actorKind() != Ast.ActorKind.SHARED || klass.proxySpec() != null
                     || (klass.concurrencySpec() != null
