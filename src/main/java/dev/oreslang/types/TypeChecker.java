@@ -95,7 +95,7 @@ public final class TypeChecker {
         program = AnnotationExpander.expand(program);
         // Reject invalid tag assignments, unknown nominal cases and pattern
         // dependencies before creating any executable actor/schema bindings.
-        TaggedMessageContracts.Registry tagged = TaggedMessageContracts.verify(program);
+        TaggedMessageContracts.Registry tagged = TaggedMessageContracts.forTypes(program);
         TypeChecker checker = new TypeChecker();
         checker.taggedMessages = tagged;
         checker.validateImports(program);
@@ -4700,16 +4700,29 @@ public final class TypeChecker {
                 + "' is not allowed by actor message domain '" + domain.name() + "'");
     }
 
+    private static void requirePortableEnumCase(
+            TaggedMessageContracts.Case candidate, String where) {
+        if (candidate.sourcePayload() != null && candidate.payload() == null) {
+            throw new IllegalArgumentException(where
+                    + " cannot use " + candidate.qualifiedName()
+                    + ": nested enum payload has no portable actor wire codec");
+        }
+    }
+
     private void requireSerializableActorMessageType(Type type, String where) {
         if (type instanceof Named named && named.arguments().isEmpty()
                 && taggedMessages != null) {
             TaggedMessageContracts.Case variant = taggedCaseOrNull(named.name());
-            if (variant != null) return; // registry already verified recursive payload codec.
+            if (variant != null) {
+                requirePortableEnumCase(variant, where);
+                return;
+            }
             if (taggedMessages.enums().containsKey(named.name())
                     || taggedMessages.patterns().containsKey(named.name())) {
-                int alternatives = taggedMessages.requireDomain(named.name()).cases().size();
-                if (alternatives < 1
-                        || alternatives > TaggedActorMessageBinding.MAX_PORTABLE_VARIANTS) {
+                var alternatives = taggedMessages.requireDomain(named.name()).cases();
+                for (var candidate : alternatives) requirePortableEnumCase(candidate, where);
+                if (alternatives.size() < 1
+                        || alternatives.size() > TaggedActorMessageBinding.MAX_PORTABLE_VARIANTS) {
                     throw new IllegalArgumentException(where
                             + " requires 1..64 portable actor alternatives; "
                             + "the native LLVM source actor runtime currently supports at most 64");
@@ -7525,6 +7538,13 @@ public final class TypeChecker {
             return structuralRecordAssignable(sourceShape, targetShape);
         }
 
+        // A constructed enum case is a value of its nominal owner enum,
+        // never an alias of that case's numeric tag or payload shape.
+        if (actual instanceof Named caseType && expected instanceof Named enumType
+                && caseType.arguments().isEmpty() && enumType.arguments().isEmpty()) {
+            TaggedMessageContracts.Case variant = taggedCaseOrNull(caseType.name());
+            if (variant != null && variant.owner().equals(enumType.name())) return true;
+        }
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {

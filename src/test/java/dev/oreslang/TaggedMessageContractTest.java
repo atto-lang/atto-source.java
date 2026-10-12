@@ -121,6 +121,44 @@ final class TaggedMessageContractTest {
     }
 
     @Test
+    void decoderSelectsOnlyCompilerBoundSchemaFromBoundedCanonicalHeader() {
+        var registry = TaggedMessageContracts.verify(Parser.parse(DECLARATIONS));
+        var codec = new TaggedMessageCodec(registry.requireDomain("Messages"));
+        var original = new TaggedMessageCodec.TaggedValue("Status", "Message2", 2, "hello");
+        var bytes = codec.encode(original);
+        String schemaId = dev.oreslang.runtime.MessagePackCollectionCodec
+                .envelopeSchemaId(bytes);
+        assertTrue(schemaId.startsWith("oreslang.enum."));
+        assertEquals(original, codec.decode(bytes));
+
+        // Flip one *ASCII schema byte*, keeping the canonical string frame
+        // valid. An unknown wire ID must fail immediately against the
+        // compiled map rather than being tried against every codec case.
+        byte[] forged = bytes.clone();
+        byte[] id = schemaId.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        boolean found = false;
+        for (int offset = 0; offset <= forged.length - id.length; offset++) {
+            boolean equal = true;
+            for (int i = 0; i < id.length; i++) {
+                if (forged[offset + i] != id[i]) { equal = false; break; }
+            }
+            if (equal) {
+                forged[offset] = forged[offset] == 'o' ? (byte)'p' : (byte)'o';
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "canonical schema ID present in wire envelope");
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(forged));
+
+        byte[] wrongVersion = bytes.clone();
+        wrongVersion[1] = 3;
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(wrongVersion));
+        assertThrows(IllegalArgumentException.class, () -> codec.decode(
+                new byte[dev.oreslang.runtime.MessagePackCollectionCodec.MAX_BYTES + 1]));
+    }
+
+    @Test
     void nominalCaseRejectsTagOrOwnerForgeryEvenWhenShapeDigestIsValid() {
         var registry = TaggedMessageContracts.verify(Parser.parse(DECLARATIONS));
         var codec = new TaggedMessageCodec(registry.requireDomain("Messages"));

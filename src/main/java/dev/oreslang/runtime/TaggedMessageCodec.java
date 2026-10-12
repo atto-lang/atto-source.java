@@ -36,14 +36,9 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
                              String schemaId,
                              MessagePackCollectionCodec.Shape shape) { }
     private final Map<String, CaseCodec> byName;
-    private final Map<String, CaseCodec> bySchema;
+    private final Map<String, CaseCodec> bySchemaId;
     private final String closedDomainIdentity;
-
-    /** Compiler-issued nominal wire identity used to typecheck whole actor
-     * pipeline edges; guest payloads do not choose or modify this identity. */
-    public String closedDomainIdentity() {
-        return closedDomainIdentity;
-    }
+    public String closedDomainIdentity() { return closedDomainIdentity; }
 
     public TaggedMessageCodec(TaggedMessageContracts.Domain domain) {
         Objects.requireNonNull(domain);
@@ -52,6 +47,20 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         }
         Map<String, CaseCodec> entries = new HashMap<>();
         Map<String, CaseCodec> schemas = new HashMap<>();
+        // The native nested-v2 emitter and the Java shape grammar both
+        // require ASCII nominal identifiers across the *entire closed
+        // domain*, not merely the inner referenced enum. Restrict only
+        // domains that opt into the new nested format, leaving legacy
+        // scalar-only domains unchanged.
+        boolean nestedDomain = domain.cases().stream().anyMatch(
+                c -> c.payload() != null && containsNestedEnum(c.payload()));
+        if (nestedDomain) {
+            MessagePackCollectionCodec.requireCanonicalEnumWireName(domain.name());
+            for (TaggedMessageContracts.Case c : domain.cases()) {
+                MessagePackCollectionCodec.requireCanonicalEnumWireName(c.owner());
+                MessagePackCollectionCodec.requireCanonicalEnumWireName(c.name());
+            }
+        }
         StringBuilder fingerprint = new StringBuilder("oreslang.tagged.domain.v1/");
         fingerprint.append(domain.name()).append('/');
         domain.cases().stream().map(TaggedMessageContracts.Case::qualifiedName)
@@ -83,7 +92,22 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
                     routeFingerprint.append(';');
                 });
         closedDomainIdentity = digestHex(routeFingerprint.toString());
+        Set<String> wireTags = new java.util.HashSet<>();
         for (TaggedMessageContracts.Case source : domain.cases()) {
+            // A host-constructed Domain must obey the same admission rules
+            // as the compiler registry, including unambiguous owner+tag.
+            if (source.owner() == null || source.owner().isBlank()
+                    || source.name() == null || source.name().isBlank()
+                    || source.tag() < 1
+                    || (source.sourcePayload() == null) != (source.payload() == null)) {
+                throw new IllegalArgumentException(
+                        "invalid enum case or mismatched payload descriptor");
+            }
+            if (!wireTags.add(source.owner() + "#" + source.tag())) {
+                throw new IllegalArgumentException(
+                        "duplicate enum wire tag in domain " + source.owner()
+                                + "#" + source.tag());
+            }
             var tuple = source.payload() == null
                     ? MessagePackCollectionCodec.tuple(
                         MessagePackCollectionCodec.string(),
@@ -98,15 +122,23 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
             if (entries.putIfAbsent(source.qualifiedName(), cc) != null) {
                 throw new IllegalArgumentException("duplicate case in pattern: " + source.qualifiedName());
             }
-            // Validate all trusted compiled descriptors at registration.
-            // Untrusted frames must never select a decoder by trial/error.
-            new MessagePackCollectionCodec.MailboxSchema(id, tuple);
             if (schemas.putIfAbsent(id, cc) != null) {
-                throw new IllegalArgumentException("duplicate tagged schema identity");
+                throw new IllegalArgumentException("duplicate compiled enum case schema ID");
             }
         }
         byName = Map.copyOf(entries);
-        bySchema = Map.copyOf(schemas);
+        bySchemaId = Map.copyOf(schemas);
+    }
+
+    private static boolean containsNestedEnum(MessagePackCollectionCodec.Shape shape) {
+        if (shape instanceof MessagePackCollectionCodec.NestedEnum) return true;
+        if (shape instanceof MessagePackCollectionCodec.Sequence sequence) {
+            for (MessagePackCollectionCodec.Shape member : sequence.slots()) {
+                if (containsNestedEnum(member)) return true;
+            }
+            return sequence.element() != null && containsNestedEnum(sequence.element());
+        }
+        return false;
     }
 
     private static String digestHex(String input) {
@@ -117,6 +149,60 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         } catch (NoSuchAlgorithmException error) {
             throw new IllegalStateException("SHA-256 unavailable", error);
         }
+    }
+
+    /**
+     * Data-only preflight view of an *already decoded, schema-authenticated*
+     * tagged value. ActorRuntime accounts and capability-checks this
+     * projection before queue admission, while the mailbox stores only the
+     * owned binary frame and later decodes the original nominal values on
+     * the receiving actor lane. Never call this on an untrusted host value
+     * instead of invoking the compiled codec first.
+     */
+    public static Object preflightProjection(TaggedValue trustedDecoded) {
+        Objects.requireNonNull(trustedDecoded, "decoded enum");
+        return project(trustedDecoded, new java.util.IdentityHashMap<>(),
+                new int[]{0}, 0);
+    }
+
+    private static Object project(Object value,
+                                  java.util.IdentityHashMap<Object, Boolean> visiting,
+                                  int[] nodes, int depth) {
+        if (depth > MessagePackCollectionCodec.MAX_DEPTH
+                || ++nodes[0] > MessagePackCollectionCodec.MAX_NODES) {
+            throw new IllegalArgumentException("enum actor preflight exceeds depth/node quota");
+        }
+        if (value instanceof TaggedValue nested) {
+            if (visiting.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("cyclic tagged actor value");
+            }
+            try {
+                if (nested.payload() == null)
+                    return List.of(nested.enumName(), (long) nested.tag());
+                return List.of(nested.enumName(), (long) nested.tag(),
+                        project(nested.payload(), visiting, nodes, depth + 1));
+            } finally {
+                visiting.remove(value);
+            }
+        }
+        if (value instanceof List<?> list) {
+            if (visiting.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("cyclic tagged actor collection");
+            }
+            try {
+                java.util.ArrayList<Object> copy = new java.util.ArrayList<>(list.size());
+                for (Object item : list) {
+                    copy.add(project(item, visiting, nodes, depth + 1));
+                }
+                return List.copyOf(copy);
+            } finally {
+                visiting.remove(value);
+            }
+        }
+        // The decoder produced this scalar from a compiler-closed wire shape.
+        // Any unexpected host reference still fails the ActorRuntime
+        // capability/Sendable validation against the returned projection.
+        return value;
     }
 
     @Override
@@ -149,17 +235,18 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         if (bytes.length > MessagePackCollectionCodec.MAX_BYTES) {
             throw new IllegalArgumentException("tagged message exceeds wire byte budget");
         }
-        // The sender still owns its bytes. Route and decode only one bounded
-        // immutable snapshot, preventing cross-alternative mutable-buffer races.
         byte[] snapshot = bytes.clone();
-        String schema = MessagePackActorContract.peekCanonicalSchema(snapshot);
-        CaseCodec cc = bySchema.get(schema);
+        // One bounded header parse, then a lookup in the *compiled* closed
+        // schema table. Never execute up to 4096 decoder attempts for one
+        // hostile message. This does not trust the on-wire schema: the
+        // complete MessagePack shape and tag are rechecked below.
+        String id = MessagePackCollectionCodec.envelopeSchemaId(snapshot);
+        CaseCodec cc = bySchemaId.get(id);
         if (cc == null) {
-            throw new IllegalArgumentException("unknown tagged schema in closed actor pattern");
+            throw new IllegalArgumentException(
+                    "unknown enum message schema in this actor pattern");
         }
-        // Exactly ONE recursive typed decode, regardless of domain cardinality.
-        Object decoded = MessagePackCollectionCodec.decode(
-                cc.schemaId(), cc.shape(), snapshot);
+        Object decoded = MessagePackCollectionCodec.decode(cc.schemaId(), cc.shape(), snapshot);
         if (!(decoded instanceof List<?> value)
                 || value.size() != (cc.source().payload() == null ? 2 : 3)
                 || !Objects.equals(value.get(0), cc.source().owner())
@@ -169,6 +256,5 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         }
         return new TaggedValue(cc.source().owner(), cc.source().name(),
                 cc.source().tag(), value.size() == 3 ? value.get(2) : null);
-
     }
 }

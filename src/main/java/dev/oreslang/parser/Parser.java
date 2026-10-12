@@ -138,7 +138,16 @@ public final class Parser {
                     rootDeclarations.add(parseTaggedEnum());
                     continue;
                 }
+                if (match(MATCH)) {
+                    consume(PATTERN, "expected 'pattern' after 'define match'");
+                    validateNoModifiers(modifiers, "match patterns");
+                    rejectCallableStructuralAnnotation(annotations, "match patterns");
+                    rootDeclarations.add(parseNamedPattern());
+                    continue;
+                }
                 if (match(PATTERN)) {
+                    // Legacy spelling stays source-compatible; the canonical
+                    // declaration spelling is now 'define match pattern'.
                     validateNoModifiers(modifiers, "patterns");
                     rejectCallableStructuralAnnotation(annotations, "patterns");
                     rootDeclarations.add(parseNamedPattern());
@@ -1005,12 +1014,24 @@ public final class Parser {
         List<String> alternatives = new ArrayList<>();
         java.util.Set<String> names = new java.util.HashSet<>();
         while (!check(END) && !check(EOF)) {
-            Token owner = consume(IDENT, "pattern alternatives must be qualified enum cases");
-            consume(DOT, "expected '.' between enum and case");
-            String variant = consume(IDENT, "expected enum case name").lexeme();
-            String qualified = owner.lexeme() + "." + variant;
-            if (!names.add(qualified)) throw error(owner, "duplicate pattern alternative " + qualified);
-            alternatives.add(qualified);
+            Token start = peek();
+            String alternative;
+            if (match(ELLIPSIS)) {
+                // A compiler-time enum spread is not an expression spread.
+                // Resolution happens after all declarations are collected, so
+                // forward references and enum evolution use the same rules.
+                String owner = consume(IDENT, "expected enum name after '...'").lexeme();
+                alternative = "..." + owner;
+            } else {
+                Token owner = consume(IDENT, "pattern alternatives must be qualified enum cases");
+                consume(DOT, "expected '.' between enum and case");
+                String variant = consume(IDENT, "expected enum case name").lexeme();
+                alternative = owner.lexeme() + "." + variant;
+            }
+            if (!names.add(alternative)) {
+                throw error(start, "duplicate pattern alternative " + alternative);
+            }
+            alternatives.add(alternative);
             // Unlike ordinary type union expressions, a pattern body is an
             // implicit alternatives list. The pipe is intentionally forbidden.
             if (check(PIPE)) throw error(peek(),

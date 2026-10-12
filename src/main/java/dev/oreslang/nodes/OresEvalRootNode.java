@@ -194,7 +194,7 @@ public final class OresEvalRootNode extends RootNode {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
-            this.messageTypes = dev.oreslang.types.TaggedMessageContracts.verify(program);
+            this.messageTypes = dev.oreslang.types.TaggedMessageContracts.forTypes(program);
             indexImports();
             indexDeclarations();
         }
@@ -5703,12 +5703,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object constructVariant(
                 dev.oreslang.types.TaggedMessageContracts.Case c, Object payload) {
-            if (c.sourcePayload() == null && payload != null) {
-                throw new IllegalArgumentException("payloadless enum case cannot carry data");
-            }
-            if (c.sourcePayload() != null && payload == null) {
-                throw new IllegalArgumentException("enum case requires payload");
-            }
+            // Validate nominal inner values at the runtime boundary too:
+            // compiler checks do not authenticate forged host TaggedValues.
+            dev.oreslang.types.NominalEnumValueGuards.requirePayload(
+                    messageTypes, c, payload);
             return new dev.oreslang.runtime.TaggedMessageCodec.TaggedValue(
                     c.owner(), c.name(), c.tag(), payload);
         }
@@ -8159,6 +8157,21 @@ public final class OresEvalRootNode extends RootNode {
                         && right instanceof ActorRuntime.ActorRef<?> b
                         && a.kind() == b.kind()
                         && a.id().equals(b.id());
+            }
+
+            // Nominal enum values have structural payload equality without
+            // erasing their owner, variant, or discriminator. A tagged value
+            // is never equal to a raw int or to the payload it contains.
+            if (left instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue
+                    || right instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue) {
+                if (!(left instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue a)
+                        || !(right instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue b)) {
+                    return false;
+                }
+                if (!a.enumName().equals(b.enumName())
+                        || !a.variant().equals(b.variant()) || a.tag() != b.tag()) return false;
+                if (comparisonPairSeen(left, right, seen)) return true;
+                return valueEquals(a.payload(), b.payload(), seen);
             }
 
             if (left instanceof OptionValue || right instanceof OptionValue) {
