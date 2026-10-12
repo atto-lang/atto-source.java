@@ -45,7 +45,9 @@ final class FormalSelectCancellationOrderingModelCheckTest {
 
     private static State send(State s, int arm) {
         int bit = 1 << arm;
-        if (s.retired || (s.sent & bit) != 0) return null;
+        // Actor retirement revokes this receiver's registration, NOT
+        // channel sends issued independently by surviving producers.
+        if ((s.sent & bit) != 0) return null;
         int nextSent = s.sent | bit;
         if (s.registered && !s.terminal()) {
             return commit(s, arm, nextSent, s.buffered);
@@ -62,8 +64,12 @@ final class FormalSelectCancellationOrderingModelCheckTest {
     }
 
     private static State retire(State s) {
-        if (!s.terminal() || s.retired) return null;
-        return new State(false, s.registerAttempted, s.cancelled, true,
+        if (s.retired) return null;
+        // Source actor retirement is an atomic coordinator barrier. If it
+        // beats a channel commit, retirement cancels the pending registration.
+        // If physical commit won earlier, its delivered value is not revoked.
+        boolean cancelled = s.cancelled || s.selected < 0;
+        return new State(false, s.registerAttempted, cancelled, true,
                 s.staleCallback, s.selected, s.sent, s.buffered, s.consumed);
     }
 
@@ -92,6 +98,10 @@ final class FormalSelectCancellationOrderingModelCheckTest {
             assertFalse(s.registered,
                     "cancel/commit/retirement must detach all pending arms");
         }
+        if (s.retired && s.selected < 0) {
+            assertTrue(s.cancelled,
+                    "retirement of a pending source selection must settle cancellation");
+        }
     }
 
     private static void enqueue(Set<State> seen, ArrayDeque<State> work, State s) {
@@ -107,6 +117,9 @@ final class FormalSelectCancellationOrderingModelCheckTest {
         boolean committedBeforeCancellation = false;
         boolean selectedSecondArm = false;
         boolean retiredAfterCancellation = false;
+        boolean retiredWhilePending = false;
+        boolean producerAfterRetirement = false;
+        boolean committedBeforeRetirement = false;
 
         while (!work.isEmpty()) {
             State s = work.removeFirst();
@@ -115,6 +128,11 @@ final class FormalSelectCancellationOrderingModelCheckTest {
             committedBeforeCancellation |= s.selected >= 0 && !s.cancelled;
             selectedSecondArm |= s.selected == 1;
             retiredAfterCancellation |= s.cancelled && s.retired;
+            retiredWhilePending |= s.registerAttempted && s.cancelled && s.retired
+                    && s.selected < 0;
+            producerAfterRetirement |= s.retired && s.sent != 0 && s.consumed == 0
+                    && s.buffered != 0;
+            committedBeforeRetirement |= s.retired && s.selected >= 0;
             enqueue(seen, work, register(s));
             enqueue(seen, work, send(s, 0));
             enqueue(seen, work, send(s, 1));
@@ -128,7 +146,24 @@ final class FormalSelectCancellationOrderingModelCheckTest {
         assertTrue(committedBeforeCancellation);
         assertTrue(selectedSecondArm);
         assertTrue(retiredAfterCancellation);
+        assertTrue(retiredWhilePending);
+        assertTrue(producerAfterRetirement);
+        assertTrue(committedBeforeRetirement);
         assertTrue(seen.size() >= 20, "model must explore nontrivial interleavings");
+    }
+
+    @Test
+    void intentionallyUnsafeRetirementWithoutDetachmentProducesCounterexample() {
+        State unsafe = new State(true, true, false, true, false,
+                -1, 0, 0, 0);
+        assertThrows(AssertionError.class, () -> assertSafety(unsafe));
+    }
+
+    @Test
+    void intentionallyUnsafePostRetirementConsumeProducesCounterexample() {
+        State unsafe = new State(false, true, true, true, false,
+                0, 1, 0, 1);
+        assertThrows(AssertionError.class, () -> assertSafety(unsafe));
     }
 
     @Test
