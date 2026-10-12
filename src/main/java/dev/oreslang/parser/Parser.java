@@ -3299,6 +3299,20 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        // Preserve the planned "using state.read/write" spelling without
+        // letting it degrade into an arbitrary member invocation. Java
+        // currently lacks authenticated state-loan runtime lowering, so
+        // reject the capability syntax rather than running it unsafely.
+        if (isContextualIdentifier("using") && current + 3 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("state")
+                && tokens.get(current + 2).type() == DOT
+                && (tokens.get(current + 3).lexeme().equals("read")
+                    || tokens.get(current + 3).lexeme().equals("write"))) {
+            throw error(peek(),
+                    "using state.read/write requires Java scoped actor-state "
+                    + "capability lowering (not implemented)");
+        }
         if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
