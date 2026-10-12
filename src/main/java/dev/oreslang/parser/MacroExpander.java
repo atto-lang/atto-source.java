@@ -99,11 +99,14 @@ public final class MacroExpander {
         for (int i = 0; i < end;) {
             int start = i;
             Mode mode = Mode.AOT;
-            if (at(source, i, AT) && named(source, i + 1, "expand")
-                    && at(source, i + 2, LPAREN) && at(source, i + 4, RPAREN)
-                    && named(source, i + 5, "macro_rules") && at(source, i + 6, BANG)) {
-                if (!at(source, i + 3, IDENT) || !at(source, i + 4, RPAREN)) {
-                    throw fail(source.get(i), "expected @expand(aot) or @expand(rebuildable)");
+            if (at(source, i, AT) && named(source, i + 1, "expand")) {
+                if (!at(source, i + 2, LPAREN) || !at(source, i + 3, IDENT)
+                        || !at(source, i + 4, RPAREN)
+                        || !named(source, i + 5, "macro_rules")
+                        || !at(source, i + 6, BANG)) {
+                    throw fail(source.get(i),
+                            "@expand is reserved for an immediately following macro_rules! definition"
+                            + " and requires @expand(aot) or @expand(rebuildable)");
                 }
                 String value = source.get(i + 3).lexeme();
                 mode = switch (value) {
@@ -276,10 +279,18 @@ public final class MacroExpander {
                             && (arg.size() != 1 || arg.getFirst().type() != IDENT)) {
                         throw fail(token, "macro parameter $" + parameter.name + " requires an identifier");
                     }
-                    if (parameter.kind.equals("tt")
-                            && !(arg.size() == 1 || (opening(arg.getFirst().type())
-                            && close(arg, 0) == arg.size() - 1))) {
-                        throw fail(token, "macro parameter $" + parameter.name + " requires one token tree");
+                    if (parameter.kind.equals("tt")) {
+                        if (!(arg.size() == 1 || (opening(arg.getFirst().type())
+                                && close(arg, 0) == arg.size() - 1))) {
+                            throw fail(token, "macro parameter $" + parameter.name + " requires one token tree");
+                        }
+                        // Until fragments are parsed as typed AST expressions, a bare
+                        // token tree cannot splice control-flow or annotation syntax
+                        // into the call site in place of an ordinary expression.
+                        if (arg.size() == 1 && !Set.of(IDENT, INT, FLOAT, IMAG, STRING,
+                                TRUE, FALSE, NULL).contains(arg.getFirst().type())) {
+                            throw fail(token, "unsafe bare token tree: expected an identifier, literal, or grouped expression");
+                        }
                     }
                     captures.put(parameter.name, arg);
                 }
