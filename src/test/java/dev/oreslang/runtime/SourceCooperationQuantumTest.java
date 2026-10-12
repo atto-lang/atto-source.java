@@ -83,6 +83,25 @@ final class SourceCooperationQuantumTest {
     }
 
     @Test
+    void independentWatchdogRequestWinsAtNextBatchedSafepointWithoutClockRead() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int i = 0; i < 63; i++) {
+            assertFalse(q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.completedBackedgeNeedsCheck());
+        assertEquals(2, clock.reads.get(), "hot-path backedges must not read the clock");
+        assertTrue(q.shouldCooperateAtCheck(true),
+                "watchdog should request cooperation at the next resumable boundary");
+        assertEquals(2, clock.reads.get(),
+                "watchdog requests must not perform an extra clock read");
+        assertFalse(q.shouldCooperateAtCheck(false),
+                "a watchdog notice is not a persistent per-task time charge");
+        assertEquals(3, clock.reads.get());
+    }
+
+    @Test
     void backedgeAccountingDoesNotRollOverAtTheUnsigned32BitBoundary() throws ReflectiveOperationException {
         Clock clock = new Clock();
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
