@@ -116,12 +116,20 @@ public final class OresScheduler implements AutoCloseable {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(task, "task");
         long generation = NEXT_PHYSICAL_RECEIPT_GENERATION.incrementAndGet();
-        OresFuture<T> result = start(task);
+        TaskRunner<T> runner = startRunner(task);
+        OresFuture<T> result = runner.completion;
         OresFuture<Void> physicalDone = new OresFuture<>();
         result.whenCompleteRuntime((ignored, failure) -> {
-            // Terminal completion, including cancellation, is published only
-            // after the last physical turn has left its guest executor.
-            physicalDone.completeFromRuntime(null);
+            // Terminal completion alone is insufficient if TruffleContext.leave
+            // (or the turn executor containing it) threw. The scheduler still
+            // publishes task failure after draining leases, but that must not
+            // be mistaken for successful physical DONE evidence.
+            if (runner.physicalExitUnproven.get()) {
+                physicalDone.failFromRuntime(new IllegalStateException(
+                        "guest turn executor failed: physical context exit not proven"));
+            } else {
+                physicalDone.completeFromRuntime(null);
+            }
         });
         return new HostGeneratorTurnPump.Turn<>(result,
                 new PhysicalDoneReceipt(this, owner, generation, result, physicalDone));
@@ -382,6 +390,10 @@ public final class OresScheduler implements AutoCloseable {
      * scheduler does not move the waiter onto this scheduler.</p>
      */
     public <T> OresFuture<T> start(Task<T> task) {
+        return startRunner(task).completion;
+    }
+
+    private <T> TaskRunner<T> startRunner(Task<T> task) {
         Objects.requireNonNull(task, "task");
         // Admission and close share the same monitor. No new task may slip
         // into the live registry after close() snapshots cancellation targets.
@@ -396,14 +408,14 @@ public final class OresScheduler implements AutoCloseable {
         if (closed.get()) {
             runner.failBeforeStart(new RejectedExecutionException(
                     "OresScheduler " + name + " closed during task admission"));
-            return runner.completion;
+            return runner;
         }
         try {
             runner.scheduleInitial();
         } catch (RuntimeException | Error failure) {
             runner.failBeforeStart(failure);
         }
-        return runner.completion;
+        return runner;
     }
 
     /**
@@ -466,7 +478,8 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
-    private void executeTurn(Runnable turn, Runnable afterTurn,
+    private void executeTurn(Runnable turn,
+            java.util.function.Consumer<Boolean> afterTurn,
             java.util.function.Consumer<Throwable> admissionFailure,
             java.util.function.BooleanSupplier enterContext) {
         Objects.requireNonNull(turn, "turn");
@@ -477,12 +490,17 @@ public final class OresScheduler implements AutoCloseable {
             OresScheduler priorOwner = ACTIVE_CARRIER_OWNER.get();
             SCHEDULER_CARRIER.set(Boolean.TRUE);
             ACTIVE_CARRIER_OWNER.set(this);
+            boolean physicalExitConfirmed = true;
             try {
                 // A queued cancellation may revoke its unclaimed carrier
                 // ticket. In that case the already-submitted Runnable is a
                 // no-op and must never enter the Truffle/VM context.
                 if (enterContext.getAsBoolean()) {
+                    physicalExitConfirmed = false;
                     turnExecutor.execute(() -> runBoundAdmittedTask(turn));
+                    // A normal return from the context-owned turn executor
+                    // certifies that its TruffleContext.leave completed.
+                    physicalExitConfirmed = true;
                 }
             } catch (RuntimeException | Error failure) {
                 // Context admission can fail before runTurn starts. Settle the
@@ -498,7 +516,7 @@ public final class OresScheduler implements AutoCloseable {
                     SCHEDULER_CARRIER.remove();
                 }
                 try {
-                    afterTurn.run();
+                    afterTurn.accept(physicalExitConfirmed);
                 } finally {
                     if (priorOwner == null) ACTIVE_CARRIER_OWNER.remove();
                     else ACTIVE_CARRIER_OWNER.set(priorOwner);
@@ -603,6 +621,9 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        // Permanent negative evidence for this task, including guest leave
+        // failure; no later cancellation or retry may turn it into DONE.
+        private final AtomicBoolean physicalExitUnproven = new AtomicBoolean();
         // Reserved before QUEUED publication; released after VM carrier exit.
         private final AtomicInteger outstandingCarrierTurns = new AtomicInteger();
         private final AtomicReference<CarrierLease> queuedCarrierLease =
@@ -765,7 +786,7 @@ public final class OresScheduler implements AutoCloseable {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn();
                     }
-                }, () -> afterCarrierTurn(lease::release),
+                }, normalExit -> afterCarrierTurn(lease::release, normalExit),
                         this::failTerminal, lease::enterContext);
             } catch (RuntimeException | Error rejected) {
                 lease.release();
@@ -855,7 +876,8 @@ public final class OresScheduler implements AutoCloseable {
          * task Future earlier can let a host close its Polyglot Context while
          * this carrier is still executing guest continuation code.
          */
-        private void afterCarrierTurn(Runnable release) {
+        private void afterCarrierTurn(Runnable release, boolean physicalExitConfirmed) {
+            if (!physicalExitConfirmed) physicalExitUnproven.set(true);
             executing.set(false);
             release.run();
             scheduleReadyResume();

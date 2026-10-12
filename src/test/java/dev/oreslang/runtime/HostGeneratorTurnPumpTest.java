@@ -492,6 +492,39 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void failedGuestExecutorExitCannotMintSuccessfulPhysicalDone() throws Exception {
+        java.util.concurrent.ExecutorService carriers =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            OresScheduler root = OresScheduler.runtimeOwned(
+                    "leave-error-root", 1, carriers, turn -> {
+                        turn.run();
+                        throw new IllegalStateException(
+                                "simulated failure while leaving guest context");
+                    });
+            try {
+                HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                        UUID.randomUUID(), () -> true, root);
+                OresFuture<Integer> host = pump.requestCertified(pump.token(),
+                        () -> root.startCertifiedGeneratorTurn(
+                                pump.token(), input -> OresScheduler.done(23)));
+                assertTrue(pump.dispatchOne());
+                assertInstanceOf(IllegalStateException.class,
+                        assertThrows(java.util.concurrent.ExecutionException.class,
+                                () -> host.get(5, TimeUnit.SECONDS)).getCause());
+                assertFalse(pump.isQuiescent(),
+                        "even completed scheduler work cannot certify a failed guest leave");
+                assertThrows(IllegalStateException.class, pump::close);
+            } finally {
+                root.close();
+            }
+        } finally {
+            carriers.shutdownNow();
+            assertTrue(carriers.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void cancelledCertifiedAwaitCannotStartAnotherPullBeforePhysicalDone()
             throws Exception {
         try (OresScheduler root = new OresScheduler(1)) {
