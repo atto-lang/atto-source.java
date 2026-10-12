@@ -124,6 +124,11 @@ final class OresContextLifecycleTest {
             Value exposed = guest.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
                     "cleanup_gate");
             assertTrue(exposed.isHostObject(), "host must observe the guest-owned channel");
+            Value secondLookup = guest.execute(
+                    OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "cleanup_gate");
+            assertTrue(secondLookup.isHostObject());
+            assertSame(exposed.asHostObject(), secondLookup.asHostObject(),
+                    "static module fields must retain one identity per context");
             @SuppressWarnings("unchecked")
             ChannelRuntime.Channel<Long> hostAccessibleGate =
                     (ChannelRuntime.Channel<Long>) assertInstanceOf(
