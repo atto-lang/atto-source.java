@@ -18,7 +18,7 @@ final class SourceSerialActorStateTest {
                 }
 
                 pub increment(): int using state.read, state.write {
-                    return self.handle_state(|s| -> {
+                    return self.handle_state(critical write |s| -> {
                         s.count = s.count + 1;
                         return s.count;
                     });
