@@ -62,16 +62,26 @@ final class SourceActorIncompleteCleanupGuestTest {
                 """;
     }
 
+    private static void assertIncompleteReceipt(String output) {
+        // ActorOutput.toString includes an unpredictable actor UUID; verify
+        // payload and ordering without hard-coding the identity.
+        assertTrue(output.startsWith("ActorOutput["), output);
+        assertTrue(output.contains("sequence=0, value=entered]"), output);
+        assertTrue(output.endsWith("\ncleanup-incomplete\nroot-finished"), output);
+        assertFalse(output.contains("false-success"), output);
+        assertFalse(output.contains("defer-ran"), output);
+        assertFalse(output.contains("finally-ran"), output);
+    }
+
     @Test
     void suspendedSourceDeferNeverYieldsFalseSuccessfulDone() throws Exception {
-        assertEquals("entered\ncleanup-incomplete\nroot-finished",
-                execute(program("defer stdio.println(\"defer-ran\");\n",
-                        "")));
+        assertIncompleteReceipt(
+                execute(program("defer stdio.println(\"defer-ran\");\n", "")));
     }
 
     @Test
     void suspendedSourceFinallyNeverYieldsFalseSuccessfulDone() throws Exception {
         String original = program("try {\n", "} catch (e) { } finally { stdio.println(\"finally-ran\"); }\n");
-        assertEquals("entered\ncleanup-incomplete\nroot-finished", execute(original));
+        assertIncompleteReceipt(execute(original));
     }
 }
