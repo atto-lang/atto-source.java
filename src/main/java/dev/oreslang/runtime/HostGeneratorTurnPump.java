@@ -225,7 +225,7 @@ final class HostGeneratorTurnPump implements AutoCloseable {
             }
             if (selected.certified) {
                 OresScheduler.PhysicalDoneReceipt proof = started.certificate();
-                if (proof == null || !proof.verifies(owner, owningScheduler,
+                if (proof == null || !proof.claimFor(owner, owningScheduler,
                         started.result(), started.physicalExit())) {
                     throw new SecurityException(
                             "generator physical DONE was not issued by owning root scheduler");

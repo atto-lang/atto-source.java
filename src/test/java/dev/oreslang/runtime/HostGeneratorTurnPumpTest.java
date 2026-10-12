@@ -460,6 +460,38 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void certifiedPhysicalDoneReceiptCannotBeReplayedForAnotherPull()
+            throws Exception {
+        try (OresScheduler root = new OresScheduler(1)) {
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> true, root);
+            HostGeneratorTurnPump.Turn<Integer> valid =
+                    root.startCertifiedGeneratorTurn(pump.token(),
+                            input -> OresScheduler.done(19));
+            OresFuture<Integer> first =
+                    pump.requestCertified(pump.token(), () -> valid);
+            assertTrue(pump.dispatchOne());
+            assertEquals(19, first.get(5, TimeUnit.SECONDS));
+            // Wait for the pump's post-publication ownership release; Future
+            // completion itself is allowed to wake the host slightly earlier.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!pump.isQuiescent() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(pump.isQuiescent());
+            OresFuture<Integer> replay =
+                    pump.requestCertified(pump.token(), () -> valid);
+            assertTrue(pump.dispatchOne());
+            assertInstanceOf(SecurityException.class,
+                    assertThrows(java.util.concurrent.ExecutionException.class,
+                            () -> replay.get(5, TimeUnit.SECONDS)).getCause());
+            assertFalse(pump.isQuiescent(),
+                    "replayed DONE must permanently quarantine physical ownership");
+            assertThrows(IllegalStateException.class, pump::close);
+        }
+    }
+
+    @Test
     void cancelledCertifiedAwaitCannotStartAnotherPullBeforePhysicalDone()
             throws Exception {
         try (OresScheduler root = new OresScheduler(1)) {

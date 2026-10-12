@@ -75,6 +75,7 @@ public final class OresScheduler implements AutoCloseable {
         private final long generation;
         private final OresFuture<?> sourceTask;
         private final OresFuture<Void> physicalDone;
+        private final AtomicBoolean redeemed = new AtomicBoolean();
 
         private PhysicalDoneReceipt(OresScheduler issuer,
                 HostGeneratorTurnPump.OwnerToken owner, long generation,
@@ -88,12 +89,16 @@ public final class OresScheduler implements AutoCloseable {
 
         OresFuture<Void> physicalDone() { return physicalDone; }
 
-        boolean verifies(HostGeneratorTurnPump.OwnerToken expectedOwner,
+        boolean claimFor(HostGeneratorTurnPump.OwnerToken expectedOwner,
                 OresScheduler expectedScheduler, OresFuture<?> expectedResult,
                 OresFuture<?> expectedPhysicalDone) {
+            // A proof must be bound to the original task AND may authorize
+            // precisely one pull. Reusing an already-DONE task to advance the
+            // next request would be a physical turn replay.
             return generation > 0 && owner.equals(expectedOwner)
                     && issuer == expectedScheduler && sourceTask == expectedResult
-                    && physicalDone == expectedPhysicalDone;
+                    && physicalDone == expectedPhysicalDone
+                    && redeemed.compareAndSet(false, true);
         }
     }
 
