@@ -64,6 +64,12 @@ public final class ActorRuntimePipelineEngine implements PipelineController.Engi
                     throw new SecurityException("provider did not return an ActorRuntime.ActorRef: "
                             + stage.providerId());
                 }
+                // Never include a foreign runtime's actor in rollback.
+                // A hostile registered provider cannot gain STOP authority
+                // over an unrelated actor by making pipeline admission fail.
+                if (!runtime.ownsActorRef(ref)) {
+                    throw new SecurityException("pipeline provider returned a foreign runtime actor");
+                }
                 refs.add(ref);
             }
             // Atomically bind live unused same-runtime compiler-owned mailboxes.

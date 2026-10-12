@@ -34,6 +34,24 @@ final class ActorRuntimePipelineEngineAdmissionTest {
         }
     }
 
+    @Test void foreignRuntimeActorCannotBeStoppedByFailedPipelineOpen() {
+        try (ActorRuntime owner = new ActorRuntime();
+             ActorRuntime foreign = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Object> foreignRef = foreign.spawn(
+                    () -> (message, context) -> { });
+            PipelinePlan.ActorProvider provider = () -> foreignRef;
+            PipelinePlan plan = new PipelinePlanner()
+                    .add("source", "registered", "domain", provider)
+                    .add("sink", "registered", "domain", provider).build();
+            ActorRuntimePipelineEngine engine = new ActorRuntimePipelineEngine(
+                    owner, Runnable::run, Map.of("registered", provider));
+            assertThrows(SecurityException.class, () -> engine.open(plan));
+            assertTrue(foreignRef.isAlive(),
+                    "failed pipeline open revoked an unrelated runtime actor");
+            foreignRef.stop();
+        }
+    }
+
     @Test void providerMustProduceActorCapabilityNotHostObject() {
         AtomicInteger calls = new AtomicInteger();
         PipelinePlan.ActorProvider bogus = () -> {

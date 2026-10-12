@@ -4497,6 +4497,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** Host-only ownership query for fail-closed provider admission. */
+    public boolean ownsActorRef(ActorRef<?> ref) {
+        return ref != null && ref.ownedBy(this);
+    }
+
     public boolean isAlive(ActorRef<?> ref) {
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) return false;
