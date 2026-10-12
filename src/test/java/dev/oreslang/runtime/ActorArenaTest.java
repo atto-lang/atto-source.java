@@ -168,4 +168,72 @@ final class ActorArenaTest {
                 "late completion must release last native quota exactly once");
         assertDoesNotThrow(slice.get()::close);
     }
+
+    @Test
+    void explicitStopQuarantinesLateLoanCompletionsAndReclaimsExactlyOnce() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable());
+        var region = new AtomicReference<ExplicitNativeI64Region>();
+        var first = new AtomicReference<ExplicitNativeI64Region.Loan>();
+        var second = new AtomicReference<ExplicitNativeI64Region.Loan>();
+        var slot = new AtomicReference<ExplicitNativeI64Region.Slot>();
+        var slice = new AtomicReference<ActorRuntime.ActorMemorySlice>();
+        var failure = new AtomicReference<Throwable>();
+        var ready = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnPrivate(() -> (mail, ctx) -> {
+                try {
+                    var memory = ctx.actorOwnedMemory().orElseThrow();
+                    slice.set(memory);
+                    var nativeRegion = memory.newExplicitNativeI64Region(2);
+                    region.set(nativeRegion);
+                    var handle = nativeRegion.allocate(77L);
+                    slot.set(handle);
+                    first.set(nativeRegion.borrow(handle));
+                    second.set(nativeRegion.borrow(handle));
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                } finally {
+                    ready.countDown();
+                }
+            });
+            actor.send("allocate");
+            assertTrue(ready.await(20, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+            assertEquals(16L, slice.get().usedBytes());
+            // Supervisor stop is the actor's cancellation/retirement boundary.
+            actor.stop();
+            assertTrue(actor.awaitTermination(20, TimeUnit.SECONDS));
+            assertTrue(region.get().closed());
+            assertFalse(region.get().physicallyClosed(), "both loans still pin FFM");
+            assertEquals(16L, slice.get().usedBytes());
+            assertThrows(IllegalStateException.class, () -> region.get().read(slot.get()));
+            assertThrows(IllegalStateException.class, () -> first.get().read());
+            first.get().close();
+            first.get().close();
+            assertFalse(region.get().physicallyClosed(), "second loan still pins FFM");
+            assertEquals(16L, slice.get().usedBytes());
+            var barrier = new CountDownLatch(1);
+            var completionsDone = new CountDownLatch(12);
+            for (int index = 0; index < 12; index++) {
+                new Thread(() -> {
+                    try {
+                        barrier.await();
+                        second.get().close(); // duplicate completion race
+                    } catch (Throwable error) {
+                        failure.compareAndSet(null, error);
+                    } finally {
+                        completionsDone.countDown();
+                    }
+                }, "actor-loan-completion-" + index).start();
+            }
+            barrier.countDown();
+            assertTrue(completionsDone.await(20, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+            assertTrue(region.get().physicallyClosed());
+            assertEquals(0L, slice.get().usedBytes());
+            assertThrows(IllegalStateException.class, () -> region.get().read(slot.get()));
+            assertDoesNotThrow(second.get()::close);
+            assertDoesNotThrow(slice.get()::close);
+        }
+    }
 }
