@@ -123,7 +123,7 @@ final class MatchPatternEnumSpreadTest {
                 Parser.ROOT_MODULE, List.of(
                 new Ast.EnumDecl("Big", cases),
                 new Ast.EnumDecl("Small", List.of(new Ast.EnumCase("Only", null, 1))),
-                new Ast.PatternDecl("TooBig", List.of("...Big", "Small.Only")))));
+                new Ast.PatternDecl("TooBig", List.of("...Big", "Small.Only"))))));
         assertThrows(IllegalArgumentException.class,
                 () -> TaggedMessageContracts.verify(program));
     }
