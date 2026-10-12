@@ -332,6 +332,11 @@ public final class SupervisorChildRegistry {
         }
     }
 
+    /** Host-only admission snapshot; never grants a restart capability. */
+    synchronized boolean restartAdmissionOpen() {
+        return !restartClosed;
+    }
+
     /** A closed supervisor may clean up, but cannot publish a new incarnation. */
     synchronized void closeRestartAdmission() {
         if (restartClosed) return;
