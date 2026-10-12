@@ -820,27 +820,30 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowKind kind,
                 Object value,
                 Throwable failure,
-                long matchFrameId) {
+                long matchFrameId,
+                Object ownerTask) {
             private static SourceFlow normal() {
-                return new SourceFlow(SourceFlowKind.NORMAL, null, null, 0);
+                return new SourceFlow(SourceFlowKind.NORMAL, null, null, 0, null);
             }
 
             private static SourceFlow returning(Object value) {
-                return new SourceFlow(SourceFlowKind.RETURN, value, null, 0);
+                return new SourceFlow(SourceFlowKind.RETURN, value, null, 0, null);
             }
 
-            private static SourceFlow armResult(Object value, long matchFrameId) {
+            private static SourceFlow armResult(
+                    Object value, long matchFrameId, Object ownerTask) {
                 if (matchFrameId <= 0) throw new IllegalStateException(
                         "ARM_RESULT requires an owned lexical match frame");
-                return new SourceFlow(SourceFlowKind.ARM_RESULT, value, null, matchFrameId);
+                return new SourceFlow(SourceFlowKind.ARM_RESULT, value, null,
+                        matchFrameId, Objects.requireNonNull(ownerTask, "ownerTask"));
             }
 
             private static SourceFlow breaking() {
-                return new SourceFlow(SourceFlowKind.BREAK, null, null, 0);
+                return new SourceFlow(SourceFlowKind.BREAK, null, null, 0, null);
             }
 
             private static SourceFlow continuing() {
-                return new SourceFlow(SourceFlowKind.CONTINUE, null, null, 0);
+                return new SourceFlow(SourceFlowKind.CONTINUE, null, null, 0, null);
             }
 
             private static SourceFlow throwing(Throwable failure) {
@@ -848,7 +851,7 @@ public final class OresEvalRootNode extends RootNode {
                         SourceFlowKind.THROW,
                         null,
                         Objects.requireNonNull(failure, "failure"),
-                        0);
+                        0, null);
             }
         }
 
@@ -1974,7 +1977,7 @@ public final class OresEvalRootNode extends RootNode {
                             (t, value, failure) ->
                                     continuation.accept(t,
                                             failure == null
-                                                    ? SourceFlow.armResult(value, owner)
+                                                    ? SourceFlow.armResult(value, owner, t)
                                                     : SourceFlow.throwing(failure)));
                     return;
                 }
@@ -3066,9 +3069,10 @@ public final class OresEvalRootNode extends RootNode {
             armEnv.valueMatchFrameId = owner;
             runBlock(task, arm.body(), armEnv, (t, flow) -> {
                 if (flow.kind() == SourceFlowKind.ARM_RESULT) {
-                    if (flow.matchFrameId() != owner) {
+                    if (flow.matchFrameId() != owner
+                            || flow.ownerTask() != t || t != task) {
                         continuation.accept(t, null, new IllegalStateException(
-                                "ARM_RESULT crossed another lexical match boundary"));
+                                "ARM_RESULT crossed another lexical match or task boundary"));
                     } else {
                         continuation.accept(t, flow.value(), null);
                     }
