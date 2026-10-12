@@ -137,17 +137,7 @@ public final class OresContext implements AutoCloseable {
                     contextId, () -> generatorRootTurnAuthorized(
                             vm.isRootSchedulerCurrent(),
                             Boolean.TRUE.equals(rootGuestEntryScope.get())),
-                    () -> {
-                        // Host pulls only enqueue. A real root-scheduler carrier
-                        // subsequently enters Truffle and owns dispatch/start.
-                        OresFuture<Void> wake = vm.rootScheduler().startSync(() -> {
-                            hostGeneratorTurns.dispatchOne();
-                            return null;
-                        });
-                        wake.whenCompleteRuntime((ignored, failure) -> {
-                            if (failure != null) hostGeneratorTurns.seal();
-                        });
-                    },
+                    this::scheduleHostGeneratorDispatch,
                     vm.rootScheduler());
         } catch (RuntimeException | Error failure) {
             if (async != null) {
@@ -394,6 +384,18 @@ public final class OresContext implements AutoCloseable {
             }
         }
         return task.join();
+    }
+
+    private void scheduleHostGeneratorDispatch() {
+        // Only the root scheduler carrier may dispatch an authenticated
+        // generator pull, and it must enter the physical Truffle context.
+        OresFuture<Void> wake = vm.rootScheduler().startSync(() -> {
+            hostGeneratorTurns.dispatchOne();
+            return null;
+        });
+        wake.whenCompleteRuntime((ignored, failure) -> {
+            if (failure != null) hostGeneratorTurns.seal();
+        });
     }
 
     /**
