@@ -3880,12 +3880,18 @@ public final class OresEvalRootNode extends RootNode {
                 // This path validates lexical callback shape, rejects any
                 // nested potential suspension, and releases the state loan
                 // before resuming the outer source continuation.
+                Object value;
                 try {
                     Invocation invocation = criticalStateInvocation(call, member, env);
-                    continuation.accept(task, invoke(invocation), null);
+                    value = invoke(invocation);
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(task, null, failure);
+                    return;
                 }
+                // Never invoke a continuation under the exception catch:
+                // if downstream propagation itself throws, retrying it would
+                // duplicate the continuation and potentially its side effects.
+                continuation.accept(task, value, null);
                 return;
             }
             if (call.callee() instanceof Ast.NameExpr name
