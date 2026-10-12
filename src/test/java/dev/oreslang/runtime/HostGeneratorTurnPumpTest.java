@@ -394,6 +394,55 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void schedulerBackedHeapFrameCannotOverlapPhysicalStarts() throws Exception {
+        try (OresScheduler root = new OresScheduler(1)) {
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> true, root);
+            CountDownLatch firstEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirst = new CountDownLatch(1);
+            AtomicInteger resumes = new AtomicInteger();
+            GeneratorRuntime.SchedulerBacked<Integer> frame =
+                    GeneratorRuntime.schedulerBacked(root, pump.token(), input -> {
+                        int value = resumes.incrementAndGet();
+                        if (value == 1) {
+                            firstEntered.countDown();
+                            if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("frame release timed out");
+                            }
+                        }
+                        return OresScheduler.done(GeneratorRuntime.Step.yielded(value));
+                    });
+
+            HostGeneratorTurnPump.Turn<GeneratorRuntime.Step<Integer>> first =
+                    frame.nextTurn().start();
+            // The observer registers before the held guest carrier is released.
+            // Runtime Future waiters are delivered in registration order; this
+            // latch follows the frame's own physical-exit lease callback.
+            CountDownLatch firstExitCallbacksDone = new CountDownLatch(1);
+            first.physicalExit().whenCompleteRuntime(
+                    (ignored, failure) -> firstExitCallbacksDone.countDown());
+            try {
+                assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+                assertThrows(IllegalStateException.class,
+                        () -> frame.nextTurn().start(),
+                        "even an internal bypass cannot resume one heap frame twice");
+                assertEquals(1, resumes.get());
+            } finally {
+                releaseFirst.countDown();
+            }
+            assertEquals(1, first.result().get(5, TimeUnit.SECONDS).value());
+            assertTrue(firstExitCallbacksDone.await(5, TimeUnit.SECONDS));
+
+            HostGeneratorTurnPump.Turn<GeneratorRuntime.Step<Integer>> second =
+                    frame.nextTurn().start();
+            assertEquals(2, second.result().get(5, TimeUnit.SECONDS).value());
+            second.physicalExit().get(5, TimeUnit.SECONDS);
+            assertEquals(2, resumes.get());
+            pump.close();
+        }
+    }
+
+    @Test
     void certifiedSchedulerFrameYieldsThreeTypedValuesAndFinishes() throws Exception {
         try (OresScheduler root = new OresScheduler(1)) {
             HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
