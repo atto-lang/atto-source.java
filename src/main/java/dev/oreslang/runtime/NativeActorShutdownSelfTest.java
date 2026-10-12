@@ -85,7 +85,65 @@ public final class NativeActorShutdownSelfTest {
             }
         }
         checkFailedDrainRetainsPhysicalOwnership();
-        System.out.println("ORES_NATIVE_SHUTDOWN|PASS|cleanup=1|physical_done=1|failed_drain_fenced=1");
+        checkNativeLoanRetirementFencesPhysicalDone();
+        System.out.println("ORES_NATIVE_SHUTDOWN|PASS|cleanup=1|physical_done=1|failed_drain_fenced=1|native_loans=1");
+    }
+
+    private static void checkNativeLoanRetirementFencesPhysicalDone() throws Exception {
+        if (!ExplicitNativeI64Region.isAvailable()) {
+            throw new AssertionError("native-image actor shutdown requires real FFM backing");
+        }
+        CountDownLatch created = new CountDownLatch(1);
+        AtomicReference<ExplicitNativeI64Region> region = new AtomicReference<>();
+        AtomicReference<ExplicitNativeI64Region.Loan> loan = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        ActorRuntime runtime = new ActorRuntime();
+        try {
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnPrivate(
+                    () -> (message, context) -> {
+                        try {
+                            ExplicitNativeI64Region memory = context
+                                    .actorOwnedMemory().orElseThrow()
+                                    .newExplicitNativeI64Region(1);
+                            region.set(memory);
+                            loan.set(memory.borrow(memory.allocate(42)));
+                        } catch (Throwable error) {
+                            failure.compareAndSet(null, error);
+                        } finally {
+                            created.countDown();
+                        }
+                    });
+            actor.ready().get(10, TimeUnit.SECONDS);
+            actor.send(1);
+            if (!created.await(10, TimeUnit.SECONDS)) {
+                throw new AssertionError("native loan creation never entered actor turn");
+            }
+            if (failure.get() != null) {
+                throw new AssertionError("native loan creation failed", failure.get());
+            }
+            CompletableFuture<Void> stopping = CompletableFuture.runAsync(actor::stop);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!region.get().closed() && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            if (!region.get().closed() || actor.get_done().isDone()) {
+                throw new AssertionError(
+                        "logical STOP must retire arena but retain physical done for native loans");
+            }
+            if (runtime.privateMemoryBytes() != Long.BYTES) {
+                throw new AssertionError("native FFM quota must stay charged while pinned");
+            }
+            loan.get().close();
+            stopping.get(10, TimeUnit.SECONDS);
+            actor.get_done().get(10, TimeUnit.SECONDS);
+            if (!region.get().physicallyClosed()
+                    || runtime.privateMemoryBytes() != 0L) {
+                throw new AssertionError(
+                        "last native loan did not release arena and aggregate quota");
+            }
+        } finally {
+            runtime.close();
+        }
     }
 
     private static void checkFailedDrainRetainsPhysicalOwnership() throws Exception {
