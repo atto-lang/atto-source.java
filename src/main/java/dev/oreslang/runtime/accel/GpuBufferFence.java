@@ -146,6 +146,90 @@ public final class GpuBufferFence implements AutoCloseable {
         }
     }
 
+
+    /**
+     * Trusted-provider terminal transition for ONE two-buffer submission.
+     * A caller may not complete one half with this entry point: both exact
+     * active tickets must match before either state is changed.
+     */
+    static void completePair(GpuBufferFence input, GpuBufferFence output,
+                             PairTickets pair, boolean succeeded) {
+        requireDistinctPair(input, output, pair);
+        State a = input.state, b = output.state;
+        State first = a.rank < b.rank ? a : b, second = first == a ? b : a;
+        synchronized (first) {
+            synchronized (second) {
+                input.active();
+                output.active();
+                if (a.status != Status.IN_FLIGHT || b.status != Status.IN_FLIGHT
+                        || a.activeTicket != pair.inputTicket()
+                        || b.activeTicket != pair.outputTicket()
+                        || !a.identity.equals(pair.input())
+                        || !b.identity.equals(pair.output()))
+                    throw new IllegalStateException("stale or partial GPU pair completion");
+                a.status = b.status = succeeded ? Status.IDLE : Status.POISONED;
+                a.backendQuiescent = b.backendQuiescent = true;
+                a.activeTicket = b.activeTicket = null;
+            }
+        }
+    }
+
+    /**
+     * Mark both allocations poisoned without claiming the device stopped.
+     * Their tickets remain live until the backend acknowledges BOTH events.
+     */
+    static void cancelPair(GpuBufferFence input, GpuBufferFence output,
+                           PairTickets pair) {
+        requireDistinctPair(input, output, pair);
+        State a = input.state, b = output.state;
+        State first = a.rank < b.rank ? a : b, second = first == a ? b : a;
+        synchronized (first) {
+            synchronized (second) {
+                input.active();
+                output.active();
+                if (a.status != Status.IN_FLIGHT || b.status != Status.IN_FLIGHT
+                        || a.activeTicket != pair.inputTicket()
+                        || b.activeTicket != pair.outputTicket()
+                        || !a.identity.equals(pair.input())
+                        || !b.identity.equals(pair.output()))
+                    throw new IllegalStateException("stale or partial GPU pair cancellation");
+                a.status = b.status = Status.POISONED;
+            }
+        }
+    }
+
+    /** Call only after backend authentication of BOTH cancelled device events. */
+    static void acknowledgeCancelledPair(GpuBufferFence input, GpuBufferFence output,
+                                         PairTickets pair) {
+        requireDistinctPair(input, output, pair);
+        State a = input.state, b = output.state;
+        State first = a.rank < b.rank ? a : b, second = first == a ? b : a;
+        synchronized (first) {
+            synchronized (second) {
+                input.active();
+                output.active();
+                if (a.status != Status.POISONED || b.status != Status.POISONED
+                        || a.backendQuiescent || b.backendQuiescent
+                        || a.activeTicket != pair.inputTicket()
+                        || b.activeTicket != pair.outputTicket()
+                        || !a.identity.equals(pair.input())
+                        || !b.identity.equals(pair.output()))
+                    throw new IllegalStateException("invalid cancelled GPU pair acknowledgement");
+                a.backendQuiescent = b.backendQuiescent = true;
+                a.activeTicket = b.activeTicket = null;
+            }
+        }
+    }
+
+    private static void requireDistinctPair(GpuBufferFence input, GpuBufferFence output,
+                                            PairTickets pair) {
+        Objects.requireNonNull(input, "input owner");
+        Objects.requireNonNull(output, "output owner");
+        Objects.requireNonNull(pair, "GPU submission");
+        if (input == output || input.state == output.state)
+            throw new IllegalArgumentException("GPU pair must own distinct allocations");
+    }
+
     Ticket beginCommand(Identity caller) {
         synchronized (state) {
         active();
