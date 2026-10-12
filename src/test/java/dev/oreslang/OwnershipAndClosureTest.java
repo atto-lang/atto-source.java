@@ -569,7 +569,7 @@ final class OwnershipAndClosureTest {
                         }
                         """)));
 
-        assertTrue(error.getMessage().contains("cannot escape its mailbox turn as a bound method"));
+        assertTrue(error.getMessage().contains("direct-call-only"), error::getMessage);
     }
 
 
