@@ -21,6 +21,95 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Regression proving the same actor receives successive HTTP exchanges. */
 class NativeHttpPooledActorTest {
+
+    @Test void oneTimedOutExchangeMustNotDestroyAnOtherwiseHealthyPooledActor() throws Exception {
+        String program = """
+            define actor Worker as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                if request.target == "/stall"; then
+                  try { await request.body_text(); } catch (err) { }
+                else
+                  await request.respond(200, "text/plain", "still-alive");
+                fi
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val pool = http.pool_handler("Worker", 1);
+              val server = http.listen("127.0.0.1", 0, 4, 4096, 500);
+              stdio.println(server.port);
+              for (let int i = 0; i < 2; i = i + 1) {
+                val request = await server.accept();
+                val completed = request.completion;
+                pool.dispatch(rt borrow mut request);
+                if i == 1; then await completed; fi
+              }
+              stdio.println("AFTER_REQUEST_TIMEOUT");
+              stdio.println(pool.workers_created);
+              stdio.println(pool.workers_reused);
+              await server.shutdown(0);
+              return;
+            }
+            """;
+        CompletableFuture<Integer> port = new CompletableFuture<>();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public synchronized void write(byte[] bytes, int off, int length) {
+                super.write(bytes, off, length);
+                String text = toString(StandardCharsets.UTF_8);
+                int end = text.indexOf('\n');
+                if (end >= 0 && !port.isDone())
+                    port.complete(Integer.parseInt(text.substring(0, end).trim()));
+            }
+        };
+        try (Context context = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)
+                .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of()).out(output).build();
+             ExecutorService clients = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> work = clients.submit(() -> {
+                try (java.net.Socket stalled = new java.net.Socket("127.0.0.1", port.get(10, TimeUnit.SECONDS));
+                     HttpClient http = HttpClient.newHttpClient()) {
+                    // Request handler starts reading an incomplete body. Keep
+                    // the socket open past the 500ms request deadline.
+                    stalled.getOutputStream().write((
+                        "POST /stall HTTP/1.1\r\nHost: localhost\r\nContent-Length: 256\r\n" +
+                        "Connection: keep-alive\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                    stalled.getOutputStream().flush();
+                    Thread.sleep(950);
+                    var request = HttpRequest.newBuilder(
+                            URI.create("http://127.0.0.1:" + port.get(10, TimeUnit.SECONDS) + "/ok"))
+                            .timeout(Duration.ofSeconds(8)).GET().build();
+                    var response = http.send(request, HttpResponse.BodyHandlers.ofString());
+                    assertEquals(200, response.statusCode());
+                    assertEquals("still-alive", response.body());
+                } catch (Exception failure) { throw new RuntimeException(failure); }
+            });
+            context.eval(Source.newBuilder(OresLanguage.ID, program, "pooled-timeout-test.ores").build());
+            work.get(30, TimeUnit.SECONDS);
+        }
+        String result = output.toString(StandardCharsets.UTF_8);
+        assertTrue(result.contains("AFTER_REQUEST_TIMEOUT\n1\n1"),
+            "request-local deadline killed or replaced the surviving pool worker: " + result);
+    }
+
+    @Test void poolSizeMustNotTruncateLongToValidInt() {
+        String program = """
+            define actor Worker as
+              receive(ActorMail<String> mail): void { return; }
+            end
+            pub routine main(): void {
+              http.pool_handler("Worker", 4294967297);
+              return;
+            }
+            """;
+        try (Context context = IsolatePolicy.developer().restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of()).build()) {
+            org.graalvm.polyglot.PolyglotException denied = assertThrows(
+                org.graalvm.polyglot.PolyglotException.class,
+                () -> context.eval(Source.newBuilder(OresLanguage.ID, program, "pool-size-overflow.ores").build()));
+            assertTrue(denied.getMessage().contains("pool") || denied.getMessage().contains("10000"),
+                "invalid pool size must be rejected, not silently truncated: " + denied.getMessage());
+        }
+    }
     @Test void sharedAndIsolatedWorkersHandleMultipleExchangesWithoutEnding() throws Exception {
         String program = """
             define actor Shared as
