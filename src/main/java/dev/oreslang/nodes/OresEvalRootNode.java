@@ -1745,7 +1745,9 @@ public final class OresEvalRootNode extends RootNode {
 
             evalSuspendableExpr(
                     task,
-                    defer,
+                    defer instanceof Ast.LambdaExpr
+                            ? new Ast.CallExpr(defer, List.of())
+                            : defer,
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
@@ -4590,6 +4592,7 @@ public final class OresEvalRootNode extends RootNode {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
+            Throwable pendingFailure = null;
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
             } catch (TailCallSignal signal) {
@@ -4598,16 +4601,41 @@ public final class OresEvalRootNode extends RootNode {
                 throw signal;
             } catch (RuntimeException | Error failure) {
                 abnormalExit = true;
+                pendingFailure = failure;
                 throw failure;
             } finally {
-                boolean deferredFailure = false;
+                Throwable originalFailure = pendingFailure;
+                // Always run the entire LIFO cleanup stack. In particular,
+                // a failed defer must not prevent remaining resource cleanup.
+                while (!deferred.isEmpty()) {
+                    Ast.Expr cleanup = deferred.pop();
+                    try {
+                        eval(cleanup instanceof Ast.LambdaExpr
+                                ? new Ast.CallExpr(cleanup, List.of())
+                                : cleanup, env);
+                    } catch (RuntimeException | Error failure) {
+                        if (pendingFailure != null && pendingFailure != failure) {
+                            failure.addSuppressed(pendingFailure);
+                        }
+                        pendingFailure = failure;
+                    }
+                }
                 try {
-                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                    env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    deferredFailure = true;
-                    throw failure;
-                } finally {
-                    env.releaseMutexGuards(abnormalExit || deferredFailure);
+                    if (pendingFailure != null && pendingFailure != failure) {
+                        failure.addSuppressed(pendingFailure);
+                    }
+                    pendingFailure = failure;
+                }
+                // If only the body failed, Java will rethrow it naturally.
+                // If cleanup failed, the most recent failure takes precedence
+                // and retains earlier failures as suppressed exceptions.
+                if (pendingFailure != null && pendingFailure != originalFailure) {
+                    if (pendingFailure instanceof RuntimeException runtimeFailure) {
+                        throw runtimeFailure;
+                    }
+                    throw (Error) pendingFailure;
                 }
             }
         }
