@@ -15,12 +15,13 @@ import static org.junit.jupiter.api.Assertions.*;
  * reduction-region instrumentation. That still needs guest execution.
  */
 final class FormalBorrowReductionBoundaryModelTest {
-    private enum Phase { RUNNING, HANDOFF, READY, CANCELLED }
+    private enum Phase { RUNNING, HANDOFF, READY, STOP_PENDING, CANCELLED }
     private enum Loan { NONE, ORDINARY, ACTOR_STATE, NATIVE }
     private enum Action {
         BORROW_ORDINARY, BORROW_STATE, BORROW_NATIVE, RELEASE,
         CHARGE_REDUCTION, COMPLETE_EXTERNAL_EFFECT,
-        REQUEST_PREEMPTION, EXIT_CARRIER, RESUME, CANCEL
+        REQUEST_PREEMPTION, EXIT_CARRIER, RESUME,
+        REQUEST_CANCEL, RETIRE_STOP_LOAN, EXIT_STOP_CARRIER
     }
     private record State(Phase phase, Loan loan, int workSinceYield,
                          int totalFuel, int resumes, int externalEffects,
@@ -66,11 +67,34 @@ final class FormalBorrowReductionBoundaryModelTest {
             case RESUME -> s.phase == Phase.READY && !s.carrierOwned
                     ? new State(Phase.RUNNING, s.loan, 0, s.totalFuel,
                             s.resumes + 1, s.externalEffects, true) : null;
-            // Cancellation abstracts completed cleanup/retirement: all loans
-            // have already been retired before the terminal state is exposed.
-            case CANCEL -> s.phase == Phase.RUNNING
-                    ? new State(Phase.CANCELLED, Loan.NONE, s.workSinceYield,
-                            s.totalFuel, s.resumes, s.externalEffects, false) : null;
+            // Cancellation seals admission but does not revoke the physical
+            // carrier or silently erase live actor/native/ordinary loans.
+            // The carrier must retire them before exposing DONE.
+            case REQUEST_CANCEL -> {
+                if (s.phase == Phase.READY && !s.carrierOwned
+                        && s.loan == Loan.NONE) {
+                    yield new State(Phase.CANCELLED, Loan.NONE,
+                            s.workSinceYield, s.totalFuel, s.resumes,
+                            s.externalEffects, false);
+                }
+                if ((s.phase == Phase.RUNNING || s.phase == Phase.HANDOFF)
+                        && s.carrierOwned) {
+                    yield new State(Phase.STOP_PENDING, s.loan,
+                            s.workSinceYield, s.totalFuel, s.resumes,
+                            s.externalEffects, true);
+                }
+                yield null;
+            }
+            case RETIRE_STOP_LOAN -> s.phase == Phase.STOP_PENDING
+                    && s.carrierOwned && s.loan != Loan.NONE
+                    ? new State(Phase.STOP_PENDING, Loan.NONE,
+                            s.workSinceYield, s.totalFuel, s.resumes,
+                            s.externalEffects, true) : null;
+            case EXIT_STOP_CARRIER -> s.phase == Phase.STOP_PENDING
+                    && s.carrierOwned && s.loan == Loan.NONE
+                    ? new State(Phase.CANCELLED, Loan.NONE,
+                            s.workSinceYield, s.totalFuel, s.resumes,
+                            s.externalEffects, false) : null;
         };
     }
 
@@ -91,9 +115,15 @@ final class FormalBorrowReductionBoundaryModelTest {
     }
 
     private static boolean safety(State state) {
-        if (state.phase != Phase.RUNNING && state.loan != Loan.NONE) return false;
-        if (state.phase == Phase.HANDOFF && !state.carrierOwned) return false;
-        if (state.phase == Phase.READY && state.carrierOwned) return false;
+        if ((state.phase == Phase.HANDOFF
+                || state.phase == Phase.READY
+                || state.phase == Phase.CANCELLED)
+                && state.loan != Loan.NONE) return false;
+        if ((state.phase == Phase.RUNNING
+                || state.phase == Phase.HANDOFF
+                || state.phase == Phase.STOP_PENDING) && !state.carrierOwned) return false;
+        if ((state.phase == Phase.READY || state.phase == Phase.CANCELLED)
+                && state.carrierOwned) return false;
         if (state.resumes > 0 && state.totalFuel < 2) return false;
         if (state.totalFuel < state.workSinceYield) return false;
         if (state.externalEffects > 1 || state.resumes > 1) return false;
@@ -117,6 +147,35 @@ final class FormalBorrowReductionBoundaryModelTest {
             State released = step(blocked, Action.RELEASE, false);
             assertNotNull(step(released, Action.REQUEST_PREEMPTION, false));
         }
+    }
+
+    @Test
+    void cancellationRequiresPhysicalCarrierExitAfterLoanRetirement() {
+        for (Loan loan : new Loan[]{Loan.ORDINARY, Loan.ACTOR_STATE, Loan.NATIVE}) {
+            State active = new State(Phase.RUNNING, loan, 2, 2, 0, 1, true);
+            State stoppedAdmission = step(active, Action.REQUEST_CANCEL, false);
+            assertNotNull(stoppedAdmission);
+            assertEquals(Phase.STOP_PENDING, stoppedAdmission.phase);
+            assertEquals(loan, stoppedAdmission.loan,
+                    "cancellation must not silently drop an active loan");
+            assertTrue(stoppedAdmission.carrierOwned);
+            assertNull(step(stoppedAdmission, Action.EXIT_STOP_CARRIER, false),
+                    "physical DONE is forbidden until the active loan retires");
+            State retired = step(stoppedAdmission, Action.RETIRE_STOP_LOAN, false);
+            assertNotNull(retired);
+            assertEquals(Loan.NONE, retired.loan);
+            State done = step(retired, Action.EXIT_STOP_CARRIER, false);
+            assertNotNull(done);
+            assertEquals(Phase.CANCELLED, done.phase);
+            assertFalse(done.carrierOwned);
+            assertTrue(safety(done));
+        }
+
+        State ready = new State(Phase.READY, Loan.NONE, 2, 2, 0, 1, false);
+        State cancelledReady = step(ready, Action.REQUEST_CANCEL, false);
+        assertNotNull(cancelledReady);
+        assertTrue(safety(cancelledReady));
+        assertEquals(Phase.CANCELLED, cancelledReady.phase);
     }
 
     @Test
