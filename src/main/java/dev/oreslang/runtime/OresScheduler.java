@@ -307,34 +307,78 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
-     * Start one compiler-lowered async task on this scheduler.
+     * A registered but not yet physically dispatched source task. Intended for
+     * host entry that must leave Polyglot Value.execute before a newly started
+     * CONTROL carrier can enter the same Truffle context.
      *
-     * <p>The returned Future represents the whole task. Awaiting it from another
-     * scheduler does not move the waiter onto this scheduler.</p>
+     * Preparation reserves logical task ownership; dispatch is a one-time
+     * handoff after the host boundary exits. Abandonment requests cancellation
+     * without executing an unstarted guest source frame.
      */
-    public <T> OresFuture<T> start(Task<T> task) {
+    public final class DeferredStart<T> {
+        private final TaskRunner<T> runner;
+        private final AtomicBoolean released = new AtomicBoolean();
+
+        private DeferredStart(TaskRunner<T> runner) {
+            this.runner = runner;
+        }
+
+        public OresFuture<T> future() {
+            return runner.completion;
+        }
+
+        public void dispatchAfterHostReturn() {
+            if (!released.compareAndSet(false, true)) {
+                throw new IllegalStateException("deferred scheduler start already resolved");
+            }
+            if (runner.phase.get() == TaskRunner.TERMINAL) return;
+            if (closed.get()) {
+                runner.failBeforeStart(new RejectedExecutionException(
+                        "OresScheduler " + name + " closed before deferred dispatch"));
+                return;
+            }
+            try {
+                runner.scheduleInitial();
+            } catch (RuntimeException | Error failure) {
+                runner.failBeforeStart(failure);
+            }
+        }
+
+        public void abandonBeforeDispatch() {
+            if (released.compareAndSet(false, true)) {
+                // OresFuture's source-owned cancellation logic may settle an
+                // unstarted frame without ever entering the guest context.
+                runner.completion.cancel(false);
+            }
+        }
+    }
+
+    /**
+     * Register a source task without dispatching a physical carrier. A host
+     * must either call dispatchAfterHostReturn after its Value.execute exits
+     * or abandonBeforeDispatch on host-return failure.
+     */
+    public <T> DeferredStart<T> prepareDeferred(Task<T> task) {
         Objects.requireNonNull(task, "task");
-        // Admission and close share the same monitor. No new task may slip
-        // into the live registry after close() snapshots cancellation targets.
         TaskRunner<T> runner;
         synchronized (tasks) {
             ensureOpen();
             runner = new TaskRunner<>(task);
             tasks.add(runner);
         }
-        // close() may win after ensureOpen() and before registration. Do not
-        // admit a new task after close snapshots and drains live tasks.
-        if (closed.get()) {
-            runner.failBeforeStart(new RejectedExecutionException(
-                    "OresScheduler " + name + " closed during task admission"));
-            return runner.completion;
-        }
-        try {
-            runner.scheduleInitial();
-        } catch (RuntimeException | Error failure) {
-            runner.failBeforeStart(failure);
-        }
-        return runner.completion;
+        return new DeferredStart<>(runner);
+    }
+
+    /**
+     * Start one compiler-lowered async task on this scheduler.
+     *
+     * <p>The returned Future represents the whole task. Awaiting it from another
+     * scheduler does not move the waiter onto this scheduler.</p>
+     */
+    public <T> OresFuture<T> start(Task<T> task) {
+        DeferredStart<T> deferred = prepareDeferred(task);
+        deferred.dispatchAfterHostReturn();
+        return deferred.future();
     }
 
     /**
