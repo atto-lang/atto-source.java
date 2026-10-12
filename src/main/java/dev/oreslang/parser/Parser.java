@@ -741,7 +741,12 @@ public final class Parser {
                         + "compiler-enforced exhaustiveness and CONTROL dispatch; "
                         + "source handlers are not yet enabled");
             }
-            methods.add(parseMethod(annotations, mods));
+            Ast.MethodDecl method = parseMethod(annotations, mods);
+            if (method.name().equals("handle_state")) {
+                throw error(previous(),
+                        "actor handle_state is a sealed runtime intrinsic and cannot be overridden");
+            }
+            methods.add(method);
         }
 
         consume(terminator, braceStyle
