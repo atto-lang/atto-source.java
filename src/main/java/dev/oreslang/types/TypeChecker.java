@@ -67,6 +67,7 @@ public final class TypeChecker {
     private String currentLexicalModule;
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
+    private boolean currentMaySuspend;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -91,6 +92,7 @@ public final class TypeChecker {
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         program = AnnotationExpander.expand(program);
+        ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
@@ -448,7 +450,16 @@ public final class TypeChecker {
                 Ast.BindingKind.CONST);
     }
 
+    private void requireSuspendableCall(boolean suspends, String label) {
+        if (suspends && !currentMaySuspend)
+            throw new IllegalArgumentException(
+                    "suspends " + label + " requires an async or suspends caller");
+    }
+
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        if (fn.name().endsWith("_blocking") && !fn.suspends())
+            throw new IllegalArgumentException(
+                    "*_blocking function '" + fn.name() + "' must declare suspends");
         if (fn.trapped()) {
             if (fn.async()) {
                 throw new IllegalArgumentException("async trap callables are not enabled until the trap boundary spans every await");
@@ -464,6 +475,7 @@ public final class TypeChecker {
             Ast.TypeRef initReturn = fn.returnType();
             if (fn.visibility() != Ast.Visibility.PRIVATE
                     || fn.async()
+                    || fn.suspends()
                     || fn.generator()
                     || fn.structural()
                     || fn.nonLexical()
@@ -568,12 +580,15 @@ public final class TypeChecker {
         currentActorKind = fn.actorKind();
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async();
+        boolean previousMaySuspend = currentMaySuspend;
+        currentMaySuspend = fn.async() || fn.suspends();
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
             currentActorKind = previousActorKind;
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
+            currentMaySuspend = previousMaySuspend;
         }
 
         if (!fn.generator() && returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -997,7 +1012,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "actor lifecycle hook '" + klass.name() + ".on_start' must have an implementation");
                 }
-                if (method.async()) {
+                if (method.async() || method.suspends()) {
                     throw new IllegalArgumentException(
                             "actor lifecycle hook '" + klass.name() + ".on_start' must be synchronous; "
                                     + "readiness settles only after startup completes on the actor execution domain");
@@ -1041,6 +1056,9 @@ public final class TypeChecker {
                 }
             }
 
+            if (method.name().endsWith("_blocking") && !method.suspends())
+                throw new IllegalArgumentException(
+                        "*_blocking method '" + method.name() + "' must declare suspends");
             if (method.async() && !method.isStatic()) {
                 throw new IllegalArgumentException(
                         "async instance method '" + klass.name() + "." + method.name()
@@ -1154,12 +1172,15 @@ public final class TypeChecker {
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
+            boolean previousMaySuspend = currentMaySuspend;
+            currentMaySuspend = method.async() || method.suspends();
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
+                currentMaySuspend = previousMaySuspend;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -1471,6 +1492,10 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
         if (stmt instanceof Ast.DeferStmt defer) {
+            if (defer.expression() instanceof Ast.LambdaExpr lambda && !lambda.parameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "defer cleanup lambda must accept zero parameters");
+            }
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
             try {
                 typeOf(defer.expression(), env, generics, self);
@@ -1821,8 +1846,22 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
-            if (unary.operator().equals("&")) return new Borrow(operand, false);
-            if (unary.operator().equals("&mut")) return new Borrow(operand, true);
+            if (unary.operator().equals("&")) {
+                // Reborrow an existing loan; borrowing the wrapper must not
+                // create Borrow<Borrow<T>> or erase the source lifetime.
+                if (operand instanceof Borrow existing)
+                    return new Borrow(existing.target(), false);
+                return new Borrow(operand, false);
+            }
+            if (unary.operator().equals("&mut")) {
+                if (operand instanceof Borrow existing) {
+                    // Shared loans cannot be escalated into exclusive loans.
+                    if (!existing.mutable())
+                        throw new IllegalArgumentException("cannot mutably reborrow a shared borrow");
+                    return new Borrow(existing.target(), true);
+                }
+                return new Borrow(operand, true);
+            }
             if (unary.operator().equals("!")) {
                 requireAssignable(operand, Primitive.BOOL, "! operand");
                 return Primitive.BOOL;
@@ -2002,6 +2041,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -2039,6 +2079,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -2300,7 +2341,17 @@ public final class TypeChecker {
                             }
                             yield Primitive.BOOL;
                         }
-                        case "ready", "done", "outputs", "id", "kind" ->
+                        case "get_ready", "get_done" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef." + member.member()
+                                                + " expects no arguments");
+                            }
+                            yield new Named("Future", List.of(Primitive.VOID));
+                        }
+                        case "ready", "done" -> throw new IllegalArgumentException(
+                                "ActorRef lifecycle futures are methods: use get_ready() or get_done()");
+                        case "outputs", "id", "kind" ->
                                 throw new IllegalArgumentException(
                                         "ActorRef." + member.member()
                                                 + " is a property and is not callable");
@@ -2533,6 +2584,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
@@ -2623,6 +2675,7 @@ public final class TypeChecker {
                                             + " on " + named.name());
                         }
                         Ast.MethodDecl method = target.method();
+                        requireSuspendableCall(method.suspends(), "method '" + method.name() + "'");
                         Ast.ClassDecl owner = target.owner();
                         Named ownerType = target.ownerType();
                         requireClassMemberVisible(method.visibility(), owner, "method", method.name());
@@ -2798,7 +2851,13 @@ public final class TypeChecker {
                     && actorRef.name().equals("ActorRef")) {
                 actorClassForRef(actorRef);
                 return switch (member.member()) {
-                    case "ready", "done" -> new Named("Future", List.of(Primitive.VOID));
+                    case "get_ready", "get_done" ->
+                            throw new IllegalArgumentException(
+                                    "ActorRef." + member.member()
+                                            + " is a method; invoke it with ()");
+                    case "ready", "done" ->
+                            throw new IllegalArgumentException(
+                                    "ActorRef lifecycle futures are methods: use get_ready() or get_done()");
                     case "outputs" -> new Named(
                             "ActorOutputStream",
                             List.of(Unknown.INSTANCE));
@@ -3121,8 +3180,15 @@ public final class TypeChecker {
                     && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
             }
+            if (awaitedType instanceof Named actorRef
+                    && actorRef.name().equals("ActorRef")) {
+                // await spawn Actor() is a readiness barrier, not a termination
+                // barrier. The expression retains its ActorRef<T> type.
+                actorClassForRef(actorRef);
+                return actorRef;
+            }
             throw new IllegalArgumentException(
-                    "await requires Future<T>; got " + awaitedType);
+                    "await requires Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
             Type element = channelElementType(
@@ -3562,14 +3628,10 @@ public final class TypeChecker {
     }
 
     /**
-     * Resolve a first-class class callable using the function type supplied by
-     * its context.  This is what makes doWork(self.someMethod) AOT-safe even
-     * when someMethod is overloaded: the expected callback arity selects the
-     * same closed-world CallableSelector slot that a direct call would use.
-     *
-     * <p>No runtime parameter types participate in selection.  Generic method
-     * values remain intentionally unsupported until Oreslang has an explicit
-     * method-value specialization surface.
+     * Resolve only static class functions as first-class callable values
+     * against an expected function type. Instance methods require a receiver
+     * and are never implicitly reified as callbacks, even with expected arity.
+     * Callers wanting capture semantics must write an explicit lambda.
      */
     private Type contextualCallableMemberType(
             Ast.MemberExpr member,
@@ -3604,50 +3666,9 @@ public final class TypeChecker {
             return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
         }
 
-        if (normalized instanceof Named named) {
-            Ast.ClassDecl klass = findClass(named.name());
-            if (klass == null) return null;
-
-            // Runtime member lookup gives fields precedence over methods.
-            if (findFieldTarget(klass, named, member.member(), new LinkedHashSet<>()) != null) {
-                return null;
-            }
-
-            ResolvedMethod target = findMethodTarget(
-                    klass, named, member.member(), arity, new LinkedHashSet<>());
-            if (target == null) {
-                if (!findMethodsByName(klass, member.member(), new LinkedHashSet<>()).isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "no overload of method '" + klass.name() + "." + member.member()
-                                    + "' matches callback arity " + arity);
-                }
-                return null;
-            }
-
-            Ast.MethodDecl method = target.method();
-            requireClassMemberVisible(method.visibility(), target.owner(), "method", method.name());
-            if (!method.genericParameters().isEmpty()) {
-                throw new IllegalArgumentException(
-                        "generic method '" + target.owner().name() + "." + method.name()
-                                + "' must be specialized by a direct call; polymorphic bound-method values are not supported yet");
-            }
-
-            Set<String> memberGenerics = new HashSet<>(target.owner().genericParameters());
-            memberGenerics.addAll(method.genericParameters());
-            Type callableReceiver = receiverValueType instanceof SelfType
-                    ? receiverValueType
-                    : named;
-            Type signature = functionType(
-                    method.parameters(),
-                    method.returnType(),
-                    method.async(),
-                    false,
-                    memberGenerics,
-                    callableReceiver);
-            return substituteGenerics(
-                    signature,
-                    classGenericBindings(target.owner(), target.ownerType()));
-        }
+        // An instance method always requires its receiver. Even an expected
+        // Function type must not implicitly capture self or turn a method into
+        // a bound callback. An explicit lambda is the opt-in capture mechanism.
 
         return null;
     }

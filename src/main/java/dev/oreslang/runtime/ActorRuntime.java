@@ -57,6 +57,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
+    private static final int MAX_ACTOR_GROUP_MEMBERSHIPS_PER_ACTOR = 64;
     private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
@@ -161,6 +162,13 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
+
+    /** Host-visible notice; it does not grant permission to interrupt a carrier. */
+    public record WatchdogNotice(
+            ActorId actorId,
+            ActorKind kind,
+            long elapsedNanos,
+            long sinceCheckpointNanos) { }
 
     public static final class UntrustedActorQuotaExceededException extends SecurityException {
         public enum Resource { FUEL, WALL_TIME, CPU_TIME }
@@ -343,6 +351,18 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
+    /**
+     * Reverse cooperation-membership index. All mutations to this map AND an
+     * ActorGroup.members set are serialized on groupMembershipLock. This is
+     * independent of ActorCell.managedByGroup (exclusive lifecycle ownership).
+     * Lock order for join is groupMembershipLock -> group.authorityLock; group
+     * close releases authorityLock before taking groupMembershipLock.
+     */
+    private final Object groupMembershipLock = new Object();
+    private final Map<ActorId, Set<ActorGroupId>> groupMemberships = new java.util.HashMap<>();
+    /** Actor-created groups remain structurally owned even after creator leaves. */
+    private final Map<ActorId, Set<ActorGroupId>> createdGroupsByActor =
+            new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
@@ -373,6 +393,10 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
+    private final AtomicLong watchdogOverruns = new AtomicLong();
+    private final AtomicLong watchdogNoticesDropped = new AtomicLong();
+    private final ArrayBlockingQueue<WatchdogNotice> watchdogNotices =
+            new ArrayBlockingQueue<>(1024);
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
@@ -451,6 +475,47 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    /** Total overrun detections, including notices dropped from the bounded queue. */
+    public long watchdogOverruns() {
+        requireSupervisorContext("inspect actor watchdog overruns");
+        return watchdogOverruns.get();
+    }
+
+    /** Number of watchdog notices dropped when the bounded host queue was full. */
+    public long watchdogNoticesDropped() {
+        requireSupervisorContext("inspect dropped actor watchdog notices");
+        return watchdogNoticesDropped.get();
+    }
+
+    /** Number of recoverable watchdog monitor/observer failures in this JVM. */
+    public long watchdogObserverFailures() {
+        requireSupervisorContext("inspect watchdog observer failures");
+        return ActorTurnWatchdog.observerFailures();
+    }
+
+    /** Host-only nonblocking drain: actor code cannot steal another actor's diagnostics. */
+    public Optional<WatchdogNotice> pollWatchdogNotice() {
+        requireSupervisorContext("drain actor watchdog notices");
+        return Optional.ofNullable(watchdogNotices.poll());
+    }
+
+    /** Indicates a request, not a safe or completed suspension. */
+    public boolean watchdogPreemptionRequested() {
+        ActorCell<?> cell = currentActor.get();
+        ActorTurnWatchdog.Lease lease = cell == null ? null : cell.watchdogLease;
+        return lease != null && lease.preemptionRequested();
+    }
+
+    private void recordWatchdogOverrun(ActorCell<?> cell, ActorTurnWatchdog.Lease lease) {
+        long now = System.nanoTime();
+        watchdogOverruns.incrementAndGet();
+        if (!watchdogNotices.offer(new WatchdogNotice(
+                cell.ref.id(), cell.kind,
+                lease.elapsedNanos(now), lease.sinceCheckpointNanos(now)))) {
+            watchdogNoticesDropped.incrementAndGet();
+        }
+    }
 
     /**
      * Physical carrier implementation currently backing actor turns.
@@ -1558,6 +1623,10 @@ public final class ActorRuntime implements AutoCloseable {
         // either observer cannot cancel the actor or fabricate its lifecycle.
         private final OresFuture<Void> readyFuture =
                 new OresFuture<>(() -> false, () -> { });
+        // Non-cancellable observer: cancelling a waiter never cancels its actor.
+        // Unlike readyFuture, this projects the successfully initialized ref.
+        private final OresFuture<ActorRef<M>> readyRefFuture =
+                new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
         private volatile ActorOutputStream<Object> outputStream;
@@ -1565,6 +1634,13 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
             this.kind = kind;
+            readyFuture.whenCompleteRuntime((ignored, failure) -> {
+                if (failure != null) {
+                    readyRefFuture.failFromRuntime(OresFuture.unwrap(failure));
+                } else {
+                    readyRefFuture.completeFromRuntime(this);
+                }
+            });
         }
 
         public ActorId id() { return id; }
@@ -1585,11 +1661,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * Java host accessor corresponding to Oreslang's get_ready().
+         * Kept separate from await-spawn's ref-valued readiness barrier.
+         */
+        public OresFuture<Void> getReady() {
+            return ready();
+        }
+
+        /**
+         * An actor-ref-valued initialization barrier for `await spawn Actor()`.
+         * Neither awaiting nor attempting to cancel this observer owns or
+         * cancels the actor. Completion means on_start succeeded, not done.
+         */
+        public OresFuture<ActorRef<M>> readyRef() {
+            ready();
+            return readyRefFuture;
+        }
+
+        /**
          * Settles only after actor finalization and the TurnExecutor exit.
          * Exceptional termination is reported as a failed Future.
          */
         public OresFuture<Void> done() {
             return doneFuture;
+        }
+
+        /** Java host accessor corresponding to Oreslang's get_done(). */
+        public OresFuture<Void> getDone() {
+            return done();
         }
 
         /** Read-only outputs emitted by actor-local self.send(...). */
@@ -1880,7 +1979,17 @@ public final class ActorRuntime implements AutoCloseable {
         private final int memberLimit;
         private final int eventTopicLimit;
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
+        // Explicitly lifecycle-managed workers, distinct from cooperating
+        // members: membership never grants cancellation authority.
+        private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
+        // Guarded by authorityLock: a stop-admitted actor cannot be released
+        // into a different supervisor before stop actually dispatches.
+        private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
+        // Runtime-owned, non-cancellable observer; actor retirement may outlive
+        // group admission revocation and clearing managed-worker references.
+        private final OresFuture<Void> closedWorkersDone =
+                new OresFuture<>(() -> false, () -> { });
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
         private final AtomicReference<GroupMailmanState<?>> mailmanState = new AtomicReference<>();
@@ -1924,6 +2033,190 @@ public final class ActorRuntime implements AutoCloseable {
         public Set<ActorId> memberIds() {
             requireObserver("inspect ActorGroup membership");
             return Set.copyOf(members);
+        }
+
+        /**
+         * Opt a worker into lifecycle management without automatically joining
+         * it to the group's event bus. Cooperating membership and structured
+         * lifecycle ownership are separate capabilities.
+         *
+         * Host/supervisors may manage runtime-local actors. Inside an actor,
+         * only the group's creator may register a structured descendant.
+         */
+        public <M> ActorRef<M> manageWorker(ActorRef<M> worker) {
+            Objects.requireNonNull(worker, "worker");
+            requireManager("manage an ActorGroup worker");
+            if (!worker.ownedBy(ActorRuntime.this)) {
+                throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
+            }
+            requireActorLifecycleAuthority(worker, "manage an ActorGroup worker");
+            synchronized (authorityLock) {
+                requireOpen();
+                ActorCell<?> cell = actors.get(worker.id());
+                if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker.id())) {
+                    throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
+                }
+                if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
+                    throw new IllegalStateException(
+                            "ActorGroup managed worker limit exceeded: maximum " + memberLimit);
+                }
+                // A worker has exactly one structured ActorGroup owner.
+                // Other cooperation groups may still admit it as a member,
+                // but no second manager may acquire independent stop rights.
+                ActorGroupId owningGroup = cell.managedByGroup.get();
+                if (owningGroup == null) {
+                    if (cell.managedByGroup.compareAndSet(null, id)) {
+                        owningGroup = id;
+                    } else {
+                        owningGroup = cell.managedByGroup.get();
+                    }
+                }
+                if (!id.equals(owningGroup)) {
+                    throw new IllegalStateException(
+                            "actor is already managed by a different ActorGroup");
+                }
+                managedWorkers.putIfAbsent(worker.id(), worker);
+                if (cell.stopped.get()) {
+                    managedWorkers.remove(worker.id(), worker);
+                    throw new IllegalStateException("worker stopped during group admission");
+                }
+            }
+            return worker;
+        }
+
+        /**
+         * Spawn, then register the worker before any readiness/mailbox work is
+         * scheduled. A registration failure cancels the newly spawned actor.
+         */
+        public <M> ActorRef<M> spawnWorker(
+                ActorKind kind,
+                IsolatePolicy policy,
+                BehaviorFactory<M> behaviorFactory) {
+            requireManager("spawn an ActorGroup worker");
+            requireOpen();
+            ActorRef<M> worker = ActorRuntime.this.spawn(kind, policy, behaviorFactory);
+            try {
+                return manageWorker(worker);
+            } catch (RuntimeException | Error failure) {
+                try {
+                    worker.cancel();
+                } catch (RuntimeException cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
+                throw failure;
+            }
+        }
+
+        /** Non-blocking readiness barrier retaining the worker reference. */
+        public <M> OresFuture<ActorRef<M>> spawnReadyWorker(
+                ActorKind kind,
+                IsolatePolicy policy,
+                BehaviorFactory<M> behaviorFactory) {
+            return spawnWorker(kind, policy, behaviorFactory).readyRef();
+        }
+
+        /**
+         * Transfer one live actor out of the group's lifecycle authority
+         * without stopping it or changing cooperative group membership.
+         * A second group can adopt only after the old cell ownership token
+         * has been atomically cleared under the same admission lock.
+         */
+        public boolean releaseWorker(ActorRef<?> worker) {
+            requireManager("release an ActorGroup worker");
+            Objects.requireNonNull(worker, "worker");
+            if (!worker.ownedBy(ActorRuntime.this)) {
+                throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
+            }
+            synchronized (authorityLock) {
+                requireOpen();
+                if (stoppingWorkers.contains(worker.id())) {
+                    throw new IllegalStateException(
+                            "cannot transfer worker after stop/cancellation was admitted");
+                }
+                if (!managedWorkers.containsKey(worker.id())) return false;
+                ActorCell<?> cell = actors.get(worker.id());
+                if (cell == null || cell.stopped.get()) {
+                    throw new IllegalStateException("cannot transfer a stopped worker");
+                }
+                if (!cell.managedByGroup.compareAndSet(id, null)) {
+                    throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
+                }
+                managedWorkers.remove(worker.id(), worker);
+                return true;
+            }
+        }
+
+        /** Live managed workers at a point in time; never exposes cancellation authority. */
+        public List<ActorRef<?>> workers() {
+            requireObserver("inspect ActorGroup workers");
+            return List.copyOf(managedWorkers.values());
+        }
+
+        public int workerCount() {
+            requireObserver("inspect ActorGroup workers");
+            return managedWorkers.size();
+        }
+
+        /** The snapshot can be awaited without blocking an OresVM carrier. */
+        public OresFuture<List<Void>> workersReady() {
+            requireObserver("await ActorGroup workers readiness");
+            return OresFutures.all(workers().stream().map(ActorRef::ready).toList());
+        }
+
+        /** Completion snapshot; new worker admissions are not included. */
+        public OresFuture<List<Void>> workersDone() {
+            requireObserver("await ActorGroup workers completion");
+            return OresFutures.all(workers().stream().map(ActorRef::done).toList());
+        }
+
+        /**
+         * Await all workers owned at group-close admission, not merely the
+         * empty managed-worker registry after close has revoked admission.
+         * This observes logical actor retirement, not loan-gated physical
+         * FFM/native heap release.
+         */
+        public OresFuture<Void> closedDone() {
+            requireObserver("observe ActorGroup close completion");
+            return closedWorkersDone;
+        }
+
+        /** Request group shutdown and obtain its noncancellable drain barrier. */
+        public OresFuture<Void> closeAsync() {
+            requireManager("close ActorGroup asynchronously");
+            closeFromRuntime();
+            return closedWorkersDone;
+        }
+
+        /** Manager-only graceful stop. Never acts on membership-only actors. */
+        public void stopWorkers() {
+            requireManager("stop ActorGroup workers");
+            final List<ActorRef<?>> stopRequests;
+            synchronized (authorityLock) {
+                requireOpen();
+                stopRequests = List.copyOf(managedWorkers.values());
+                for (ActorRef<?> ref : stopRequests) stoppingWorkers.add(ref.id());
+            }
+            // Do not acquire actor lifecycle locks while group authority is
+            // held: actor finalization takes its own lock before group cleanup.
+            for (ActorRef<?> ref : stopRequests) {
+                if (ref.isAlive()) ref.stop();
+            }
+        }
+
+        /** Manager-only structured cancellation, not force-kill. */
+        public int cancelWorkers() {
+            requireManager("cancel ActorGroup workers");
+            final List<ActorRef<?>> stopRequests;
+            synchronized (authorityLock) {
+                requireOpen();
+                stopRequests = List.copyOf(managedWorkers.values());
+                for (ActorRef<?> ref : stopRequests) stoppingWorkers.add(ref.id());
+            }
+            int cancelled = 0;
+            for (ActorRef<?> ref : stopRequests) {
+                if (ref.cancel()) cancelled++;
+            }
+            return cancelled;
         }
 
         int eventTopicLimit() { return eventTopicLimit; }
@@ -2047,21 +2340,38 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void joinId(ActorId actorId, ActorGroupJoinCapability capability) {
-            synchronized (authorityLock) {
-                requireOpen();
-                requireCapabilityLocked(capability);
-                ActorCell<?> cell = actors.get(actorId);
-                if (cell == null || cell.stopped.get()) {
-                    throw new IllegalStateException("actor is not alive: " + actorId);
-                }
-                if (!members.contains(actorId) && members.size() >= memberLimit) {
-                    throw new IllegalStateException(
-                            "ActorGroup member limit exceeded: maximum " + memberLimit);
-                }
-                members.add(actorId);
-                if (groupClosed.get() || cell.stopped.get()) {
-                    members.remove(actorId);
-                    throw new IllegalStateException("ActorGroup or actor closed during join");
+            // One admission boundary across ALL groups, including creator
+            // auto-memberships. Never reserve a slot on duplicate join.
+            synchronized (groupMembershipLock) {
+                synchronized (authorityLock) {
+                    requireOpen();
+                    requireCapabilityLocked(capability);
+                    ActorCell<?> cell = actors.get(actorId);
+                    if (cell == null || cell.stopped.get()) {
+                        throw new IllegalStateException("actor is not alive: " + actorId);
+                    }
+                    if (members.contains(actorId)) return;
+                    if (members.size() >= memberLimit) {
+                        throw new IllegalStateException(
+                                "ActorGroup member limit exceeded: maximum " + memberLimit);
+                    }
+                    Set<ActorGroupId> joined = groupMemberships.computeIfAbsent(
+                            actorId, ignored -> new java.util.HashSet<>());
+                    int limit = Math.max(1, Math.min(
+                            MAX_ACTOR_GROUP_MEMBERSHIPS_PER_ACTOR,
+                            cell.policy.maxMailboxMessages()));
+                    if (joined.size() >= limit) {
+                        throw new IllegalStateException(
+                                "actor ActorGroup membership limit exceeded: maximum " + limit);
+                    }
+                    members.add(actorId);
+                    joined.add(id);
+                    if (groupClosed.get() || cell.stopped.get()) {
+                        members.remove(actorId);
+                        joined.remove(id);
+                        if (joined.isEmpty()) groupMemberships.remove(actorId);
+                        throw new IllegalStateException("ActorGroup or actor closed during join");
+                    }
                 }
             }
         }
@@ -2141,10 +2451,26 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void leaveId(ActorId actorId) {
-            if (members.remove(actorId)) eventBus.removeActor(actorId);
+            synchronized (groupMembershipLock) {
+                if (!members.remove(actorId)) return;
+                Set<ActorGroupId> joined = groupMemberships.get(actorId);
+                if (joined != null) {
+                    joined.remove(id);
+                    if (joined.isEmpty()) groupMemberships.remove(actorId);
+                }
+                // Rejoin must not overtake subscription draining for the old
+                // membership and inadvertently inherit a previous channel.
+                eventBus.removeActor(actorId);
+            }
         }
 
         private void actorTerminated(ActorId actorId) {
+            // Fenced against concurrent worker admission so stale actor refs
+            // cannot be resurrected after finalization.
+            synchronized (authorityLock) {
+                managedWorkers.remove(actorId);
+                stoppingWorkers.remove(actorId);
+            }
             leaveId(actorId);
             if (Objects.equals(creator, actorId)) closeFromRuntime();
         }
@@ -2162,17 +2488,81 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void closeFromRuntime() {
+            List<ActorRef<?>> owned;
             synchronized (authorityLock) {
                 if (!groupClosed.compareAndSet(false, true)) return;
                 // Revocation is part of close: even a capability held by code
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
+                owned = List.copyOf(managedWorkers.values());
+                managedWorkers.clear();
+                stoppingWorkers.clear();
             }
-            GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
-            if (mailman != null) mailman.close();
-            eventBus.closeFromGroup();
-            members.clear();
-            actorGroups.remove(id, this);
+            // Revoke every membership before asynchronous worker cleanup. A
+            // room close frees membership quota without stopping unrelated
+            // members or tearing down their other room subscriptions.
+            synchronized (groupMembershipLock) {
+                for (ActorId member : members) {
+                    Set<ActorGroupId> joined = groupMemberships.get(member);
+                    if (joined != null) {
+                        joined.remove(id);
+                        if (joined.isEmpty()) groupMemberships.remove(member);
+                    }
+                }
+                members.clear();
+                if (creator != null) {
+                    Set<ActorGroupId> created = createdGroupsByActor.get(creator);
+                    if (created != null) {
+                        created.remove(id);
+                        if (created.isEmpty()) createdGroupsByActor.remove(creator);
+                    }
+                }
+            }
+            // Attach completion handlers before requesting cancellation: an
+            // actor might finalize synchronously during the first stop call.
+            // Keep only a future, not strong actor heap/arena references.
+            if (owned.isEmpty()) {
+                closedWorkersDone.completeFromRuntime(null);
+            } else {
+                AtomicInteger pending = new AtomicInteger(owned.size());
+                AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+                for (ActorRef<?> worker : owned) {
+                    worker.done().whenCompleteRuntime((ignored, failure) -> {
+                        if (failure != null) firstFailure.compareAndSet(null, failure);
+                        if (pending.decrementAndGet() == 0) {
+                            Throwable terminal = firstFailure.get();
+                            if (terminal == null) closedWorkersDone.completeFromRuntime(null);
+                            else closedWorkersDone.failFromRuntime(terminal);
+                        }
+                    });
+                }
+            }
+            // Closing a cooperating group never cancels ordinary members.
+            // Only explicitly managed workers are structurally cancelled.
+            // Never abort event-bus and Mailman teardown because one worker's
+            // cancellation hook failed. Preserve the failure for the manager.
+            RuntimeException cancellationFailure = null;
+            for (ActorRef<?> worker : owned) {
+                try {
+                    worker.cancel();
+                } catch (RuntimeException failure) {
+                    if (worker.isAlive()) {
+                        if (cancellationFailure == null) cancellationFailure = failure;
+                        else cancellationFailure.addSuppressed(failure);
+                    }
+                }
+            }
+            try {
+                GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
+                if (mailman != null) mailman.close();
+            } finally {
+                try {
+                    eventBus.closeFromGroup();
+                } finally {
+                    actorGroups.remove(id, this);
+                }
+            }
+            if (cancellationFailure != null) throw cancellationFailure;
         }
 
         @Override
@@ -2808,11 +3198,42 @@ public final class ActorRuntime implements AutoCloseable {
                                     + creator + ": maximum " + ownerLimit);
                 }
             }
-            while (true) {
-                ActorGroupId id = ActorGroupId.create();
-                ActorGroup group =
-                        new ActorGroup(id, creator, creatorPolicy);
-                if (actorGroups.putIfAbsent(id, group) == null) return group;
+            synchronized (groupMembershipLock) {
+                ActorCell<?> creatorCell = creator == null ? null : actors.get(creator);
+                if (creator != null && (creatorCell == null || creatorCell.stopped.get())) {
+                    throw new IllegalStateException("group creator is no longer alive");
+                }
+                Set<ActorGroupId> joined = creator == null
+                        ? null : groupMemberships.computeIfAbsent(
+                                creator, ignored -> new java.util.HashSet<>());
+                int limit = creatorCell == null ? 0 : Math.max(1, Math.min(
+                        MAX_ACTOR_GROUP_MEMBERSHIPS_PER_ACTOR,
+                        creatorCell.policy.maxMailboxMessages()));
+                if (joined != null && joined.size() >= limit) {
+                    throw new IllegalStateException(
+                            "actor ActorGroup membership limit exceeded: maximum " + limit);
+                }
+                while (true) {
+                    ActorGroupId id = ActorGroupId.create();
+                    ActorGroup group = new ActorGroup(id, creator, creatorPolicy);
+                    if (actorGroups.putIfAbsent(id, group) == null) {
+                        if (joined != null) {
+                            joined.add(id);
+                            createdGroupsByActor.computeIfAbsent(
+                                    creator, ignored -> new java.util.HashSet<>()).add(id);
+                        }
+                        // Finalization calls unregisterActor() while holding
+                        // ActorCell.lifecycleLock. Never acquire that lock here:
+                        // instead recheck the stop flag after publication. If
+                        // retirement beat group creation's registration, the
+                        // group is closed before it can escape to the caller.
+                        if (creatorCell != null && creatorCell.stopped.get()) {
+                            group.closeFromRuntime();
+                            throw new IllegalStateException("group creator stopped during creation");
+                        }
+                        return group;
+                    }
+                }
             }
         }
     }
@@ -3773,8 +4194,20 @@ public final class ActorRuntime implements AutoCloseable {
         // part of its termination contract has completed. ActorRef.awaitTermination()
         // treats absence from this map as terminal, so removing the actor first
         // would let observers race ahead of creator-owned ActorGroup cleanup.
-        for (ActorGroup group : List.copyOf(actorGroups.values())) {
-            group.actorTerminated(cell.ref.id());
+        Set<ActorGroupId> affected = new java.util.HashSet<>();
+        synchronized (groupMembershipLock) {
+            Set<ActorGroupId> memberships = groupMemberships.get(cell.ref.id());
+            if (memberships != null) affected.addAll(memberships);
+            Set<ActorGroupId> created = createdGroupsByActor.get(cell.ref.id());
+            if (created != null) affected.addAll(created);
+            // An explicitly managed worker is not necessarily a cooperating
+            // member. The owner needs its independent termination callback.
+            ActorGroupId managedBy = cell.managedByGroup.get();
+            if (managedBy != null) affected.add(managedBy);
+        }
+        for (ActorGroupId groupId : affected) {
+            ActorGroup group = actorGroups.get(groupId);
+            if (group != null) group.actorTerminated(cell.ref.id());
         }
         if (actors.remove(cell.ref.id(), cell)) {
             int remaining = actorCount.decrementAndGet();
@@ -4266,6 +4699,9 @@ public final class ActorRuntime implements AutoCloseable {
     public void schedulerSafepoint() {
         if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
+        if (cell != null && cell.watchdogLease != null) {
+            cell.watchdogLease.checkpoint();
+        }
         if (cell != null && cell.stopped.get() && !cell.endRequested) {
             throw new ActorCancellationSignal("actor execution stopped");
         }
@@ -5648,6 +6084,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
+        // Lifetime-affine structured owner: never transferred before physical
+        // finalization, even if the original group closes during cancellation.
+        private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final AtomicLong outputBytes = new AtomicLong();
@@ -5682,6 +6121,7 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
         private boolean finalized;
+        private volatile ActorTurnWatchdog.Lease watchdogLease;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
         private long untrustedFuelRemaining;
@@ -6170,6 +6610,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // The carrier's actor identity must still be cleared.
                 turnActive = beginTurn();
                 if (!turnActive) return;
+                watchdogLease = ActorTurnWatchdog.enter(
+                        lease -> recordWatchdogOverrun(this, lease));
 
                 if (kind == ActorKind.UNTRUSTED) {
                     turnStartedWallNanos = System.nanoTime();
@@ -6343,6 +6785,9 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 try {
+                    ActorTurnWatchdog.Lease lease = watchdogLease;
+                    watchdogLease = null;
+                    if (lease != null) lease.close();
                     if (turnActive) endTurn();
                 } finally {
                     // endTurn itself is a fail-closed invariant check and may

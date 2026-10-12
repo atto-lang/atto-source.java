@@ -345,7 +345,12 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
-            ValueInfo value = checkExpr(defer.expression(), scope, false);
+            // A deferred lambda is executed synchronously at this lexical
+            // scope's exit. Its captures must remain owned by the caller
+            // until cleanup, rather than being moved into an escaping closure.
+            ValueInfo value = defer.expression() instanceof Ast.LambdaExpr lambda
+                    ? checkLambda(lambda, scope, null, false, true)
+                    : checkExpr(defer.expression(), scope, false);
             if (containsMutexGuardType(value.type)) {
                 throw error("defer cannot produce a guard-bearing value");
             }
@@ -1152,6 +1157,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
+                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
@@ -1165,6 +1171,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
+                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(
                         call.arguments(),
                         signature.parameters(),
@@ -1229,6 +1236,7 @@ public final class OwnershipChecker {
                             call,
                             scope,
                             Map.of());
+                    if (staticFunction.suspends()) checkSuspensionBorrows(scope, "suspends call " + staticFunction.name());
                     checkArguments(
                             call.arguments(),
                             signature.parameters(),
@@ -1379,6 +1387,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
+                if (method.suspends()) checkSuspensionBorrows(scope, "suspends call " + method.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
@@ -1689,7 +1698,16 @@ public final class OwnershipChecker {
                 throw error("cannot mutably borrow infer struct value '" + owner.debugName
                         + "'; inferred structs are permanently readonly");
             }
-            if (!owner.mutable) throw error("cannot mutably borrow immutable owner '" + owner.debugName + "'");
+            if (owner.kind == ValueKind.IMM_BORROW)
+                throw error("cannot mutably reborrow a shared borrow '" + owner.debugName + "'");
+            // An incoming exclusive loan may be reborrowed for a call, even
+            // though its parameter binding itself cannot be reassigned.
+            // This does not grant mutability to an owned immutable binding
+            // or to any shared loan, and all live-loan conflict checks below
+            // still apply.
+            if (!owner.mutable && !(owner.origin == Origin.PARAM
+                    && owner.kind == ValueKind.MUT_BORROW))
+                throw error("cannot mutably borrow immutable owner '" + owner.debugName + "'");
             if (root.mutableBorrowed || root.immutableBorrows > 0) throw error("cannot mutably borrow '" + owner.debugName + "' while another borrow is active");
         } else if (root.mutableBorrowed) {
             throw error("cannot immutably borrow '" + owner.debugName + "' while a mutable borrow is active");
@@ -1759,6 +1777,15 @@ public final class OwnershipChecker {
             Scope outer,
             String recursiveBinding,
             boolean allowActorSelfCapture) {
+        return checkLambda(lambda, outer, recursiveBinding, allowActorSelfCapture, false);
+    }
+
+    private ValueInfo checkLambda(
+            Ast.LambdaExpr lambda,
+            Scope outer,
+            String recursiveBinding,
+            boolean allowActorSelfCapture,
+            boolean deferredCleanup) {
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
@@ -1790,10 +1817,10 @@ public final class OwnershipChecker {
             if (capture.write) {
                 if (!source.mutable && !source.rebindable) throw error("closure cannot write read-only capture '" + capture.name + "'");
                 if (source.immutableBorrows > 0 || source.mutableBorrowed) throw error("closure cannot capture '" + capture.name + "' mutably while borrowed");
-                move(source, capture.name);
+                if (!deferredCleanup) move(source, capture.name);
                 closure.define(capture.name, new VarState(source.type, source.mutable, source.rebindable, source.kind, Origin.CAPTURE));
             } else if (source.kind == ValueKind.MOVE_ONLY) {
-                move(source, capture.name);
+                if (!deferredCleanup) move(source, capture.name);
                 closure.define(capture.name, new VarState(source.type, false, ValueKind.MOVE_ONLY, Origin.CAPTURE));
             } else {
                 closure.define(capture.name, new VarState(source.type, false, ValueKind.COPY, Origin.CAPTURE));

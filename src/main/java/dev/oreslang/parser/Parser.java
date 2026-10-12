@@ -101,7 +101,7 @@ public final class Parser {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
                 if (match(MODULE)) {
-                    if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                             || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
                         throw error(previous(), "modules do not accept declaration modifiers");
                     }
@@ -417,6 +417,8 @@ public final class Parser {
             Ast.CallableKind kind,
             Ast.ActorKind actorKind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
+        if (modifiers.suspends && modifiers.generator)
+            throw error(previous(), "suspends generators need suspension-aware generator frames");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         if (modifiers.trapped && modifiers.async) {
             throw error(previous(), "async trap fnc/routine is not enabled until trap spans every await suspension");
@@ -441,7 +443,7 @@ public final class Parser {
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
             List<Ast.Stmt> body = parseBlock();
-            return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
+            return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
                     generics, params, returnType, annotations, body);
         }
 
@@ -451,7 +453,7 @@ public final class Parser {
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
-        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
+        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body);
     }
 
@@ -511,7 +513,11 @@ public final class Parser {
             }
 
             boolean explicitFnc = match(FNC);
-            if (explicitFnc) {
+            boolean explicitMethod = matchExplicitMethodMarker();
+            if (explicitFnc && explicitMethod) {
+                throw error(previous(), "an instance member cannot combine 'fnc' and 'method' markers");
+            }
+            if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             if (mods.generator) throw error(peek(), "'generator' is not permitted on class methods or static class fnc; declare a module/top-level generator fnc or routine");
@@ -519,13 +525,16 @@ public final class Parser {
             if (mods.trapped) throw error(peek(), "'trap' on class methods/static fnc is not enabled until method callable metadata carries the trap effect");
             if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
             if (mods.isStatic) {
+                if (explicitMethod) {
+                    throw error(previous(), "static class functions use 'static fnc', not 'static method'");
+                }
                 if (!explicitFnc) {
                     consume(FNC, "static class functions must be declared with 'static fnc'");
                 }
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
-            } else if (explicitFnc) {
-                throw error(previous(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
             }
+            // Legacy 'fnc name' and explicit 'method name' both describe instance
+            // methods. The AST's isStatic flag, not the spelling, controls binding.
             methods.add(parseMethod(annotations, mods));
         }
         consume(
@@ -545,7 +554,7 @@ public final class Parser {
             Ast.Visibility classVisibility,
             boolean filePrivateScope) {
         Token keyword = advance(); // contextual 'constructor'
-        if (mods.async || mods.generator || mods.structural || mods.nonLexical || mods.isStatic
+        if (mods.async || mods.suspends || mods.generator || mods.structural || mods.nonLexical || mods.isStatic
                 || mods.isAbstract || mods.shared || mods.untrusted) {
             throw error(keyword,
                     "constructors accept only private/pub visibility; callable/actor modifiers are not permitted");
@@ -699,14 +708,37 @@ public final class Parser {
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
+            if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                validateActorFieldModifiers(mods);
+                fields.add(parseFinalActorField(annotations, mods.visibility));
+                continue;
+            }
 
             boolean explicitFnc = match(FNC);
-            if (explicitFnc) {
+            boolean explicitMethod = matchExplicitMethodMarker();
+            if (explicitFnc && explicitMethod) {
+                throw error(previous(), "an instance member cannot combine 'fnc' and 'method' markers");
+            }
+            if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             validateActorMethodModifiers(mods);
+            if (mods.isStatic && explicitMethod) {
+                throw error(previous(), "static actor functions use 'static fnc', not 'static method'");
+            }
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
+            }
+            // Do not silently admit methods that look like checked supervisor
+            // handlers before typed exhaustiveness and CONTROL dispatch exist.
+            if (check(IDENT) && (peek().lexeme().equals("on_throw")
+                    || peek().lexeme().equals("on_throws")
+                    || peek().lexeme().equals("on_raise")
+                    || peek().lexeme().equals("on_panic")
+                    || peek().lexeme().equals("on_recover"))) {
+                throw error(peek(), "actor supervision on_* handlers require "
+                        + "compiler-enforced exhaustiveness and CONTROL dispatch; "
+                        + "source handlers are not yet enabled");
             }
             methods.add(parseMethod(annotations, mods));
         }
@@ -851,6 +883,19 @@ public final class Parser {
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
     }
 
+    /** Actor-state 'final name: Type' is a const/immutable field spelling. */
+    private Ast.FieldDecl parseFinalActorField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectCallableStructuralAnnotation(annotations, "fields");
+        consumeContextualIdentifier("final", "expected 'final' actor field");
+        String name = consume(IDENT, "expected field name after 'final'").lexeme();
+        consume(COLON, "expected ':' after final field name");
+        Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
+        Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        consumeExpressionClassFieldTerminator(initializer, "final actor field should end with ';'");
+        return new Ast.FieldDecl(name, visibility, Ast.BindingKind.CONST,
+                type, annotations, initializer, false);
+    }
+
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
@@ -924,7 +969,7 @@ public final class Parser {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else body = parseBlock();
-        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async, structural.enabled(),
+        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body);
     }
 
@@ -979,6 +1024,7 @@ public final class Parser {
     private Modifiers parseModifiers() {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
+        boolean suspends = false;
         boolean generator = false;
         boolean structural = false;
         boolean nonLexical = false;
@@ -989,6 +1035,7 @@ public final class Parser {
         boolean untrusted = false;
         boolean visibilitySeen = false;
         boolean asyncSeen = false;
+        boolean suspendsSeen = false;
         boolean generatorSeen = false;
         boolean structuralSeen = false;
         boolean nonLexicalSeen = false;
@@ -1011,6 +1058,10 @@ public final class Parser {
                 if (asyncSeen) throw error(previous(), "duplicate 'async' modifier");
                 asyncSeen = true;
                 async = true;
+            } else if (match(SUSPENDS) || matchContextualSuspendModifier()) {
+                if (suspendsSeen) throw error(previous(), "duplicate 'suspends' modifier");
+                suspendsSeen = true;
+                suspends = true;
             } else if (match(GENERATOR)) {
                 if (generatorSeen) throw error(previous(), "duplicate 'generator' modifier");
                 generatorSeen = true;
@@ -1055,7 +1106,8 @@ public final class Parser {
                 break;
             }
         }
-        return new Modifiers(visibility, visibilitySeen, async, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted);
+        if (async && suspends) throw error(previous(), "'async suspends' is redundant; choose one");
+        return new Modifiers(visibility, visibilitySeen, async, suspends, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted);
     }
 
     private Modifiers mergeModifiers(Modifiers before, Modifiers after) {
@@ -1063,6 +1115,9 @@ public final class Parser {
             throw error(previous(), "duplicate/conflicting visibility modifier");
         }
         if (before.async && after.async) throw error(previous(), "duplicate 'async' modifier");
+        if (before.suspends && after.suspends) throw error(previous(), "duplicate 'suspends' modifier");
+        if (before.async && after.suspends || before.suspends && after.async)
+            throw error(previous(), "'async suspends' is redundant; choose one");
         if (before.generator && after.generator) throw error(previous(), "duplicate 'generator' modifier");
         if (before.structural && after.structural) throw error(previous(), "duplicate 'structural' modifier");
         if (before.nonLexical && after.nonLexical) throw error(previous(), "duplicate 'nlex' modifier");
@@ -1076,6 +1131,7 @@ public final class Parser {
                 after.visibilitySeen ? after.visibility : before.visibility,
                 before.visibilitySeen || after.visibilitySeen,
                 before.async || after.async,
+                before.suspends || after.suspends,
                 before.generator || after.generator,
                 before.structural || after.structural,
                 before.nonLexical || after.nonLexical,
@@ -1488,6 +1544,13 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        // Keep these distinct from ordinary calls/identifiers. Exception
+        // effect checking, typed recovery and actor CONTROL delivery have
+        // not yet been lowered in the Java/Graal production compiler.
+        if (check(THROW) || check(RAISE) || check(PANIC) || check(RECOVER)) {
+            throw error(peek(), "typed exceptional effect '" + peek().lexeme()
+                    + "' requires checked exception and supervision lowering; source effect is not yet enabled");
+        }
         if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
@@ -1640,6 +1703,21 @@ public final class Parser {
         return i < tokens.size() && tokens.get(i).type() == LBRACE;
     }
 
+    /** A select arm participates in one atomic selection; only the enclosing select sets its wait mode. */
+    private void rejectPerArmChannelWaitModifier() {
+        if ((check(NB) || check(TRY))
+                && (checkNext(READCH) || checkNext(WRITECH))) {
+            Token modifier = peek();
+            Token operation = tokens.get(current + 1);
+            throw error(modifier,
+                    "select arm cannot use '" + modifier.lexeme() + " "
+                            + operation.lexeme()
+                            + "'; put the wait mode on the enclosing select "
+                            + "('select', 'nb select', or 'try select') and use "
+                            + "plain 'readch' or 'writech' in each arm");
+        }
+    }
+
     private Ast.SelectStmt parseStaticSelectStatement() {
         boolean explicitDo = match(DO);
         Ast.WaitMode mode = Ast.WaitMode.BLOCKING;
@@ -1659,6 +1737,7 @@ public final class Parser {
         List<Ast.SelectArm> arms = new ArrayList<>();
         while (!check(RBRACE) && !check(EOF)) {
             if (matchContextualKeyword("when", "case")) {
+                rejectPerArmChannelWaitModifier();
                 Ast.ChannelOperation operation;
                 Ast.Expr channel;
                 Ast.Expr value = null;
@@ -1695,6 +1774,7 @@ public final class Parser {
                     }
                     bindingName = consume(IDENT, "select read case requires binding name").lexeme();
                     consume(EQUAL, "select case binding requires '='");
+                    rejectPerArmChannelWaitModifier();
                     consume(READCH, "select case binding requires readch");
                     consume(LPAREN, "binding-first select readch requires '('");
                     channel = parseExpression();
@@ -2458,7 +2538,7 @@ public final class Parser {
             return new Ast.TuplePattern(elements);
         }
 
-        if (match(INT)) return new Ast.LiteralPattern(Long.parseLong(previous().lexeme().replace("_", "")));
+        if (match(INT)) return new Ast.LiteralPattern(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
         if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
@@ -2969,8 +3049,24 @@ public final class Parser {
         };
     }
 
+    // A guest-language literal must not leak Java's NumberFormatException.
+    // Both expression and pattern literals use the same signed-i64 bound.
+    // Wider integers require a separately admitted type and backend contract.
+    private long parseSignedI64(Token token) {
+        String literal = token.lexeme();
+        // Do not silently turn malformed token separators into valid integers.
+        if (literal.endsWith("_") || literal.contains("__")) {
+            throw error(token, "malformed integer separator: " + literal);
+        }
+        try {
+            return Long.parseLong(literal.replace("_", ""));
+        } catch (NumberFormatException invalid) {
+            throw error(token, "integer literal overflows signed 64-bit: " + literal);
+        }
+    }
+
     private Ast.Expr parsePrimary() {
-        if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
+        if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
             String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
@@ -3198,10 +3294,24 @@ public final class Parser {
 
     private void consumeClassFieldTerminator(String message) {
         if (match(SEMICOLON) || check(AT) || check(END) || check(PUB) || check(PRIVATE)
-                || check(STATIC) || check(ABSTRACT) || check(ASYNC) || check(LBRACKET)
+                || check(STATIC) || check(ABSTRACT) || check(ASYNC) || check(SUSPENDS) || check(LBRACKET)
                 || isBindingKind(peek().type())
-                || (check(IDENT) && (checkNext(COLON) || checkNext(LPAREN)))) return;
+                || (check(IDENT) && (checkNext(COLON) || checkNext(LPAREN)))
+                || isNextContextualMemberLine()) return;
         throw error(peek(), message);
+    }
+
+    // A field without a semicolon can be followed by the new contextual
+    // declaration spellings, but only on a *new* source line. Never treat
+    // arbitrary same-line tokens as an implicit field terminator.
+    private boolean isNextContextualMemberLine() {
+        if (current == 0 || previous().line() >= peek().line()) return false;
+        if (check(FNC)) return true;
+        if (!check(IDENT)) return false;
+        String word = peek().lexeme();
+        return (word.equals("suspend") || word.equals("method")
+                || word.equals("final") || word.equals("critical"))
+                && (checkNext(IDENT) || checkNext(FNC) || checkNext(LPAREN));
     }
 
     private boolean hasAnnotation(List<Ast.Annotation> annotations, String name) {
@@ -3396,6 +3506,24 @@ public final class Parser {
         return true;
     }
 
+    // 'suspend' is an alias of 'suspends' only in modifier position; preserve
+    // instance methods actually named suspend(...).
+    private boolean matchContextualSuspendModifier() {
+        if (!isContextualIdentifier("suspend")) return false;
+        if (!checkNext(IDENT) && !checkNext(FNC)) return false;
+        advance();
+        return true;
+    }
+
+    // Preserve an ordinary method named 'method' (method(...)) while accepting
+    // the opt-in declaration marker 'method other_name(...)'.
+    private boolean matchExplicitMethodMarker() {
+        if (!isContextualIdentifier("method")) return false;
+        if (!checkNext(IDENT) && !checkNext(LBRACKET) && !checkNext(STATIC)) return false;
+        advance();
+        return true;
+    }
+
     private boolean matchContextualShared() {
         if (match(SHARED)) return true;
         if (check(IDENT) && peek().lexeme().equals("shared")) {
@@ -3509,5 +3637,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
+    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
 }
