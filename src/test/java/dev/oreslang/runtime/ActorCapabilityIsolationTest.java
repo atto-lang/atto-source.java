@@ -15,6 +15,58 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorCapabilityIsolationTest {
 
     @Test
+    void processExitAuthorityIsDeniedForEveryActorKindEvenWhenParentIsPrivileged() {
+        for (String declaration : new String[] {
+                "define actor Worker as",
+                "define isoactor Worker as",
+                "define untrusted actor Worker as"
+        }) {
+            Ast.Program program = Parser.parse(declaration + """
+                      receive(ActorMail<String> mail): void {
+                        std.process.exit(0);
+                        self.end();
+                        return;
+                      }
+                    end
+                    """);
+            SecurityException denied = assertThrows(SecurityException.class,
+                    () -> CapabilityChecker.check(program, IsolatePolicy.developer()),
+                    declaration + " must never inherit root process-exit authority");
+            assertTrue(denied.getMessage().contains("PROCESS_EXIT"), denied.getMessage());
+        }
+    }
+
+    @Test
+    void sharedActorCannotLaunderProcessExitThroughAnOrdinaryHelper() {
+        Ast.Program program = Parser.parse("""
+                fnc attemptExit(): void {
+                    std.process.exit(0);
+                    return;
+                }
+                define actor Worker as
+                    receive(ActorMail<String> mail): void {
+                        attemptExit();
+                        self.end();
+                        return;
+                    }
+                end
+                """);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("PROCESS_EXIT"), denied.getMessage());
+    }
+
+    @Test
+    void standaloneRootRetainsExplicitProcessExitCapability() {
+        Ast.Program program = Parser.parse("""
+                pub routine main(): void {
+                    std.process.exit(7);
+                }
+                """);
+        assertDoesNotThrow(() -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+    }
+
+    @Test
     void privateActorStaticallyDeniesReadonlySharingEvenUnderDeveloperPolicy() {
         Ast.Program program = Parser.parse("""
                 isoactor PrivateWorker {
