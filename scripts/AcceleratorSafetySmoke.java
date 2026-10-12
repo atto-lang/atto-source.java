@@ -1,3 +1,5 @@
+package dev.oreslang.runtime.accel;
+
 import dev.oreslang.runtime.accel.GpuBufferFence;
 import dev.oreslang.runtime.accel.QuantumCircuitIR;
 import java.util.Arrays;
