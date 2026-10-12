@@ -2000,6 +2000,46 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr intrinsic
+                    && intrinsic.name().equals("pipeline")
+                    && env.lookup("pipeline") == null) {
+                if (currentActorKind != Ast.ActorKind.NONE || call.typeArgumentsPresent()
+                        || call.arguments().size() != 3) {
+                    throw new IllegalArgumentException(
+                            "pipeline(source, transform, sink) requires three actor refs in root execution");
+                }
+                String domain = null;
+                Set<String> actorsSeen = new HashSet<>();
+                for (Ast.Expr argument : call.arguments()) {
+                    Type ref = deref(typeOf(argument, env, generics, self));
+                    if (!(ref instanceof Named named)
+                            || !named.name().equals("ActorRef")
+                            || named.arguments().size() != 1
+                            || !(named.arguments().getFirst() instanceof Named target)) {
+                        throw new IllegalArgumentException(
+                                "pipeline requires three statically typed ActorRef<T> arguments");
+                    }
+                    if (!actorsSeen.add(target.name())) {
+                        throw new IllegalArgumentException(
+                                "pipeline requires three distinct source actor types");
+                    }
+                    Type mailbox = actorMailboxPayloadType(named);
+                    if (!(mailbox instanceof Named messageDomain)
+                            || messageDomain.arguments().size() != 0
+                            || taggedMessages == null
+                            || (!taggedMessages.patterns().containsKey(messageDomain.name())
+                                && !taggedMessages.enums().containsKey(messageDomain.name()))) {
+                        throw new IllegalArgumentException(
+                                "pipeline actors require the same closed nominal ActorMail domain");
+                    }
+                    if (domain == null) domain = messageDomain.name();
+                    else if (!domain.equals(messageDomain.name())) {
+                        throw new IllegalArgumentException(
+                                "pipeline requires matching closed nominal ActorMail domains");
+                    }
+                }
+                return Primitive.VOID;
+            }
             if (call.callee() instanceof Ast.MemberExpr variantMember
                     && variantMember.receiver() instanceof Ast.NameExpr variantEnum) {
                 TaggedMessageContracts.Case enumCase = taggedCaseOrNull(
@@ -2278,12 +2318,31 @@ public final class TypeChecker {
                 // guest lowering exist, fail closed instead of accepting a
                 // user method with the same name and silently omitting routing.
                 if (actorSelf && (member.member().equals("forward")
-                        || member.member().equals("backward")
-                        || member.member().equals("respond")
+                        || member.member().equals("backward"))) {
+                    if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "self." + member.member()
+                                        + " requires one typed enum message");
+                    }
+                    Type payload = deref(typeOf(
+                            call.arguments().getFirst(), env, generics, self));
+                    if (!(payload instanceof Named taggedVariant)
+                            || !taggedVariant.arguments().isEmpty()
+                            || taggedCaseOrNull(taggedVariant.name()) == null) {
+                        throw new IllegalArgumentException(
+                                "self." + member.member()
+                                        + " requires a compiler-checked nominal enum case");
+                    }
+                    validateActorCallableBoundaryType(
+                            payload, currentActorKind, false, "pipeline message");
+                    requireSerializableActorMessageType(payload, "pipeline message");
+                    return Primitive.VOID;
+                }
+                if (actorSelf && (member.member().equals("respond")
                         || member.member().equals("done"))) {
                     throw new IllegalArgumentException(
                             "self." + member.member()
-                                    + " requires compiler-bound pipeline/reply routing; "
+                                    + " requires compiler-bound reply/completion routing; "
                                     + "this backend has no authorized lowering yet");
                 }
                 if (actorSelf && (member.member().equals("on_start")
