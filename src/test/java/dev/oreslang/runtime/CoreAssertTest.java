@@ -112,6 +112,48 @@ final class CoreAssertTest {
         assertTrue(failure.getMessage().contains("Assert.equal: values are not equal"), failure::toString);
     }
 
+    @Test void trapCannotTurnDeniedFilesystemWritesIntoNone() throws Exception {
+        Path blocked = Files.createTempFile("ores-assert-denied-", ".txt");
+        Path entry = Files.createTempFile("ores-assert-policy-", ".ores");
+        try {
+            Files.delete(blocked);
+            for (String prefix : new String[]{"", "Assert.equal_throws(1, 1);"}) {
+                Files.writeString(entry, """
+                    import module Assert from "std/assert";
+                    trap fnc guarded(): bool {
+                      %s
+                      fs.write_text("%s", "forbidden");
+                      return true;
+                    }
+                    pub routine main(): void { guarded(); return; }
+                    """.formatted(prefix, blocked.toString().replace("\\", "\\\\").replace("\"", "\\\"")));
+                RuntimeException failure = assertThrows(RuntimeException.class,
+                        () -> LinkedProgramRunner.run(
+                                entry,
+                                IsolatePolicy.developer().withCapabilities(
+                                        IsolatePolicy.Capability.FILESYSTEM_WRITE),
+                                RuntimePermissions.denyAll(),
+                                PermissionCheckMode.RUNTIME,
+                                ExecutionProfile.serverJit(),
+                                java.util.Set.of(),
+                                System.getenv(),
+                                new ByteArrayOutputStream(),
+                                new ByteArrayOutputStream()));
+                StringBuilder diagnostic = new StringBuilder();
+                for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
+                    diagnostic.append(cursor.getMessage()).append(' ');
+                }
+                assertTrue(diagnostic.toString().contains("permission denied"),
+                        () -> "authorization failure must escape trap: " + diagnostic);
+                assertFalse(Files.exists(blocked),
+                        "a failed authorization must not create the destination");
+            }
+        } finally {
+            Files.deleteIfExists(entry);
+            Files.deleteIfExists(blocked);
+        }
+    }
+
     @Test void failurePrimitiveChecksMessageTypeAndArity() {
         for (String expression : new String[]{"rt fail(1)", "rt fail()", "rt fail(\"a\", \"b\")"}) {
             assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
