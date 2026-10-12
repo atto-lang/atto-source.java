@@ -128,7 +128,13 @@ public final class MixedJavaCompiler {
             if (entry.getValue().size() != 1) continue;
             Ast.FunctionDecl fn = entry.getValue().getFirst();
             if (!javaIdentifier(fn.name()) || fn.name().equals("call")) continue;
-            String returnType = javaReturnType(fn.returnType(), importedJavaTypes);
+            // Native async callables and explicit Future<T> returns expose
+            // runtime-owned Futures to Java. Do not generate a synchronous int
+            // facade for an async Oreslang function returning int.
+            String returnType = !fn.generator()
+                    && (fn.async() || "Future".equals(fn.returnType().name()))
+                    ? "dev.oreslang.runtime.OresFuture<?>"
+                    : javaReturnType(fn.returnType(), importedJavaTypes);
             out.append("  public static ").append(returnType).append(' ').append(fn.name()).append('(');
             for (int i = 0; i < fn.parameters().size(); i++) {
                 if (i > 0) out.append(", ");

@@ -817,9 +817,11 @@ public final class OresEvalRootNode extends RootNode {
             // Reject unsupported synchronous functions BEFORE any guest body
             // executes. Otherwise the host Future bridge may throw after
             // running user side effects and misreporting a rejected request.
-            if (requireAsync && !fn.async()) {
+            if (requireAsync && !fn.async()
+                    && !"Future".equals(fn.returnType().name())) {
                 throw new IllegalArgumentException(
-                        "host Future handoff requires an async public function: " + name);
+                        "host Future handoff requires an async public function or "
+                        + "a public function returning Future<T>: " + name);
             }
             if (requireAsync && fn.generator()) {
                 // Async generators are pull-driven iterators, not Futures;

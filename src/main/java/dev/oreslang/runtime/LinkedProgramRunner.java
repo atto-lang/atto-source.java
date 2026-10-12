@@ -9,6 +9,7 @@ import dev.oreslang.interop.MixedInteropBridge;
 import dev.oreslang.interop.MixedJavaCompiler;
 import dev.oreslang.interop.MixedSourceUnit;
 import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.nodes.OresHostFutureBridge;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.stdlib.CoreLibrarySources;
 import org.graalvm.polyglot.Context;
@@ -248,7 +249,16 @@ public final class LinkedProgramRunner {
                     LinkedHashMap<String, MixedInteropBridge.Invoker> bridgeInvokers = new LinkedHashMap<>();
                     for (Map.Entry<String, Value> parsed : parsedUnits.entrySet()) {
                         Value unit = parsed.getValue();
+                        Ast.Program compiledProgram = programs.get(parsed.getKey());
                         bridgeInvokers.put(parsed.getKey(), (function, arguments) -> {
+                            // Decide from the validated source AST before any guest
+                            // dispatch. A legacy Value.asHostObject() call after
+                            // starting an async task may race CONTROL Truffle entry.
+                            if (publicFunctionReturnsFuture(
+                                    compiledProgram, function, arguments.length)) {
+                                return OresHostFutureBridge.invokePublicFuture(
+                                        unit, function, arguments);
+                            }
                             Object[] invocation = new Object[2 + arguments.length];
                             invocation[0] = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
                             invocation[1] = function;
@@ -272,6 +282,28 @@ public final class LinkedProgramRunner {
             }
         }
         return new RunResult(build, exitStatus);
+    }
+
+    /**
+     * Exact name/arity preflight for Java mixed-source export invocations.
+     * Keep this consistent with the Truffle root's own async/Future preflight;
+     * a pull-driven generator does not return an OresFuture.
+     */
+    private static boolean publicFunctionReturnsFuture(
+            Ast.Program program, String name, int arity) {
+        if (program == null) return false;
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.name().equals(name)
+                        && fn.parameters().size() == arity
+                        && fn.visibility() == Ast.Visibility.PUBLIC) {
+                    return !fn.generator() && (fn.async()
+                            || "Future".equals(fn.returnType().name()));
+                }
+            }
+        }
+        return false;
     }
 
     private static int requireExitStatus(Value value) {

@@ -232,6 +232,43 @@ final class MixedSourceInteropTest {
     }
 
     @Test
+    void javaMixedBridgeUsesScopedFutureHandoffForTypedAndDynamicAsyncExports()
+            throws Exception {
+        Path source = temp.resolve("AsyncFutureBridge.java");
+        Files.writeString(source, """
+                public final class AsyncFutureBridge {
+                  public static void main(String[] args) throws Exception {
+                    dev.oreslang.runtime.OresFuture<?> typed = Ores.work();
+                    if (((Number) typed.get(5, java.util.concurrent.TimeUnit.SECONDS))
+                            .intValue() != 42) {
+                      throw new AssertionError("typed Future bridge returned wrong value");
+                    }
+                    Object dynamic = Ores.call("work");
+                    if (!(dynamic instanceof dev.oreslang.runtime.OresFuture<?> future)
+                            || ((Number) future.get(5, java.util.concurrent.TimeUnit.SECONDS))
+                                .intValue() != 42) {
+                      throw new AssertionError("dynamic Future bridge returned wrong type/value");
+                    }
+                    Ores.report();
+                  }
+                  ores {
+                    pub async fnc work(): int { return 42; }
+                    pub fnc report(): void {
+                      stdio.println("async-java-bridge-ok");
+                      return;
+                    }
+                  }
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        assertDoesNotThrow(() -> LinkedProgramRunner.run(
+                source, trustedMixedPolicy(), ExecutionProfile.serverJit(),
+                Set.of(), out, new ByteArrayOutputStream()));
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains(
+                "async-java-bridge-ok"));
+    }
+
+    @Test
     void mixedJavaSourceRequiresSeparateTrustedCapability() throws Exception {
         Path source = temp.resolve("capability.ores");
         Files.writeString(source, """
