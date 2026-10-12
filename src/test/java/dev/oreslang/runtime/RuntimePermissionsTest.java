@@ -153,9 +153,18 @@ final class RuntimePermissionsTest {
 
     @Test
     void checkModeArgumentDoesNotBecomeAPermissionGrant() {
+        String[] arguments = {
+                "--ores-permission-check=runtime",
+                "--ores-permission-env-allow=PUBLIC_*"
+        };
+        // Scoped CLI permission rules can only narrow a separately granted
+        // isolate capability. They must not manufacture ENVIRONMENT authority.
+        assertThrows(SecurityException.class, () ->
+                RuntimePermissions.fromApplicationArguments(arguments, IsolatePolicy.developer()));
+
         RuntimePermissions permissions = RuntimePermissions.fromApplicationArguments(
-                new String[]{"--ores-permission-check=runtime", "--ores-permission-env-allow=PUBLIC_*"},
-                IsolatePolicy.developer());
+                arguments,
+                IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.ENVIRONMENT));
         assertTrue(permissions.allows(RuntimePermissions.Permission.ENV, "PUBLIC_NAME"));
         assertFalse(permissions.allows(RuntimePermissions.Permission.ENV, "SECRET"));
         assertFalse(permissions.allows(RuntimePermissions.Permission.WRITE, "/tmp/out"));
