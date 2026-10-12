@@ -9,6 +9,8 @@ pub routine main(): void {
     defer stdio.println("ORES_NATIVE|defer");
     val int value = await answer();
     stdio.println(value);
+  } catch (unexpected) {
+    stdio.println("ORES_NATIVE|unexpected-catch");
   } finally {
     stdio.println("ORES_NATIVE|finally");
   }
