@@ -61,8 +61,15 @@ final class HostPolyglotGeneratorBridgeTest {
             assertFalse(fourth.isDone());
             assertTrue(fourth.cancel(false));
             session.seal();
+            // Host preflight itself enters Polyglot on the Java caller. It
+            // must not race the source cancellation carrier's final leave.
+            long physicalDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!session.isQuiescent() && System.nanoTime() < physicalDeadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(session.isQuiescent(),
+                    "host may not re-enter Polyglot until physical DONE is verified");
             OresContextLifecycle.prepareForDisposal(context);
-            assertTrue(session.isQuiescent());
             assertEquals(1, session.cleanupRuns());
             assertEquals(1, ((Number) session.cleanupBinding("cleanup_marker")).intValue());
             assertFalse(sourcePending.isDone(),
