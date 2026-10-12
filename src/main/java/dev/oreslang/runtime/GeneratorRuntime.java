@@ -210,7 +210,13 @@ public final class GeneratorRuntime {
         }
 
         static SourceLowering compile(String source, String function, Map<String, ?> args) {
-            Ast.Program program = OresCompiler.parseAndTypeCheck(source);
+            return compile(OresCompiler.parseAndTypeCheck(source), function, args);
+        }
+
+        static SourceLowering compile(Ast.Program program, String function, Map<String, ?> args) {
+            Objects.requireNonNull(program, "typechecked program");
+            Objects.requireNonNull(function, "generator function");
+            Objects.requireNonNull(args, "generator arguments");
             Ast.FunctionDecl target = null;
             for (Ast.ModuleDecl module : program.modules()) {
                 for (Ast.Decl decl : module.declarations()) {
@@ -418,7 +424,7 @@ public final class GeneratorRuntime {
      * scheduler. This does not expose the legacy virtual-thread producer.
      * The OresContext pump dispatches from a physically entered CONTROL turn.
      */
-    static final class HostPullSession implements AutoCloseable {
+    public static final class HostPullSession implements AutoCloseable {
         private final HostGeneratorTurnPump pump;
         private final SchedulerBacked<Object> frame;
         private final java.util.Set<OresFuture<Step<Object>>> pulls =
@@ -430,7 +436,7 @@ public final class GeneratorRuntime {
             this.frame = Objects.requireNonNull(frame, "frame");
         }
 
-        OresFuture<Step<Object>> nextStep() {
+        public OresFuture<Step<Object>> nextStep() {
             if (closed.get()) {
                 throw new java.util.concurrent.RejectedExecutionException(
                         "source generator host session is closed");
