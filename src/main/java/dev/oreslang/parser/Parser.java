@@ -859,7 +859,6 @@ public final class Parser {
 
     private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
-        rejectDiscardedDeclarationAnnotations(annotations, "fields");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
@@ -881,7 +880,6 @@ public final class Parser {
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
-        rejectDiscardedDeclarationAnnotations(annotations, "fields");
         String name = consume(IDENT, "expected field name").lexeme();
         consume(COLON, "expected ':' after field name");
         Ast.TypeRef type = parseTypeRef();
@@ -895,7 +893,6 @@ public final class Parser {
     /** Actor-state 'final name: Type' is a const/immutable field spelling. */
     private Ast.FieldDecl parseFinalActorField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
-        rejectDiscardedDeclarationAnnotations(annotations, "fields");
         consumeContextualIdentifier("final", "expected 'final' actor field");
         String name = consume(IDENT, "expected field name after 'final'").lexeme();
         consume(COLON, "expected ':' after final field name");
@@ -908,7 +905,6 @@ public final class Parser {
 
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "module bindings");
-        rejectDiscardedDeclarationAnnotations(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
