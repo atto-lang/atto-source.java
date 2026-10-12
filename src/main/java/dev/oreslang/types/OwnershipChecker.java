@@ -383,28 +383,33 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
-            // The interpreter queues an expression and evaluates it at scope
-            // unwind, before the scope's bindings are destroyed. Reading a
-            // mutable/rebindable COPY local is safe while that frame is live:
-            // the deferred expression intentionally observes its latest value.
-            // Borrowed or move-only captures remain unsafe without a precise
-            // scope-end loan/drop plan.
+            // Runtime evaluates the registered AST at scope unwind before
+            // releasing lexical bindings. Pin its borrowed/non-Copy sources
+            // against moves and rebindings until then. Do not acquire a mutable
+            // borrow at registration: distinct LIFO deferred calls may reborrow
+            // the same incoming &mut sequentially during scope exit.
             CaptureSet delayed = new CaptureSet();
             scanExpr(defer.expression(), Set.of(), scope, null, delayed, false);
             for (Capture capture : delayed.values.values()) {
                 VarState state = capture.source;
                 requireUsable(state, capture.name, capture.write);
-                if (state.kind != ValueKind.COPY || containsBorrowType(state.type)
-                        || isActorConfinedBorrow(state)
-                        || containsMutexGuardType(state.type)) {
-                    throw error("defer cannot capture borrowed or move-only binding '"
-                            + capture.name
-                            + "' until registration-time capture/lifetime lowering is implemented");
+                if (isActorConfinedBorrow(state) || containsMutexGuardType(state.type)
+                        || (containsBorrowType(state.type) && !state.type.isBorrow())) {
+                    throw error("defer cannot retain actor-confined, guard-bearing or nested borrowed binding '"
+                            + capture.name + "'");
                 }
             }
             ValueInfo value = checkExpr(defer.expression(), scope, false);
             if (containsMutexGuardType(value.type)) {
                 throw error("defer cannot produce a guard-bearing value");
+            }
+            for (Capture capture : delayed.values.values()) {
+                VarState state = capture.source;
+                if (state.kind != ValueKind.COPY || state.type.isBorrow()) {
+                    VarState root = ownershipRoot(state);
+                    root.deferredCaptureCount++;
+                    scope.deferredCaptureRoots.add(root);
+                }
             }
             return;
         }
@@ -1878,6 +1883,9 @@ public final class OwnershipChecker {
         if (target instanceof Ast.NameExpr name) {
             VarState state = requireState(scope, name.name());
             requireUsable(state, name.name(), true);
+            if (ownershipRoot(state).deferredCaptureCount > 0) {
+                throw error("cannot rebind '" + name.name() + "' while a defer capture is registered");
+            }
             if (!state.rebindable) throw error("cannot reassign fixed binding '" + name.name() + "'; use let or let mut");
             if (state.immutableBorrows > 0 || state.mutableBorrowed) throw error("cannot assign '" + name.name() + "' while it is borrowed");
             return;
@@ -2836,6 +2844,9 @@ public final class OwnershipChecker {
     private void move(VarState state, String name) {
         VarState root = ownershipRoot(state);
         requireUsable(root, name, false);
+        if (root.deferredCaptureCount > 0) {
+            throw error("cannot move '" + name + "' while a defer capture is registered");
+        }
         if (root.immutableBorrows > 0 || root.mutableBorrowed) {
             throw error("cannot move '" + name + "' while it is borrowed");
         }
@@ -3383,6 +3394,7 @@ public final class OwnershipChecker {
         private boolean moved;
         private int immutableBorrows;
         private boolean mutableBorrowed;
+        private int deferredCaptureCount;
         private VarState borrowSource;
         private boolean borrowLease;
         /** Narrowing/pattern alias: ownership operations are forwarded to this root place. */
@@ -3407,6 +3419,7 @@ public final class OwnershipChecker {
         private final Scope parent;
         private final boolean descendantsNonLexical;
         private final Map<String,VarState> locals = new LinkedHashMap<>();
+        private final List<VarState> deferredCaptureRoots = new ArrayList<>();
         private boolean closed;
 
         private Scope(Scope parent) { this(parent, parent != null && parent.descendantsNonLexical); }
@@ -3455,6 +3468,12 @@ public final class OwnershipChecker {
         private void close() {
             if (closed) return;
             closed = true;
+            for (VarState root : deferredCaptureRoots) {
+                root.deferredCaptureCount--;
+                if (root.deferredCaptureCount < 0) {
+                    throw new IllegalStateException("Oreslang ownership invariant violated: negative defer capture count");
+                }
+            }
             for (VarState state : locals.values()) {
                 if (state.borrowSource != null && state.borrowLease) {
                     if (state.kind == ValueKind.MUT_BORROW) state.borrowSource.mutableBorrowed = false;
