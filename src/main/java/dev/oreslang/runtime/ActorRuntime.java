@@ -1819,7 +1819,15 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
 
         ActorCell<?> cell = actors.get(target.actorId());
-        if (cell == null || !ownFuture(cell, future)) return;
+        // Bind ownership to the exact actor incarnation BEFORE registering
+        // this Future as a pending operation. Otherwise a stale target can
+        // attach/cancel a producer Future in a replacement actor's lifecycle,
+        // even though CONTROL admission later rejects the callback itself.
+        if (cell == null
+                || !target.taskTicket.issuedFor(target.actorId(), cell.executionDomain)
+                || !target.taskTicket.mayEnqueue()
+                || !target.authority.mayQueue()
+                || !ownFuture(cell, future)) return;
 
         future.whenCompleteRuntime(
                 (value, failure) ->
@@ -1843,7 +1851,18 @@ public final class ActorRuntime implements AutoCloseable {
                 || !taskTicket.mayEnqueue())) {
             return false;
         }
-        if (!cell.reserveContinuationSlot()) {
+        // A cancelled task racing the mailbox-accounting lock must be
+        // discarded, NOT counted as a legitimate CONTROL overflow. This
+        // decision is linearized with ticket.retire() inside the ticket.
+        SerialExecutionTicket.ControlReservation reservation =
+                taskTicket == null
+                        ? (cell.reserveContinuationSlot()
+                                ? SerialExecutionTicket.ControlReservation.RESERVED
+                                : SerialExecutionTicket.ControlReservation.FULL)
+                        : taskTicket.reserveControlSlotFor(
+                                actorId, cell.executionDomain, cell::reserveContinuationSlot);
+        if (reservation == SerialExecutionTicket.ControlReservation.REVOKED) return false;
+        if (reservation == SerialExecutionTicket.ControlReservation.FULL) {
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
             return false;
