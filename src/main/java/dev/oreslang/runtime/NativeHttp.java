@@ -210,6 +210,9 @@ public final class NativeHttp implements AutoCloseable {
             // transfer after this HTTP runtime has been closed.
             if (closed) { exchange.state.abort(503); return; }
             ActorRuntime.ActorRef<Object> actor = null;
+            String deliveryToken = null;
+            boolean handoffPending = false;
+            boolean mailSent = false;
             try {
                 long spawnPerf = CorePerf.start();
                 if (serial) {
@@ -227,7 +230,16 @@ public final class NativeHttp implements AutoCloseable {
                 // Reserve the bounded transfer slot *before* observing the
                 // actor's readiness Future. A stalled actor's pending ready
                 // Future otherwise retains one callback per rejected dispatch.
-                String token = exchange.moveTo(actor, !serial);
+                // Publish the transfer and register its pending handoff
+                // together under the State monitor. Actor mailbox submission
+                // itself must never execute while this monitor is held.
+                String token;
+                synchronized (exchange.state) {
+                    token = exchange.moveTo(actor, !serial);
+                    deliveryToken = token;
+                    exchange.state.server.pendingDeliveries.incrementAndGet();
+                    handoffPending = true;
+                }
                 var readyObserver = actor.ready().whenCompleteRuntimeCancellable(
                         (ignored, failure) -> {
                             long spawn;
@@ -244,16 +256,13 @@ public final class NativeHttp implements AutoCloseable {
                 }
                 // A timer or shutdown may already have settled the exchange.
                 exchange.state.detachReadyObserverIfTerminal();
-                // Atomically arbitrate delivery against listener retirement
-                // on this exact transfer's State monitor. If shutdown won,
-                // there must be no future queued stale token.
-                synchronized (exchange.state) {
-                    if (exchange.state.server.stopped) {
-                        exchange.state.revokeTransferLocked();
-                        throw new RejectedExecutionException("HTTP listener shut down before actor delivery");
-                    }
-                    context.actors().sendHttpTransfer(actor, token);
-                }
+                if (exchange.state.server.stopped)
+                    throw new RejectedExecutionException("HTTP listener shut down before actor delivery");
+                // Never acquire an actor mailbox/lifecycle lock with a State
+                // monitor held. The pending-handoff accounting fences shutdown
+                // while the mailbox accepts this tagged message.
+                context.actors().sendHttpTransfer(actor, token);
+                mailSent = true;
             } catch (RuntimeException failure) {
                 synchronized (exchange.state) {
                     exchange.state.revokeTransferLocked();
@@ -261,6 +270,25 @@ public final class NativeHttp implements AutoCloseable {
                 if (actor != null && !serial) actor.cancel();
                 exchange.state.abort(failure instanceof RejectedExecutionException ? 503 : 500);
             } finally {
+                if (handoffPending) {
+                    Server server = exchange.state.server;
+                    if (server.stopped) {
+                        // A queued token can be retired safely; an already
+                        // delivered token remains a tombstone for actor-side
+                        // stale-mail suppression.
+                        exchange.state.abort(503);
+                        if (mailSent && actor != null
+                                && context.actors().retireQueuedHttpTransfer(actor, deliveryToken)) {
+                            synchronized (exchange.state) {
+                                if (deliveryToken.equals(exchange.state.ticket))
+                                    exchange.state.revokeTransferLocked();
+                            }
+                            exchange.state.detachActorDoneObserverIfReleased();
+                        }
+                    }
+                    server.pendingDeliveries.decrementAndGet();
+                    server.completeDrain();
+                }
                 CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
             }
         }
@@ -344,6 +372,9 @@ public final class NativeHttp implements AutoCloseable {
         private OresFuture<Object> waiter;
         private volatile boolean stopped;
         private boolean transportStopped, retirementSweepComplete;
+        /** Pending ActorRuntime mailbox handoffs must finish before drain settles. */
+        private final java.util.concurrent.atomic.AtomicInteger pendingDeliveries =
+                new java.util.concurrent.atomic.AtomicInteger();
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
         private final java.util.concurrent.atomic.AtomicInteger tombstones = new java.util.concurrent.atomic.AtomicInteger();
@@ -468,7 +499,8 @@ public final class NativeHttp implements AutoCloseable {
         }
         private synchronized void completeDrain() {
             if (transportStopped && retirementSweepComplete && active.isEmpty()
-                    && drained != null) drained.completeFromRuntime(null);
+                    && pendingDeliveries.get() == 0 && drained != null)
+                drained.completeFromRuntime(null);
         }
 
         /**
