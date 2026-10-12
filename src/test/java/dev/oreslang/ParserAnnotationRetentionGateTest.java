@@ -71,6 +71,30 @@ final class ParserAnnotationRetentionGateTest {
     }
 
     @Test
+    void implementedAlignMetadataSurvivesFailClosedAnnotationAdmission() {
+        Ast.Program parsed = assertDoesNotThrow(() -> Parser.parse("""
+                define module demo as
+                    define class Packet as
+                        @Align(16)
+                        let int payload = 1;
+                    end
+                    fnc read(): int {
+                        @Align(8)
+                        let int value = 2;
+                        return value;
+                    }
+                end
+                """));
+        Ast.ClassDecl packet = (Ast.ClassDecl) parsed.modules().getFirst()
+                .declarations().getFirst();
+        Ast.TypeRef aligned = packet.fields().getFirst().type();
+        assertTrue(aligned.arguments().stream()
+                        .anyMatch(arg -> arg.isNamedParameter()
+                                && arg.namedParameterName().equals("align")),
+                "implemented @Align field metadata must remain in the type AST");
+    }
+
+    @Test
     void retainsSpecializedCallableAnnotationError() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("@structural define class Example as end"));
