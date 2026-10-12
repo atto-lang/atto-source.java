@@ -4625,6 +4625,12 @@ public final class OresEvalRootNode extends RootNode {
                             // remain visible as suppressed diagnostics, not a
                             // replacement status (including during mutex release).
                             if (failure != exit) exit.addSuppressed(failure);
+                        } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
+                            // A deferred exit(0) must not convert an earlier
+                            // unhandled failure into a successful process exit.
+                            // Keep the original failure authoritative; the exit
+                            // attempt is diagnostic only.
+                            if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
                         } else {
                             if (pendingFailure != null && pendingFailure != failure) {
                                 failure.addSuppressed(pendingFailure);
@@ -4638,6 +4644,10 @@ public final class OresEvalRootNode extends RootNode {
                 } catch (RuntimeException | Error failure) {
                     if (pendingFailure instanceof ProcessExitSignal exit) {
                         if (failure != exit) exit.addSuppressed(failure);
+                    } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
+                        // Mutex cleanup cannot downgrade an already failing
+                        // root task into successful exit(0).
+                        if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
                     } else {
                         if (pendingFailure != null && pendingFailure != failure) {
                             failure.addSuppressed(pendingFailure);
