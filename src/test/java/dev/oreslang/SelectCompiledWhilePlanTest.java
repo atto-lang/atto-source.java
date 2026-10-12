@@ -87,7 +87,7 @@ final class SelectCompiledWhilePlanTest {
                   while tick < 2 {
                     if tick == 1 {
                       active = second;
-                    }
+                    } fi
                     select {
                       when readch active: let event {
                         stdio.stdout.write(event);
