@@ -83,7 +83,7 @@ public final class OresHostFutureBridge {
             // gate prevents its scheduler task from entering a second Truffle
             // thread until the outer host Value.execute physically returns.
             if (validatedContext instanceof OresContext runtime) {
-                entryLease = runtime.vm().beginHostHandoff();
+                entryLease = runtime.beginHostFutureHandoff();
             }
             ownerContext = validatedContext;
             ownerRoot = validatedRoot;
