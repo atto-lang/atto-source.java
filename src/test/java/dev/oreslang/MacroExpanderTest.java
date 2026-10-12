@@ -253,6 +253,38 @@ final class MacroExpanderTest {
     }
 
     @Test
+    void expressionCapturesMustBeCompleteSyntacticallyValidExpressions() {
+        String definition = "macro_rules! id { ($x:expr) => { $x }; }\\n";
+        for (String fragment : List.of("1 +", "1; 2", "return 2",
+                "let x = 1", "1 2", "@FromJson(\"key\")", "1 = 2")) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(
+                            new Lexer(definition + "id!(" + fragment + ")").scan()),
+                    fragment);
+            assertNotNull(failure.getMessage(), fragment);
+        }
+        for (String expression : List.of("1 + 2", "(3 * 4)", "foo(1, 2)",
+                "1 < 3", "a ? b : c")) {
+            assertDoesNotThrow(() -> MacroExpander.expand(
+                    new Lexer(definition + "id!(" + expression + ")").scan()),
+                    expression);
+        }
+    }
+
+    @Test
+    void nestedExpressionMacroCallsMustBeExpandedAndThenValidated() {
+        String definitions = """
+                macro_rules! unit { ($x:expr) => { ($x) }; }
+                macro_rules! twice { ($x:expr) => { $x * 2 }; }
+                """;
+        assertDoesNotThrow(() -> MacroExpander.expand(
+                new Lexer(definitions + "twice!(unit!(21))").scan()));
+        assertThrows(IllegalArgumentException.class,
+                () -> MacroExpander.expand(
+                        new Lexer(definitions + "twice!(unit!(1; 2))").scan()));
+    }
+
+    @Test
     void rejectsLexicallyNestedMacroDefinitionsWithoutHidingCode() {
         String source = """
                 define module app as
