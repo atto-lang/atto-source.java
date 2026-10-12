@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
+import java.util.ArrayDeque;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
@@ -28,6 +29,7 @@ public final class OresVM implements AutoCloseable {
 
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
+    private final RootHandoffGate rootHandoffGate;
     private final AtomicBoolean closed = new AtomicBoolean();
     // Admission may be sealed while source cleanup still owns active carriers.
     // Only a successful root drain and physical CONTROL termination retires the VM.
@@ -54,10 +56,12 @@ public final class OresVM implements AutoCloseable {
                 factory,
                 new ThreadPoolExecutor.AbortPolicy());
 
+        this.rootHandoffGate = new RootHandoffGate(
+                rootAdmission == null ? controlExecutor : rootAdmission);
         this.rootScheduler = OresScheduler.runtimeOwned(
                 "ores-root-scheduler",
                 rootAdmission == null ? controlParallelism : 1,
-                rootAdmission == null ? controlExecutor : rootAdmission,
+                rootHandoffGate,
                 turnExecutor);
         try {
             startup();
@@ -79,6 +83,107 @@ public final class OresVM implements AutoCloseable {
                         DEFAULT_CONTROL_PARALLELISM),
                 turnExecutor,
                 rootAdmission);
+    }
+
+
+    /** Host handoff lease released only after the outer Value.execute returns. */
+    public static final class HostHandoffLease implements AutoCloseable {
+        private final RootHandoffGate gate;
+        private final AtomicBoolean released = new AtomicBoolean();
+        private HostHandoffLease(RootHandoffGate gate) { this.gate = gate; }
+        @Override public void close() {
+            if (released.compareAndSet(false, true)) gate.release();
+        }
+    }
+
+    /**
+     * Bounded FIFO admission barrier. Held scheduler tasks own NO executing
+     * worker and cannot call TruffleContext.enter. Nested scoped host calls
+     * must all exit before the first task is delegated to CONTROL.
+     */
+    private static final class RootHandoffGate implements Executor {
+        private final Executor downstream;
+        private final ArrayDeque<Runnable> held = new ArrayDeque<>();
+        private int hostScopes;
+        private boolean draining;
+
+        private RootHandoffGate(Executor downstream) {
+            this.downstream = Objects.requireNonNull(downstream, "downstream");
+        }
+
+        synchronized HostHandoffLease begin() {
+            hostScopes++;
+            return new HostHandoffLease(this);
+        }
+
+        synchronized int heldCount() { return held.size(); }
+        synchronized boolean active() { return hostScopes > 0; }
+
+        @Override public void execute(Runnable task) {
+            Objects.requireNonNull(task, "task");
+            synchronized (this) {
+                if (hostScopes > 0 || draining || !held.isEmpty()) {
+                    if (held.size() >= DEFAULT_QUEUE_CAPACITY) {
+                        throw new RejectedExecutionException(
+                                "host handoff root admission queue is full");
+                    }
+                    held.addLast(task);
+                    return;
+                }
+            }
+            downstream.execute(task);
+        }
+
+        private void release() {
+            synchronized (this) {
+                if (hostScopes <= 0) throw new IllegalStateException(
+                        "host Future handoff has no active admission lease");
+                if (--hostScopes != 0 || draining) return;
+                draining = true;
+            }
+            while (true) {
+                Runnable next;
+                synchronized (this) {
+                    if (hostScopes != 0) {
+                        draining = false;
+                        return;
+                    }
+                    next = held.pollFirst();
+                    if (next == null) {
+                        draining = false;
+                        return;
+                    }
+                }
+                try {
+                    downstream.execute(next);
+                } catch (RuntimeException | Error failure) {
+                    synchronized (this) {
+                        // Preserve scheduler ownership on rejection; do NOT
+                        // convert a failed submission into a physical DONE.
+                        held.addFirst(next);
+                        draining = false;
+                    }
+                    throw failure;
+                }
+            }
+        }
+    }
+
+    /** Called only after the scoped host Future ticket has been authenticated. */
+    public HostHandoffLease beginHostHandoff() {
+        if (!started() || closed.get()) {
+            throw new RejectedExecutionException("root handoff context is unavailable");
+        }
+        return rootHandoffGate.begin();
+    }
+
+    int queuedHostHandoffTurns() { return rootHandoffGate.heldCount(); }
+
+    void requireHostHandoffReleased() {
+        if (rootHandoffGate.active() || rootHandoffGate.heldCount() != 0) {
+            throw new IllegalStateException(
+                    "unfinished host Future handoff still owns root guest admission");
+        }
     }
 
     /**
