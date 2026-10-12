@@ -84,6 +84,8 @@ public final class SupervisorChildRegistry {
     private record ReplacementState(ActorRuntime.ActorId actor, long generation,
                                     ReplacementPhase phase) {}
     private final Map<UUID, ReplacementState> replacements = new HashMap<>();
+    // A candidate's physical ActorId may belong to at most one pending claim.
+    private final Map<ActorRuntime.ActorId, UUID> stagedActors = new HashMap<>();
     private boolean restartClosed;
     private final Map<UUID, StopReservation> stopReservations = new HashMap<>();
     /** Per logical-child ledger: bounded by the existing child registry. */
@@ -180,10 +182,18 @@ public final class SupervisorChildRegistry {
         checkReservation(permit);
         if (restartClosed) throw new IllegalStateException("supervisor is closed");
         requireFreshActor(candidate);
-        if (replacements.containsKey(permit.child().logicalId()))
+        if (replacements.containsKey(permit.child().logicalId())
+                || stagedActors.containsKey(candidate))
             throw new IllegalStateException("candidate already staged");
-        replacements.put(permit.child().logicalId(), new ReplacementState(
-                candidate, permit.incarnation() + 1, ReplacementPhase.SPAWNED));
+        ReplacementState state = new ReplacementState(
+                candidate, permit.incarnation() + 1, ReplacementPhase.SPAWNED);
+        stagedActors.put(candidate, permit.child().logicalId());
+        try {
+            replacements.put(permit.child().logicalId(), state);
+        } catch (Throwable failed) {
+            stagedActors.remove(candidate);
+            throw failed;
+        }
     }
 
     private ReplacementState requireReplacement(
@@ -249,7 +259,9 @@ public final class SupervisorChildRegistry {
         var admitted = requireReplacement(permit, replacement);
         if (restartClosed || admitted.phase() != ReplacementPhase.ADMITTED)
             throw new IllegalStateException("replacement lacks physical admission or supervisor closed");
-        requireFreshActor(replacement);
+        if (seenActors.contains(replacement) || activeActors.containsKey(replacement)
+                || !permit.child().logicalId().equals(stagedActors.get(replacement)))
+            throw new IllegalStateException("candidate is not exclusively staged");
         Snapshot after = new Snapshot(
                 permit.child(), replacement, permit.incarnation() + 1, Phase.ACTIVE);
         // Commit both actor indexes or neither; a failed commit keeps the
@@ -263,6 +275,7 @@ public final class SupervisorChildRegistry {
             seenActors.remove(replacement);
             throw failure;
         }
+        stagedActors.remove(replacement);
         replacements.remove(permit.child().logicalId());
         reservations.remove(permit.child().logicalId());
         return after;
@@ -277,6 +290,7 @@ public final class SupervisorChildRegistry {
         Snapshot restored = new Snapshot(
                 permit.child(), permit.failedActor(), permit.incarnation(), Phase.FINALIZED);
         children.put(permit.child().logicalId(), restored);
+        if (candidate != null) stagedActors.remove(candidate.actor());
         replacements.remove(permit.child().logicalId());
         reservations.remove(permit.child().logicalId());
         return restored;
@@ -292,7 +306,8 @@ public final class SupervisorChildRegistry {
 
     private void requireFreshActor(ActorRuntime.ActorId actor) {
         Objects.requireNonNull(actor);
-        if (seenActors.contains(actor) || activeActors.containsKey(actor))
+        if (seenActors.contains(actor) || activeActors.containsKey(actor)
+                || stagedActors.containsKey(actor))
             throw new IllegalStateException("actor incarnation identity was already used");
         if (seenActors.size() >= MAX_ACTOR_IDENTITIES)
             throw new IllegalStateException("actor identity ledger capacity exhausted");
