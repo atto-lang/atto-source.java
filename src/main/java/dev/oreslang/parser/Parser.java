@@ -2748,6 +2748,13 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnary() {
+        if (check(TRAP)) {
+            // Callable 'trap' is admitted only at declarations. Never parse
+            // 'trap expr' as a name or silently lower it before typed throw
+            // effects, synchronous cleanup and ownership are implemented.
+            throw error(peek(),
+                    "trap expression unsupported: typed throw effects and cleanup lowering required");
+        }
         if (match(BANG, TILDE, MINUS, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
             boolean mutable = match(MUT);
