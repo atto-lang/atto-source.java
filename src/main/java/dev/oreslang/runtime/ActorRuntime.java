@@ -2019,6 +2019,28 @@ public final class ActorRuntime implements AutoCloseable {
             return childRegistry.trackedChildren();
         }
 
+        /** Trusted identity lookup for the existing physical child only. */
+        SupervisorChildRegistry.Snapshot supervisedWorkerSnapshot(
+                ActorRef<?> worker) {
+            requireSupervisorContext("inspect physical supervised child identity");
+            Objects.requireNonNull(worker);
+            if (!worker.ownedBy(ActorRuntime.this))
+                throw new SecurityException("foreign actor runtime");
+            ActorCell<?> cell = actors.get(worker.id());
+            if (cell == null || cell.supervisedChild.get() == null
+                    || cell.supervisedChild.get().registry() != childRegistry)
+                throw new IllegalStateException("actor is not supervised here");
+            return childRegistry.snapshot(cell.supervisedChild.get().admitted().child());
+        }
+
+        /** Claim one finalized incarnation before creating a replacement. */
+        SupervisorChildRegistry.RestartReservation reserveFinalizedRestart(
+                SupervisorChildRegistry.ChildId child, ActorId actor,
+                long incarnation) {
+            requireSupervisorContext("reserve finalized supervisor RESTART");
+            return childRegistry.beginRestart(child, actor, incarnation);
+        }
+
         /**
          * Trusted host-only RESTART spawn. The real ActorCell exists, but
          * remains invisible to ordinary mail, initializers and other groups
