@@ -337,6 +337,39 @@ public final class SupervisorChildRegistry {
         return !restartClosed;
     }
 
+    /**
+     * Host-only physical-DONE cleanup reconciliation for a candidate that
+     * may never have crossed stageReplacement. A stopped, never-staged actor
+     * is not a live logical incarnation and must not strand RESTART forever.
+     * A staged candidate is marked CLEANED only when the original scheduler
+     * confirms the exact physical actor has finished. The probe runs outside
+     * the registry monitor; termination is monotonic and cannot be undone.
+     */
+    void acknowledgeCleanupIfStaged(
+            RestartReservation permit, ActorRuntime.ActorId candidate,
+            java.util.function.BooleanSupplier physicallyDone) {
+        Objects.requireNonNull(candidate);
+        Objects.requireNonNull(physicallyDone);
+        if (!physicallyDone.getAsBoolean())
+            throw new IllegalStateException("restart candidate has not physically terminated");
+        synchronized (this) {
+            checkReservation(permit);
+            ReplacementState current = replacements.get(permit.child().logicalId());
+            if (current == null) return; // never staged, still one-use permit
+            if (!current.actor().equals(candidate)
+                    || current.generation() != permit.incarnation() + 1)
+                throw new IllegalStateException("foreign or stale cleanup candidate");
+            if (current.phase() == ReplacementPhase.CLEANED) return;
+            if (current.phase() != ReplacementPhase.SPAWNED
+                    && current.phase() != ReplacementPhase.ADMITTED)
+                throw new IllegalStateException("invalid replacement cleanup state");
+            replacements.put(permit.child().logicalId(), new ReplacementState(
+                    candidate, current.generation(), ReplacementPhase.CLEANED));
+            recordTransition("restart.cleanup-verified",
+                    requireCurrent(permit.child()), permit.nonce(), 0L, candidate);
+        }
+    }
+
     /** A closed supervisor may clean up, but cannot publish a new incarnation. */
     synchronized void closeRestartAdmission() {
         if (restartClosed) return;
