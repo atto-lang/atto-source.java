@@ -104,6 +104,37 @@ final class ActorTwoPhaseFinalizationTest {
         }
     }
 
+
+    @Test
+    void finalizationRetainsOriginalCauseAndDistinctSuppressedCleanupFailures()
+            throws Exception {
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 16, 32))) {
+            var actor = runtime.<Integer>spawnShared(() -> (mail, context) -> {});
+            actor.ready().get(3, TimeUnit.SECONDS);
+            Object owner = cell(runtime, actor);
+            var record = owner.getClass().getDeclaredMethod(
+                    "recordFinalizationFailure", Throwable.class);
+            record.setAccessible(true);
+
+            IllegalStateException original = new IllegalStateException("original failure");
+            IllegalStateException cleanupA = new IllegalStateException("scheduler cleanup");
+            IllegalStateException cleanupB = new IllegalStateException("guest cleanup");
+            record.invoke(owner, original);
+            record.invoke(owner, cleanupA);
+            record.invoke(owner, cleanupB);
+            record.invoke(owner, cleanupA); // idempotent repeated receipt
+            assertSame(original, actor.failure().orElseThrow(),
+                    "secondary teardown failures must not replace original failure");
+            assertArrayEquals(new Throwable[] { cleanupA, cleanupB },
+                    original.getSuppressed(),
+                    "each distinct secondary cleanup failure must remain observable");
+            actor.stop();
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertSame(original, actor.failure().orElseThrow());
+        }
+    }
+
     @Test
     void terminalFutureObserverRunsOutsideActorLifecycleMonitor()
             throws Exception {
