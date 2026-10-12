@@ -284,10 +284,10 @@ final class TaggedMessageContractTest {
                     Result: int = 2
                 end
                 """;
-        String reordered = """
-                define enum Signal as
-                    Result: int = 2
-                    Data: int = 1
+        String reversedPattern = """
+                define pattern PipeMessages as
+                    Signal.Result
+                    Signal.Data
                 end
                 """;
         String differentTag = """
@@ -306,7 +306,7 @@ final class TaggedMessageContractTest {
                 TaggedMessageContracts.verify(Parser.parse(declaration + common))
                         .requireDomain("PipeMessages")).closedDomainIdentity();
         String same = new TaggedMessageCodec(
-                TaggedMessageContracts.verify(Parser.parse(reordered + common))
+                TaggedMessageContracts.verify(Parser.parse(declaration + reversedPattern))
                         .requireDomain("PipeMessages")).closedDomainIdentity();
         String tagChanged = new TaggedMessageCodec(
                 TaggedMessageContracts.verify(Parser.parse(differentTag + common))
