@@ -81,8 +81,9 @@ public record IsolatePolicy(
     }
 
     /**
-     * Production FaaS baseline: malicious-source threat model, stdout only,
-     * one guest thread, hard VM isolate and guest resource limits.
+     * Resource baseline for untrusted function code: stdout only and one
+     * guest thread. Actual execution must use the application's single pooled
+     * UNTRUSTED Engine; this factory does not allocate its own isolate.
      */
     public static IsolatePolicy strictFaas() {
         return new IsolatePolicy(Set.of(Capability.STDOUT), 128L * 1024 * 1024, 1024, Duration.ofSeconds(30), true);
