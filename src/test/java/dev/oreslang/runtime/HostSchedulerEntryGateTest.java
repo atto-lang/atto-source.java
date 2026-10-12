@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -155,6 +156,154 @@ final class HostSchedulerEntryGateTest {
             assertThrows(RejectedExecutionException.class, gate::enterHost);
         }
         assertEquals(1, ran.get());
+        assertTrue(gate.physicallyQuiescent());
+    }
+
+    @Test
+    void acceptingExecutorThatThrowsCannotRunGuestLater() {
+        var gate = new HostSchedulerEntryGate(1);
+        var escaped = new AtomicReference<Runnable>();
+        var guestRuns = new AtomicInteger();
+        var failures = new AtomicInteger();
+        gate.submitGuest(task -> {
+                    escaped.set(task);
+                    throw new RejectedExecutionException("accepted then reported failure");
+                }, guestRuns::incrementAndGet, error -> {
+                    assertInstanceOf(RejectedExecutionException.class, error);
+                    failures.incrementAndGet();
+                });
+        gate.sealAdmission();
+        assertTrue(gate.physicallyQuiescent());
+        assertNotNull(escaped.get());
+        escaped.get().run();
+        assertEquals(0, guestRuns.get(), "a late accepted task must not enter guest code");
+        assertEquals(1, failures.get(), "admission failure is delivered exactly once");
+        assertTrue(gate.physicallyQuiescent());
+    }
+
+    @Test
+    void queuedCancellationPreventsExecutionAndNotifiesExactlyOnce() throws Exception {
+        var gate = new HostSchedulerEntryGate(2);
+        var guestRuns = new AtomicInteger();
+        var failed = new AtomicInteger();
+        try (var host = gate.enterHost()) {
+            var ticket = gate.submitGuest(Runnable::run, guestRuns::incrementAndGet,
+                    error -> {
+                        assertInstanceOf(CancellationException.class, error);
+                        failed.incrementAndGet();
+                    });
+            assertEquals(1, gate.pendingGuests());
+            assertTrue(ticket.cancelBeforeStart());
+            assertFalse(ticket.cancelBeforeStart(), "ticket cancellation must be one-use");
+            assertEquals(0, gate.pendingGuests());
+            assertEquals(0, guestRuns.get());
+            gate.sealAdmission();
+        }
+        assertEquals(1, failed.get());
+        assertEquals(0, guestRuns.get());
+        assertTrue(gate.physicallyQuiescent());
+    }
+
+    @Test
+    void acceptedWorkCanBeRevokedUntilItsActualExecutionStarts() {
+        var gate = new HostSchedulerEntryGate(1);
+        var delayed = new AtomicReference<Runnable>();
+        var guestRuns = new AtomicInteger();
+        var failed = new AtomicInteger();
+        var ticket = gate.submitGuest(delayed::set, guestRuns::incrementAndGet,
+                error -> {
+                    assertInstanceOf(CancellationException.class, error);
+                    failed.incrementAndGet();
+                });
+        assertNotNull(delayed.get());
+        gate.sealAdmission();
+        assertFalse(gate.physicallyQuiescent(),
+                "accepted but unexecuted work retains its admission reservation");
+        assertTrue(ticket.cancelBeforeStart());
+        assertTrue(gate.physicallyQuiescent());
+        delayed.get().run();
+        assertEquals(0, guestRuns.get());
+        assertEquals(1, failed.get());
+        assertTrue(gate.physicallyQuiescent(), "late executor replay does not release twice");
+    }
+
+    @Test
+    void runningGuestCannotBeCancelledAsIfItNeverEntered() throws Exception {
+        var gate = new HostSchedulerEntryGate(1);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var done = new CountDownLatch(1);
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            var ticket = gate.submitGuest(pool, () -> {
+                entered.countDown();
+                try {
+                    assertTrue(release.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                } finally {
+                    done.countDown();
+                }
+            }, error -> fail("running guest must not be pre-start cancelled", error));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            gate.sealAdmission();
+            assertFalse(ticket.cancelBeforeStart());
+            assertFalse(gate.physicallyQuiescent());
+            release.countDown();
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+        } finally {
+            release.countDown();
+            pool.shutdown();
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+        }
+        assertTrue(gate.physicallyQuiescent());
+    }
+
+    @Test
+    void queuedInlineFailureAndRejectionDoNotStrandLaterReservations()
+            throws Exception {
+        var gate = new HostSchedulerEntryGate(3);
+        var firstFailure = new IllegalArgumentException("guest failure");
+        var callbackFailure = new IllegalStateException("callback failure");
+        var laterRuns = new AtomicInteger();
+        var lastRuns = new AtomicInteger();
+        var host = gate.enterHost();
+        try {
+            gate.submitGuest(Runnable::run, () -> { throw firstFailure; },
+                    error -> fail("inline guest failure is not admission rejection", error));
+            gate.submitGuest(Runnable::run, laterRuns::incrementAndGet,
+                    error -> fail("second guest rejected", error));
+            gate.submitGuest(task -> {
+                throw new RejectedExecutionException("executor not accepting");
+            }, () -> fail("rejected guest ran"), error -> {
+                assertInstanceOf(RejectedExecutionException.class, error);
+                lastRuns.incrementAndGet();
+                throw callbackFailure;
+            });
+            gate.sealAdmission();
+            var failure = assertThrows(IllegalArgumentException.class, host::close);
+            assertSame(firstFailure, failure);
+            assertEquals(1, failure.getSuppressed().length);
+            assertSame(callbackFailure, failure.getSuppressed()[0]);
+        } finally {
+            host.close();
+        }
+        assertEquals(1, laterRuns.get(),
+                "failure of an earlier queued task cannot strand later tickets");
+        assertEquals(1, lastRuns.get());
+        assertTrue(gate.physicallyQuiescent());
+    }
+
+    @Test
+    void sealingPreventsNestedHostReentryButAllowsOriginalLeaseToClose()
+            throws Exception {
+        var gate = new HostSchedulerEntryGate(1);
+        try (var owner = gate.enterHost()) {
+            gate.sealAdmission();
+            assertThrows(RejectedExecutionException.class, gate::enterHost);
+            assertFalse(gate.physicallyQuiescent());
+        }
         assertTrue(gate.physicallyQuiescent());
     }
 
