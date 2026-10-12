@@ -4393,15 +4393,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (fn.actorKind() == Ast.ActorKind.NONE) {
-                // An actor function declared UNTRUSTED must never be executed by
-            // the trusted host's in-process ActorRuntime. The pooled guest
-            // Context itself may schedule UNTRUSTED code on its own runtime.
-            // Until the source-callable transport supports typed results and
-            // Future settlement, reject host dispatch rather than silently
-            // downgrade physical isolation.
-            requireUntrustedActorGuestPlacement(runtimeKind);
-
-            if (fn.async() || functionContainsPotentialSuspension(fn)) {
+                if (fn.async() || functionContainsPotentialSuspension(fn)) {
                     OresFuture<Object> future =
                             startSourceFunctionTask(
                                     fn,
@@ -4435,6 +4427,10 @@ public final class OresEvalRootNode extends RootNode {
                 case SHARED -> ActorRuntime.ActorKind.SHARED;
                 case UNTRUSTED -> ActorRuntime.ActorKind.UNTRUSTED;
             };
+            // The compiler's source actor-callable path must not silently
+            // downgrade physical isolation by executing an UNTRUSTED actor
+            // function on the trusted host JVM.
+            requireUntrustedActorGuestPlacement(runtimeKind);
 
             if (fn.async() || functionContainsPotentialSuspension(fn)) {
                 OresFuture<Object> completion =
