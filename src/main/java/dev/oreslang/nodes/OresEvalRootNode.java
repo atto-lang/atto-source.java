@@ -3768,13 +3768,14 @@ public final class OresEvalRootNode extends RootNode {
                                                             }
                                                         }
                                                     });
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    null);
                                         } catch (RuntimeException | Error failure) {
                                             continuation.accept(t2, null, failure);
+                                            return;
                                         }
+                                        // Callback registration is complete.
+                                        // Downstream propagation cannot retry
+                                        // registration if its consumer throws.
+                                        continuation.accept(t2, null, null);
                                         return;
                                     }
 
