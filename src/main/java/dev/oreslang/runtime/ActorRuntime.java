@@ -2072,6 +2072,17 @@ public final class ActorRuntime implements AutoCloseable {
             return childRegistry.stopReceipt(Objects.requireNonNull(child));
         }
 
+        /**
+         * Source-compiled host STOP invocation entry: a one-use claim bound to
+         * the reserved nonce and logical CONTROL turn, before the external
+         * effect is called. It is NOT evidence that the effect succeeded.
+         */
+        public void claimReservedStopInvocation(
+                SupervisorChildRegistry.StopReservation reservation) {
+            requireSupervisorContext("claim reserved STOP host effect invocation");
+            childRegistry.claimHostStopInvocation(Objects.requireNonNull(reservation));
+        }
+
         /** Commit an authenticated, applied host effect to the STOP ledger. */
         public SupervisorChildRegistry.StopReceipt recordAppliedStop(
                 SupervisorChildRegistry.StopReservation reservation) {
