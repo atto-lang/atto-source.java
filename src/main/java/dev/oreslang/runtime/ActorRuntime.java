@@ -6620,7 +6620,40 @@ public final class ActorRuntime implements AutoCloseable {
                     int cpu = lanes.cpuForLane(dispatchLane);
                     if (cpu >= 0) NativeCarrierExecutor.bindCurrentThreadToCpu(cpu);
                 }
-                turnExecutor.execute(this::runBatchEntered);
+                // TurnExecutor is a synchronous host context boundary, not
+                // an independent scheduler. A broken host must not suppress a
+                // turn, call it twice, or re-enter actor code on another worker.
+                // These flags remain valid even if a foreign callback races
+                // after the executor has returned.
+                AtomicBoolean invoked = new AtomicBoolean();
+                AtomicBoolean completed = new AtomicBoolean();
+                Thread admittedWorker = Thread.currentThread();
+                turnExecutor.execute(() -> {
+                    if (!invoked.compareAndSet(false, true)) {
+                        throw new IllegalStateException(
+                                "actor turn callback invoked more than once for " + ref.id());
+                    }
+                    if (Thread.currentThread() != admittedWorker) {
+                        throw new IllegalStateException(
+                                "actor turn callback invoked on a foreign worker for " + ref.id());
+                    }
+                    synchronized (lifecycleLock) {
+                        if (scheduledDispatchToken != dispatchTicket || !scheduled.get()
+                                || !carrierActive || carrierOwnerThread != admittedWorker) {
+                            throw new IllegalStateException(
+                                    "actor turn callback lost physical carrier lease for " + ref.id());
+                        }
+                    }
+                    try {
+                        runBatchEntered();
+                    } finally {
+                        completed.set(true);
+                    }
+                });
+                if (!completed.get()) {
+                    throw new IllegalStateException(
+                            "actor TurnExecutor returned without completing its callback for " + ref.id());
+                }
             } catch (Throwable failure) {
                 fail(failure);
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
