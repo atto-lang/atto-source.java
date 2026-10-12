@@ -387,7 +387,12 @@ public final class OresScheduler implements AutoCloseable {
                 }
                 runner.reserveDeadlineSlot();
             }
-            tasks.add(runner);
+            try {
+                tasks.add(runner);
+            } catch (RuntimeException | Error failure) {
+                runner.releaseUnusedDeadlineSlot();
+                throw failure;
+            }
         }
         try {
             if (deadlineFailure != null) {
@@ -563,6 +568,8 @@ public final class OresScheduler implements AutoCloseable {
         private final boolean timedAdmission;
         private final AtomicBoolean deadlineSlotReserved = new AtomicBoolean();
         private final AtomicBoolean deadlineSlotReleased = new AtomicBoolean();
+        private final AtomicBoolean deadlineNotificationDrained = new AtomicBoolean();
+        private final AtomicBoolean deadlineQuiescenceRetired = new AtomicBoolean();
         private final AtomicReference<ScheduledFuture<?>> wallDeadline =
                 new AtomicReference<>();
         private volatile ActorTurnWatchdog.Lease watchdogLease;
@@ -573,7 +580,7 @@ public final class OresScheduler implements AutoCloseable {
             this.onQuiescent = onQuiescent;
             this.timedAdmission = timedAdmission;
             this.completion = new OresFuture<>(
-                    this::cancelFromFuture, this::releaseDeadlineSlot);
+                    this::cancelFromFuture, this::notificationDrained);
         }
 
         private void reserveDeadlineSlot() {
@@ -582,10 +589,24 @@ public final class OresScheduler implements AutoCloseable {
             }
         }
 
-        private void releaseDeadlineSlot() {
-            // The only normal release is the actual winning Future settlement,
-            // *after* its synchronous waiter notifications return. Reusing a
-            // slot at task quiescence would leak unlimited blocked notifiers.
+        private void notificationDrained() {
+            deadlineNotificationDrained.set(true);
+            releaseDeadlineSlotIfRetired();
+        }
+
+        private void releaseDeadlineSlotIfRetired() {
+            // Both subscriber notification and physical guest quiescence must
+            // have finished. Cancellation alone is not a memory-release event.
+            if (deadlineSlotReserved.get() && deadlineNotificationDrained.get()
+                    && deadlineQuiescenceRetired.get()
+                    && deadlineSlotReleased.compareAndSet(false, true)) {
+                WALL_DEADLINE_ADMISSIONS.release();
+            }
+        }
+
+        private void releaseUnusedDeadlineSlot() {
+            // Only for a failed admission before task publication to the
+            // scheduler live set. No external Future could have been observed.
             if (deadlineSlotReserved.get()
                     && deadlineSlotReleased.compareAndSet(false, true)) {
                 WALL_DEADLINE_ADMISSIONS.release();
@@ -912,7 +933,12 @@ public final class OresScheduler implements AutoCloseable {
                 // A terminal Future is not a carrier-exit witness.
                 tasks.remove(this);
                 cancelWallDeadline();
-                onQuiescent.run();
+                try {
+                    onQuiescent.run();
+                } finally {
+                    deadlineQuiescenceRetired.set(true);
+                    releaseDeadlineSlotIfRetired();
+                }
             }
         }
 
