@@ -93,20 +93,22 @@ public final class DeclaredEffectVerifier {
                         || callback.parameters().size() != 1) {
                     throw new IllegalArgumentException("invalid handle_state effect callback");
                 }
-                if (!callback.explicitStateMode() || callback.nonLexical()) {
+                if (callback.nonLexical()) {
                     throw new IllegalArgumentException(
-                            "handle_state needs a lexical critical read or critical write callback");
+                            "handle_state needs a lexical state callback");
                 }
                 String name = callback.parameters().getFirst().name();
                 EnumSet<FunctionEffects.Effect> callbackEffects =
                         EnumSet.noneOf(FunctionEffects.Effect.class);
                 collect(callback.expressionBody(), callbackEffects, name, callableName, serial);
                 collect(callback.blockBody(), callbackEffects, name, callableName, serial);
-                // Mode grants authority, using only constrains declared effects.
-                if (callback.criticalMode() == Ast.CriticalMode.READ
+                // Mode grants authority, while 'with' only constrains effects.
+                // No critical marker means READ, never an implicit write.
+                if ((callback.criticalMode() == Ast.CriticalMode.NONE
+                            || callback.criticalMode() == Ast.CriticalMode.READ)
                         && callbackEffects.contains(FunctionEffects.Effect.STATE_WRITE)) {
                     throw new IllegalArgumentException(
-                            "critical read cannot write state, regardless of using state.write");
+                            "critical read cannot write state, regardless of with state.write");
                 }
                 effects.addAll(callbackEffects);
                 return;
@@ -126,7 +128,7 @@ public final class DeclaredEffectVerifier {
             // An unknown callee might suspend, allocate, perform I/O, or
             // mutate externally reachable memory. Require a trusted summary.
             throw new IllegalArgumentException(
-                    "cannot verify using effects of call in " + callableName
+                    "cannot verify with effects of call in " + callableName
                     + " without a trusted callee summary");
         }
         if (node instanceof Ast.AssignExpr assign) {
