@@ -40,6 +40,7 @@ public final class GpuBufferFence implements AutoCloseable {
         final long bytes;
         Status status = Status.IDLE;
         boolean backendQuiescent = true;
+        boolean paired; // must use paired terminal transitions
         long sequence;
         Ticket activeTicket;
         State(Identity identity, long bytes) {
@@ -139,6 +140,7 @@ public final class GpuBufferFence implements AutoCloseable {
                 ++b.sequence;
                 a.activeTicket = at;
                 b.activeTicket = bt;
+                a.paired = b.paired = true;
                 a.backendQuiescent = b.backendQuiescent = false;
                 a.status = b.status = Status.IN_FLIGHT;
                 return pair;
@@ -162,6 +164,7 @@ public final class GpuBufferFence implements AutoCloseable {
                 input.active();
                 output.active();
                 if (a.status != Status.IN_FLIGHT || b.status != Status.IN_FLIGHT
+                        || !a.paired || !b.paired
                         || a.activeTicket != pair.inputTicket()
                         || b.activeTicket != pair.outputTicket()
                         || !a.identity.equals(pair.input())
@@ -170,6 +173,7 @@ public final class GpuBufferFence implements AutoCloseable {
                 a.status = b.status = succeeded ? Status.IDLE : Status.POISONED;
                 a.backendQuiescent = b.backendQuiescent = true;
                 a.activeTicket = b.activeTicket = null;
+                a.paired = b.paired = false;
             }
         }
     }
@@ -188,6 +192,7 @@ public final class GpuBufferFence implements AutoCloseable {
                 input.active();
                 output.active();
                 if (a.status != Status.IN_FLIGHT || b.status != Status.IN_FLIGHT
+                        || !a.paired || !b.paired
                         || a.activeTicket != pair.inputTicket()
                         || b.activeTicket != pair.outputTicket()
                         || !a.identity.equals(pair.input())
@@ -210,6 +215,7 @@ public final class GpuBufferFence implements AutoCloseable {
                 output.active();
                 if (a.status != Status.POISONED || b.status != Status.POISONED
                         || a.backendQuiescent || b.backendQuiescent
+                        || !a.paired || !b.paired
                         || a.activeTicket != pair.inputTicket()
                         || b.activeTicket != pair.outputTicket()
                         || !a.identity.equals(pair.input())
@@ -217,6 +223,7 @@ public final class GpuBufferFence implements AutoCloseable {
                     throw new IllegalStateException("invalid cancelled GPU pair acknowledgement");
                 a.backendQuiescent = b.backendQuiescent = true;
                 a.activeTicket = b.activeTicket = null;
+                a.paired = b.paired = false;
             }
         }
     }
@@ -234,7 +241,8 @@ public final class GpuBufferFence implements AutoCloseable {
         synchronized (state) {
         active();
         if (!state.identity.equals(caller)) throw new SecurityException("foreign device/tenant/generation");
-        if (state.status != Status.IDLE) throw new IllegalStateException("device buffer not idle");
+        if (state.status != Status.IDLE || state.paired)
+            throw new IllegalStateException("device buffer not idle or belongs to a GPU pair");
         if (state.sequence == Long.MAX_VALUE) throw new IllegalStateException("device fence sequence overflow");
         var ticket = new Ticket(state.identity.allocationGeneration(), state.sequence + 1);
         state.activeTicket = ticket;
@@ -257,7 +265,8 @@ public final class GpuBufferFence implements AutoCloseable {
     void complete(Ticket ticket, boolean success) {
         synchronized (state) {
         active();
-        if (state.status != Status.IN_FLIGHT || ticket != state.activeTicket) {
+        if (state.status != Status.IN_FLIGHT || state.paired
+                || ticket != state.activeTicket) {
             throw new IllegalStateException("stale or mismatched device event");
         }
         state.status = success ? Status.IDLE : Status.POISONED;
@@ -271,7 +280,8 @@ public final class GpuBufferFence implements AutoCloseable {
     void cancelPending(Ticket ticket) {
         synchronized (state) {
         active();
-        if (state.status != Status.IN_FLIGHT || ticket != state.activeTicket) {
+        if (state.status != Status.IN_FLIGHT || state.paired
+                || ticket != state.activeTicket) {
             throw new IllegalStateException("stale cancellation");
         }
         state.status = Status.POISONED;
@@ -284,7 +294,8 @@ public final class GpuBufferFence implements AutoCloseable {
         synchronized (state) {
         active();
         if (!state.identity.equals(caller) || ticket != state.activeTicket
-                || state.status != Status.POISONED || state.backendQuiescent) {
+                || state.paired || state.status != Status.POISONED
+                || state.backendQuiescent) {
             throw new IllegalStateException("invalid cancelled-device completion");
         }
         state.backendQuiescent = true;
