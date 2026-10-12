@@ -74,7 +74,9 @@ final class ExplicitNativeRetirementFaultInjectionTest {
                 () -> stop.get(5, TimeUnit.SECONDS));
         assertInstanceOf(IllegalStateException.class, rejectedStop.getCause());
         assertTrue(String.valueOf(rejectedStop.getCause())
-                .contains("did not finalize within the stop deadline"));
+                .contains("failed physical native retirement"));
+        assertSame(failedShutdown.getCause(), rejectedStop.getCause().getCause(),
+                "STOP must preserve the exact native fault reported to shutdown observers");
         assertThrows(IllegalStateException.class, runtime::close);
     }
 
@@ -131,8 +133,12 @@ final class ExplicitNativeRetirementFaultInjectionTest {
                 () -> actor.get_shutdown_result().get(5, TimeUnit.SECONDS));
         assertTrue(String.valueOf(failedShutdown.getCause())
                 .contains("actor native budget accounting underflow"));
-        assertThrows(java.util.concurrent.ExecutionException.class,
+        var stopped = assertThrows(java.util.concurrent.ExecutionException.class,
                 () -> stop.get(5, TimeUnit.SECONDS));
+        assertTrue(String.valueOf(stopped.getCause())
+                .contains("failed physical native retirement"));
+        assertSame(failedShutdown.getCause(), stopped.getCause().getCause(),
+                "aggregate-accounting failure must be returned directly to STOP caller");
         assertThrows(IllegalStateException.class, runtime::close);
     }
 
