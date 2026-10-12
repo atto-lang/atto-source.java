@@ -794,14 +794,17 @@ public final class Parser {
     private List<Ast.Annotation> parseSignatureEffects(List<Ast.Annotation> annotations) {
         List<Ast.Annotation> result = new ArrayList<>(annotations);
         if (match(USING)) {
+            throw error(previous(), "using acquires scoped capabilities; use 'with' for function effect declarations");
+        }
+        if (match(WITH)) {
             List<String> names = new ArrayList<>();
             do {
-                String name = consume(IDENT, "expected function effect after using").lexeme();
+                String name = consume(IDENT, "expected function effect after with").lexeme();
                 if (match(DOT)) name += "." + consume(IDENT, "expected effect member after '.'").lexeme();
                 names.add(name);
             } while (match(COMMA));
             dev.oreslang.types.FunctionEffects.ofNames(names);
-            result.add(new Ast.Annotation("$using$", names.stream()
+            result.add(new Ast.Annotation("$with$", names.stream()
                     .map(Ast.TypeRef::simple).toList()));
         }
         if (matchContextualIdentifier("requires")) {
@@ -3082,6 +3085,35 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        // 'using' acquires a lexical capability; it never declares an
+        // effect row. Desugar scoped actor state into the one sealed
+        // handle_state intrinsic without introducing a guest-callable API.
+        if (match(USING)) {
+            String namespace = consume(IDENT, "using requires a scoped capability").lexeme();
+            if (!namespace.equals("state"))
+                throw error(previous(), "unsupported using capability namespace '" + namespace + "'");
+            consume(DOT, "using state requires .read or .write");
+            String capability = consume(IDENT, "using state requires read or write").lexeme();
+            if (!capability.equals("read") && !capability.equals("write"))
+                throw error(previous(), "unknown using state capability '" + capability + "'");
+            consume(LPAREN, "using state capability requires a callback");
+            Ast.Expr parameter = parseExpression();
+            consume(RPAREN, "using state callback requires closing ')'");
+            if (!(parameter instanceof Ast.LambdaExpr lambda))
+                throw error(previous(), "using state requires one inline lexical callback");
+            if (lambda.nonLexical())
+                throw error(previous(), "using state callback must be lexical");
+            if (capability.equals("read")
+                    && lambda.criticalMode() != Ast.CriticalMode.NONE
+                    && lambda.criticalMode() != Ast.CriticalMode.READ)
+                throw error(previous(), "using state.read cannot request write authority");
+            if (capability.equals("write")
+                    && lambda.criticalMode() != Ast.CriticalMode.EXCLUSIVE
+                    && lambda.criticalMode() != Ast.CriticalMode.WRITE)
+                throw error(previous(), "using state.write requires a critical callback");
+            return new Ast.CallExpr(new Ast.MemberExpr(
+                    new Ast.NameExpr("self"), "handle_state"), List.of(lambda));
+        }
         if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
