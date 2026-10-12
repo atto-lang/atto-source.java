@@ -5,7 +5,6 @@ import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.parser.MacroExpander;
 import dev.oreslang.parser.Lexer;
-import dev.oreslang.parser.Token;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -149,16 +148,7 @@ public final class HotReloadManager implements AutoCloseable {
      * Until pre-expanded, signed artifact loading exists, fail before macro parsing.
      */
     static void rejectRuntimeMacroExpansion(String sourceText) {
-        java.util.List<Token> tokens = new Lexer(sourceText).scan();
-        for (int i = 0; i + 1 < tokens.size(); i++) {
-            Token current = tokens.get(i);
-            if (current.type() == Token.Type.IDENT
-                    && current.lexeme().equals("macro_rules")
-                    && tokens.get(i + 1).type() == Token.Type.BANG) {
-                throw new IllegalArgumentException(
-                        "runtime macro expansion forbidden: compile the macro into a guest-AOT artifact before loading");
-            }
-        }
+        MacroExpander.rejectRuntimeMacroDefinitions(new Lexer(sourceText).scan());
     }
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
