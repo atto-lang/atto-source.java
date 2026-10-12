@@ -66,10 +66,45 @@ public final class CriticalRwGate implements AutoCloseable {
          * The resulting Future must be awaited by a compiler-lowered task.
          */
         public OresFuture<Void> enterAsync() {
-            boolean grantNow = false;
             Object caller = OresScheduler.currentTaskDomain();
             if (caller == null) caller = ActorRuntime.currentActorExecutionDomain();
             if (caller == null) caller = this; // independent detached host async request
+            return request(caller);
+        }
+
+        /**
+         * Synchronous critical entry: only host embedders may wait on an OS
+         * thread. A contended actor/scheduler call fails without parking.
+         * Host recursion uses thread identity to reject same-domain nesting.
+         */
+        public void enterSync() {
+            Object caller = OresScheduler.currentTaskDomain();
+            if (caller == null) caller = ActorRuntime.currentActorExecutionDomain();
+            boolean onCarrier = ActorRuntime.inActorExecution()
+                    || OresScheduler.current() != null;
+            if (caller == null) caller = Thread.currentThread();
+            OresFuture<Void> ready = request(caller);
+            if (onCarrier) {
+                if (!isHeld()) {
+                    close();
+                    throw new IllegalStateException(
+                            "contended synchronous critical admission would park an actor/scheduler carrier");
+                }
+                return;
+            }
+            try {
+                ready.join();
+                if (!isHeld()) {
+                    throw new CancellationException("critical permit revoked before host entry");
+                }
+            } catch (RuntimeException | Error failure) {
+                close();
+                throw failure;
+            }
+        }
+
+        private OresFuture<Void> request(Object caller) {
+            boolean grantNow = false;
             synchronized (coordinator) {
                 if (state != State.NEW) {
                     throw new IllegalStateException("RW ticket already requested or closed");
