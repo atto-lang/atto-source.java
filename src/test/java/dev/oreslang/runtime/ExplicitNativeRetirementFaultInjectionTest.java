@@ -24,6 +24,56 @@ final class ExplicitNativeRetirementFaultInjectionTest {
         checkPausedRetirement(false);
     }
 
+    @Test
+    void postRefundFailureReportsShutdownErrorWithoutPublishingPhysicalDone() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "JDK25 FFM required");
+        ActorRuntime runtime = new ActorRuntime();
+        AtomicReference<ExplicitNativeI64Region.Loan> loan = new AtomicReference<>();
+        AtomicReference<ExplicitNativeI64Region> region = new AtomicReference<>();
+        AtomicReference<Throwable> actorError = new AtomicReference<>();
+        CountDownLatch allocated = new CountDownLatch(1);
+        var actor = runtime.<Integer>spawnPrivate(() -> (message, ctx) -> {
+            try {
+                var nativeRegion = ctx.actorOwnedMemory().orElseThrow()
+                        .newExplicitNativeI64Region(1);
+                nativeRegion.installRetirementProbesForTesting(
+                        () -> { },
+                        () -> { throw new IllegalStateException("injected post-refund failure"); });
+                region.set(nativeRegion);
+                loan.set(nativeRegion.borrow(nativeRegion.allocate(7)));
+            } catch (Throwable error) {
+                actorError.compareAndSet(null, error);
+            } finally {
+                allocated.countDown();
+            }
+        });
+        actor.send(1);
+        assertTrue(allocated.await(5, TimeUnit.SECONDS));
+        if (actorError.get() != null) fail(actorError.get());
+        CompletableFuture<Void> stop = CompletableFuture.runAsync(actor::stop);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!region.get().closed() && System.nanoTime() < deadline) Thread.sleep(2);
+        assertTrue(region.get().closed());
+        IllegalStateException failure = assertThrows(
+                IllegalStateException.class, () -> loan.get().close());
+        assertTrue(failure.getMessage().contains("injected post-refund failure"));
+        var failedShutdown = assertThrows(
+                java.util.concurrent.ExecutionException.class,
+                () -> actor.get_shutdown_result().get(5, TimeUnit.SECONDS));
+        assertTrue(String.valueOf(failedShutdown.getCause())
+                        .contains("injected post-refund failure"));
+        assertFalse(actor.get_done().isDone(),
+                "failed post-refund registration leaves physical done pending");
+        assertEquals(0L, runtime.privateMemoryBytes(),
+                "native Arena has physically released quota before injected callback failure");
+        assertTrue(region.get().physicallyClosed());
+        // This fault deliberately leaves a registered actor-owned arena. Fail
+        // closed instead of pretending that logical STOP implies physical DONE.
+        assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> stop.get(5, TimeUnit.SECONDS));
+        assertThrows(IllegalStateException.class, runtime::close);
+    }
+
     private void checkPausedRetirement(boolean pauseBeforeRefund) throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "JDK25 FFM required");
         ActorRuntime runtime = new ActorRuntime();
