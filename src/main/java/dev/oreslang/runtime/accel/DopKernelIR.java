@@ -50,6 +50,12 @@ public final class DopKernelIR {
         int readLoans;
         boolean closed;
         State(DataOrientedLayout.Plan layout) {
+            // getFloat/putFloat operate on four bytes regardless of the POD
+            // descriptor. An undersized slot can alias neighboring fields or
+            // throw partway through a kernel after modifying other values.
+            if (layout.scalarBytes() != Float.BYTES) {
+                throw new IllegalArgumentException("F32 HostBuffer requires four-byte POD fields");
+            }
             this.layout = layout;
             this.bytes = ByteBuffer.allocateDirect(Math.toIntExact(layout.byteLength()))
                     .order(ByteOrder.LITTLE_ENDIAN);
@@ -69,7 +75,12 @@ public final class DopKernelIR {
         }
 
         private HostBuffer(State state) { this.state = state; }
-        public DataOrientedLayout.Plan layout() { active(); return state.layout; }
+        public DataOrientedLayout.Plan layout() {
+            synchronized (state) {
+                active();
+                return state.layout;
+            }
+        }
         private void active() {
             if (moved || state.closed) throw new IllegalStateException("buffer moved or closed");
         }
@@ -84,6 +95,9 @@ public final class DopKernelIR {
         public ReadLoan borrowRead() {
             synchronized (state) {
                 active();
+                if (state.readLoans == Integer.MAX_VALUE) {
+                    throw new IllegalStateException("read loan count exhausted");
+                }
                 state.readLoans++;
                 return new ReadLoan(state);
             }
