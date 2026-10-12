@@ -80,7 +80,13 @@ public final class HotReloadManager implements AutoCloseable {
      */
     public synchronized Generation load(String name, String sourceText) {
         validateAdmissionInputs(name, sourceText);
-        OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        // NEVER parse or type-check attacker-supplied source in the trusted
+        // bootstrap JVM. The isolated Context will parse/link/capability-check
+        // when Generation.start() evaluates the source. Keep only cheap input
+        // length/identity admission here, before allocating the guest Engine.
+        if (!guestPolicy.adversarial()) {
+            OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        }
         return stage(name, digest(sourceText), sourceText);
     }
 
@@ -92,6 +98,12 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
+        if (guestPolicy.adversarial()) {
+            // A trusted compiler cache/AST is NOT an untrusted isolate proof.
+            // Restage the original bounded source and verify its digest here;
+            // isolated parsing and type checking occur on guest evaluation.
+            return stage(unit.unitId(), digest(unit.sourceText()), unit.sourceText());
+        }
         CapabilityChecker.check(unit.program(), guestPolicy);
         return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
     }
@@ -146,7 +158,8 @@ public final class HotReloadManager implements AutoCloseable {
                     .buildLiteral();
             Generation generation = new Generation(
                     id, codeUnitId, sourceDigest, context, source,
-                    executionProfile, group);
+                    group == null ? executionProfile : ExecutionProfile.serverHybrid(),
+                    group);
             generations.put(id, generation);
             activeByCodeUnit.put(codeUnitId, generation);
             active.set(generation);
