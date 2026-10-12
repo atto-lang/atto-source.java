@@ -417,6 +417,9 @@ public final class TypeChecker {
                                 + "' cannot declare static function '" + method.name()
                                 + "'; actor code must remain inside the actor ownership/effect domain");
             }
+            if (actorEndpoint && Set.of("id", "is_alive", "mailbox").contains(method.name())) {
+                throw new IllegalArgumentException("actor protocol cannot shadow reserved ActorRef member '" + method.name() + "'");
+            }
             if (actorEndpoint && !method.genericParameters().isEmpty()) {
                 throw new IllegalArgumentException(
                         "public actor protocol method '" + klass.name() + "." + method.name() + "' cannot declare generic parameters");
@@ -450,6 +453,9 @@ public final class TypeChecker {
             }
             Type returns = resolve(method.returnType(), generics, callableSelf);
             if (actorEndpoint) {
+                if (returns instanceof Named reactive &&
+                        (reactive.name().equals("Observable") || reactive.name().equals("Stream")))
+                    throw new IllegalArgumentException("persistent actor protocol stream replies need owner-aware lowering; use an actor callable stream result");
                 validateActorCallableBoundaryType(
                         returns,
                         klass.actorKind(),
@@ -859,7 +865,22 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr factory
+                    && factory.receiver() instanceof Ast.NameExpr name
+                    && (name.name().equals("Observable") || name.name().equals("Stream"))) {
+                if (!factory.member().equals("from_values") || call.arguments().size() != 1)
+                    throw new IllegalArgumentException(name.name() + " supports from_values(values)");
+                validateCallTypeArgumentMarker(call, List.of(), name.name() + ".from_values");
+                Type values = typeOf(call.arguments().getFirst(), env, generics, self);
+                if (!(values instanceof ListType list) || list.element() == Unknown.INSTANCE)
+                    throw new IllegalArgumentException("from_values requires a nonempty typed list");
+                return new Named(name.name(), List.of(list.element()));
+            }
             if (call.callee() instanceof Ast.NameExpr functionName) {
+                Ast.ClassDecl actorClass = findClass(functionName.name());
+                if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE)
+                    throw new IllegalArgumentException("actor class '" + actorClass.name()
+                            + "' requires spawn " + actorClass.name() + "(...)");
                 Ast.FunctionDecl target = findFunction(functionName.name());
                 if (target != null) {
                     if (target.actorKind() != Ast.ActorKind.NONE) {
@@ -884,6 +905,9 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
                     && modules.containsKey(namespace.name())) {
+                Ast.ClassDecl actorClass = classes.get(namespace.name() + "." + qualifiedCall.member());
+                if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE)
+                    throw new IllegalArgumentException("actor class '" + actorClass.name() + "' requires spawn");
                 Ast.FunctionDecl target = functions.get(namespace.name() + "." + qualifiedCall.member());
                 if (target != null) {
                     if (target.actorKind() != Ast.ActorKind.NONE) {
@@ -1033,9 +1057,7 @@ public final class TypeChecker {
                             }
                             return Primitive.BOOL;
                         }
-                        if (member.member().equals("send")
-                                || member.member().equals("receive")
-                                || member.member().equals("mailbox")) {
+                        if (member.member().equals("mailbox")) {
                             throw new IllegalArgumentException(
                                     "raw ActorRef mailbox operations are runtime-private; "
                                             + "invoke a declared typed actor protocol method instead");
@@ -1053,7 +1075,7 @@ public final class TypeChecker {
                                     || target.method().visibility() != Ast.Visibility.PUBLIC
                                     || target.method().name().equals("constructor")) {
                                 throw new IllegalArgumentException(
-                                        "no public actor protocol method '" + member.member()
+                                        "no public actor mailbox protocol method '" + member.member()
                                                 + "' with arity " + call.arguments().size()
                                                 + " on " + actorClass.name());
                             }
@@ -1188,6 +1210,11 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
+            if (callee instanceof ClassNamespace namespace) {
+                Ast.ClassDecl actorClass = findClass(namespace.className());
+                if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE)
+                    throw new IllegalArgumentException("actor class constructor aliases still require spawn");
+            }
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
             if (fn.parameters().size() != call.arguments().size()) throw new IllegalArgumentException("call arity mismatch");
             for (int i = 0; i < fn.parameters().size(); i++) {
@@ -1228,6 +1255,8 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "unknown " + sumNamed.name() + " member '" + member.member() + "'");
             }
+            Type reactiveMember = builtinReactiveMember(sumReceiver, member.member());
+            if (reactiveMember != null) return reactiveMember;
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
             Type actorHandleMember = builtinActorHandleMember(sumReceiver, member.member());
@@ -1723,6 +1752,14 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
+        if (named.name().equals("Observable") || named.name().equals("Stream")) {
+            if (!returnPosition || named.arguments().size() != 1)
+                throw new IllegalArgumentException(where + " admits actor-owned streams only as a direct result");
+            validateActorCallableBoundaryType(named.arguments().getFirst(), actorKind, false, where + " item");
+            return;
+        }
+        if (named.name().equals("Subscription") || named.name().equals("Notification"))
+            throw new IllegalArgumentException(where + " cannot transport subscription control state");
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("ActorSpawn")) {
             throw new IllegalArgumentException(
@@ -1989,6 +2026,33 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "unknown ActorRef member '" + member + "'");
                 }
+            };
+        }
+        return null;
+    }
+
+    private Type builtinReactiveMember(Type receiver, String member) {
+        if (!(receiver instanceof Named type) || type.arguments().size() != 1) return null;
+        Type item = type.arguments().getFirst();
+        if (type.name().equals("Observable") || type.name().equals("Stream")) {
+            return switch (member) {
+                case "subscribe" -> new Function(List.of(), new Named("Subscription", List.of(item)));
+                case "close" -> new Function(List.of(), Primitive.VOID);
+                default -> throw new IllegalArgumentException("unknown " + type.name() + " member '" + member + "'");
+            };
+        }
+        if (type.name().equals("Subscription")) {
+            return switch (member) {
+                case "next" -> new Function(List.of(), new Named("Future", List.of(new Named("Notification", List.of(item)))));
+                case "cancel" -> new Function(List.of(), Primitive.BOOL);
+                default -> throw new IllegalArgumentException("unknown Subscription member '" + member + "'");
+            };
+        }
+        if (type.name().equals("Notification")) {
+            return switch (member) {
+                case "value" -> item;
+                case "is_next", "is_complete" -> new Function(List.of(), Primitive.BOOL);
+                default -> throw new IllegalArgumentException("unknown Notification member '" + member + "'");
             };
         }
         return null;
@@ -2919,6 +2983,13 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Mutex<T> requires an owned value type; borrowed payload types are invalid");
                 }
                 yield new Named("Mutex", List.of(element));
+            }
+            case "Observable", "Stream", "Subscription", "Notification" -> {
+                if (ref.arguments().size() != 1)
+                    throw new IllegalArgumentException(ref.name() + " requires one item type");
+                Type item = resolve(ref.arguments().getFirst(), generics, self);
+                if (item == Primitive.VOID) throw new IllegalArgumentException(ref.name() + "<void> is invalid");
+                yield new Named(ref.name(), List.of(item));
             }
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");

@@ -66,7 +66,7 @@ public final class Parser {
                     rootDeclarations.add(parseActorClass(Ast.ActorKind.SHARED));
                     continue;
                 }
-                if (match(ISOACTOR)) {
+                if (match(ISOACTOR) || matchContextualIsolatedActor()) {
                     if (afterDefineAbstract || modifiers.isAbstract || modifiers.async || modifiers.nonLexical || modifiers.isStatic) {
                         throw error(previous(), "isoactor class declarations do not accept abstract, async, nlex, or static modifiers");
                     }
@@ -205,7 +205,7 @@ public final class Parser {
                 }
                 return parseActorClass(Ast.ActorKind.SHARED);
             }
-            if (match(ISOACTOR)) {
+            if (match(ISOACTOR) || matchContextualIsolatedActor()) {
                 if (afterDefineAbstract || modifiers.isAbstract || modifiers.async || modifiers.nonLexical || modifiers.isStatic) {
                     throw error(previous(), "isoactor class declarations do not accept abstract, async, nlex, or static modifiers");
                 }
@@ -364,8 +364,10 @@ public final class Parser {
         }
         parents = parents.stream().filter(parent -> !isIntrinsicActorBase(parent)).toList();
 
+        // "define actor Worker { ... }", "as { ... }", and "as ... end"
+        // all declare the same actor class.
+        match(AS);
         boolean braceStyle = match(LBRACE);
-        if (!braceStyle) match(AS); // preferred end-style spelling is "as ... end"; legacy omission remains accepted
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
@@ -1529,6 +1531,15 @@ public final class Parser {
     }
 
     private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }
+
+    private boolean matchContextualIsolatedActor() {
+        if (check(IDENT) && peek().lexeme().equals("isolated") && checkNext(ACTOR)) {
+            advance();
+            advance();
+            return true;
+        }
+        return false;
+    }
 
     private boolean matchContextualShared() {
         if (match(SHARED)) return true;

@@ -24,10 +24,12 @@ import java.util.function.Function;
  * <p><strong>Linking boundary:</strong> rx-ores is a core library, not an
  * implicit runtime dependency. Base OresVM/runtime initialization must not
  * eagerly register or instantiate this class merely to advertise RX support.
- * The standard-library linker/source lowering should make the RX runtime
+     * The standard-library linker/source lowering should make the RX runtime
  * reachable only for programs that explicitly import the RX core library.
  * This keeps closed-world AOT reachability capable of removing the entire RX
- * substrate from applications that do not use it.</p>
+     * substrate from applications that do not use it. The reference interpreter
+     * currently has a direct from_values bridge for actor-result proof; explicit
+     * import-driven AOT elimination is not yet established.</p>
  */
 public abstract class OresObservable<T> {
 

@@ -114,6 +114,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
     private static final ThreadLocal<ActorRuntime> CURRENT_ROOT_RUNTIME = new ThreadLocal<>();
+    private static final ThreadLocal<ActorRuntime> PROCESS_CONTEXT_ENTRY = new ThreadLocal<>();
     private static final ThreadLocal<ActorRuntime> CURRENT_MAILMAN_RUNTIME = new ThreadLocal<>();
     private static final ThreadLocal<Long> CURRENT_ROOT_DEADLINE_NANOS = new ThreadLocal<>();
 
@@ -1733,10 +1734,25 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(task, "task");
         ActorRuntime hostRuntime = processShared(policyCeiling, TurnExecutor.direct());
         try {
-            return hostRuntime.executeRootTask(task);
+            return hostRuntime.executeRootTask(() -> {
+                PROCESS_CONTEXT_ENTRY.set(hostRuntime);
+                try { return task.get(); }
+                finally { PROCESS_CONTEXT_ENTRY.remove(); }
+            });
         } finally {
             hostRuntime.close();
         }
+    }
+
+    /** Bind an already-entered launcher context without changing its carrier. */
+    <T> T executeEnteredRootFromKernel(Supplier<T> task) {
+        ActorRuntime previous = CURRENT_ROOT_RUNTIME.get();
+        if (previous == null || previous == this) return task.get();
+        if (previous != PROCESS_CONTEXT_ENTRY.get() || inActorExecution() || inMailmanExecution())
+            throw new SecurityException("only the launcher bootstrap may bind an entered root context");
+        CURRENT_ROOT_RUNTIME.set(this);
+        try { return task.get(); }
+        finally { CURRENT_ROOT_RUNTIME.set(previous); }
     }
 
     private ActorRuntime(
@@ -3046,12 +3062,16 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorSpawn(ActorRef<M> ref, OresFuture<R> result) {
             this.ref = Objects.requireNonNull(ref);
             this.result = Objects.requireNonNull(result);
-            this.done = new OresFuture<>(() -> result.cancel(true));
-            result.whenCompleteRuntime((value, failure) -> {
-                if (failure == null) {
+            this.done = new OresFuture<>(() -> {
+                ActorCell<?> cell = actors.get(ref.id());
+                if (cell != null) cell.stop();
+            });
+            ref.finalization().whenComplete((ignored, ended) -> {
+                Throwable failure = ref.terminationCause.get();
+                if (failure == null && ended == null) {
                     done.completeFromRuntime(Boolean.TRUE);
                 } else {
-                    done.failFromRuntime(OresFuture.unwrap(failure));
+                    done.failFromRuntime(OresFuture.unwrap(failure != null ? failure : ended));
                 }
             });
         }
@@ -3221,10 +3241,18 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public ActorRef<Object> spawnSourceSharedProtocolActor(
             SourceProtocolBehaviorFactory behaviorFactory) {
+        return spawnSourceTrustedProtocolActor(ActorKind.SHARED, behaviorFactory);
+    }
+
+    /** Trusted source state stays confined to its actor; PRIVATE messages are copied. */
+    public ActorRef<Object> spawnSourceTrustedProtocolActor(
+            ActorKind kind, SourceProtocolBehaviorFactory behaviorFactory) {
+        if (kind != ActorKind.SHARED && kind != ActorKind.PRIVATE)
+            throw new SecurityException("source trusted protocols require SHARED or PRIVATE placement");
         Objects.requireNonNull(behaviorFactory, "behaviorFactory");
-        requireCallerRuntimeAffinity("spawn source shared protocol actor classes");
+        requireCallerRuntimeAffinity("spawn source trusted protocol actor classes");
         return spawnInternal(
-                ActorKind.SHARED,
+                kind,
                 defaultSpawnPolicy(),
                 context -> {
                     @SuppressWarnings("unchecked")
@@ -3825,10 +3853,22 @@ public final class ActorRuntime implements AutoCloseable {
                 policy,
                 factoryContext -> (delivered, turnContext) -> {
                     try {
-                        @SuppressWarnings("unchecked")
-                        R frozen = (R) freeze(invocation.run(delivered, turnContext));
-                        invocationValue.set(frozen);
-                        invocationReturned.set(true);
+                        Object produced = invocation.run(delivered, turnContext);
+                        if (produced instanceof OresObservable<?> observable) {
+                            if (observable instanceof OresActorObservable<?> || observable instanceof OresActorStream<?>)
+                                throw new IllegalArgumentException("an actor-owned result cannot be re-exported by another actor");
+                            ActorCell<?> cell = currentActor.get();
+                            ActorStreamController<?> controller = new ActorStreamController<>(cell, observable);
+                            cell.resultStream = controller;
+                            @SuppressWarnings("unchecked") R handle = (R) controller.handle();
+                            invocationValue.set(handle);
+                            invocationReturned.set(true);
+                            cell.afterTurnPublication.set(() -> completion.completeFromRuntime(handle));
+                        } else {
+                            @SuppressWarnings("unchecked") R frozen = (R) freeze(produced);
+                            invocationValue.set(frozen);
+                            invocationReturned.set(true);
+                        }
                     } catch (VirtualMachineError fatal) {
                         invocationFailure.compareAndSet(null, fatal);
                         throw fatal;
@@ -3845,7 +3885,9 @@ public final class ActorRuntime implements AutoCloseable {
                         invocationFailure.compareAndSet(null, failure);
                         throw failure;
                     } finally {
-                        turnContext.self().stop();
+                        ActorCell<?> cell = currentActor.get();
+                        if (cell == null || cell.resultStream == null || !invocationReturned.get())
+                            turnContext.self().stop();
                     }
                 },
                 true);
@@ -5915,8 +5957,176 @@ public final class ActorRuntime implements AutoCloseable {
         };
     }
 
+    /** No source subscription, pull, cancellation hook, or item conversion runs on a consumer thread. */
+    private final class ActorStreamController<T> implements OresActorObservable.Driver<T> {
+        private final ActorCell<?> owner;
+        private volatile OresObservable<T> source;
+        private final boolean single;
+        private final Object gate = new Object();
+        private final Set<StreamPull> subscriptions = ConcurrentHashMap.newKeySet();
+        private boolean everSubscribed;
+        private boolean closedStream;
+
+        private ActorStreamController(ActorCell<?> owner, OresObservable<T> source) {
+            this.owner = Objects.requireNonNull(owner);
+            this.source = source;
+            this.single = source instanceof OresStream<?>;
+            owner.ref.finalization().whenComplete((ignored, failure) -> {
+                synchronized (gate) { closedStream = true; }
+                for (StreamPull pull : subscriptions) {
+                    OresFuture<?> pending = pull.pending;
+                    if (pending != null) pending.cancel(false);
+                    OresFuture<?> output = pull.output;
+                    if (output != null) output.cancel(false);
+                    pull.inner = null;
+                    pull.pending = null;
+                    pull.output = null;
+                }
+                subscriptions.clear();
+                this.source = null;
+                owner.resultStream = null;
+            });
+        }
+
+        private Object handle() {
+            OresActorObservable<T> handle = new OresActorObservable<>(this);
+            return single ? new OresActorStream<>(handle) : handle;
+        }
+
+        @Override public OresSubscription<T> subscribe() {
+            requireCallerRuntimeAffinity("subscribe to actor results");
+            StreamPull pull = new StreamPull();
+            synchronized (gate) {
+                if (closedStream || owner.stopped.get()) throw new IllegalStateException("actor result producer is closed");
+                if (single && everSubscribed) throw new IllegalStateException("Stream permits exactly one subscription");
+                if (subscriptions.size() >= owner.policy.maxMailboxMessages())
+                    throw new RejectedExecutionException("actor result subscription capacity exceeded");
+                everSubscribed = true;
+                subscriptions.add(pull);
+            }
+            return new OresSubscription<>() {
+                @Override protected OresFuture<OresNotification<T>> nextFromRuntime() {
+                    requireCallerRuntimeAffinity("pull actor results");
+                    OresFuture<OresNotification<T>> result = new OresFuture<>(() -> cancelPull(pull));
+                    pull.output = result;
+                    dispatch(() -> startPull(pull, result));
+                    return result;
+                }
+                @Override protected void cancelFromRuntime() { cancelPull(pull); }
+            };
+        }
+
+        private void dispatch(Runnable action) {
+            owner.enqueueContinuation(owner.eventContinuations,
+                    new ContinuationEnvelope((value, failure, context) -> action.run(), null, null),
+                    "actor stream");
+        }
+
+        private void startPull(StreamPull pull, OresFuture<OresNotification<T>> result) {
+            if (pull.cancelled.get()) { result.cancel(false); return; }
+            try {
+                if (pull.inner == null) {
+                    pull.inner = source.subscribe();
+                    pull.inner.bindCancellationDispatcher(action -> {
+                        if (currentActor.get() == owner) action.run();
+                        else dispatch(action);
+                    });
+                }
+                OresFuture<OresNotification<T>> pending = pull.inner.next();
+                pull.pending = pending;
+                pending.whenCompleteRuntime((notification, failure) -> {
+                    // Producer completions enqueue work; they never run source hooks or guest conversion.
+                    if (!pull.cancelled.get() && !owner.stopped.get())
+                        dispatch(() -> finishPull(pull, result, notification, failure));
+                });
+            } catch (Throwable failure) { finishPull(pull, result, null, failure); }
+        }
+
+        private void finishPull(StreamPull pull, OresFuture<OresNotification<T>> result,
+                                OresNotification<T> notification, Throwable failure) {
+            if (pull.cancelled.get()) { result.cancel(false); return; }
+            pull.pending = null;
+            try {
+                if (failure != null) throw new java.util.concurrent.CompletionException(failure);
+                if (notification == null) throw new IllegalStateException("stream returned a null notification");
+                if (notification.isComplete()) {
+                    finishSubscription(pull, true);
+                    publishTerminal(result, notification, pull.cleanupFailure);
+                } else {
+                    // No handles, lambdas, borrows, or mutable host objects escape as items.
+                    @SuppressWarnings("unchecked") T item = (T) freeze(notification.value());
+                    estimatePrivateTransportBytes(item, new IdentityHashMap<>(), 0, owner.policy.maxHeapBytes());
+                    result.completeFromRuntime(OresNotification.next(item));
+                }
+            } catch (Throwable problem) {
+                owner.ref.terminationCause.compareAndSet(null, OresFuture.unwrap(problem));
+                finishSubscription(pull, true);
+                publishTerminal(result, null, OresFuture.unwrap(problem));
+            }
+        }
+
+        private void publishTerminal(OresFuture<OresNotification<T>> result,
+                                     OresNotification<T> notification, Throwable failure) {
+            Runnable publish = () -> {
+                if (failure == null) result.completeFromRuntime(notification);
+                else result.failFromRuntime(failure);
+            };
+            if (owner.stopped.get()) owner.ref.finalization().whenComplete((ignored, ended) -> publish.run());
+            else publish.run();
+        }
+
+        private void cancelPull(StreamPull pull) {
+            if (pull.cancelled.compareAndSet(false, true)) dispatch(() -> finishSubscription(pull));
+        }
+
+        private void finishSubscription(StreamPull pull) {
+            finishSubscription(pull, false);
+        }
+
+        private void finishSubscription(StreamPull pull, boolean preserveOutput) {
+            pull.cancelled.set(true);
+            try {
+                if (pull.inner != null) pull.inner.cancel();
+            } catch (Throwable cleanupFailure) {
+                pull.cleanupFailure = cleanupFailure;
+                owner.ref.terminationCause.compareAndSet(null, cleanupFailure);
+            } finally {
+                if (!preserveOutput && pull.output != null) pull.output.cancel(false);
+                subscriptions.remove(pull);
+                synchronized (gate) {
+                    if (everSubscribed && subscriptions.isEmpty()) {
+                        closedStream = true;
+                        owner.stopNow();
+                    }
+                }
+            }
+        }
+
+        @Override public void close() {
+            requireCallerRuntimeAffinity("close actor result producers");
+            synchronized (gate) {
+                if (closedStream) return;
+                closedStream = true;
+            }
+            dispatch(() -> {
+                for (StreamPull pull : List.copyOf(subscriptions)) finishSubscription(pull);
+                owner.stopNow();
+            });
+        }
+
+        private final class StreamPull {
+            private final AtomicBoolean cancelled = new AtomicBoolean();
+            private OresSubscription<T> inner; // owning actor only
+            private Throwable cleanupFailure; // owning actor only
+            private volatile OresFuture<OresNotification<T>> pending;
+            private volatile OresFuture<OresNotification<T>> output;
+        }
+    }
+
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
+        private ActorStreamController<?> resultStream;
+        private final AtomicReference<Runnable> afterTurnPublication = new AtomicReference<>();
         private final ActorKind kind;
         private final ActorGroupHandle<?> groupHandle;
         private final IsolatePolicy policy;
@@ -6528,6 +6738,8 @@ public final class ActorRuntime implements AutoCloseable {
                 disarmMessageDeadline(entryDeadline);
                 activeCarrier = null;
                 if (turnActive) endTurn();
+                Runnable publication = afterTurnPublication.getAndSet(null);
+                if (publication != null) publication.run();
                 if (!executionLease.compareAndSet(carrier, null)) {
                     fail(new IllegalStateException(
                             "actor execution lease ownership changed unexpectedly for " + ref.id()));
@@ -6972,6 +7184,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void stop() {
+            if (resultStream != null && !stopped.get()) {
+                resultStream.close();
+                return;
+            }
+            stopNow();
+        }
+
+        private void stopNow() {
             synchronized (lifecycleLock) {
                 if (!ref.readiness().isDone()) {
                     ref.failReady(new CancellationException(

@@ -14,6 +14,10 @@ import dev.oreslang.runtime.OresRwLock;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.OresObservable;
+import dev.oreslang.runtime.OresStream;
+import dev.oreslang.runtime.OresSubscription;
+import dev.oreslang.runtime.OresNotification;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -71,7 +75,7 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
-            return current.executeMain(new Object[0]);
+            return context.executeEnteredRootFromKernel(() -> current.executeMain(new Object[0]));
         }
 
         // RootNode is already executing inside an entered Graal context. It
@@ -80,7 +84,7 @@ public final class OresEvalRootNode extends RootNode {
         // entering Graal; direct embedders retain ownership of their entry
         // thread unless they opt into ActorRuntime.executeProcessRoot(...).
         current.link();
-        return current.executeMain(arguments);
+        return context.executeEnteredRootFromKernel(() -> current.executeMain(arguments));
     }
 
     private Evaluator evaluator(OresContext context) {
@@ -259,18 +263,20 @@ public final class OresEvalRootNode extends RootNode {
         private ActorRuntime.ActorRef<Object> spawnActorClass(
                 Ast.ClassDecl klass,
                 List<Object> constructorArguments) {
-            if (klass.actorKind() != Ast.ActorKind.SHARED) {
+            if (klass.actorKind() == Ast.ActorKind.UNTRUSTED) {
                 throw new SecurityException(
-                        "the reference evaluator executes only SHARED source actor classes; "
-                                + klass.actorKind()
-                                + " actor classes require their isolation-aware OresVM lowering");
+                        "untrusted actor classes require tenant-isolate OresVM lowering");
             }
 
+            ActorRuntime.ActorKind runtimeKind = klass.actorKind() == Ast.ActorKind.PRIVATE
+                    ? ActorRuntime.ActorKind.PRIVATE : ActorRuntime.ActorKind.SHARED;
+
             List<Object> prepared = constructorArguments.stream()
-                    .map(context.actors()::prepareSourceSharedActorInput)
+                    .map(value -> runtimeKind == ActorRuntime.ActorKind.PRIVATE
+                            ? ActorRuntime.freeze(value) : context.actors().prepareSourceSharedActorInput(value))
                     .toList();
 
-            return context.actors().spawnSourceSharedProtocolActor(actorContext -> {
+            return context.actors().spawnSourceTrustedProtocolActor(runtimeKind, actorContext -> {
                 OresObject actor = instantiateActorState(klass, prepared);
                 return (methodName, arguments, turnContext) -> {
                     Ast.MethodDecl endpoint = findMethod(
@@ -458,6 +464,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Futures")) return new FuturesFacade();
+                if (name.name().equals("Observable")) return new ReactiveFactory(false);
+                if (name.name().equals("Stream")) return new ReactiveFactory(true);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("RwLock")) return new RwLockFactory(context);
@@ -581,7 +589,7 @@ public final class OresEvalRootNode extends RootNode {
                                 requireZero(args, "ActorRef.is_alive");
                                 yield ref.isAlive();
                             }
-                            case "send", "receive", "mailbox" -> throw new IllegalArgumentException(
+                            case "mailbox" -> throw new IllegalArgumentException(
                                     "raw ActorRef mailbox operations are runtime-private; "
                                             + "invoke a declared typed actor protocol method instead");
                             default -> context.actors().invokeSourceProtocol(
@@ -729,6 +737,48 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "gc" -> (Invokable) actor::gc;
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
+                };
+            }
+            if (receiver instanceof ReactiveFactory factory) {
+                if (!name.equals("from_values")) throw new IllegalArgumentException("unknown stream factory member " + name);
+                return (Invokable) args -> {
+                    requireOne(args, "from_values");
+                    if (!(args.getFirst() instanceof List<?> values))
+                        throw new IllegalArgumentException("from_values expects a list");
+                    @SuppressWarnings("unchecked") List<Object> frozen = (List<Object>) ActorRuntime.freeze(values);
+                    return factory.single ? OresStream.fromValues(frozen) : OresObservable.fromValues(frozen);
+                };
+            }
+            if (receiver instanceof OresObservable<?> observable) {
+                return switch (name) {
+                    case "subscribe" -> (Invokable) args -> { requireZero(args, "subscribe"); return observable.subscribe(); };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "close");
+                        if (!(observable instanceof AutoCloseable owned))
+                            throw new IllegalStateException("close is available on actor-owned result streams");
+                        try { owned.close(); } catch (RuntimeException failure) { throw failure; }
+                        catch (Exception failure) { throw new IllegalStateException(failure); }
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException("unknown Observable member " + name);
+                };
+            }
+            if (receiver instanceof OresSubscription<?> subscription) {
+                return switch (name) {
+                    case "next" -> (Invokable) args -> { requireZero(args, "next"); return subscription.next(); };
+                    case "cancel" -> (Invokable) args -> { requireZero(args, "cancel"); return subscription.cancel(); };
+                    default -> throw new IllegalArgumentException("unknown Subscription member " + name);
+                };
+            }
+            if (receiver instanceof OresNotification<?> notification) {
+                return switch (name) {
+                    case "value" -> {
+                        if (notification.isComplete()) throw new IllegalStateException("COMPLETE has no item value");
+                        yield notification.value();
+                    }
+                    case "is_next" -> (Invokable) args -> { requireZero(args, "is_next"); return notification.isNext(); };
+                    case "is_complete" -> (Invokable) args -> { requireZero(args, "is_complete"); return notification.isComplete(); };
+                    default -> throw new IllegalArgumentException("unknown Notification member " + name);
                 };
             }
             if (receiver instanceof FuturesFacade futures) {
@@ -1958,6 +2008,8 @@ public final class OresEvalRootNode extends RootNode {
     private record ActorFacade(OresContext context) {
         private Map<String,Object> gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().collectCurrentActor().asMap();}
     }
+    private record ReactiveFactory(boolean single) { }
+
     private record FuturesFacade() {
         private Object all(List<Object> args) {
             return OresFutures.all(requireFutures(args, "Futures.all"));

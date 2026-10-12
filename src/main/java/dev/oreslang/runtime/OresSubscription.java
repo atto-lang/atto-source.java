@@ -14,6 +14,12 @@ import java.util.Objects;
  */
 public abstract class OresSubscription<T> {
     private final Object gate = new Object();
+    private final java.util.concurrent.atomic.AtomicBoolean runtimeCancelled = new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile java.util.function.Consumer<Runnable> cancellationDispatcher = Runnable::run;
+
+    final void bindCancellationDispatcher(java.util.function.Consumer<Runnable> dispatcher) {
+        cancellationDispatcher = Objects.requireNonNull(dispatcher);
+    }
 
     private boolean cancelled;
     private boolean terminal;
@@ -87,7 +93,7 @@ public abstract class OresSubscription<T> {
 
             if (shouldCancelRuntime) {
                 try {
-                    cancelFromRuntime();
+                    cancelRuntimeOnce();
                 } catch (RuntimeException | Error ignored) {
                     // Stream terminal state is already authoritative.
                 }
@@ -125,8 +131,12 @@ public abstract class OresSubscription<T> {
         if (toCancel != null) {
             toCancel.cancel(true);
         }
-        cancelFromRuntime();
+        cancelRuntimeOnce();
         return true;
+    }
+
+    private void cancelRuntimeOnce() {
+        if (runtimeCancelled.compareAndSet(false, true)) cancellationDispatcher.accept(this::cancelFromRuntime);
     }
 
     public final boolean isCancelled() {
