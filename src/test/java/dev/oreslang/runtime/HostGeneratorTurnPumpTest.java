@@ -585,7 +585,7 @@ final class HostGeneratorTurnPumpTest {
             }
             assertTrue(pump.isQuiescent());
             assertEquals(1, frame.cleanupRuns());
-            assertEquals(1, frame.cleanupBinding("marker"));
+            assertEquals(1, ((Number) frame.cleanupBinding("marker")).intValue());
             assertTrue(lowered.isTerminal());
             pump.close();
         }
