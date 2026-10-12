@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -73,6 +74,23 @@ final class ActorDispatchIdentityTest {
                         }
                         assertTrue(ActorRuntime.isActorCarrierThread(),
                                 "stale dispatch must not clear outer carrier marker");
+                        assertTrue(runtime.currentThreadOwnsActorExecutionLease());
+                        assertEquals(context.self().id(),
+                                ActorRuntime.currentActorId().orElseThrow());
+
+                        // Even a direct hostile nested entrypoint must reject
+                        // BEFORE changing the outer actor's execution context.
+                        try {
+                            Method enterAgain = currentCell.getClass().getDeclaredMethod(
+                                    "runBatchEntered");
+                            enterAgain.setAccessible(true);
+                            InvocationTargetException rejected = assertThrows(
+                                    InvocationTargetException.class,
+                                    () -> enterAgain.invoke(currentCell));
+                            assertInstanceOf(IllegalStateException.class, rejected.getCause());
+                        } catch (ReflectiveOperationException error) {
+                            throw new AssertionError("actor nested-entry test setup", error);
+                        }
                         assertTrue(runtime.currentThreadOwnsActorExecutionLease());
                         assertEquals(context.self().id(),
                                 ActorRuntime.currentActorId().orElseThrow());
