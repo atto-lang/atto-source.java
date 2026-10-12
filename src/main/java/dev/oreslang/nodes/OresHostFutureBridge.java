@@ -23,15 +23,69 @@ public final class OresHostFutureBridge {
     private static final ThreadLocal<ArrayDeque<Slot>> CAPTURES =
             new ThreadLocal<>();
 
-    private static final class Slot {
+    /**
+     * A one-use ticket. Claim happens before any guest dispatch; publication
+     * is permitted only by the same physical context and source root that
+     * claimed it. In particular, a reentrant command cannot claim this ticket
+     * again while the first call is still starting its task.
+     */
+    static final class Slot {
+        private enum State { OPEN, CLAIMED, PUBLISHED, CLOSED }
+
         private final String function;
-        // This nonce is never passed to the guest callable. It binds one
-        // public control invocation to the host's current capture scope.
+        // Never supplied to the guest callable or exposed through a Value.
         private final String nonce = UUID.randomUUID().toString();
+        private State state = State.OPEN;
+        private Object ownerContext;
+        private Object ownerRoot;
         private OresFuture<?> future;
 
-        private Slot(String function) {
-            this.function = function;
+        Slot(String function) {
+            this.function = Objects.requireNonNull(function, "function");
+        }
+
+        String nonce() {
+            return nonce;
+        }
+
+        void claim(String function, String nonce, Object context, Object root) {
+            if (!this.function.equals(function) || !this.nonce.equals(nonce)) {
+                throw new SecurityException(
+                        "host Future handoff requires a matching scoped invocation");
+            }
+            if (state != State.OPEN) {
+                throw new SecurityException("host Future handoff ticket already consumed");
+            }
+            ownerContext = Objects.requireNonNull(context, "context");
+            ownerRoot = Objects.requireNonNull(root, "root");
+            state = State.CLAIMED;
+        }
+
+        void publish(String function, String nonce, Object context, Object root,
+                     OresFuture<?> result) {
+            if (!this.function.equals(function) || !this.nonce.equals(nonce)
+                    || state != State.CLAIMED
+                    || ownerContext != context || ownerRoot != root) {
+                throw new SecurityException(
+                        "host Future result does not belong to claimed invocation");
+            }
+            future = Objects.requireNonNull(result, "result");
+            state = State.PUBLISHED;
+        }
+
+        OresFuture<?> result() {
+            if (state != State.PUBLISHED || future == null) {
+                throw new IllegalStateException(
+                        "Oreslang public async call did not publish its Future");
+            }
+            return future;
+        }
+
+        void close() {
+            state = State.CLOSED;
+            ownerContext = null;
+            ownerRoot = null;
+            future = null;
         }
     }
 
@@ -60,20 +114,19 @@ public final class OresHostFutureBridge {
             Object[] command = new Object[arguments.length + 3];
             command[0] = OresEvalRootNode.INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND;
             command[1] = function;
-            command[2] = slot.nonce;
+            command[2] = slot.nonce();
             System.arraycopy(arguments, 0, command, 3, arguments.length);
             // Do not inspect the returned Value. Its primitive acknowledgment
             // is intentionally unused; doing asHostObject() here would enter
             // the guest context again after the scheduler has started.
             parsedSource.execute(command);
-            if (slot.future == null) {
-                throw new IllegalStateException(
-                        "Oreslang public async call did not publish its Future");
-            }
-            return (OresFuture<T>) slot.future;
+            return (OresFuture<T>) slot.result();
         } finally {
             Slot popped = slots.pop();
+            slot.close();
             if (popped != slot) {
+                popped.close();
+                for (Slot remaining : slots) remaining.close();
                 slots.clear();
                 CAPTURES.remove();
                 throw new IllegalStateException("host Future handoff scope was corrupted");
@@ -86,33 +139,22 @@ public final class OresHostFutureBridge {
      * Reject forged bridged control commands before any asynchronous work is
      * started. A missing host receiver must not create an orphaned producer.
      */
-    static void requireActiveScope(String function, String nonce) {
+    static void requireActiveScope(String function, String nonce,
+                                   Object context, Object root) {
         ArrayDeque<Slot> slots = CAPTURES.get();
-        if (slots == null || slots.isEmpty()
-                || !slots.peek().function.equals(function)
-                || !slots.peek().nonce.equals(nonce)) {
+        if (slots == null || slots.isEmpty()) {
             throw new SecurityException(
                     "host Future handoff requires a matching scoped invocation");
         }
-        if (slots.peek().future != null) {
-            throw new IllegalStateException("host Future already published");
-        }
+        slots.peek().claim(function, nonce, context, root);
     }
 
-    /** Called only by the root node's dedicated bridged invoke command. */
-    static boolean publish(String function, String nonce, OresFuture<?> future) {
-        Objects.requireNonNull(future, "future");
+    /** Called only by the same root and context that claimed the ticket. */
+    static boolean publish(String function, String nonce, Object context, Object root,
+                           OresFuture<?> future) {
         ArrayDeque<Slot> slots = CAPTURES.get();
         if (slots == null || slots.isEmpty()) return false;
-        Slot slot = slots.peek();
-        if (!slot.function.equals(function) || !slot.nonce.equals(nonce)) {
-            throw new IllegalStateException(
-                    "host Future result does not belong to current public invocation");
-        }
-        if (slot.future != null) {
-            throw new IllegalStateException("host Future result published twice");
-        }
-        slot.future = future;
+        slots.peek().publish(function, nonce, context, root, future);
         return true;
     }
 }

@@ -114,7 +114,8 @@ public final class OresEvalRootNode extends RootNode {
                     || !(arguments[2] instanceof String nonce)) {
                 throw new SecurityException("invalid scoped host Future handoff command");
             }
-            OresHostFutureBridge.requireActiveScope(functionName, nonce);
+            // Consume the one-use ticket before linking or guest dispatch.
+            OresHostFutureBridge.requireActiveScope(functionName, nonce, context, this);
         }
 
         Evaluator current = evaluator(context);
@@ -149,7 +150,8 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "host Future handoff requires an async public function: " + functionName);
                 }
-                if (!OresHostFutureBridge.publish(functionName, (String) arguments[2], future)) {
+                if (!OresHostFutureBridge.publish(
+                        functionName, (String) arguments[2], context, this, future)) {
                     throw new SecurityException(
                             "host Future handoff requires an active scoped invocation");
                 }
