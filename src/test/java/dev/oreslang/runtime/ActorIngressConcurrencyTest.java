@@ -155,6 +155,73 @@ class ActorIngressConcurrencyTest {
         }
     }
 
+    @Test void shutdownRacingContendedAdmissionNeverReopensAClosedBudget() throws Exception {
+        for (int iteration = 0; iteration < 64; iteration++) {
+            var budget = ActorIngressConcurrency.network(
+                    ActorIngressConcurrency.Protocol.WS, iteration + 1L, 2, 2);
+            try (ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+                CountDownLatch start = new CountDownLatch(1);
+                List<Future<?>> attempts = new ArrayList<>();
+                final long incarnation = iteration + 1L;
+                for (int k = 0; k < 16; k++) {
+                    attempts.add(workers.submit(() -> {
+                        start.await();
+                        try {
+                            var connection = budget.tryOpenConnection(incarnation);
+                            if (connection != null) {
+                                try (connection) {
+                                    var message = connection.tryEnter(1, incarnation);
+                                    if (message != null) message.close();
+                                }
+                            }
+                        } catch (IllegalStateException shutdownWon) {
+                            assertTrue(budget.isClosed(),
+                                    "only a terminated budget may reject admission here");
+                        }
+                        return null;
+                    }));
+                }
+                attempts.add(workers.submit(() -> {
+                    start.await();
+                    budget.close();
+                    return null;
+                }));
+                start.countDown();
+                for (var attempt : attempts) attempt.get(5, TimeUnit.SECONDS);
+                assertTrue(budget.isClosed());
+                assertEquals(0, budget.activeConnections());
+                assertThrows(IllegalStateException.class,
+                        () -> budget.tryOpenConnection(incarnation));
+            } finally {
+                budget.close();
+            }
+        }
+    }
+
+    @Test void releasingALeaseNeverMakesItsSequenceReplayable() {
+        try (var budget = ActorIngressConcurrency.regular(101, 1)) {
+            var first = budget.tryEnterRegular(1, 101);
+            first.close();
+            assertThrows(IllegalArgumentException.class,
+                    () -> budget.tryEnterRegular(1, 101));
+            var next = budget.tryEnterRegular(2, 101);
+            assertNotNull(next);
+            next.close();
+        }
+        try (var budget = ActorIngressConcurrency.network(
+                ActorIngressConcurrency.Protocol.TCP, 102, 1, 1)) {
+            var conn = budget.tryOpenConnection(102);
+            var first = conn.tryEnter(1, 102);
+            first.close();
+            assertThrows(IllegalArgumentException.class, () -> conn.tryEnter(1, 102));
+            var next = conn.tryEnter(2, 102);
+            assertNotNull(next);
+            conn.close();
+            assertTrue(next.isClosed());
+            assertThrows(IllegalStateException.class, () -> conn.tryEnter(3, 102));
+        }
+    }
+
     @Test void incorrectModesAndNonPositiveLimitsFailClosed() {
         assertThrows(IllegalArgumentException.class, () -> ActorIngressConcurrency.regular(1, 0));
         assertThrows(IllegalArgumentException.class, () -> ActorIngressConcurrency.network(
