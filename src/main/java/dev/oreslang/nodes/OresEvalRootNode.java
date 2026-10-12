@@ -2879,9 +2879,33 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr expr,
                 Env env,
                 SourceValueCont downstream) {
-            // The evaluator must never replay a consumer continuation when
-            // consumer code itself throws. Completion can also race a resumed
-            // await, so this fence must survive suspension and be atomic.
+            // Non-suspending expressions are the hot path. Deliver their
+            // completion outside the evaluation catch so downstream failures
+            // are never misclassified, without allocating an atomic fence.
+            boolean canSuspend;
+            try {
+                canSuspend = expressionContainsPotentialSuspension(
+                        expr,
+                        java.util.Collections.newSetFromMap(
+                                new IdentityHashMap<>()));
+            } catch (RuntimeException | Error failure) {
+                downstream.accept(task, null, failure);
+                return;
+            }
+            if (!canSuspend) {
+                Object value;
+                try {
+                    value = eval(expr, env);
+                } catch (RuntimeException | Error failure) {
+                    downstream.accept(task, null, failure);
+                    return;
+                }
+                downstream.accept(task, value, null);
+                return;
+            }
+
+            // Resumable expressions have exactly one terminal delivery,
+            // including races between cancellation and completion.
             java.util.concurrent.atomic.AtomicBoolean delivered =
                     new java.util.concurrent.atomic.AtomicBoolean();
             SourceValueCont continuation = (resumedTask, value, failure) -> {
@@ -2892,16 +2916,6 @@ public final class OresEvalRootNode extends RootNode {
                 downstream.accept(resumedTask, value, failure);
             };
             try {
-                if (!expressionContainsPotentialSuspension(
-                        expr,
-                        java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
-                    continuation.accept(
-                            task,
-                            eval(expr, env),
-                            null);
-                    return;
-                }
 
                 if (expr instanceof Ast.AwaitExpr awaited) {
                     evalSuspendableExpr(
