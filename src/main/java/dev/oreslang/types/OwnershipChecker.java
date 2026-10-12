@@ -235,7 +235,20 @@ public final class OwnershipChecker {
     private void checkAutomaticLoopBackedgeLoans(Scope loopScope) {
         if (actorStateLoanDepth > 0 || mutexCriticalSectionDepth > 0
                 || loopScope.hasLiveMutexGuard()) return;
-        if (loopScope.hasLiveBorrow()) {
+        // The implicit actor self capability remains owned by the same
+        // logical mailbox turn after carrier migration. It is *not* a user
+        // borrow, unless somebody has separately borrowed/aliased it.
+        boolean liveOrdinaryLoan = loopScope.visibleStates().stream().anyMatch(state ->
+                !state.moved
+                && !("self".equals(state.debugName)
+                    && isActorConfinedBorrow(state)
+                    && state.immutableBorrows == 0
+                    && !state.mutableBorrowed)
+                && (state.kind == ValueKind.IMM_BORROW
+                    || state.kind == ValueKind.MUT_BORROW
+                    || state.immutableBorrows > 0
+                    || state.mutableBorrowed));
+        if (liveOrdinaryLoan) {
             throw error("automatic loop cooperation cannot retain a live ordinary borrow across a backedge; "
                     + "end the lexical loan before entering the loop or create it inside each iteration");
         }
