@@ -561,6 +561,8 @@ public final class NativeHttp implements AutoCloseable {
         volatile boolean terminal;
         boolean transportClosed;
         String ticket;
+        /** Exact registry value installed by this invocation; never revoke by ticket alone. */
+        Exchange publishedTransfer;
         /** Distinct one-use admission authority; a stale ticket cannot free another slot. */
         TransferBudget.Reservation reservation;
         /** Counted only when a terminal persistent transfer remains unclaimed. */
@@ -589,6 +591,7 @@ public final class NativeHttp implements AutoCloseable {
                 throw new IllegalStateException("HTTP transfer reservation already released");
             reservation.release();
             reservation = null;
+            publishedTransfer = null;
             ticket = null;
             if (tombstoneCounted) {
                 tombstoneCounted = false;
@@ -598,7 +601,11 @@ public final class NativeHttp implements AutoCloseable {
         /** Called only while holding this State's monitor. */
         void revokeTransferLocked() {
             if (ticket == null) return;
-            transfers.remove(ticket);
+            if (publishedTransfer == null)
+                throw new IllegalStateException("HTTP transfer has no published registry identity");
+            // A stale callback must not revoke another incarnation's entry
+            // even if a transport ticket were accidentally reused.
+            transfers.remove(ticket, publishedTransfer);
             releaseTransferReservationLocked();
         }
         void abort(int status) {
@@ -733,6 +740,7 @@ public final class NativeHttp implements AutoCloseable {
                 // fails without consuming a reservation or moving ownership.
                 try {
                     transfers.publish(token, moved);
+                    state.publishedTransfer = moved;
                 } catch (RuntimeException rejected) {
                     state.releaseTransferReservationLocked();
                     state.generation--;
