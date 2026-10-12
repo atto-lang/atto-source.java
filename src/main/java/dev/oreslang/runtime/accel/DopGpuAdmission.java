@@ -79,4 +79,14 @@ public final class DopGpuAdmission {
         }
         return new Binding(shape, artifact, first, second, bytes, total);
     }
+    public record ClaimedBinding(Binding binding, GpuBufferFence.PairTickets tickets) { }
+
+    public static ClaimedBinding claim(DopKernelIR.Kernel kernel, DopKernelIR.GpuTarget target,
+                                       DeviceBuffer input, DeviceBuffer output) {
+        var plan = preflight(kernel, target, input, output);
+        var tickets = GpuBufferFence.claimPair(input.fence(), output.fence(),
+                plan.bytesPerBuffer());
+        return new ClaimedBinding(plan, tickets);
+    }
+
 }
