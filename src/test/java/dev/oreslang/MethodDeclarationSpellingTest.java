@@ -191,7 +191,7 @@ final class MethodDeclarationSpellingTest {
                 fnc valid(): int {
                     val worker = new Worker();
                     val static_callback = Worker.reusable;
-                    val instance_callback = |int value| -> { return worker.work(value); };
+                    val Fnc<int, int> instance_callback = |int value| -> { return worker.work(value); };
                     return static_callback(1) + instance_callback(2);
                 }
                 """)));
