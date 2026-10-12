@@ -1301,11 +1301,33 @@ public final class ActorRuntime implements AutoCloseable {
      * bounded mailbox reservations, and actor-generation fencing.
      */
     private record LinearPipeline(
-            ActorRef<Object> source,
-            ActorRef<Object> transform,
-            ActorRef<Object> sink,
+            List<ActorRef<Object>> stages,
             String nominalIdentity,
-            AtomicInteger phase) { }
+            AtomicInteger phase) {
+        ActorRef<Object> source() { return stages.getFirst(); }
+        int count() { return stages.size(); }
+        int indexOf(ActorId id) {
+            for (int i = 0; i < stages.size(); i++) {
+                if (stages.get(i).id().equals(id)) return i;
+            }
+            return -1;
+        }
+    }
+
+    /** An immutable, runtime-bound linear route; never an actor capability
+     * that can be serialized into another actor's mailbox. */
+    public final class ActorStream {
+        private final List<ActorRef<?>> stages;
+        private ActorStream(List<ActorRef<?>> stages) { this.stages = List.copyOf(stages); }
+        public int size() { return stages.size(); }
+        public ActorRef<?> source() { return stages.getFirst(); }
+        public void send(Object value) {
+            @SuppressWarnings("unchecked")
+            ActorRef<Object> first = (ActorRef<Object>) stages.getFirst();
+            ActorRuntime.this.send(first, value);
+        }
+        public OresFuture<Void> getDone() { return stages.getFirst().done(); }
+    }
 
     /** The runtime-internal delivery marker never escapes this source
      * actor turn. A plain ActorRef.send cannot spoof a pipeline hop. */
@@ -1335,28 +1357,25 @@ public final class ActorRuntime implements AutoCloseable {
     private void pipelineActorTerminated(ActorCell<?> departed) {
         LinearPipeline route = linearPipelines.get(departed.ref.id());
         if (route == null) return;
-        boolean source = departed.ref.id().equals(route.source().id());
-        boolean transform = departed.ref.id().equals(route.transform().id());
+        int position = route.indexOf(departed.ref.id());
+        if (position < 0) throw new SecurityException("unknown pipeline member");
         int phase = route.phase().get();
         Throwable failure = departed.ref.terminationCause.get();
+        boolean source = position == 0;
         boolean premature = failure != null
-                || (source ? phase != 6 : transform ? phase < 5 : phase < 4);
+                || (source ? phase != 2 * route.count()
+                           : phase < 2 * route.count() - position);
         if (source) {
-            // The root's physical finalization marks the route terminal.
-            // Reclaim refs even if the siblings are still unwinding.
-            linearPipelines.remove(route.source().id(), route);
-            linearPipelines.remove(route.transform().id(), route);
-            linearPipelines.remove(route.sink().id(), route);
+            for (ActorRef<?> stage : route.stages()) {
+                linearPipelines.remove(stage.id(), route);
+            }
         } else {
             linearPipelines.remove(departed.ref.id(), route);
         }
         if (!premature || closed.get()) return;
-
-        // Do not revive the route after a successful source completion.
-        // For any earlier state, -1 is an irreversible admission failure.
         while (true) {
             int old = route.phase().get();
-            if (old == -1 || old == 6) return;
+            if (old == -1 || old == 2 * route.count()) return;
             if (route.phase().compareAndSet(old, -1)) break;
         }
         IllegalStateException aborted = new IllegalStateException(
@@ -1364,16 +1383,13 @@ public final class ActorRuntime implements AutoCloseable {
                         + departed.ref.id(), failure);
         try {
             privateDispatcher.execute(() -> {
-                for (ActorRef<?> linked : List.of(
-                        route.source(), route.transform(), route.sink())) {
+                for (ActorRef<?> linked : route.stages()) {
                     if (linked.id().equals(departed.ref.id())) continue;
                     ActorCell<?> other = actors.get(linked.id());
                     if (other != null && !other.finalized) other.fail(aborted);
                 }
             });
         } catch (RejectedExecutionException unavailable) {
-            // Runtime shutdown closes all pending actor observers itself;
-            // no carrier thread may synchronously enter a sibling finalizer.
             if (!closed.get()) {
                 throw new IllegalStateException(
                         "pipeline cancellation dispatcher rejected terminal propagation",
@@ -1382,23 +1398,30 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    @SuppressWarnings("unchecked")
     public void bindLinearPipeline(
             ActorRef<?> source, ActorRef<?> transform, ActorRef<?> sink) {
-        Objects.requireNonNull(source);
-        Objects.requireNonNull(transform);
-        Objects.requireNonNull(sink);
+        bindLinearPipeline(List.of(source, transform, sink));
+    }
+
+    @SuppressWarnings("unchecked")
+    public ActorStream bindLinearPipeline(List<? extends ActorRef<?>> input) {
+        Objects.requireNonNull(input, "pipeline stages");
+        if (input.size() < 2 || input.size() > 16) {
+            throw new IllegalArgumentException("ActorStream requires 2..16 stages");
+        }
+        List<ActorRef<?>> refs = List.copyOf(input);
         requireCallerRuntimeAffinity("bind linear actor pipeline");
         if (currentActor.get() != null || closed.get()) {
             throw new IllegalStateException(
                     "pipeline binding requires the trusted non-actor root turn");
         }
-        if (!source.ownedBy(this) || !transform.ownedBy(this) || !sink.ownedBy(this)
-                || source.id().equals(transform.id()) || source.id().equals(sink.id())
-                || transform.id().equals(sink.id())) {
-            throw new SecurityException("pipeline requires distinct same-runtime actor references");
+        java.util.HashSet<ActorId> seen = new java.util.HashSet<>();
+        for (ActorRef<?> ref : refs) {
+            if (!ref.ownedBy(this) || !seen.add(ref.id())) {
+                throw new SecurityException(
+                        "pipeline requires distinct same-runtime actor references");
+            }
         }
-        ActorRef<?>[] refs = {source, transform, sink};
         String identity = null;
         synchronized (runtimeLifecycleLock) {
         synchronized (pipelineBindingLock) {
@@ -1412,7 +1435,7 @@ public final class ActorRuntime implements AutoCloseable {
                         || !(cell.mailboxSchema instanceof TaggedMessageCodec tagged)
                         || cell.codeExecutor == null) {
                     throw new IllegalStateException(
-                            "pipeline requires three live compiler-owned nominal actor mailboxes");
+                            "pipeline requires live compiler-owned nominal actor mailboxes");
                 }
                 if (identity == null) identity = tagged.closedDomainIdentity();
                 else if (!identity.equals(tagged.closedDomainIdentity())) {
@@ -1431,12 +1454,14 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException("actor already bound to a pipeline");
                 }
             }
-            LinearPipeline route = new LinearPipeline(
-                    (ActorRef<Object>) source, (ActorRef<Object>) transform,
-                    (ActorRef<Object>) sink, identity, new AtomicInteger(0));
+            List<ActorRef<Object>> linked = refs.stream()
+                    .map(ref -> (ActorRef<Object>) ref).toList();
+            LinearPipeline route = new LinearPipeline(linked, identity,
+                    new AtomicInteger(0));
             for (ActorRef<?> ref : refs) linearPipelines.put(ref.id(), route);
         }
         }
+        return new ActorStream(refs);
     }
 
     /** Scheduler-issued actor-turn authority only. No user-selected target,
@@ -1455,38 +1480,33 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "pipeline direction is fenced after actor end/stop");
         }
-        ActorId owner = cell.ref.id();
+        int stage = route.indexOf(cell.ref.id());
+        if (stage < 0) throw new SecurityException("actor is not a pipeline member");
+        int last = route.count() - 1;
         ActorId sender = cell.activeMail.sender().orElse(null);
         ActorRef<Object> target;
         int expectedPhase;
-        if (owner.equals(route.source().id())) {
+        if (stage == 0) {
             if (!downstream || sender != null) {
-                // A source receiving a backward reply may consume or finalize
-                // it, but may not implicitly restart the same flow.
                 throw new SecurityException("pipeline source has no authorized route in this turn");
             }
-            target = route.transform();
+            target = route.stages().get(1);
             expectedPhase = 1;
-        } else if (owner.equals(route.transform().id())) {
-            if (downstream) {
-                if (!route.source().id().equals(sender))
-                    throw new SecurityException("forward requires the actual upstream sender");
-                target = route.sink();
-                expectedPhase = 2;
-            } else {
-                if (!route.sink().id().equals(sender))
-                    throw new SecurityException("backward requires the actual downstream sender");
-                target = route.source();
-                expectedPhase = 4;
+        } else if (downstream) {
+            if (stage == last || !route.stages().get(stage - 1).id().equals(sender)) {
+                throw new SecurityException("forward requires actual upstream sender");
             }
-        } else if (owner.equals(route.sink().id())) {
-            if (downstream || !route.transform().id().equals(sender)) {
-                throw new SecurityException("sink may only reply to its actual upstream ingress");
-            }
-            target = route.transform();
-            expectedPhase = 3;
+            target = route.stages().get(stage + 1);
+            expectedPhase = stage + 1;
         } else {
-            throw new SecurityException("actor is not a member of its pipeline");
+            ActorId expectedSender = stage == last
+                    ? route.stages().get(stage - 1).id()
+                    : route.stages().get(stage + 1).id();
+            if (!expectedSender.equals(sender)) {
+                throw new SecurityException("backward requires actual neighboring sender");
+            }
+            target = route.stages().get(stage - 1);
+            expectedPhase = 2 * route.count() - 1 - stage;
         }
         // Exactly one in-flight typed route: reject duplicates, replays and
         // out-of-order causal sends before enqueueing a guest DATA envelope.
@@ -1517,11 +1537,11 @@ public final class ActorRuntime implements AutoCloseable {
         LinearPipeline route = linearPipelines.get(cell.ref.id());
         if (route != null && cell.ref.id().equals(route.source().id())) {
             if (cell.activeMail == null
-                    || !route.transform().id().equals(cell.activeMail.sender().orElse(null))) {
+                    || !route.stages().get(1).id().equals(cell.activeMail.sender().orElse(null))) {
                 throw new SecurityException(
                         "pipeline source may finish only on an authorized upstream result");
             }
-            advancePipelinePhase(route, 5, 6);
+            advancePipelinePhase(route, 2 * route.count() - 1, 2 * route.count());
         }
         cell.requestEnd(null);
     }

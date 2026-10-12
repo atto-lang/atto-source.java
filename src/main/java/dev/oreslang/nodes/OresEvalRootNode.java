@@ -5717,6 +5717,30 @@ public final class OresEvalRootNode extends RootNode {
             return constructVariant(caseInfo, value);
         }
 
+        private void collectActorPipeStages(Ast.Expr expr, List<Ast.Expr> stages) {
+            if (expr instanceof Ast.BinaryExpr binary && binary.operator().equals("pipe")) {
+                collectActorPipeStages(binary.left(), stages);
+                collectActorPipeStages(binary.right(), stages);
+            } else {
+                stages.add(expr);
+            }
+        }
+
+        private ActorRuntime.ActorStream createActorStream(List<Object> values) {
+            if (values.size() < 2 || values.size() > 16) {
+                throw new IllegalArgumentException("ActorStream requires 2..16 actor refs");
+            }
+            List<ActorRuntime.ActorRef<?>> refs = new ArrayList<>(values.size());
+            for (Object value : values) {
+                if (!(value instanceof ActorRuntime.ActorRef<?> ref)) {
+                    throw new IllegalArgumentException(
+                            "ActorUtils.pipe requires actor refs, not guest objects");
+                }
+                refs.add(ref);
+            }
+            return context.actors().bindLinearPipeline(refs);
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
@@ -5729,6 +5753,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (messageTypes.enums().containsKey(name.name())) {
                     return new EnumNamespace(name.name());
                 }
+                if (name.name().equals("ActorUtils")) return ActorUtilsNamespace.INSTANCE;
                 if (name.name().equals("pipeline")) return (Invokable) args -> {
                     if (args.size() != 3
                             || !(args.get(0) instanceof ActorRuntime.ActorRef<?> source)
@@ -5900,6 +5925,13 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (expr instanceof Ast.BinaryExpr binary) {
+                if (binary.operator().equals("pipe")) {
+                    List<Ast.Expr> stages = new ArrayList<>();
+                    collectActorPipeStages(binary, stages);
+                    List<Object> values = new ArrayList<>(stages.size());
+                    for (Ast.Expr stage : stages) values.add(eval(stage, env));
+                    return createActorStream(values);
+                }
                 if (binary.operator().equals("&&")) {
                     Object left = eval(binary.left(), env);
                     return truth(left) && truth(eval(binary.right(), env));
@@ -6166,7 +6198,27 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
 
+        private enum ActorUtilsNamespace { INSTANCE }
         private Object member(Object receiver, String name, Env env) {
+            if (receiver == ActorUtilsNamespace.INSTANCE) {
+                if (!name.equals("pipe")) {
+                    throw new IllegalArgumentException("unknown ActorUtils static function " + name);
+                }
+                return (Invokable) this::createActorStream;
+            }
+            if (receiver instanceof ActorRuntime.ActorStream stream) {
+                return switch (name) {
+                    case "send" -> (Invokable) args -> {
+                        requireOne(args, "ActorStream.send");
+                        stream.send(args.getFirst()); return null;
+                    };
+                    case "get_done" -> (Invokable) args -> {
+                        requireZero(args, "ActorStream.get_done");
+                        return stream.getDone();
+                    };
+                    default -> throw new IllegalArgumentException("unknown ActorStream member " + name);
+                };
+            }
             if (receiver instanceof EnumNamespace symbol) {
                 var c = messageCase(symbol.name() + "." + name);
                 if (c == null) throw new IllegalArgumentException(

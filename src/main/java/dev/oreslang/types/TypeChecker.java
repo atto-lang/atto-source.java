@@ -111,7 +111,7 @@ public final class TypeChecker {
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
-                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
+                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorStream", "ActorUtils", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
                 "self", "null"));
@@ -1705,6 +1705,50 @@ public final class TypeChecker {
         return java.util.Collections.unmodifiableSet(declared);
     }
 
+    private static void collectActorPipeStages(Ast.Expr expr, List<Ast.Expr> stages) {
+        if (expr instanceof Ast.BinaryExpr nested && nested.operator().equals("pipe")) {
+            collectActorPipeStages(nested.left(), stages);
+            collectActorPipeStages(nested.right(), stages);
+        } else {
+            stages.add(expr);
+        }
+    }
+
+    private Type checkActorStreamStages(
+            List<Ast.Expr> stages, Env env, Set<String> generics, Type self) {
+        if (currentActorKind != Ast.ActorKind.NONE || stages.size() < 2 || stages.size() > 16) {
+            throw new IllegalArgumentException(
+                    "ActorStream pipe requires 2..16 actor references on the trusted root turn");
+        }
+        String domain = null;
+        for (Ast.Expr stage : stages) {
+            Type ref = deref(typeOf(stage, env, generics, self));
+            if (!(ref instanceof Named named)
+                    || !named.name().equals("ActorRef")
+                    || named.arguments().size() != 1
+                    || !(named.arguments().getFirst() instanceof Named)) {
+                throw new IllegalArgumentException(
+                        "ActorStream pipe stages require statically typed ActorRef<T> values");
+            }
+            Type mailbox = actorMailboxPayloadType(named);
+            if (!(mailbox instanceof Named nominal) || !nominal.arguments().isEmpty()
+                    || taggedMessages == null
+                    || (!taggedMessages.patterns().containsKey(nominal.name())
+                        && !taggedMessages.enums().containsKey(nominal.name()))) {
+                throw new IllegalArgumentException(
+                        "ActorStream pipe requires a closed nominal ActorMail domain");
+            }
+            if (domain == null) domain = nominal.name();
+            else if (!domain.equals(nominal.name())) {
+                throw new IllegalArgumentException(
+                        "ActorStream pipe stage domains must match");
+            }
+        }
+        // Actor identities are checked at runtime (two instances of one actor
+        // class are allowed); runtime also validates exact shape/domain hash.
+        return new Named("ActorStream", List.of());
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
@@ -1742,6 +1786,9 @@ public final class TypeChecker {
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
                     || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
+            if (name.name().equals("ActorUtils")) {
+                return new Named("$ActorUtils", List.of());
+            }
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
             }
@@ -1894,6 +1941,11 @@ public final class TypeChecker {
             return operand;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
+            if (binary.operator().equals("pipe")) {
+                List<Ast.Expr> stages = new ArrayList<>();
+                collectActorPipeStages(binary, stages);
+                return checkActorStreamStages(stages, env, generics, self);
+            }
             Type left = typeOf(binary.left(), env, generics, self);
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -2000,6 +2052,16 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr utility
+                    && utility.receiver() instanceof Ast.NameExpr owner
+                    && owner.name().equals("ActorUtils")
+                    && utility.member().equals("pipe")
+                    && env.lookup("ActorUtils") == null) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("ActorUtils::pipe is not generic");
+                }
+                return checkActorStreamStages(call.arguments(), env, generics, self);
+            }
             if (call.callee() instanceof Ast.NameExpr intrinsic
                     && intrinsic.name().equals("pipeline")
                     && env.lookup("pipeline") == null) {
@@ -2409,6 +2471,36 @@ public final class TypeChecker {
                     return Primitive.VOID;
                 }
 
+                if (receiver instanceof Named streamType
+                        && streamType.name().equals("ActorStream")) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException("ActorStream methods are not generic");
+                    }
+                    return switch (member.member()) {
+                        case "send" -> {
+                            if (call.arguments().size() != 1) {
+                                throw new IllegalArgumentException("ActorStream.send requires one message");
+                            }
+                            Type message = typeOf(call.arguments().getFirst(), env, generics, self);
+                            if (!(message instanceof Named tagged)
+                                    || !tagged.arguments().isEmpty()
+                                    || taggedCaseOrNull(tagged.name()) == null) {
+                                throw new IllegalArgumentException(
+                                        "ActorStream.send requires a checked nominal enum message");
+                            }
+                            requireSerializableActorMessageType(message, "ActorStream.send");
+                            yield Primitive.VOID;
+                        }
+                        case "get_done" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException("ActorStream.get_done takes no arguments");
+                            }
+                            yield new Named("Future", List.of(Primitive.VOID));
+                        }
+                        default -> throw new IllegalArgumentException(
+                                "unknown ActorStream method " + member.member());
+                    };
+                }
                 if (receiver instanceof Named actorRef
                         && actorRef.name().equals("ActorRef")) {
                     Ast.ClassDecl actorClass = actorClassForRef(actorRef);
@@ -2975,6 +3067,11 @@ public final class TypeChecker {
             if (httpMember != null) return httpMember;
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            if (sumReceiver instanceof Named streamType
+                    && streamType.name().equals("ActorStream")) {
+                throw new IllegalArgumentException(
+                        "ActorStream members are direct-call-only: send(...) or get_done()");
+            }
             if (sumReceiver instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
                 actorClassForRef(actorRef);

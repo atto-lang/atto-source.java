@@ -2763,8 +2763,12 @@ public final class Parser {
 
     private Ast.Expr parseBitwiseOr() {
         Ast.Expr expr = parseBitwiseXor();
-        while (!isChannelCallbackDelimiter() && matchSingleOperator(PIPE)) {
-            expr = new Ast.BinaryExpr("|", expr, parseBitwiseXor());
+        while (true) {
+            if (matchContextualIdentifier("pipe")) {
+                expr = new Ast.BinaryExpr("pipe", expr, parseBitwiseXor());
+            } else if (!isChannelCallbackDelimiter() && matchSingleOperator(PIPE)) {
+                expr = new Ast.BinaryExpr("|", expr, parseBitwiseXor());
+            } else break;
         }
         return expr;
     }
@@ -3017,6 +3021,15 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT)) {
+                String member = consumeMemberName();
+                expr = new Ast.MemberExpr(expr, member);
+            } else if (check(COLON) && checkNext(COLON)
+                    && adjacent(peek(), tokens.get(current + 1))) {
+                advance();
+                advance();
+                // The explicit static-resolution spelling is lowered to
+                // the existing namespace/class member dispatch. In
+                // particular ActorUtils::pipe never resolves an instance.
                 String member = consumeMemberName();
                 expr = new Ast.MemberExpr(expr, member);
             } else if (match(LBRACKET)) {
