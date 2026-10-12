@@ -137,14 +137,14 @@ final class ActorStateAndEffectsParserTest {
                 """)));
     }
 
-    @Test void permitsHomogeneousDynamicMapAndShadowedNestedStateCallbacks() {
+    @Test void permitsDynamicMapButRejectsNestedStateLoans() {
         assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
             define actor Cache as
                 state: Map<string, int>;
                 pub noop(): void { return; }
             end
             """)));
-        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
+        assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(Parser.parse("""
             define actor Counter as
                 state { count: int = 0; }
                 pub nested(): void {
@@ -171,8 +171,8 @@ final class ActorStateAndEffectsParserTest {
             """)));
     }
 
-    @Test void parsesSuspensionInStateCallbackWithoutClaimingRuntimeLowering() {
-        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
+    @Test void rejectsSuspensionWhileStateLoanIsLive() {
+        assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(Parser.parse("""
             define actor Worker as
                 state { count: int = 0; }
                 pub tick(): void {
