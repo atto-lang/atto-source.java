@@ -22,6 +22,8 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    // A lexical `using state.*` grant is valid only inside actor instance methods.
+    private boolean insideActorInstanceMethod;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -727,7 +729,13 @@ public final class Parser {
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
             }
-            methods.add(parseMethod(annotations, mods));
+            boolean previousScope = insideActorInstanceMethod;
+            insideActorInstanceMethod = !mods.isStatic;
+            try {
+                methods.add(parseMethod(annotations, mods));
+            } finally {
+                insideActorInstanceMethod = previousScope;
+            }
         }
 
         consume(terminator, braceStyle
@@ -811,6 +819,10 @@ public final class Parser {
             dev.oreslang.types.FunctionEffects.ofNames(names);
             result.add(new Ast.Annotation("$with$", names.stream()
                     .map(Ast.TypeRef::simple).toList()));
+        }
+        if (check(WITH) || check(USING)) {
+            throw error(peek(),
+                    "duplicate function effect clause; declare exactly one 'with' effect bound");
         }
         if (matchContextualIdentifier("requires")) {
             List<String> names = new ArrayList<>();
@@ -3082,7 +3094,7 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, SPAWN, STOP, DONE, AWAIT, ASYNC, NLEX, TRAP, NB, SELECT, READCH, WRITECH, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, EQ, NEQ, IS, WHEN, CASE, DEFAULT, FIRST, CB, UNTRUSTED, TYPE, TYPES, TYPEOF,
+                    NEW, SPAWN, STOP, DONE, AWAIT, ASYNC, NLEX, TRAP, WITH, NB, SELECT, READCH, WRITECH, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, EQ, NEQ, IS, WHEN, CASE, DEFAULT, FIRST, CB, UNTRUSTED, TYPE, TYPES, TYPEOF,
                     INTERFACE, TRAIT, STRUCT, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
@@ -3094,6 +3106,11 @@ public final class Parser {
         // effect row. Desugar scoped actor state into the one sealed
         // handle_state intrinsic without introducing a guest-callable API.
         if (match(USING)) {
+            Token usingToken = previous();
+            if (!insideActorInstanceMethod) {
+                throw error(usingToken,
+                        "using state capabilities require an actor instance method");
+            }
             String namespace = consume(IDENT, "using requires a scoped capability").lexeme();
             if (!namespace.equals("state"))
                 throw error(previous(), "unsupported using capability namespace '" + namespace + "'");

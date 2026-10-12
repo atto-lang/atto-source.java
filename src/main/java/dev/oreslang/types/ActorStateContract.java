@@ -68,8 +68,17 @@ public final class ActorStateContract {
                         "serial actor '" + klass.name()
                         + "' must use one state { ... } aggregate; legacy fields are forbidden");
             }
+            // Even storage-free actors must not override or call the sealed
+            // intrinsic, or forge a `self.state` member capability.
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.name().equals("handle_state")) {
+                    throw new IllegalArgumentException("handle_state is a sealed actor intrinsic");
+                }
+                visit(method.body(), klass.name(), null, null, false,
+                        !method.isStatic(), Ast.CriticalMode.NONE);
+            }
             return;
-        } // migration: non-serial legacy actor fields retain old behavior
+        }
         if (klass.fields().size() != 1) {
             throw new IllegalArgumentException(
                     "actor '" + klass.name() + "' may declare only the state schema");
@@ -116,6 +125,10 @@ public final class ActorStateContract {
                     || lambda.parameters().size() != 1) {
                 throw new IllegalArgumentException("self.handle_state expects exactly one single-argument lambda");
             }
+            if (keys == null) {
+                throw new IllegalArgumentException(
+                        "self.handle_state requires a declared actor state schema");
+            }
             Ast.CriticalMode loanMode = switch (lambda.criticalMode()) {
                 case NONE, READ -> Ast.CriticalMode.READ;
                 case EXCLUSIVE, WRITE -> Ast.CriticalMode.WRITE;
@@ -145,7 +158,9 @@ public final class ActorStateContract {
         }
         if (activeAccess != null
                 && (node instanceof Ast.AwaitExpr || node instanceof Ast.SelectStmt
-                    || node instanceof Ast.DynamicSelectExpr || node instanceof Ast.ChannelOpExpr)) {
+                    || node instanceof Ast.DynamicSelectExpr || node instanceof Ast.ChannelOpExpr
+                    || (node instanceof Ast.RuntimeCallExpr op
+                        && op.operation().equals("cooperate")))) {
             throw new IllegalArgumentException(
                     "actor state loan cannot cross await, select, or suspension");
         }
@@ -198,10 +213,13 @@ public final class ActorStateContract {
         }
         if (node instanceof Ast.RuntimeCallExpr op && activeAccess != null
                 && (op.operation().equals("borrow") || op.operation().equals("borrow_mut")
-                    || op.operation().equals("borrowMut"))
+                    || op.operation().equals("borrowMut")
+                    || op.operation().equals("take")
+                    || op.operation().equals("share")
+                    || op.operation().equals("copy"))
                 && referencesAccess(op.arguments(), activeAccess)) {
             throw new IllegalArgumentException(
-                    "actor state-backed borrow requires continuation-aware loan lowering");
+                    "actor state-backed ownership operation requires verified snapshot lowering");
         }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) visit(item, actor, keys, activeAccess, nestedClosure, instanceMethod, accessMode);
