@@ -111,7 +111,7 @@ public final class SupervisorProcess implements AutoCloseable {
         callbackActive = true;
         try {
             // Must enqueue; ActorRuntime supplies its shared CONTROL pool.
-            controlDispatcher.execute(this::beginCallback);
+            SupervisorDispatchGuard.enqueue(controlDispatcher, this::beginCallback);
         } catch (Throwable schedulingFailure) {
             failLocked(schedulingFailure);
         }
@@ -141,7 +141,8 @@ public final class SupervisorProcess implements AutoCloseable {
         try {
             pending.whenComplete((decision, failure) -> {
                 try {
-                    controlDispatcher.execute(
+                    SupervisorDispatchGuard.enqueue(
+                            controlDispatcher,
                             () -> finishCallback(notice, decision, failure));
                 } catch (Throwable schedulingFailure) {
                     synchronized (this) { failLocked(schedulingFailure); }
