@@ -365,7 +365,8 @@ class NativeHttpTest {
             // The host close must drain all former I/O carriers before its
             // synchronous socket-close fallback and exchange release.
             NativeHttp.REJECT_NEXT_ABORT_FOR_TEST.set(true);
-            assertDoesNotThrow(() -> { context.close(); });
+            assertDoesNotThrow(() -> OresContextLifecycle.closeWhenQuiescent(context),
+                    "host disposal must preflight while the outer Polyglot context is live");
             assertFalse(NativeHttp.REJECT_NEXT_ABORT_FOR_TEST.get(),
                     "the fault must have reached a real abort dispatch");
             assertTrue(output.toString(StandardCharsets.UTF_8).contains("stream-finalized"));
