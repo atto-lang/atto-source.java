@@ -123,6 +123,22 @@ final class HostSchedulerEntryGateTest {
     }
 
     @Test
+    void inlineGuestFailureReleasesExactlyOnePhysicalLease() {
+        var gate = new HostSchedulerEntryGate(1);
+        var admissionFailure = new AtomicReference<Throwable>();
+        var guestFailure = new IllegalStateException("guest threw");
+        assertSame(guestFailure, assertThrows(IllegalStateException.class,
+                () -> gate.submitGuest(Runnable::run, () -> {
+                    throw guestFailure;
+                }, admissionFailure::set)));
+        assertNull(admissionFailure.get(),
+                "a guest-body failure is not an executor admission rejection");
+        gate.sealAdmission();
+        assertTrue(gate.physicallyQuiescent(),
+                "inline execution cannot double-release the guest reservation");
+    }
+
+    @Test
     void sealedGateDrainsPreviouslyAuthorizedQueuedCleanupButRejectsNewWork()
             throws Exception {
         var gate = new HostSchedulerEntryGate(1);
