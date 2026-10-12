@@ -153,21 +153,24 @@ final class RuntimePermissionsTest {
 
     @Test
     void checkModeArgumentDoesNotBecomeAPermissionGrant() {
-        String[] arguments = {
-                "--ores-permission-check=runtime",
-                "--ores-permission-env-allow=PUBLIC_*"
+        String[] args = {
+                "--ores-permission-check=runtime", "--ores-permission-env-allow=PUBLIC_*"
         };
-        // Scoped CLI permission rules can only narrow a separately granted
-        // isolate capability. They must not manufacture ENVIRONMENT authority.
-        assertThrows(SecurityException.class, () ->
-                RuntimePermissions.fromApplicationArguments(arguments, IsolatePolicy.developer()));
-
+        // A scoped permission can narrow ENVIRONMENT when the host already
+        // granted that coarse capability. Permission-check mode grants nothing.
+        IsolatePolicy authorized = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.ENVIRONMENT);
         RuntimePermissions permissions = RuntimePermissions.fromApplicationArguments(
-                arguments,
-                IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.ENVIRONMENT));
+                args, authorized);
         assertTrue(permissions.allows(RuntimePermissions.Permission.ENV, "PUBLIC_NAME"));
         assertFalse(permissions.allows(RuntimePermissions.Permission.ENV, "SECRET"));
         assertFalse(permissions.allows(RuntimePermissions.Permission.WRITE, "/tmp/out"));
+
+        // A CLI/application argument must never promote a restricted isolate.
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> RuntimePermissions.fromApplicationArguments(
+                        args, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("ENVIRONMENT"), denied.getMessage());
     }
 
     @Test
