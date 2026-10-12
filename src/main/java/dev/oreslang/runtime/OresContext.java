@@ -529,6 +529,10 @@ public final class OresContext implements AutoCloseable {
                 // guest entries: cleanup may still require root/actor/async
                 // carriers and a failed close must be safely retryable.
                 hostFutureAdmission.sealHostClaims();
+                // No new host scope can begin after the seal. Reject teardown
+                // while a previous Value.execute still owns the physical
+                // host-entry boundary; retries can finish after it exits.
+                hostFutureAdmission.requireNoActiveHostClaim();
                 hostGeneratorTurns.seal();
                 // Actor-owned finalizers may still need the VM CONTROL scheduler,
                 // async workers, imported code, network or native I/O. Never
@@ -551,6 +555,9 @@ public final class OresContext implements AutoCloseable {
                     throw new IllegalStateException(
                             "context retirement refused: guest physical leave unproven");
                 }
+                // Verify actual host and Truffle entry leases have drained,
+                // not merely logical scheduler Futures.
+                hostFutureAdmission.requirePhysicalQuiescence();
                 // Only after all scheduler and async carriers prove physical
                 // exit may we revoke the residual admission gate.
                 hostFutureAdmission.close();
