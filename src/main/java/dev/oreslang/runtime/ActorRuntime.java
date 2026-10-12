@@ -1836,6 +1836,12 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
         if (cell == null || cell.stopped.get() || closed.get()) return false;
+        // An old or foreign task must not be able to exhaust a newer
+        // incarnation's bounded CONTROL lane, even momentarily. Carrier-time
+        // requireAdmissible() remains the authoritative live-lease check.
+        if (taskTicket != null && !taskTicket.issuedFor(actorId, cell.executionDomain)) {
+            return false;
+        }
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
@@ -1846,6 +1852,10 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || closed.get()) return false;
+                // Cell retirement/replacement might race slot reservation.
+                // Recheck immutable ticket provenance at publication too.
+                if (taskTicket != null
+                        && !taskTicket.issuedFor(actorId, cell.executionDomain)) return false;
                 if (!cell.continuationMailbox.tryWrite(
                         MessageEnvelope.continuation(continuation, taskTicket))) {
                     throw new IllegalStateException(
