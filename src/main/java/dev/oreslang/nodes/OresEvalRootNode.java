@@ -5368,10 +5368,22 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (!readOnly) {
-                // Conservative fallback: a WRITE descriptor captures a payload
-                // that must not be silently replayed on a later iteration.
-                return new ChannelRuntime.SelectPlan(
-                        cases, staticSelectTicket(selected));
+                // WRITE descriptors are always fresh: retain only the owner's
+                // committed FAIR cursor, never an earlier captured payload.
+                ActorRuntime owner = ActorRuntime.currentActorRuntime();
+                if (owner != null) {
+                    if (owner != context.actors()) {
+                        throw new SecurityException(
+                                "static WRITE select crossed ActorRuntime ownership");
+                    }
+                    return owner.actorFreshStaticSelectPlan(selected, cases);
+                }
+                synchronized (rootStaticSelectCursors) {
+                    return new ChannelRuntime.SelectPlan(
+                            cases,
+                            rootStaticSelectCursors.computeIfAbsent(
+                                    selected, ignored -> new AtomicLong()));
+                }
             }
 
             ActorRuntime actorRuntime = ActorRuntime.currentActorRuntime();
@@ -5385,26 +5397,13 @@ public final class OresEvalRootNode extends RootNode {
             synchronized (rootStaticSelectCursors) {
                 ChannelRuntime.SelectPlan existing = rootReadSelectPlans.get(selected);
                 ChannelRuntime.SelectPlan plan = existing == null
-                        ? new ChannelRuntime.SelectPlan(cases)
+                        ? new ChannelRuntime.SelectPlan(
+                                cases,
+                                rootStaticSelectCursors.computeIfAbsent(
+                                        selected, ignored -> new AtomicLong()))
                         : existing.rebindReadOnly(cases);
                 if (plan != existing) rootReadSelectPlans.put(selected, plan);
                 return plan;
-            }
-        }
-
-        private long staticSelectTicket(Ast.SelectStmt selected) {
-            ActorRuntime actorRuntime = ActorRuntime.currentActorRuntime();
-            if (actorRuntime != null) {
-                if (actorRuntime != context.actors()) {
-                    throw new SecurityException(
-                            "static select attempted to cross ActorRuntime ownership");
-                }
-                return actorRuntime.nextActorLocalSelectTicket(selected);
-            }
-            synchronized (rootStaticSelectCursors) {
-                return rootStaticSelectCursors
-                        .computeIfAbsent(selected, ignored -> new AtomicLong())
-                        .getAndIncrement();
             }
         }
 
