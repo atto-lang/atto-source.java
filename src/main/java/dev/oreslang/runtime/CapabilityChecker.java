@@ -301,6 +301,7 @@ public final class CapabilityChecker {
             }
             else if (stmt instanceof Ast.DestructureStmt s) checkExpr(s.initializer(), policy);
             else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) checkExpr(s.value(), policy);
+            else if (stmt instanceof Ast.ArmReturnStmt s) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.YieldStmt s) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
@@ -314,7 +315,9 @@ public final class CapabilityChecker {
                 checkStatements(s.elseBody(), policy);
             } else if (stmt instanceof Ast.MatchStmt s) {
                 checkExpr(s.subject(), policy);
+                checkType(s.returnContract(), policy);
                 for (Ast.MatchArm arm : s.arms()) {
+                    checkPattern(arm.pattern(), policy);
                     if (arm.guard() != null) checkExpr(arm.guard(), policy);
                     checkStatements(arm.body(), policy);
                 }
@@ -352,7 +355,38 @@ public final class CapabilityChecker {
         }
     }
 
+    private void checkPattern(Ast.Pattern pattern, IsolatePolicy policy) {
+        if (pattern instanceof Ast.TypePattern p) {
+            checkType(p.type(), policy);
+        } else if (pattern instanceof Ast.StructuralPattern p) {
+            checkType(p.target(), policy);
+        } else if (pattern instanceof Ast.TaggedTuplePattern p) {
+            checkType(p.tag(), policy);
+            checkPattern(p.tuple(), policy);
+        } else if (pattern instanceof Ast.TuplePattern p) {
+            for (Ast.Pattern nested : p.elements()) checkPattern(nested, policy);
+        } else if (pattern instanceof Ast.ConstructorPattern p) {
+            // A zero-arity constructor is still a nominal type reference.
+            // Check its authority even without an explicit TypePattern node.
+            checkType(Ast.TypeRef.simple(p.constructor()), policy);
+            for (Ast.Pattern nested : p.arguments()) checkPattern(nested, policy);
+        }
+    }
+
     private void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
+        if (expr instanceof Ast.ValueMatchExpr matched) {
+            // Arm-local completions carry effects independently of the outer
+            // function return. A missing traversal would let restricted actors
+            // hide authority-bearing calls inside expression-valued matches.
+            checkExpr(matched.subject(), policy);
+            checkType(matched.returnContract(), policy);
+            for (Ast.MatchArm arm : matched.arms()) {
+                checkPattern(arm.pattern(), policy);
+                if (arm.guard() != null) checkExpr(arm.guard(), policy);
+                checkStatements(arm.body(), policy);
+            }
+            return;
+        }
         if (expr instanceof Ast.NameExpr javaName) {
             String javaClass = javaImports.get(javaName.name());
             if (javaClass != null) {
@@ -408,6 +442,7 @@ public final class CapabilityChecker {
             for (Ast.Expr argument : runtime.arguments()) checkExpr(argument, policy);
         }
         else if (expr instanceof Ast.CallExpr c) {
+            for (Ast.TypeRef typeArgument : c.typeArguments()) checkType(typeArgument, policy);
             String target = memberPath(c.callee());
             if (isZeroAuthorityAdversarial(policy) && target != null) {
                 String root = target.contains(".")
@@ -473,6 +508,15 @@ public final class CapabilityChecker {
                 if (path.startsWith("process.spawn")) require(policy, IsolatePolicy.Capability.CHILD_PROCESS, path);
             }
             checkExpr(m.receiver(), policy);
+        } else if (expr instanceof Ast.TypeTestExpr e) {
+            checkExpr(e.value(), policy);
+            checkType(e.targetType(), policy);
+        } else if (expr instanceof Ast.PatternTestExpr e) {
+            checkExpr(e.value(), policy);
+            checkPattern(e.pattern(), policy);
+        } else if (expr instanceof Ast.CastExpr e) {
+            checkExpr(e.value(), policy);
+            checkType(e.targetType(), policy);
         } else if (expr instanceof Ast.SpreadExpr e) {
             checkExpr(e.expression(), policy);
         } else if (expr instanceof Ast.BinaryExpr e) { checkExpr(e.left(), policy); checkExpr(e.right(), policy); }

@@ -42,6 +42,14 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
+    /** Preserve each distinct cleanup failure without self-suppression. */
+    static void preserveCleanupFailure(Throwable primary, Throwable cleanup) {
+        if (primary == null || cleanup == null || primary == cleanup) return;
+        for (Throwable existing : primary.getSuppressed())
+            if (existing == cleanup) return;
+        primary.addSuppressed(cleanup);
+    }
+
     public static final String LINK_ONLY_COMMAND = "__ores_internal_link_only__";
     public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
@@ -805,35 +813,69 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private enum SourceFlowKind {
-            NORMAL, RETURN, BREAK, CONTINUE, THROW
+            NORMAL, RETURN, ARM_RESULT, BREAK, CONTINUE, THROW
         }
 
         private record SourceFlow(
                 SourceFlowKind kind,
                 Object value,
-                Throwable failure) {
+                Throwable failure,
+                long matchFrameId,
+                Object ownerTask) {
             private static SourceFlow normal() {
-                return new SourceFlow(SourceFlowKind.NORMAL, null, null);
+                return new SourceFlow(SourceFlowKind.NORMAL, null, null, 0, null);
             }
 
             private static SourceFlow returning(Object value) {
-                return new SourceFlow(SourceFlowKind.RETURN, value, null);
+                return new SourceFlow(SourceFlowKind.RETURN, value, null, 0, null);
+            }
+
+            private static SourceFlow armResult(
+                    Object value, long matchFrameId, Object ownerTask) {
+                if (matchFrameId <= 0) throw new IllegalStateException(
+                        "ARM_RESULT requires an owned lexical match frame");
+                return new SourceFlow(SourceFlowKind.ARM_RESULT, value, null,
+                        matchFrameId, Objects.requireNonNull(ownerTask, "ownerTask"));
             }
 
             private static SourceFlow breaking() {
-                return new SourceFlow(SourceFlowKind.BREAK, null, null);
+                return new SourceFlow(SourceFlowKind.BREAK, null, null, 0, null);
             }
 
             private static SourceFlow continuing() {
-                return new SourceFlow(SourceFlowKind.CONTINUE, null, null);
+                return new SourceFlow(SourceFlowKind.CONTINUE, null, null, 0, null);
             }
 
             private static SourceFlow throwing(Throwable failure) {
                 return new SourceFlow(
                         SourceFlowKind.THROW,
                         null,
-                        Objects.requireNonNull(failure, "failure"));
+                        Objects.requireNonNull(failure, "failure"),
+                        0, null);
             }
+        }
+
+        /**
+         * Merge one cleanup outcome into the execution-context completion.
+         * The first guest failure keeps its identity; cleanup failures become
+         * suppressed causes. In contrast, a failed cleanup overrides a pending
+         * ordinary/lexical result. This is independent of carrier threads.
+         */
+        private static SourceFlow sourceCleanup(SourceFlow pending, Throwable failure) {
+            Objects.requireNonNull(pending, "pending");
+            Objects.requireNonNull(failure, "failure");
+            if (pending.kind() == SourceFlowKind.THROW) {
+                preserveCleanupFailure(pending.failure(), failure);
+                return pending;
+            }
+            return SourceFlow.throwing(failure);
+        }
+
+        private static SourceFlow sourceFinally(SourceFlow pending, SourceFlow cleanup) {
+            if (cleanup.kind() == SourceFlowKind.NORMAL) return pending;
+            if (cleanup.kind() == SourceFlowKind.THROW)
+                return sourceCleanup(pending, cleanup.failure());
+            return cleanup;
         }
 
         /**
@@ -857,6 +899,14 @@ public final class OresEvalRootNode extends RootNode {
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
             private Env initialBlockEnv;
+
+            // Monotonic within the logical SourceTask; never derived from a carrier thread.
+            private long nextMatchFrameId;
+            private long newMatchFrameId() {
+                if (nextMatchFrameId == Long.MAX_VALUE) throw new IllegalStateException(
+                        "value match frame id overflow");
+                return ++nextMatchFrameId;
+            }
 
             private SourceValueCont awaitingContinuation;
             private OresScheduler.Step<Object> nextStep;
@@ -1079,6 +1129,8 @@ public final class OresEvalRootNode extends RootNode {
                             done(null);
                         }
                         case THROW -> throw sourceFailure(flow.failure());
+                        case ARM_RESULT -> throw new IllegalStateException(
+                                "ARM_RESULT escaped its owning value match frame");
                         case BREAK, CONTINUE ->
                                 throw new IllegalStateException(
                                         "loop control crossed a source continuation boundary");
@@ -1090,6 +1142,8 @@ public final class OresEvalRootNode extends RootNode {
                     case NORMAL -> done(shapeSourceReturn(null, null));
                     case RETURN -> done(shapeSourceReturn(flow.value(), null));
                     case THROW -> throw sourceFailure(flow.failure());
+                    case ARM_RESULT -> throw new IllegalStateException(
+                            "ARM_RESULT escaped its owning value match frame");
                     case BREAK, CONTINUE ->
                             throw new IllegalStateException(
                                     "loop control crossed a source function boundary");
@@ -1315,6 +1369,9 @@ public final class OresEvalRootNode extends RootNode {
                 return expressionContainsPotentialSuspension(
                         destructure.initializer(), seen);
             }
+            // ARM_RESULT needs the SourceFlow dispatcher, even when the
+            // result expression itself is immediately ready.
+            if (stmt instanceof Ast.ArmReturnStmt) return true;
             if (stmt instanceof Ast.ReturnStmt ret) {
                 return ret.value() != null
                         && expressionContainsPotentialSuspension(
@@ -1420,10 +1477,49 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
+        /** Only real suspension, not the lexical ARM_RESULT token itself. */
+        private boolean valueArmActuallySuspends(Ast.Stmt stmt, Set<Object> seen) {
+            if (stmt instanceof Ast.ArmReturnStmt arm)
+                return expressionContainsPotentialSuspension(arm.value(), seen);
+            if (stmt instanceof Ast.BindingStmt binding)
+                return expressionContainsPotentialSuspension(binding.initializer(), seen);
+            if (stmt instanceof Ast.ExprStmt expression)
+                return expressionContainsPotentialSuspension(expression.expression(), seen);
+            if (stmt instanceof Ast.DeferStmt defer)
+                return expressionContainsPotentialSuspension(defer.expression(), seen);
+            if (stmt instanceof Ast.BlockStmt block)
+                return block.body().stream().anyMatch(child -> valueArmActuallySuspends(child, seen));
+            if (stmt instanceof Ast.IfStmt conditional)
+                return conditional.branches().stream().anyMatch(branch ->
+                        expressionContainsPotentialSuspension(branch.condition(), seen)
+                                || branch.body().stream().anyMatch(child ->
+                                        valueArmActuallySuspends(child, seen)))
+                        || conditional.elseBody().stream().anyMatch(child ->
+                                valueArmActuallySuspends(child, seen));
+            if (stmt instanceof Ast.TryStmt tried)
+                return tried.body().stream().anyMatch(child -> valueArmActuallySuspends(child, seen))
+                        || tried.catchBody().stream().anyMatch(child -> valueArmActuallySuspends(child, seen))
+                        || tried.finallyBody().stream().anyMatch(child -> valueArmActuallySuspends(child, seen));
+            return false;
+        }
+
         private boolean expressionContainsPotentialSuspension(
                 Ast.Expr expr,
                 Set<Object> seen) {
             if (expr == null) return false;
+            if (expr instanceof Ast.ValueMatchExpr matched) {
+                // Do not promote synchronous value-match callables into async
+                // merely because ARM_RESULT needs a SourceFlow when in a task.
+                if (expressionContainsPotentialSuspension(matched.subject(), seen)) return true;
+                for (Ast.MatchArm arm : matched.arms()) {
+                    if (arm.guard() != null
+                            && expressionContainsPotentialSuspension(arm.guard(), seen)) return true;
+                    for (Ast.Stmt stmt : arm.body()) {
+                        if (valueArmActuallySuspends(stmt, seen)) return true;
+                    }
+                }
+                return false;
+            }
             if (expr instanceof Ast.AwaitExpr
                     || expr instanceof Ast.ChannelOpExpr channel
                         && channel.mode() == Ast.WaitMode.BLOCKING
@@ -1623,6 +1719,7 @@ public final class OresEvalRootNode extends RootNode {
             // Source tasks must carry returns as SourceFlow, not as a tail-call
             // signal, including when a discarded do-select value is a call.
             if (!(stmt instanceof Ast.ReturnStmt)
+                    && !(stmt instanceof Ast.ArmReturnStmt)
                     && !containsSourceLoop(stmt)
                     && !statementContainsPotentialSuspension(
                     stmt,
@@ -1708,7 +1805,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = sourceCleanup(completed, failure);
                 }
                 // The consumer owns any failure it throws. Do not call it twice.
                 continuation.accept(task, completed);
@@ -1736,7 +1833,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = sourceCleanup(completed, failure);
                 }
                 continuation.accept(task, completed);
                 return;
@@ -1748,14 +1845,11 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
-                            if (currentFlow.failure() != null) {
-                                failure.addSuppressed(currentFlow.failure());
-                            }
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    SourceFlow.throwing(failure),
+                                    sourceCleanup(currentFlow, failure),
                                     continuation);
                         } else {
                             runOneDefer(
@@ -1773,7 +1867,29 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Stmt stmt,
                 Env env,
                 ArrayDeque<Ast.Expr> defers,
-                SourceFlowCont continuation) {
+                SourceFlowCont downstream) {
+            // Never replay a statement completion if its consumer throws.
+            // Completion belongs to its SourceTask execution context, not to
+            // the producer callback or the physical carrier thread.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicReference<Throwable> consumerFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            SourceFlowCont continuation = (resumed, flow) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    Throwable prior = consumerFailure.get();
+                    if (prior instanceof RuntimeException runtime) throw runtime;
+                    if (prior instanceof Error error) throw error;
+                    throw new IllegalStateException(
+                            "suspendable statement completed more than once");
+                }
+                try {
+                    downstream.accept(resumed, flow);
+                } catch (RuntimeException | Error failure) {
+                    consumerFailure.compareAndSet(null, failure);
+                    throw failure;
+                }
+            };
             try {
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
@@ -1847,6 +1963,22 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure2));
                                 }
                             });
+                    return;
+                }
+
+                if (stmt instanceof Ast.ArmReturnStmt returned) {
+                    long owner = env.valueMatchFrameId;
+                    if (owner <= 0) throw new IllegalStateException(
+                            "ARM_RESULT outside owning typed match frame");
+                    evalSuspendableExpr(
+                            task,
+                            returned.value(),
+                            env,
+                            (t, value, failure) ->
+                                    continuation.accept(t,
+                                            failure == null
+                                                    ? SourceFlow.armResult(value, owner, t)
+                                                    : SourceFlow.throwing(failure)));
                     return;
                 }
 
@@ -1993,7 +2125,8 @@ public final class OresEvalRootNode extends RootNode {
                             attempted.body(),
                             env,
                             (t, flow) -> {
-                                if (flow.kind() == SourceFlowKind.THROW) {
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && !(flow.failure() instanceof OresPanic)) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
@@ -2011,10 +2144,7 @@ public final class OresEvalRootNode extends RootNode {
                                                             (t3, finallyFlow) ->
                                                                     continuation.accept(
                                                                             t3,
-                                                                            finallyFlow.kind()
-                                                                                            != SourceFlowKind.NORMAL
-                                                                                    ? finallyFlow
-                                                                                    : catchFlow)));
+                                                                            sourceFinally(catchFlow, finallyFlow))));
                                 } else {
                                     runBlock(
                                             t,
@@ -2023,10 +2153,7 @@ public final class OresEvalRootNode extends RootNode {
                                             (t2, finallyFlow) ->
                                                     continuation.accept(
                                                             t2,
-                                                            finallyFlow.kind()
-                                                                            != SourceFlowKind.NORMAL
-                                                                    ? finallyFlow
-                                                                    : flow));
+                                                            sourceFinally(flow, finallyFlow)));
                                 }
                             });
                     return;
@@ -2135,6 +2262,9 @@ public final class OresEvalRootNode extends RootNode {
                         "unsupported suspendable statement "
                                 + stmt.getClass().getName());
             } catch (RuntimeException | Error failure) {
+                // Once the consumer owns the outcome, the current statement
+                // must not reinterpret its error or run cleanup twice.
+                if (delivered.get()) throw failure;
                 continuation.accept(
                         task,
                         SourceFlow.throwing(failure));
@@ -2889,12 +3019,90 @@ public final class OresEvalRootNode extends RootNode {
                     Map.copyOf(bindings));
         }
 
+        /**
+         * Match evaluation belongs to the same logical SourceTask across await.
+         * One monotonically allocated frame id identifies the selected arm;
+         * inner typed matches allocate distinct ids and cannot steal its result.
+         */
+        private void runValueMatchArms(
+                SourceTask task,
+                Ast.ValueMatchExpr matched,
+                Object subject,
+                Env parent,
+                int index,
+                SourceValueCont continuation) {
+            if (index >= matched.arms().size()) {
+                continuation.accept(task, null, new IllegalStateException(
+                        "exhaustive typed value match invariant violated: no arm matched"));
+                return;
+            }
+            Ast.MatchArm arm = matched.arms().get(index);
+            LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+            final boolean matches;
+            try {
+                matches = patternMatches(arm.pattern(), subject, bindings);
+            } catch (RuntimeException | Error error) {
+                continuation.accept(task, null, error);
+                return;
+            }
+            if (!matches) {
+                runValueMatchArms(task, matched, subject, parent, index + 1, continuation);
+                return;
+            }
+            Env armEnv = new Env(parent);
+            bindings.forEach((name, value) ->
+                    armEnv.define(name, value, Ast.BindingKind.VAL));
+            // Guard is currently non-suspending by static admission. Evaluate
+            // it before creating the new lexical result owner.
+            final boolean selected;
+            try {
+                selected = arm.guard() == null || truth(eval(arm.guard(), armEnv));
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
+            if (!selected) {
+                runValueMatchArms(task, matched, subject, parent, index + 1, continuation);
+                return;
+            }
+            final long owner = task.newMatchFrameId();
+            armEnv.valueMatchFrameId = owner;
+            runBlock(task, arm.body(), armEnv, (t, flow) -> {
+                if (flow.kind() == SourceFlowKind.ARM_RESULT) {
+                    if (flow.matchFrameId() != owner
+                            || flow.ownerTask() != t || t != task) {
+                        continuation.accept(t, null, new IllegalStateException(
+                                "ARM_RESULT crossed another lexical match or task boundary"));
+                    } else {
+                        continuation.accept(t, flow.value(), null);
+                    }
+                } else if (flow.kind() == SourceFlowKind.THROW) {
+                    continuation.accept(t, null, flow.failure());
+                } else {
+                    continuation.accept(t, null, new IllegalStateException(
+                            "typed value match arm terminated without its owned ARM_RESULT: "
+                                    + flow.kind()));
+                }
+            });
+        }
+
         private void evalSuspendableExpr(
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
                 SourceValueCont continuation) {
             try {
+                if (expr instanceof Ast.ValueMatchExpr matched) {
+                    evalSuspendableExpr(task, matched.subject(), env,
+                            (t, subject, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                runValueMatchArms(t, matched, subject, env, 0, continuation);
+                            });
+                    return;
+                }
                 if (!expressionContainsPotentialSuspension(
                         expr,
                         java.util.Collections.newSetFromMap(
@@ -4596,24 +4804,49 @@ public final class OresEvalRootNode extends RootNode {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
+            Throwable originalFailure = null;
             try {
-                for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
+                for (Ast.Stmt stmt : statements)
+                    executeStatement(stmt, env, deferred, inheritedTailBarrier);
             } catch (TailCallSignal signal) {
                 throw signal;
-            } catch (ReturnSignal | BreakSignal | ContinueSignal signal) {
+            } catch (ReturnSignal | ArmResultSignal | BreakSignal | ContinueSignal signal) {
+                // Lexical completions are not guest exceptions. Cleanup still
+                // runs exactly once before their nearest lexical handler.
                 throw signal;
             } catch (RuntimeException | Error failure) {
                 abnormalExit = true;
+                originalFailure = failure;
                 throw failure;
             } finally {
-                boolean deferredFailure = false;
+                Throwable cleanupFailure = null;
+                // Run every deferred cleanup in LIFO order, even after one
+                // fails. Preserve the first cleanup failure as the leader.
+                while (!deferred.isEmpty()) {
+                    try {
+                        eval(deferred.pop(), env);
+                    } catch (RuntimeException | Error failure) {
+                        if (cleanupFailure == null) cleanupFailure = failure;
+                        else if (cleanupFailure != failure)
+                            preserveCleanupFailure(cleanupFailure, failure);
+                    }
+                }
                 try {
-                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                    env.releaseMutexGuards(abnormalExit || cleanupFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    deferredFailure = true;
+                    if (cleanupFailure == null) cleanupFailure = failure;
+                    else if (cleanupFailure != failure)
+                        preserveCleanupFailure(cleanupFailure, failure);
+                }
+                if (originalFailure != null) {
+                    // Never mask the original guest failure with a later
+                    // deferred expression or MutexGuard release failure.
+                    if (cleanupFailure != null && cleanupFailure != originalFailure)
+                        preserveCleanupFailure(originalFailure, cleanupFailure);
+                } else if (cleanupFailure instanceof RuntimeException failure) {
                     throw failure;
-                } finally {
-                    env.releaseMutexGuards(abnormalExit || deferredFailure);
+                } else if (cleanupFailure instanceof Error failure) {
+                    throw failure;
                 }
             }
         }
@@ -4657,6 +4890,11 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 return;
+            }
+            if (stmt instanceof Ast.ArmReturnStmt returned) {
+                // This completion is consumed only by the nearest lexical
+                // ValueMatchExpr, after all nested defers/finally unwind.
+                throw new ArmResultSignal(eval(returned.value(), env));
             }
             if (stmt instanceof Ast.ReturnStmt ret) {
                 returnFrom(
@@ -4820,15 +5058,38 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.TryStmt tried) {
                 // A call under catch/finally is not a proper tail call: the
                 // caller still owns exception/cleanup semantics after the call.
-                try { executeBlock(tried.body(), env, true); }
-                catch (TailCallSignal signal) { throw signal; }
-                catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
-                catch (OresPanic panic) { throw panic; }
-                catch (RuntimeException failure) {
-                    Env catchEnv = new Env(env);
-                    catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
-                    executeBlock(tried.catchBody(), catchEnv, true);
-                } finally { executeBlock(tried.finallyBody(), env, true); }
+                Throwable originalFailure = null;
+                try {
+                    try { executeBlock(tried.body(), env, true); }
+                    catch (TailCallSignal signal) { throw signal; }
+                    catch (ReturnSignal | ArmResultSignal | BreakSignal | ContinueSignal signal) { throw signal; }
+                    catch (OresPanic panic) { throw panic; }
+                    catch (RuntimeException failure) {
+                        Env catchEnv = new Env(env);
+                        catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
+                        executeBlock(tried.catchBody(), catchEnv, true);
+                    }
+                } catch (TailCallSignal signal) {
+                    throw signal;
+                } catch (ReturnSignal | ArmResultSignal | BreakSignal | ContinueSignal signal) {
+                    // A pending lexical completion is not an exception. A
+                    // failed finally must override it, never be suppressed.
+                    throw signal;
+                } catch (RuntimeException | Error failure) {
+                    // Includes a panic or a failure from the catch body. If
+                    // finally also fails, preserve this original identity.
+                    originalFailure = failure;
+                    throw failure;
+                } finally {
+                    try {
+                        executeBlock(tried.finallyBody(), env, true);
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        if (originalFailure != null && originalFailure != cleanupFailure)
+                            preserveCleanupFailure(originalFailure, cleanupFailure);
+                        else
+                            throw cleanupFailure;
+                    }
+                }
                 return;
             }
             if (stmt instanceof Ast.ForOfDestructureStmt loop) {
@@ -5592,6 +5853,33 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.ValueMatchExpr matched) {
+                // Staged arm-local expression lowering: no ReturnSignal is
+                // created or caught. This cannot exit the containing callable.
+                Object subject = eval(matched.subject(), env);
+                for (Ast.MatchArm arm : matched.arms()) {
+                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                    if (!patternMatches(arm.pattern(), subject, bindings)) continue;
+                    Env armEnv = new Env(env);
+                    bindings.forEach((name, value) ->
+                            armEnv.define(name, value, Ast.BindingKind.VAL));
+                    if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
+                    try {
+                        executeBlock(arm.body(), armEnv, true);
+                    } catch (ArmResultSignal result) {
+                        return result.value;
+                    } catch (ReturnSignal escaped) {
+                        // A procedural/nonlocal return inside a value arm
+                        // must not silently become a function return.
+                        throw new IllegalStateException(
+                                "nonlocal function return reached typed value match arm", escaped);
+                    }
+                    throw new IllegalStateException(
+                            "typed value match arm completed without ARM_RESULT");
+                }
+                throw new IllegalStateException(
+                        "exhaustive typed value match invariant violated: no arm matched");
+            }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
@@ -8387,6 +8675,8 @@ public final class OresEvalRootNode extends RootNode {
         private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
+        // Zero means this frame is not owned by a typed value match.
+        private long valueMatchFrameId;
         private Env(Env parent) {
             this(
                     parent,
@@ -8438,6 +8728,7 @@ public final class OresEvalRootNode extends RootNode {
             this.lexicalContainerClass = lexicalContainerClass;
             this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
+            this.valueMatchFrameId = parent == null ? 0 : parent.valueMatchFrameId;
         }
 
         private Env lexicalBoundaryOnly() {
@@ -8612,6 +8903,15 @@ public final class OresEvalRootNode extends RootNode {
         private Object value;
         private final Ast.BindingKind kind;
         private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+    }
+
+    /** A value-match result is not a function return or a catchable guest error. */
+    private static final class ArmResultSignal extends RuntimeException {
+        private final Object value;
+        private ArmResultSignal(Object value) {
+            super(null, null, false, false);
+            this.value = value;
+        }
     }
 
     private static final class ReturnSignal extends RuntimeException {

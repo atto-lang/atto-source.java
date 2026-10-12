@@ -22,6 +22,8 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    /** Lexical value-match completion boundary, reset by independent lambdas. */
+    private int valueArmDepth;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -1589,7 +1591,9 @@ public final class Parser {
         if (match(RETURN)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
-            return new Ast.ReturnStmt(value);
+            return valueArmDepth > 0
+                    ? new Ast.ArmReturnStmt(value)
+                    : new Ast.ReturnStmt(value);
         }
         if (match(YIELD)) {
             boolean delegated = match(STAR);
@@ -2434,6 +2438,10 @@ public final class Parser {
     }
 
     private Ast.MatchStmt parseMatch(boolean procedural) {
+        return parseMatch(procedural, false);
+    }
+
+    private Ast.MatchStmt parseMatch(boolean procedural, boolean valuePosition) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
         //     on Pattern -> { ... }
@@ -2455,6 +2463,12 @@ public final class Parser {
             }
             returnContract = parseTypeRef();
             consume(GT, "expected '>' after match return-type contract");
+        }
+        if (valuePosition && returnContract == null) {
+            throw error(peek(), "value-producing match requires <ret=Type> during staged lowering");
+        }
+        if (valuePosition && procedural) {
+            throw error(peek(), "do match cannot produce an expression result");
         }
 
         boolean previousSuppression = suppressRefinementOperators;
@@ -2508,7 +2522,15 @@ public final class Parser {
             if (!match(ARROW) && !check(LBRACE)) {
                 throw error(peek(), "match arm requires '{ ... }' or '-> { ... }'");
             }
-            Ast.MatchArm arm = new Ast.MatchArm(pattern, guard, parseBlock());
+            int previousArmDepth = valueArmDepth;
+            valueArmDepth = valuePosition ? previousArmDepth + 1 : 0;
+            List<Ast.Stmt> body;
+            try {
+                body = parseBlock();
+            } finally {
+                valueArmDepth = previousArmDepth;
+            }
+            Ast.MatchArm arm = new Ast.MatchArm(pattern, guard, body);
             if (catchAll) {
                 if (defaultArm != null) throw error(previous(), "match can contain only one default arm");
                 defaultArm = arm;
@@ -3129,6 +3151,11 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        if (match(MATCH)) {
+            Ast.MatchStmt matched = parseMatch(false, true);
+            return new Ast.ValueMatchExpr(
+                    matched.subject(), matched.ordered(), matched.arms(), matched.returnContract());
+        }
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
@@ -3309,6 +3336,9 @@ public final class Parser {
     }
 
     private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
+        int outerArmDepth = valueArmDepth;
+        valueArmDepth = 0;
+        try {
         // Only an immediate '{' denotes the statement-block form. Everything
         // else starts a normal expression body. This is intentionally lexical:
         // future prefix expressions such as `struct{...}{...}` must remain
@@ -3317,6 +3347,9 @@ public final class Parser {
             return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
         }
         return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
+        } finally {
+            valueArmDepth = outerArmDepth;
+        }
     }
 
     private boolean looksLikeLambda() {
