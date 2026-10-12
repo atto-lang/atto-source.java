@@ -1,6 +1,4 @@
 package dev.oreslang.runtime.accel;
-
-import dev.oreslang.runtime.accel.GpuBufferFence;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -14,8 +12,20 @@ final class GpuBufferFenceTest {
         assertEquals(GpuBufferFence.Status.IN_FLIGHT, buffer.status());
         assertThrows(IllegalStateException.class, buffer::take);
         assertThrows(IllegalStateException.class, buffer::close);
+        // The same generation and sequence on an unrelated buffer must
+        // not forge completion or cancellation of this buffer's command.
+        var unrelated = new GpuBufferFence(id, 8);
+        var unrelatedTicket = unrelated.beginCommand(id);
+        assertEquals(command.generation(), unrelatedTicket.generation());
+        assertEquals(command.sequence(), unrelatedTicket.sequence());
         assertThrows(IllegalStateException.class,
-                () -> buffer.complete(null, true));
+                () -> buffer.complete(unrelatedTicket, true));
+        assertThrows(IllegalStateException.class,
+                () -> buffer.cancelPending(unrelatedTicket));
+        assertEquals(0, GpuBufferFence.Ticket.class.getConstructors().length);
+        unrelated.complete(unrelatedTicket, true);
+        unrelated.retireAfterBackendRelease(id);
+        unrelated.close();
         buffer.complete(command, true);
         assertThrows(IllegalStateException.class, () -> buffer.complete(command, true));
         var owner = buffer.take();
@@ -23,9 +33,10 @@ final class GpuBufferFenceTest {
         buffer.close(); // A moved-from wrapper has relinquished ownership.
         assertEquals(1024, owner.byteLength());
         var next = owner.beginCommand(id);
-        assertThrows(IllegalStateException.class, () -> owner.complete(command, true));
         assertNotEquals(command.sequence(), next.sequence());
         owner.cancelPending(next);
+        assertThrows(IllegalStateException.class,
+                () -> owner.acknowledgeCancelledDeviceEvent(command, id));
         assertEquals(GpuBufferFence.Status.POISONED, owner.status());
         assertThrows(IllegalStateException.class, owner::take);
         assertThrows(IllegalStateException.class, () -> owner.retireAfterBackendRelease(id));
@@ -47,18 +58,12 @@ final class GpuBufferFenceTest {
         fence.close();
         assertThrows(IllegalArgumentException.class, () -> new GpuBufferFence(id, 0));
     }
-    @Test void deviceEventAndClaimApisRemainInternalAndTicketsCannotBeForged() throws Exception {
-        var ticketConstructor = GpuBufferFence.Ticket.class
-                .getDeclaredConstructor(long.class, long.class);
-        assertTrue(java.lang.reflect.Modifier.isPrivate(ticketConstructor.getModifiers()));
-        for (var method : new String[]{
-                "beginCommand", "complete", "cancelPending",
-                "acknowledgeCancelledDeviceEvent", "retireAfterBackendRelease",
-                "claimPair"}) {
-            boolean exposed = java.util.Arrays.stream(GpuBufferFence.class.getDeclaredMethods())
-                    .anyMatch(m -> m.getName().equals(method)
-                            && java.lang.reflect.Modifier.isPublic(m.getModifiers()));
-            assertFalse(exposed, "guest-visible GPU event API: " + method);
+    @Test void backendCompletionCannotBeCalledThroughPublicApi() {
+        for (String method : new String[]{"beginCommand", "complete", "cancelPending",
+                "acknowledgeCancelledDeviceEvent", "retireAfterBackendRelease", "claimPair"}) {
+            assertFalse(java.util.Arrays.stream(GpuBufferFence.class.getMethods())
+                    .anyMatch(m -> m.getName().equals(method)),
+                    "untrusted Java caller could invoke trusted GPU transition: " + method);
         }
     }
 
