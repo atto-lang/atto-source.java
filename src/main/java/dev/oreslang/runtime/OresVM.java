@@ -155,7 +155,7 @@ public final class OresVM implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() {
+    public void close() {
         // A CONTROL/root task cannot wait for its own carrier to leave. Reject
         // BEFORE setting CLOSED or revoking dispatch; otherwise the scheduler's
         // own close guard throws after the VM has been irreversibly poisoned.
@@ -167,6 +167,7 @@ public final class OresVM implements AutoCloseable {
             throw new IllegalStateException(
                     "OresVM must be closed outside actor and CONTROL scheduler turns");
         }
+        synchronized (this) {
         if (!closed.compareAndSet(false, true)) return;
         startupState = StartupState.CLOSED;
         try {
@@ -184,6 +185,7 @@ public final class OresVM implements AutoCloseable {
                         "interrupted while closing Oreslang CONTROL scheduler",
                         interrupted);
             }
+        }
         }
     }
 }

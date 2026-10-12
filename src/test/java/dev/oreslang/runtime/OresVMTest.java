@@ -87,6 +87,41 @@ final class OresVMTest {
     }
 
     @Test
+    void rootClosePreflightDoesNotWaitForVmMonitorHeldByAnotherThread() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        var acquired = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        Thread holdingMonitor = Thread.ofPlatform().start(() -> {
+            synchronized (vm) {
+                acquired.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("test monitor-release timed out");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+            }
+        });
+        try {
+            assertTrue(acquired.await(5, TimeUnit.SECONDS));
+            var task = vm.rootScheduler().start(resume -> {
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalStateException.class, vm::close);
+                return OresScheduler.done(9);
+            });
+            assertEquals(9, task.get(2, TimeUnit.SECONDS),
+                    "self-close rejection must run BEFORE waiting on VM monitor");
+        } finally {
+            release.countDown();
+            holdingMonitor.join(5000);
+            assertTrue(!holdingMonitor.isAlive());
+            vm.close();
+        }
+    }
+
+    @Test
     void startupIsIdempotentAndSchedulerDispatchIdsRemainFresh() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try {
