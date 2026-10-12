@@ -127,15 +127,19 @@ public final class OresVM implements AutoCloseable {
         // Close seals all new host entry BEFORE actor/CONTROL resources retire.
         // Active scopes and already-queued cleanup still drain on retry.
         private boolean sealed;
+        // Permanent negative evidence: an executor reported failure while
+        // a submitted root turn may still physically own the guest context.
+        // The outcome is not a reusable carrier or physical DONE receipt.
+        private boolean unprovenSubmission;
 
         private RootHandoffGate(Executor downstream) {
             this.downstream = Objects.requireNonNull(downstream, "downstream");
         }
 
         synchronized HostHandoffLease begin() {
-            if (sealed) {
+            if (sealed || unprovenSubmission) {
                 throw new RejectedExecutionException(
-                        "root host handoff admission is sealed");
+                        "root host handoff admission is sealed or unproven");
             }
             if (executingRootTurns != 0) {
                 throw new RejectedExecutionException(
@@ -151,6 +155,7 @@ public final class OresVM implements AutoCloseable {
 
         synchronized int heldCount() { return held.size(); }
         synchronized boolean active() {
+            if (unprovenSubmission) return true;
             // This tests HOST scope ownership only. Executing root tasks
             // drain through OresScheduler.close(), where their physical
             // carrier-exit barrier is established. Treating them as host
@@ -161,6 +166,10 @@ public final class OresVM implements AutoCloseable {
         @Override public void execute(Runnable task) {
             Objects.requireNonNull(task, "task");
             synchronized (this) {
+                if (unprovenSubmission) {
+                    throw new RejectedExecutionException(
+                            "root turn submission is unproven; context quarantined");
+                }
                 if (hostScopes > 0 || draining || !held.isEmpty()) {
                     if (held.size() >= DEFAULT_QUEUE_CAPACITY) {
                         throw new RejectedExecutionException(
@@ -181,6 +190,8 @@ public final class OresVM implements AutoCloseable {
          */
         private void submitGuarded(Runnable task, boolean fromDrain) {
             AtomicBoolean started = new AtomicBoolean();
+            AtomicBoolean requeuedWithoutEntry = new AtomicBoolean();
+            AtomicBoolean guestTurnReturnedNormally = new AtomicBoolean();
             Runnable gated = () -> {
                 if (!started.compareAndSet(false, true)) return;
                 synchronized (this) {
@@ -191,6 +202,7 @@ public final class OresVM implements AutoCloseable {
                         }
                         // This turn was admitted before later host-scoped turns.
                         held.addFirst(task);
+                        requeuedWithoutEntry.set(true);
                         return;
                     }
                     // Physically claim the root turn under the very same
@@ -200,6 +212,7 @@ public final class OresVM implements AutoCloseable {
                 }
                 try {
                     task.run();
+                    guestTurnReturnedNormally.set(true);
                 } finally {
                     synchronized (this) {
                         executingRootTurns--;
@@ -215,6 +228,12 @@ public final class OresVM implements AutoCloseable {
                 // inline executor can run the guest and then throw: NEVER
                 // requeue a task whose physical entry already started.
                 boolean revokedBeforeStart = started.compareAndSet(false, true);
+                if (!revokedBeforeStart && !requeuedWithoutEntry.get()
+                        && !guestTurnReturnedNormally.get()) {
+                    synchronized (this) {
+                        unprovenSubmission = true;
+                    }
+                }
                 if (fromDrain) {
                     synchronized (this) {
                         if (revokedBeforeStart) held.addFirst(task);
@@ -240,6 +259,10 @@ public final class OresVM implements AutoCloseable {
         /** Retry failed downstream submission without releasing a host lease twice. */
         private void retryHeldDrain() {
             synchronized (this) {
+                if (unprovenSubmission) {
+                    throw new RejectedExecutionException(
+                            "uncertain root physical exit cannot retry queued carriers");
+                }
                 if (hostScopes != 0 || draining || held.isEmpty()) return;
                 draining = true;
             }
@@ -250,6 +273,11 @@ public final class OresVM implements AutoCloseable {
             while (true) {
                 Runnable next;
                 synchronized (this) {
+                    if (unprovenSubmission) {
+                        draining = false;
+                        throw new RejectedExecutionException(
+                                "uncertain root physical exit cannot drain queued carriers");
+                    }
                     if (hostScopes != 0) {
                         draining = false;
                         return;
