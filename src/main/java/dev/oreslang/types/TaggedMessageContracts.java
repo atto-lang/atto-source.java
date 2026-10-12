@@ -65,6 +65,12 @@ public final class TaggedMessageContracts {
         }
     }
 
+    private static boolean hasExplicitBox(Ast.TypeRef ref) {
+        if (ref == null) return false;
+        if (ref.name().equals("Box")) return true;
+        return ref.arguments().stream().anyMatch(TaggedMessageContracts::hasExplicitBox);
+    }
+
     private static void appendPatternCase(List<Case> items, Set<String> seen, Case entry) {
         if (!seen.add(entry.qualifiedName())) {
             throw new IllegalArgumentException(
@@ -162,9 +168,13 @@ public final class TaggedMessageContracts {
                             // in local registration rather than being erased.
                             boolean indirect = localOnlyCases.contains(
                                     enumDecl.name() + "." + entry.name());
+                            boolean recursiveWire = unsupported.getMessage().contains(
+                                    "recursive enum wire schema");
+                            boolean boxedWire = unsupported.getMessage().contains(
+                                    "no portable Serializable wire codec: Box")
+                                    && hasExplicitBox(entry.payload());
                             if (!localOnly || !indirect
-                                    || !unsupported.getMessage().contains(
-                                            "recursive enum wire schema")) {
+                                    || (!recursiveWire && !boxedWire)) {
                                 throw unsupported;
                             }
                         }
