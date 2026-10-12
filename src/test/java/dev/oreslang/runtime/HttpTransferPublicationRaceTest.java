@@ -79,6 +79,62 @@ final class HttpTransferPublicationRaceTest {
         }
     }
 
+    @Test void sealFencesClaimsAsWellAsNewPublications() {
+        var registry = new NativeHttp.TransferPublicationGate<String>();
+        registry.publish("before", "claimed-before-close");
+        assertTrue(registry.claimIfOpen("before", "claimed-before-close"));
+        assertEquals(List.of(), registry.sealAndSnapshot());
+        assertFalse(registry.claimIfOpen("before", "claimed-before-close"));
+        assertThrows(IllegalStateException.class,
+                () -> registry.publish("after", "unreachable"));
+
+        var pending = new NativeHttp.TransferPublicationGate<String>();
+        pending.publish("stale", "old-incarnation");
+        assertEquals(List.of("old-incarnation"), pending.sealAndSnapshot());
+        assertFalse(pending.claimIfOpen("stale", "old-incarnation"),
+                "a guest cannot claim a published ticket after runtime shutdown");
+        assertEquals("old-incarnation", pending.remove("stale"),
+                "authorized teardown may still revoke the stale ticket");
+    }
+
+    @Test void concurrentClaimsAndShutdownLeaveExactlyTheUnclaimedSnapshot()
+            throws Exception {
+        final int attempts = 96;
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int round = 0; round < 16; round++) {
+                var registry = new NativeHttp.TransferPublicationGate<Integer>();
+                for (int n = 0; n < attempts; n++)
+                    registry.publish(Integer.toString(n), n);
+                var begin = new CountDownLatch(1);
+                var claimed = new AtomicInteger();
+                var tasks = new ArrayList<java.util.concurrent.Future<?>>();
+                for (int n = 0; n < attempts; n++) {
+                    final int token = n;
+                    tasks.add(workers.submit(() -> {
+                        begin.await();
+                        if (registry.claimIfOpen(Integer.toString(token), token))
+                            claimed.incrementAndGet();
+                        return null;
+                    }));
+                }
+                var closing = workers.submit(() -> {
+                    begin.await();
+                    return registry.sealAndSnapshot();
+                });
+                begin.countDown();
+                var remaining = closing.get(10, TimeUnit.SECONDS);
+                for (var task : tasks) task.get(10, TimeUnit.SECONDS);
+                assertEquals(attempts, claimed.get() + remaining.size(),
+                        "every ticket must be claimed before seal or retained for teardown");
+                assertEquals(remaining.size(), registry.size());
+                assertEquals(remaining.size(), new HashSet<>(remaining).size());
+                for (int n = 0; n < attempts; n++)
+                    assertFalse(registry.claimIfOpen(Integer.toString(n), n),
+                            "post-shutdown claims must always fail");
+            }
+        }
+    }
+
     @Test void duplicatePublicationCannotOverwriteOriginalTransfer() {
         var registry = new NativeHttp.TransferPublicationGate<String>();
         registry.publish("ticket", "original-actor");
