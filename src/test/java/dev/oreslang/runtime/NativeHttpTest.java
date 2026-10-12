@@ -199,6 +199,9 @@ class NativeHttpTest {
               handler.dispatch(rt borrow mut second);
               await observedFirst;
               await observedSecond;
+              stdio.println(server.transfer_backlog);
+              stdio.println(server.tombstones);
+              stdio.println(server.transfer_backlog_limit);
               await server.shutdown(0);
               return;
             }
@@ -207,6 +210,7 @@ class NativeHttpTest {
                 assertEquals("serial-ok", request(port, "GET", "/second", "").body());
             });
         assertTrue(output.contains("1\n2\n3\n"), output);
+        assertTrue(output.endsWith("0\n0\n2\n"), output);
     }
 
     @Test void serialHandlerRestartUsesNewIncarnationAndResetsActorState() throws Exception {
