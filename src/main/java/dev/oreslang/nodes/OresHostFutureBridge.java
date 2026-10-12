@@ -1,6 +1,7 @@
 package dev.oreslang.nodes;
 
 import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresContext;
 import org.graalvm.polyglot.Value;
 
 import java.util.ArrayDeque;
@@ -39,6 +40,7 @@ public final class OresHostFutureBridge {
         private Object ownerContext;
         private Object ownerRoot;
         private OresFuture<?> future;
+        private boolean contextHandoffAcquired;
 
         Slot(String function) {
             this.function = Objects.requireNonNull(function, "function");
@@ -60,6 +62,13 @@ public final class OresHostFutureBridge {
             // a rejected claim must not retain a partially staged context.
             Object validatedContext = Objects.requireNonNull(context, "context");
             Object validatedRoot = Objects.requireNonNull(root, "root");
+            // A newly launched scheduler carrier may start immediately.
+            // Seal its Truffle entry while the public host Value.execute is
+            // still active; only the host bridge finally block releases it.
+            if (validatedContext instanceof OresContext guestContext) {
+                guestContext.beginScopedHostFutureHandoff();
+                contextHandoffAcquired = true;
+            }
             ownerContext = validatedContext;
             ownerRoot = validatedRoot;
             state = State.CLAIMED;
@@ -106,9 +115,16 @@ public final class OresHostFutureBridge {
 
         void close() {
             state = State.CLOSED;
-            ownerContext = null;
-            ownerRoot = null;
-            future = null;
+            try {
+                if (contextHandoffAcquired) {
+                    contextHandoffAcquired = false;
+                    ((OresContext) ownerContext).endScopedHostFutureHandoff();
+                }
+            } finally {
+                ownerContext = null;
+                ownerRoot = null;
+                future = null;
+            }
         }
     }
 
