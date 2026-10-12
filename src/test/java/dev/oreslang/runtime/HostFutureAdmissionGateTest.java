@@ -313,4 +313,57 @@ final class HostFutureAdmissionGateTest {
     }
 
 
+
+    @Test
+    void alreadyEnteredGuestCarrierMayPerformSameThreadNestedHostCall() {
+        HostFutureAdmissionGate gate = new HostFutureAdmissionGate();
+        Runnable guest = gate.reserveGuestTurn();
+        gate.begin();
+        gate.begin();
+        gate.end();
+        gate.end();
+        guest.run();
+        gate.requirePhysicalQuiescence();
+        gate.close();
+    }
+
+    @Test
+    void localGuestCarrierCannotLaunderForeignPhysicalEntryIntoHostCall()
+            throws Exception {
+        HostFutureAdmissionGate gate = new HostFutureAdmissionGate();
+        Runnable own = gate.reserveGuestTurn();
+        CountDownLatch foreignEntered = new CountDownLatch(1);
+        CountDownLatch foreignRelease = new CountDownLatch(1);
+        FutureTask<Void> foreign = new FutureTask<>(() -> {
+            Runnable lease = gate.reserveGuestTurn();
+            foreignEntered.countDown();
+            try {
+                if (!foreignRelease.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("foreign carrier was not released");
+                }
+            } finally {
+                lease.run();
+            }
+            return null;
+        });
+        Thread thread = new Thread(foreign, "foreign-truffle-entry");
+        try {
+            thread.start();
+            assertTrue(foreignEntered.await(5, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class, gate::begin,
+                    "same-carrier privilege must not cover a foreign guest");
+            foreignRelease.countDown();
+            foreign.get(5, TimeUnit.SECONDS);
+            gate.begin();
+            gate.end();
+        } finally {
+            foreignRelease.countDown();
+            own.run();
+            gate.close();
+            thread.join(5_000);
+        }
+        assertFalse(thread.isAlive());
+    }
+
+
 }
