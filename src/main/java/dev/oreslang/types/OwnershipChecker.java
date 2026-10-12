@@ -1849,7 +1849,7 @@ public final class OwnershipChecker {
         ValueInfo argument = checkExpr(arg, scope, true);
         if (isBorrowValue(argument) || containsBorrowType(argument.type)) {
             throw error(callable + " argument " + position
-                    + " is owned by-value; a borrowed view cannot transfer ownership");
+                    + " is an owned by-value parameter and cannot retain a borrowed view");
         }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
