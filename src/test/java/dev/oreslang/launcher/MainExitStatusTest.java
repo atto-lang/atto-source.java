@@ -132,6 +132,49 @@ final class MainExitStatusTest {
         assertEquals(13, exit("pub async routine main(): void { std.process.exit(13); }"));
     }
 
+    @Test void asyncDeferredExitCannotHideEarlierUnhandledRootFailure() throws Exception {
+        String failingRoutine = """
+                fnc fail(): void {
+                    val Array<int> empty = new Array<int>();
+                    empty.get(0);
+                    return;
+                }
+                """;
+        for (int requestedStatus : new int[] {0, 7}) {
+            assertThrows(RuntimeException.class, () -> exit(failingRoutine + """
+                    pub async routine main(): void {
+                        defer std.process.exit(%d);
+                        fail();
+                    }
+                    """.formatted(requestedStatus)),
+                    "async root failure must remain authoritative over deferred exit("
+                            + requestedStatus + ")");
+        }
+    }
+
+    @Test void asyncFirstExplicitExitWinsOverLaterDeferredFailure() throws Exception {
+        assertEquals(7, exit("""
+                fnc fail(): void {
+                    val Array<int> empty = new Array<int>();
+                    empty.get(0);
+                    return;
+                }
+                pub async routine main(): void {
+                    defer fail();
+                    std.process.exit(7);
+                }
+                """));
+    }
+
+    @Test void asyncFirstExplicitExitWinsOverLaterDeferredExit() throws Exception {
+        assertEquals(7, exit("""
+                pub async routine main(): void {
+                    defer std.process.exit(5);
+                    std.process.exit(7);
+                }
+                """));
+    }
+
     @Test void tooLargeIntegerExitFailsClosed() throws Exception {
         assertThrows(IllegalArgumentException.class,
             () -> exit("pub routine main(): int { return 256; }"));
