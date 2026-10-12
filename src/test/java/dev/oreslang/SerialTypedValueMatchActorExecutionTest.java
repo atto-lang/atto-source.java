@@ -59,11 +59,11 @@ final class SerialTypedValueMatchActorExecutionTest {
                 end
 
                 pub async routine main(): void {
-                    val actor = spawn Counter();
-                    await actor.ready;
-                    actor.send("first");
-                    actor.send("second");
-                    await actor.done;
+                    val worker = spawn Counter();
+                    await worker.ready;
+                    worker.send("first");
+                    worker.send("second");
+                    await worker.done;
                     return;
                 }
                 """;
