@@ -352,6 +352,58 @@ final class OresSchedulerQuiescenceTest {
         }
     }
 
+
+    @Test
+    void terminalSubscriberCannotDelayQuiescentResourceRetirement()
+            throws Exception {
+        // Future subscribers run synchronously on the publishing carrier.
+        // Resource/quota retirement must already be complete by the time a
+        // subscriber can block that carrier.
+        java.util.concurrent.ExecutorService carrier =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "blocked-terminal-subscriber", 1, carrier);
+        OresFuture<Integer> releaseTask = new OresFuture<>();
+        CountDownLatch stepEntered = new CountDownLatch(1);
+        CountDownLatch subscriberEntered = new CountDownLatch(1);
+        CountDownLatch releaseSubscriber = new CountDownLatch(1);
+        CountDownLatch retired = new CountDownLatch(1);
+        AtomicInteger retirements = new AtomicInteger();
+        try {
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                if (resume.initial()) {
+                    stepEntered.countDown();
+                    return OresScheduler.await(releaseTask);
+                }
+                return OresScheduler.done(42);
+            }, () -> {
+                retirements.incrementAndGet();
+                retired.countDown();
+            });
+            assertTrue(stepEntered.await(3, TimeUnit.SECONDS));
+            result.whenCompleteRuntime((value, failure) -> {
+                subscriberEntered.countDown();
+                try {
+                    releaseSubscriber.await(3, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            releaseTask.completeFromRuntime(1);
+            assertTrue(subscriberEntered.await(3, TimeUnit.SECONDS));
+            assertTrue(retired.await(2, TimeUnit.SECONDS),
+                    "terminal subscribers must not retain quiescent task resources");
+            assertEquals(1, retirements.get());
+            scheduler.close();
+            assertEquals(1, retirements.get());
+        } finally {
+            releaseSubscriber.countDown();
+            scheduler.close();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
