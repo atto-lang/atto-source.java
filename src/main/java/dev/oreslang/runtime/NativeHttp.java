@@ -122,12 +122,16 @@ public final class NativeHttp implements AutoCloseable {
                     CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
                     workers.set(slot, actor);
                     created.incrementAndGet();
+                    exchange.state.server.pooledCreated.incrementAndGet();
                 }
                 synchronized (exchange.state) { exchange.checkOwner(); exchange.state.spawnNanos = System.nanoTime(); }
                 if (!fresh) {
                     exchange.state.completion.whenCompleteRuntime((status, failure) -> {
                         if (failure == null && status instanceof Long code && code >= 200 && code < 400)
-                            reused.incrementAndGet();
+                            {
+                                reused.incrementAndGet();
+                                exchange.state.server.pooledReused.incrementAndGet();
+                            }
                     });
                 }
                 actor.send(exchange.moveToPooled(actor));
@@ -211,6 +215,7 @@ public final class NativeHttp implements AutoCloseable {
         private boolean stopped, transportStopped;
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
+        private final AtomicLong pooledCreated = new AtomicLong(), pooledReused = new AtomicLong();
 
         private Server(HttpServer transport, int capacity, int bodyLimit, int deadlineMillis) {
             this.transport = transport; this.admission = new Semaphore(capacity);
@@ -240,6 +245,8 @@ public final class NativeHttp implements AutoCloseable {
         public long accepted() { supervisor(); return accepted.get(); }
         public long rejected() { supervisor(); return rejected.get(); }
         public long completed() { supervisor(); return completed.get(); }
+        public long pooledCreated() { supervisor(); return pooledCreated.get(); }
+        public long pooledReused() { supervisor(); return pooledReused.get(); }
         public int active() { supervisor(); return active.size(); }
 
         public synchronized OresFuture<Object> accept() {
