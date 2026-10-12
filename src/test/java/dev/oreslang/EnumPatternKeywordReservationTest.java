@@ -23,18 +23,16 @@ final class EnumPatternKeywordReservationTest {
     }
 
     @Test
-    void futureDeclarationsFailClosedInsteadOfBeingSilentlyAccepted() {
+    void malformedNominalDeclarationsFailClosedAfterFeatureAdmission() {
         String[] declarations = {
             "define enum Status as Pending Running end",
             "define pattern Accepted as string | int end",
-            "define module x as define enum Status as Pending end end",
-            "define module x as define pattern Accepted as string end end"
+            "define module x as define enum Status as Pending Running end end",
+            "define module x as define pattern Accepted as string | int end end"
         };
         for (String source : declarations) {
-            IllegalArgumentException failure = assertThrows(
+            assertThrows(
                     IllegalArgumentException.class, () -> Parser.parse(source), source);
-            assertTrue(failure.getMessage().contains("reserved but not yet implemented"),
-                    failure::getMessage);
         }
     }
 
