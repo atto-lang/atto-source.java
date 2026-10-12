@@ -6951,6 +6951,7 @@ public final class ActorRuntime implements AutoCloseable {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             boolean queuedOwnedCleanup;
+            boolean drainFinalMailbox;
             ArrayList<Runnable> retiredSelectNotifications = new ArrayList<>();
             boolean ownsRetirement = false;
             synchronized (lifecycleLock) {
@@ -6978,10 +6979,10 @@ public final class ActorRuntime implements AutoCloseable {
                 // until each task's defer/finally/owned guard has unwound.
                 continuationMailbox.close(cause);
                 sourceCleanupDraining = !sourceTaskFutures.isEmpty();
-                // Cancel ordinary callbacks immediately to free normal
-                // CONTROL reservations. Source-task commands remain owned.
-                drainOrdinaryMailboxReservations();
-                if (!sourceCleanupDraining) drainMailboxReservations();
+                // Snapshot the source cleanup state under lifecycleLock. The
+                // mailbox drain can invoke a user-envelope release callback
+                // and must occur outside the enclosing actor lifecycle monitor.
+                drainFinalMailbox = !sourceCleanupDraining;
                 descendants = List.copyOf(children);
                 java.util.HashSet<OresFuture<?>> toCancel =
                         new java.util.HashSet<>(pendingOperations);
@@ -6994,6 +6995,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             try {
+                // Drop ordinary mailbox envelopes only after releasing the
+                // outer actor lifecycle monitor: release hooks may call back
+                // into memory/scheduler accounting. The initial STOP claim
+                // keeps physical DONE fenced across this drain.
+                drainOrdinaryMailboxReservations();
+                if (drainFinalMailbox) drainMailboxReservations();
+
                 // Notify source select waiters only after lifecycleLock has
                 // been released. The same physical-DONE barrier must also
                 // cover ordinary actor-owned pending Future cancellation,
