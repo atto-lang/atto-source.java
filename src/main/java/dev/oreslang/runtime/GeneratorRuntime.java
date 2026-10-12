@@ -413,6 +413,44 @@ public final class GeneratorRuntime {
         boolean awaitingSourceFuture() { return waitingOnFuture; }
     }
 
+    /**
+     * Internal Java-host pull facade backed by the context's certified root
+     * scheduler. This does not expose the legacy virtual-thread producer.
+     * The OresContext pump dispatches from a physically entered CONTROL turn.
+     */
+    static final class HostPullSession implements AutoCloseable {
+        private final HostGeneratorTurnPump pump;
+        private final SchedulerBacked<Object> frame;
+        private final java.util.Set<OresFuture<Step<Object>>> pulls =
+                java.util.concurrent.ConcurrentHashMap.newKeySet();
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        HostPullSession(HostGeneratorTurnPump pump, SchedulerBacked<Object> frame) {
+            this.pump = Objects.requireNonNull(pump, "pump");
+            this.frame = Objects.requireNonNull(frame, "frame");
+        }
+
+        OresFuture<Step<Object>> nextStep() {
+            if (closed.get()) {
+                throw new java.util.concurrent.RejectedExecutionException(
+                        "source generator host session is closed");
+            }
+            OresFuture<Step<Object>> result =
+                    pump.requestCertified(pump.token(), frame.nextTurn());
+            pulls.add(result);
+            result.whenCompleteRuntime((value, failure) -> pulls.remove(result));
+            return result;
+        }
+
+        @Override
+        public void close() {
+            if (!closed.compareAndSet(false, true)) return;
+            // Cancelling public pulls requests source cleanup, but does NOT
+            // establish physical DONE or release the context retirement fence.
+            for (OresFuture<Step<Object>> result : pulls) result.cancel(false);
+        }
+    }
+
     public static <T> Generator<T> generator(AsyncRuntime runtime, Producer<T> producer) {
         return new Generator<>(new Engine<>(runtime, producer));
     }
