@@ -9,6 +9,41 @@ import org.junit.jupiter.api.Test;
 
 final class OresVMTest {
     @Test
+    void executorAcceptedBeforeHostScopeCannotEnterGuestAfterHostClaims()
+            throws Exception {
+        var admitted = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        try (OresVM vm = OresVM.create(Runnable::run, admitted::add)) {
+            var effects = new java.util.concurrent.atomic.AtomicInteger();
+            OresFuture<Integer> task = vm.rootScheduler().start(resume -> {
+                effects.incrementAndGet();
+                return OresScheduler.done(29);
+            });
+            Runnable acceptedBeforeHost = admitted.poll(5, TimeUnit.SECONDS);
+            org.junit.jupiter.api.Assertions.assertNotNull(acceptedBeforeHost);
+            var host = vm.beginHostHandoff();
+            try {
+                acceptedBeforeHost.run();
+                acceptedBeforeHost.run();
+                assertEquals(0, effects.get(),
+                        "previously accepted CONTROL work cannot start inside host scope");
+                assertEquals(1, vm.queuedHostHandoffTurns(),
+                        "late executor invocation must return to bounded FIFO");
+                assertTrue(!task.isDone());
+                assertEquals(0, admitted.size());
+            } finally {
+                host.close();
+            }
+            Runnable released = admitted.poll(5, TimeUnit.SECONDS);
+            org.junit.jupiter.api.Assertions.assertNotNull(released);
+            released.run();
+            released.run();
+            assertEquals(29, task.get(5, TimeUnit.SECONDS));
+            assertEquals(1, effects.get(), "guest body must execute exactly once");
+            vm.requireHostHandoffReleased();
+        }
+    }
+
+    @Test
     void contextRetirementSealsNewHostScopesWithoutDroppingAuthorizedTurns()
             throws Exception {
         var admitted = new java.util.concurrent.LinkedBlockingQueue<Runnable>();

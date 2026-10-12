@@ -142,7 +142,41 @@ public final class OresVM implements AutoCloseable {
                     return;
                 }
             }
-            downstream.execute(task);
+            submitGuarded(task);
+        }
+
+        /**
+         * Executor acceptance is not physical guest entry. A work-stealing or
+         * delayed executor may invoke this runnable after a host scope begins.
+         * Claim exactly once, and requeue rather than enter the guest while
+         * that host owns entry. No scheduler carrier waits for the host.
+         */
+        private void submitGuarded(Runnable task) {
+            AtomicBoolean started = new AtomicBoolean();
+            Runnable gated = () -> {
+                if (!started.compareAndSet(false, true)) return;
+                synchronized (this) {
+                    if (hostScopes > 0) {
+                        if (held.size() >= DEFAULT_QUEUE_CAPACITY) {
+                            throw new RejectedExecutionException(
+                                    "late accepted root turn exceeds handoff capacity");
+                        }
+                        // This turn was admitted before later host-scoped turns.
+                        held.addFirst(task);
+                        return;
+                    }
+                }
+                task.run();
+            };
+            try {
+                downstream.execute(gated);
+            } catch (RuntimeException | Error failure) {
+                // A broken executor can accept a runnable and then throw.
+                // Revoke that stale runnable so it cannot later enter guest
+                // code after the caller has treated submission as rejected.
+                started.compareAndSet(false, true);
+                throw failure;
+            }
         }
 
         private void release() {
@@ -166,7 +200,7 @@ public final class OresVM implements AutoCloseable {
                     }
                 }
                 try {
-                    downstream.execute(next);
+                    submitGuarded(next);
                 } catch (RuntimeException | Error failure) {
                     synchronized (this) {
                         // Preserve scheduler ownership on rejection; do NOT
