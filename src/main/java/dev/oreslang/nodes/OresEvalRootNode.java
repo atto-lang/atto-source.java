@@ -20,6 +20,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.SourceChannelWaitOwnership;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.SourceCooperationQuantum;
@@ -877,6 +878,8 @@ public final class OresEvalRootNode extends RootNode {
                 implements OresScheduler.CancellationAwareTask<Object> {
             private final ArrayDeque<SourceCleanupScope> activeScopes = new ArrayDeque<>();
             private volatile boolean cancellationRequested;
+            private final SourceChannelWaitOwnership ownedChannelWait =
+                    new SourceChannelWaitOwnership();
             private volatile OresScheduler.TaskCancelledException cancellationReason;
             // Observed by cancellation admission on arbitrary host threads.
             // Mutations remain exclusive to the owning scheduler/actor lane,
@@ -895,6 +898,10 @@ public final class OresEvalRootNode extends RootNode {
                     OresScheduler.TaskCancelledException reason) {
                 cancellationReason = Objects.requireNonNull(reason, "reason");
                 cancellationRequested = true;
+                // OresScheduler detaches its Future observer separately.
+                // This also cancels the source-owned channel registration,
+                // so a stopped actor cannot steal a subsequent message.
+                ownedChannelWait.cancellationRequested();
             }
 
             private SourceFlow cancellationFlow() {
@@ -958,6 +965,7 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     return resumeSource(resume);
                 } catch (RuntimeException failure) {
+                    ownedChannelWait.abort();
                     awaitingContinuation = null;
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
@@ -1116,6 +1124,26 @@ public final class OresEvalRootNode extends RootNode {
                         }
                     }
                     next.accept(this, null, null);
+                }
+            }
+
+            /**
+             * Suspend on a channel operation created by this source task.
+             * Unlike generic await, source owns the producer registration.
+             * Cancellation revokes it unless it belongs to lexical cleanup.
+             */
+            private void suspendOwnedChannel(
+                    OresFuture<?> future,
+                    SourceValueCont continuation) {
+                ownedChannelWait.arm(future, cleanupDepth > 0);
+                try {
+                    suspend(future, (t, value, failure) -> {
+                        ownedChannelWait.resumed(future);
+                        continuation.accept(t, value, failure);
+                    });
+                } catch (RuntimeException | Error failure) {
+                    ownedChannelWait.abort();
+                    throw failure;
                 }
             }
 
@@ -2579,7 +2607,7 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
-            task.suspend(
+            task.suspendOwnedChannel(
                     future,
                     (t, value, failure) -> {
                         if (failure != null) {
@@ -3347,7 +3375,7 @@ public final class OresEvalRootNode extends RootNode {
                                                 null);
                                         return;
                                     }
-                                    t.suspend(
+                                    t.suspendOwnedChannel(
                                             future,
                                             (t2, value, failure2) ->
                                                     continuation.accept(
@@ -4005,7 +4033,7 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                 }
                             } else {
-                                t.suspend(
+                                t.suspendOwnedChannel(
                                         future,
                                         (t2, value, failure) ->
                                                 continuation.accept(
@@ -4115,7 +4143,7 @@ public final class OresEvalRootNode extends RootNode {
                                                     failure);
                                         }
                                     } else {
-                                        t2.suspend(
+                                        t2.suspendOwnedChannel(
                                                 future,
                                                 (t3, ignored, failure) ->
                                                         continuation.accept(
