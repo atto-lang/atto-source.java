@@ -281,10 +281,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionProfile executionProfile;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
-        private final VerifiedCloseFence closeFence = new VerifiedCloseFence(() -> {
-            if (group != null) group.close();
-            else context.close(true);
-        });
+        private final VerifiedCloseFence closeFence;
 
         private Generation(long id, String codeUnitId, String sha256,
                            Context context, Source source,
@@ -297,6 +294,10 @@ public final class HotReloadManager implements AutoCloseable {
             this.group = group;
             this.source = source;
             this.executionProfile = executionProfile;
+            this.closeFence = new VerifiedCloseFence(() -> {
+                if (this.group != null) this.group.close();
+                else this.context.close(true);
+            });
         }
 
         public long id() { return id; }
