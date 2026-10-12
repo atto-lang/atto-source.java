@@ -71,17 +71,21 @@ public final class MacroExpander {
     private MacroExpander() { }
 
     /**
-     * Runtime OresLanguage/HotReload parsing must not invoke source macros.
+     * Runtime OresLanguage/HotReload parsing must not invoke source macros or annotation code generators.
      * Such source must instead be expanded and guest-AOT compiled in a separate
      * trusted build, then admitted through a future verified artifact loader.
      * Lexical tokens prevent comments and string literals from spoofing macros.
      */
-    public static void rejectRuntimeMacroDefinitions(List<Token> tokens) {
+    public static void rejectRuntimeCodeGeneration(List<Token> tokens) {
         Objects.requireNonNull(tokens, "tokens");
         for (int i = 0; i + 1 < tokens.size(); i++) {
             if (named(tokens, i, "macro_rules") && at(tokens, i + 1, BANG)) {
                 throw fail(tokens.get(i),
                         "runtime macro expansion forbidden: use an offline guest-AOT artifact");
+            }
+            if (at(tokens, i, AT) && named(tokens, i + 1, "FromJson")) {
+                throw fail(tokens.get(i),
+                        "runtime annotation code generation forbidden: @FromJson accessors require an offline guest-AOT build");
             }
         }
     }
