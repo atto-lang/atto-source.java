@@ -67,6 +67,38 @@ final class ActorIncompleteSourceCleanupReceiptTest {
     }
 
     @Test
+    void structuredCancellationPreservesCauseAndExactlyOneIncompleteCleanupReceipt()
+            throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        for (boolean pendingCleanup : new boolean[]{false, true}) {
+            try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+                CompletableFuture<Integer> stage = new CompletableFuture<>();
+                var guest = new PendingSourceTask(OresFuture.from(stage));
+                guest.cleanupPending.set(pendingCleanup);
+                var actor = runtime.<Integer>spawnShared(() -> (mail, context) ->
+                        context.runtime().startActorTask(guest));
+                actor.send(1);
+                assertTrue(guest.entered.await(5, TimeUnit.SECONDS));
+
+                assertTrue(runtime.cancel(actor, ActorRuntime.CancellationMode.STRUCTURED));
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+                var primary = actor.failure().orElseThrow();
+                assertInstanceOf(ActorRuntime.ActorCancelledException.class, primary,
+                        "the cancellation reason must remain the primary failure");
+                long incompleteReceipts = java.util.Arrays.stream(primary.getSuppressed())
+                        .filter(ActorRuntime.IncompleteSourceCleanupException.class::isInstance)
+                        .count();
+                assertEquals(pendingCleanup ? 1 : 0, incompleteReceipts,
+                        "exactly one diagnostic receipt must distinguish abandoned guest cleanup");
+
+                stage.complete(7);
+                assertEquals(1, guest.resumeCount.get(),
+                        "producer completion must not revive the cancelled actor");
+            }
+        }
+    }
+
+    @Test
     void cancelledTaskWithoutRegisteredCleanupKeepsOrdinaryGracefulStop() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
