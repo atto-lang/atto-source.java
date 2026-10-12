@@ -6570,6 +6570,12 @@ public final class ActorRuntime implements AutoCloseable {
             }
             drainMailboxReservations();
             staticSelectCursors.clear();
+            // A finalized incarnation must retain neither source-site
+            // descriptors nor channel capability references via its plan
+            // cache. Old completed/aborted continuations cannot resurrect
+            // them because admission is fenced above by stopped/finalized.
+            readSelectPlans.clear();
+            staticSelectPlanCursors.clear();
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
