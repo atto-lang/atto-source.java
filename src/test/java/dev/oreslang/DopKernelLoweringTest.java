@@ -60,6 +60,31 @@ final class DopKernelLoweringTest {
     }
 
     @Test
+    void hostBufferRejectsScalarSlotsThatWouldOverlapFourByteFloatValues() {
+        for (var kind : DataOrientedLayout.Kind.values()) {
+            int lanes = kind == DataOrientedLayout.Kind.AOSOA ? 4 : 1;
+            for (int scalarBytes : new int[] {1, 2, 8}) {
+                var plan = new DataOrientedLayout.Plan(
+                        kind, 1, 2, scalarBytes, Math.max(4, scalarBytes), lanes);
+                assertThrows(IllegalArgumentException.class,
+                        () -> new DopKernelIR.HostBuffer(plan));
+            }
+        }
+    }
+
+    @Test
+    void layoutAccessFollowsOwnerTransferAndClose() {
+        var plan = new DataOrientedLayout.Plan(DataOrientedLayout.Kind.AOS, 2, 1, 4, 4, 1);
+        var owner = new DopKernelIR.HostBuffer(plan);
+        assertEquals(plan, owner.layout());
+        var newOwner = owner.take();
+        assertThrows(IllegalStateException.class, owner::layout);
+        assertEquals(plan, newOwner.layout());
+        newOwner.close();
+        assertThrows(IllegalStateException.class, newOwner::layout);
+    }
+
+    @Test
     void rejectsUnsupportedScalarWidthAndNonFiniteCoefficients() {
         var p = new DataOrientedLayout.Plan(DataOrientedLayout.Kind.AOS, 2, 3, 8, 16, 1);
         assertThrows(IllegalArgumentException.class, () -> new DopKernelIR.Kernel(
