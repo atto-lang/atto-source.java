@@ -103,6 +103,18 @@ final class SharedUntrustedIsolatePoolTest {
                     "c.ores", "pub routine main(): void { return; }");
             assertSame(second.context().getEngine(), replacement.context().getEngine(),
                     "retirement must reuse the existing physical untrusted isolate");
+            // Untrusted actor hot-load starts the code generation but must
+            // NEVER run the top-level main in the 12-hour group Context.
+            HotReloadManager.Generation dangerousMain = loader.load(
+                    "dangerous.ores", """
+                    pub routine main(): void {
+                      val values = arr[1];
+                      val invalid = values[99];
+                      return;
+                    }
+                    """);
+            assertNull(dangerousMain.start(),
+                    "untrusted hot load must only link/init, not invoke main");
         }
     }
 
