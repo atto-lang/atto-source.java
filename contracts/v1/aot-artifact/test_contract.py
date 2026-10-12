@@ -49,6 +49,7 @@ def check():
     rejected("invalid signature algorithm", lambda x: x["provenance"]["signature"].update(algorithm="none"))
     rejected("empty signer identity", lambda x: x["provenance"]["signature"].update(key_id=""))
     rejected("truncated signature", lambda x: x["provenance"]["signature"].update(value_base64="AA"))
+    rejected("noncanonical signature pad bits", lambda x: x["provenance"]["signature"].update(value_base64="A" * 85 + "B=="))
     rejected("missing provenance", lambda x: x.pop("provenance"))
     try:
         decode('{"schema_version": "v1", "schema_version": "v2"}')
@@ -56,7 +57,7 @@ def check():
         pass
     else:
         raise AssertionError("duplicate JSON key escaped input admission")
-    print("AOT manifest V1 schema: valid fixture and 18 negative checks passed")
+    print("AOT manifest V1 schema: valid fixture and 19 negative checks passed")
 
 if __name__ == "__main__":
     check()
