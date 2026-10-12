@@ -206,6 +206,18 @@ final class MacroExpanderTest {
     }
 
     @Test
+    void groupedTokenTreesCannotSmuggleControlFlowOrAnnotationSyntax() {
+        String prefix = "macro_rules! single { ($x:tt) => { $x }; }\\n";
+        for (String bad : List.of("(return 42)", "{let x = 3;}", "(@unsafe)", "[defer 1]")) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(prefix + "single!(" + bad + ")").scan()), bad);
+            assertTrue(ex.getMessage().contains("token-tree expression capture"), ex.getMessage());
+        }
+        assertDoesNotThrow(() -> MacroExpander.expand(
+                new Lexer(prefix + "single!((1, 2))").scan()));
+    }
+
+    @Test
     void largeOrdinarySourcesDoNotExhaustTheMacroOnlyTokenBudget() {
         StringBuilder large = new StringBuilder();
         for (int i = 0; i < 60_000; i++) large.append("x ");
