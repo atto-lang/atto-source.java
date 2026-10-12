@@ -167,7 +167,10 @@ final class HostGeneratorTurnPumpTest {
         var failure = assertThrows(java.util.concurrent.ExecutionException.class,
                 () -> pull.get(5, TimeUnit.SECONDS));
         assertInstanceOf(IllegalArgumentException.class, failure.getCause());
-        invalid.close();
+        assertFalse(invalid.isQuiescent(),
+                "invalid starter exit receipt cannot certify physical quiescence");
+        assertThrows(IllegalStateException.class, invalid::close,
+                "invalid physical-exit receipt must permanently quarantine this incarnation");
 
         AtomicInteger producerStarts = new AtomicInteger();
         HostGeneratorTurnPump brokenNotifier = new HostGeneratorTurnPump(
