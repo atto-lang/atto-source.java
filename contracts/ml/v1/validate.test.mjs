@@ -1,0 +1,13 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {validateTensor,requireVerifiedBackend} from "./validate.mjs";
+const t=()=>({dtype:"f32",shape:[2,3],strides:[3,1],byte_length:24,layout:"row_major",device:"cpu",ownership:"moved",lifetime:"actor_incarnation"});
+test("valid tensor",()=>assert.equal(validateTensor(t(),{acrossActor:true}).requiredBytes,24));
+test("reject actor borrow escape",()=>assert.throws(()=>validateTensor({...t(),ownership:"borrowed_local"},{acrossActor:true}),/borrowed alias/));
+test("reject short buffer",()=>assert.throws(()=>validateTensor({...t(),byte_length:23}),/byte bounds/));
+test("reject declared layout mismatch",()=>assert.throws(()=>validateTensor({...t(),strides:[1,2]}),/noncontiguous/));
+test("reject large stride",()=>assert.throws(()=>validateTensor({...t(),strides:[Number.MAX_SAFE_INTEGER+1,1]}),/safe integer/));
+test("reject unknown field",()=>assert.throws(()=>validateTensor({...t(),nativePointer:2}),/unknown/));
+test("reject unadmitted GPU",()=>assert.throws(()=>validateTensor({...t(),device:"gpu"}),/UNSUPPORTED_BACKEND/));
+test("fail closed without backend evidence",()=>assert.throws(()=>requireVerifiedBackend({},"ml_actor"),/UNSUPPORTED_BACKEND/));
+test("zero extent has zero length",()=>assert.equal(validateTensor({...t(),shape:[0,3],byte_length:0}).requiredBytes,0));
