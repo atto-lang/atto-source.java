@@ -496,10 +496,17 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void suspendableTryCatchCannotCatchUnwrapPanic() throws Exception {
+    void suspendableTryFinallyCannotDowngradeUnwrapPanic() throws Exception {
         String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
                 async fnc answer(): int { return 1; }
-                async fnc panics(): int {
+                async fnc panics(Animal animal): int {
                   val int received = await answer();
                   try {
                     val Option<int> absent = None;
@@ -507,17 +514,18 @@ final class TrapOptionSemanticsTest {
                   } catch (err) {
                     return received;
                   } finally {
-                    val int done = received + 1;
+                    val Dog impossible = animal as Dog;
                   }
                 }
                 pub fnc main(): void {
-                  val int impossible = await panics();
+                  val int impossible = await panics(new Cat());
                   stdio.stdout.write("unreachable");
                   return;
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertThrows(PolyglotException.class, () -> run(source));
+        PolyglotException panic = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(panic.getMessage().contains("Option::unwrap"));
     }
 
     @Test
