@@ -39,6 +39,7 @@ public final class HotReloadManager implements AutoCloseable {
     // One HotReloadManager owns one app-wide UNTRUSTED pool; concurrent owners
     // fail closed under SharedUntrustedIsolatePool's singleton admission.
     private SharedUntrustedIsolatePool untrustedPool;
+    private boolean ownsUntrustedPool = true;
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
@@ -72,6 +73,21 @@ public final class HotReloadManager implements AutoCloseable {
                 supervisorPolicy,
                 IsolatePolicy.untrustedActor(),
                 executionProfile);
+    }
+
+    /**
+     * Reuses the application's ONE existing untrusted Engine. The caller owns
+     * the pool; this manager closes only Contexts/generations it created.
+     * No second Engine can be constructed by this factory.
+     */
+    public static HotReloadManager forUntrustedActors(
+            IsolatePolicy supervisorPolicy,
+            ExecutionProfile executionProfile,
+            SharedUntrustedIsolatePool sharedPool) {
+        HotReloadManager manager = forUntrustedActors(supervisorPolicy, executionProfile);
+        manager.untrustedPool = java.util.Objects.requireNonNull(sharedPool, "sharedPool");
+        manager.ownsUntrustedPool = false;
+        return manager;
     }
 
     public IsolatePolicy supervisorPolicy() { return supervisorPolicy; }
@@ -221,7 +237,7 @@ public final class HotReloadManager implements AutoCloseable {
         generations.clear();
         activeByCodeUnit.clear();
         active.set(null);
-        if (untrustedPool != null) {
+        if (untrustedPool != null && ownsUntrustedPool) {
             try {
                 untrustedPool.close();
                 untrustedPool = null;
