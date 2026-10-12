@@ -19,6 +19,8 @@ public final class Parser {
     }
 
     private final List<Token> tokens;
+    // Tracks the actor declaration scope while parsing member expressions.
+    private boolean insideActorClass = false;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
@@ -493,7 +495,11 @@ public final class Parser {
             }
             if (isBindingKind(peek().type())) {
                 validateClassFieldModifiers(mods);
-                fields.add(parseField(annotations, mods.visibility));
+                Ast.FieldDecl field = parseField(annotations, mods.visibility);
+                if (field.name().equals("state")) {
+                    throw error(previous(), "actor 'state' is reserved runtime-owned storage, not an ordinary field");
+                }
+                fields.add(field);
                 continue;
             }
             if (check(IDENT) && checkNext(COLON)) {
@@ -675,6 +681,7 @@ public final class Parser {
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        insideActorClass = true;
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
@@ -700,7 +707,11 @@ public final class Parser {
             }
             if (isContextualIdentifier("final") && checkNext(IDENT)) {
                 validateActorFieldModifiers(mods);
-                fields.add(parseFinalActorField(annotations, mods.visibility));
+                Ast.FieldDecl field = parseFinalActorField(annotations, mods.visibility);
+                if (field.name().equals("state")) {
+                    throw error(previous(), "actor 'state' is reserved runtime-owned storage, not an ordinary field");
+                }
+                fields.add(field);
                 continue;
             }
 
@@ -736,6 +747,7 @@ public final class Parser {
         consume(terminator, braceStyle
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
+        insideActorClass = false;
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
     }
@@ -2955,6 +2967,10 @@ public final class Parser {
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT)) {
                 String member = consumeMemberName();
+                if (insideActorClass && member.equals("state")
+                        && expr instanceof Ast.NameExpr name && name.name().equals("self")) {
+                    throw error(previous(), "self.state is not accessible; use sealed handle_state callback");
+                }
                 expr = new Ast.MemberExpr(expr, member);
             } else if (match(LBRACKET)) {
                 Ast.Expr index = parseExpression();
