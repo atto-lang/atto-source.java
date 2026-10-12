@@ -63,6 +63,17 @@ final class WithEffectsAndScopedUsingStateTest {
                     "using state.read(|s| -> { return s; })")));
     }
 
+    @Test void legacyUsingSignatureIsRejectedAndBlockEffectIsAccepted() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(actor("using state.read",
+                    "using state.read(|s| -> s.x)")));
+        assertDoesNotThrow(() -> Parser.parse(
+                "fnc work(): void with io, block { return; }"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(actor("with state.read using state.write",
+                    "using state.read(|s| -> s.x)")));
+    }
+
     @Test void malformedAndForgedCapabilitiesFailBeforeExecution() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(actor("with state.read",

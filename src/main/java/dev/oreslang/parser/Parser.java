@@ -801,23 +801,25 @@ public final class Parser {
      */
     private List<Ast.Annotation> parseSignatureEffects(List<Ast.Annotation> annotations) {
         List<Ast.Annotation> result = new ArrayList<>(annotations);
-        if (match(WITH) || match(USING)) {
-            // Keep distinct AST identities: `with` bounds effects; a
-            // source `using` expression is a lexical state capability.
-            Token signature = previous();
-            if (signature.type() == USING) {
-                warnings.add(new SyntaxWarning(signature.line(), signature.column(),
-                        "signature 'using' is deprecated; use 'with' for effect bounds"));
-            }
+        // Pre-1.0 grammar: never reinterpret a scoped `using` grant as an
+        // effect row. Accepting both is an authority ambiguity, not a feature.
+        if (match(USING)) {
+            throw error(previous(), "using acquires scoped capabilities; use 'with' for function effect declarations");
+        }
+        if (match(WITH)) {
             List<String> names = new ArrayList<>();
             do {
-                String name = consume(IDENT, "expected function effect after with").lexeme();
+                // `block` is a reserved statement keyword but also
+                // a valid effect-row name.
+                if (!check(IDENT) && !check(BLOCK)) {
+                    throw error(peek(), "expected function effect after with");
+                }
+                String name = advance().lexeme();
                 if (match(DOT)) name += "." + consume(IDENT, "expected effect member after '.'").lexeme();
                 names.add(name);
             } while (match(COMMA));
             dev.oreslang.types.FunctionEffects.ofNames(names);
-            result.add(new Ast.Annotation(
-                    signature.type() == WITH ? "$with$" : "$using$",
+            result.add(new Ast.Annotation("$with$",
                     names.stream().map(Ast.TypeRef::simple).toList()));
         }
         if (check(WITH) || check(USING)) {
