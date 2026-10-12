@@ -1,7 +1,10 @@
 package dev.oreslang.nodes;
 
+import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.frame.VirtualFrame;
+import com.oracle.truffle.api.nodes.ExecutionSignature;
+import com.oracle.truffle.api.nodes.ExplodeLoop;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
@@ -29,11 +32,11 @@ import java.util.concurrent.CompletionStage;
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
     public static final String LINK_ONLY_COMMAND = "__ores_internal_link_only__";
-    public static final String INIT_ONLY_COMMAND = "__ores_internal_init_only__";
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
 
     private final Ast.Program program;
     private final String codeUnitId;
+    private final Ast.FunctionDecl mainFunction;
     private volatile Evaluator evaluator;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
@@ -44,31 +47,37 @@ public final class OresEvalRootNode extends RootNode {
         super(language);
         this.program = program;
         this.codeUnitId = codeUnitId;
+        this.mainFunction = resolveEntrypoint(program);
     }
 
     @Override public String getName() { return "ores-eval"; }
     @Override public boolean isInternal() { return true; }
 
+    /**
+     * Oreslang roots are statically parsed and type checked before call-target
+     * creation. A generic signature is correct until typed frame lowering
+     * provides a narrower signature.
+     */
     @Override
-    public Object execute(VirtualFrame frame) {
-        return executeBoundary(OresContext.get(this), frame.getArguments());
+    protected ExecutionSignature prepareForAOT() {
+        return ExecutionSignature.GENERIC;
     }
 
-    @TruffleBoundary
-    private Object executeBoundary(OresContext context, Object[] arguments) {
-        CapabilityChecker.check(program, context.isolatePolicy());
+    @Override
+    public Object execute(VirtualFrame frame) {
+        return executeProgram(OresContext.get(this), frame.getArguments());
+    }
+
+    private Object executeProgram(OresContext context, Object[] arguments) {
+        checkCapabilities(program, context.isolatePolicy());
         Evaluator current = evaluator(context);
         if (isControl(arguments, LINK_ONLY_COMMAND)) {
             current.link();
             return null;
         }
-        if (isControl(arguments, INIT_ONLY_COMMAND)) {
-            current.link();
-            return current.initialize();
-        }
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
-            return current.executeMain(new Object[0]);
+            return current.executeMain(mainFunction, new Object[0]);
         }
 
         // RootNode is already executing inside an entered Graal context. It
@@ -77,10 +86,43 @@ public final class OresEvalRootNode extends RootNode {
         // entering Graal; direct embedders retain ownership of their entry
         // thread unless they opt into ActorRuntime.executeProcessRoot(...).
         current.link();
-        current.initialize();
-        return current.executeMain(arguments);
+        return current.executeMain(mainFunction, arguments);
     }
 
+    /**
+     * Admission is host/static policy work, not guest execution. Keep the
+     * recursive contract/type walk out of partial evaluation; otherwise AOT
+     * compilation tries to inline recursive TypeRef traversal.
+     */
+    @TruffleBoundary
+    private static void checkCapabilities(Ast.Program program, IsolatePolicy policy) {
+        CapabilityChecker.check(program, policy);
+    }
+
+    private static Ast.FunctionDecl resolveEntrypoint(Ast.Program program) {
+        Ast.FunctionDecl rootMain = null;
+        Ast.FunctionDecl unqualifiedMain = null;
+        boolean ambiguous = false;
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.FunctionDecl fn) || !fn.name().equals("main")) continue;
+                if (module.name().equals(Parser.ROOT_MODULE)) {
+                    rootMain = fn;
+                } else if (unqualifiedMain == null) {
+                    unqualifiedMain = fn;
+                } else {
+                    ambiguous = true;
+                }
+            }
+        }
+        if (rootMain != null) return rootMain;
+        if (ambiguous) {
+            throw new IllegalArgumentException("ambiguous function main; qualify program entrypoint");
+        }
+        return unqualifiedMain;
+    }
+
+    @TruffleBoundary
     private Evaluator evaluator(OresContext context) {
         Evaluator current = evaluator;
         if (current != null) return current;
@@ -108,8 +150,6 @@ public final class OresEvalRootNode extends RootNode {
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
         private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
-        private boolean initialized;
-
         private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
             this.program = program;
             this.context = context;
@@ -167,19 +207,9 @@ public final class OresEvalRootNode extends RootNode {
             context.registerLinkedCodeUnit(codeUnitId, this);
         }
 
-        private synchronized Object initialize() {
-            if (initialized) return null;
-            // Mark before invocation so a recursive path cannot run init twice.
-            initialized = true;
-            Ast.FunctionDecl init = functions.get(Parser.ROOT_MODULE + ".init");
-            if (init == null) return null;
-            return callFunction(init, List.of());
-        }
-
-        private Object executeMain(Object[] arguments) {
-            Ast.FunctionDecl main = functions.get(Parser.ROOT_MODULE + ".main");
-            if (main == null) main = findFunction("main");
+        private Object executeMain(Ast.FunctionDecl main, Object[] arguments) {
             if (main == null) return null;
+            CompilerAsserts.partialEvaluationConstant(main);
             return callFunction(main, List.of(arguments));
         }
 
@@ -273,12 +303,18 @@ public final class OresEvalRootNode extends RootNode {
             } catch (ReturnSignal signal) { return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name()); }
         }
 
+        @ExplodeLoop
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
+            CompilerAsserts.partialEvaluationConstant(statements);
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
             try {
-                for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred);
+                for (int i = 0; i < statements.size(); i++) {
+                    Ast.Stmt stmt = statements.get(i);
+                    CompilerAsserts.partialEvaluationConstant(stmt);
+                    executeStatement(stmt, env, deferred);
+                }
             } catch (ReturnSignal signal) {
                 throw signal;
             } catch (RuntimeException | Error failure) {
@@ -298,6 +334,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred) {
+            CompilerAsserts.partialEvaluationConstant(stmt);
             // Every actor kind observes stop/turn-overrun signals at statement
             // boundaries. UNTRUSTED actors additionally consume fuel here and
             // at expression boundaries below.
@@ -378,6 +415,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            CompilerAsserts.partialEvaluationConstant(expr);
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();
             }
@@ -903,7 +941,7 @@ public final class OresEvalRootNode extends RootNode {
             if (!(target instanceof Evaluator evaluator)) {
                 throw new IllegalStateException(
                         "import target '" + imported.path() + "' for '" + codeUnitId
-                                + "' is not linked yet; all members of an import cycle must be linked before init");
+                                + "' is not linked yet; all members of an import cycle must be linked before use");
             }
             return evaluator;
         }
@@ -1335,15 +1373,24 @@ public final class OresEvalRootNode extends RootNode {
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
             slot.value = value;
         }
-        private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
+        private Object lookup(String name) {
+            for (Env scope = this; scope != null; scope = scope.parent) {
+                Slot slot = scope.slots.get(name);
+                if (slot != null) return slot.value;
+            }
+            return MISSING;
+        }
         private void assign(String name, Object value) {
-            Slot slot = slots.get(name);
-            if (slot != null) {
-                if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
+            for (Env scope = this; scope != null; scope = scope.parent) {
+                Slot slot = scope.slots.get(name);
+                if (slot == null) continue;
+                if (slot.kind != Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException(
+                            "cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
+                }
                 slot.value = value;
                 return;
             }
-            if (parent != null) { parent.assign(name, value); return; }
             throw new IllegalArgumentException("unknown binding " + name);
         }
         private Env snapshot() {
@@ -1351,6 +1398,7 @@ public final class OresEvalRootNode extends RootNode {
             cp.slots.putAll(slots);
             return cp;
         }
+        @TruffleBoundary
         private void releaseMutexGuards(boolean failed) {
             Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             for (Slot slot : slots.values()) releaseMutexGuardsInValue(slot.value, failed, seen);
