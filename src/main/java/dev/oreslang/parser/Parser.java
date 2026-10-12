@@ -495,11 +495,7 @@ public final class Parser {
             }
             if (isBindingKind(peek().type())) {
                 validateClassFieldModifiers(mods);
-                Ast.FieldDecl field = parseField(annotations, mods.visibility);
-                if (field.name().equals("state")) {
-                    throw error(previous(), "actor 'state' is reserved runtime-owned storage, not an ordinary field");
-                }
-                fields.add(field);
+                fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
             if (check(IDENT) && checkNext(COLON)) {
@@ -702,7 +698,11 @@ public final class Parser {
 
             if (isBindingKind(peek().type())) {
                 validateActorFieldModifiers(mods);
-                fields.add(parseField(annotations, mods.visibility));
+                Ast.FieldDecl field = parseField(annotations, mods.visibility);
+                if (field.name().equals("state")) {
+                    throw error(previous(), "actor 'state' is reserved runtime-owned storage, not an ordinary field");
+                }
+                fields.add(field);
                 continue;
             }
             if (isContextualIdentifier("final") && checkNext(IDENT)) {
