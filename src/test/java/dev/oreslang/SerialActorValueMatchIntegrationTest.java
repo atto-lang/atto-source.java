@@ -69,7 +69,7 @@ final class SerialActorValueMatchIntegrationTest {
                 }
 
                 define serial actor Worker as
-                  receive(ActorMail<String> mail): void {
+                  suspends receive(ActorMail<String> mail): void {
                     val result: int = match<ret=int> await produce() over {
                       on 7 {
                         defer stdio.println("arm-cleanup");
