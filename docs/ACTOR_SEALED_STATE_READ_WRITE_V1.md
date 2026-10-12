@@ -135,3 +135,24 @@ to guest continuations, no user-visible actor-state read concurrency, and
 no demonstrated Java/LLVM end-to-end parity. A successful native gate test
 is not evidence that guest actor execution is race-safe. Explicit read-to-write
 upgrades are forbidden pending versioned retry semantics.
+
+
+## Java semantic boundary hardening (2026-10-12)
+
+The Java type checker now repeats the actor-state sealing rule independently
+of token parsing: effective inherited actor field layouts cannot contain a
+field named `state`; local or inherited actor instance methods named
+`handle_state` are rejected; local static actor methods with that name are
+also rejected. This protects against synthetic/expanded AST declarations and
+imported ancestor shapes, not only direct source text. Regression fixtures
+construct forged actor declarations in the AST to exercise these checks.
+
+Java Parser/TypeChecker/JUnit **full-source compilation and runtime tests
+are not yet verified** because the source repository's own Actions jobs did
+not execute. The exact Java Lexer/Token keyword smoke tests previously
+passed on a funded runner; do not conflate that with semantic enforcement
+or source-level `state {}` lowering.
+
+For security, future exact-source copies of this private code MUST target
+private repositories only. See private LLVM security issue #256 regarding
+the earlier public CI mirror history and administrator purge follow-up.
