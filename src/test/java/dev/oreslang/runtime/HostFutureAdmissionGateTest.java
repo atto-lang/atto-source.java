@@ -244,4 +244,33 @@ final class HostFutureAdmissionGateTest {
     }
 
 
+    @Test
+    void retirementRequiresNoHostScopeAndNoPhysicalGuestReservation() {
+        HostFutureAdmissionGate gate = new HostFutureAdmissionGate();
+        gate.begin();
+        gate.sealHostClaims();
+        assertThrows(IllegalStateException.class, gate::requireNoActiveHostClaim);
+        assertThrows(IllegalStateException.class, gate::requirePhysicalQuiescence);
+        gate.end();
+        gate.requireNoActiveHostClaim();
+
+        Runnable physical = gate.reserveGuestTurn();
+        assertThrows(IllegalStateException.class, gate::requirePhysicalQuiescence,
+                "a scheduler Future is not proof of TruffleContext.leave");
+        physical.run();
+        gate.requirePhysicalQuiescence();
+        gate.close();
+    }
+
+    @Test
+    void poisonedPhysicalExitNeverPassesRetirementPreflight() {
+        HostFutureAdmissionGate gate = new HostFutureAdmissionGate();
+        Runnable lease = gate.reserveGuestTurn();
+        gate.quarantineUnknownPhysicalExit();
+        lease.run();
+        assertThrows(IllegalStateException.class, gate::requirePhysicalQuiescence);
+        assertTrue(gate.physicalExitUnproven());
+    }
+
+
 }
