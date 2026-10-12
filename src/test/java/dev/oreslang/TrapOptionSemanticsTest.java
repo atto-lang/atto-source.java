@@ -611,6 +611,11 @@ final class TrapOptionSemanticsTest {
                 fnc invalid(): int {
                   return identity(trap (42));
                 }
+                """,
+                """
+                fnc invalid(): int {
+                  return 1 + trap (41);
+                }
                 """
         };
         for (String source : sources) {
