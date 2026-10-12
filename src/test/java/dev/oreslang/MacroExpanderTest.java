@@ -197,7 +197,7 @@ final class MacroExpanderTest {
 
     @Test
     void bareTokenTreesCannotInjectStatementsOrAnnotations() {
-        String prefix = "macro_rules! single { ($x:tt) => { $x }; }\\n";
+        String prefix = "macro_rules! single { ($x:tt) => { $x }; }\n";
         for (String bad : List.of("return", "end", ";", "@", "$", "let", "if", "=")) {
             IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
                     () -> MacroExpander.expand(new Lexer(prefix + "single!(" + bad + ")").scan()), bad);
