@@ -60,9 +60,17 @@ public final class ActorRuntime implements AutoCloseable {
      * cleanup ran; only a future cleanup-only CONTROL protocol may do that.
      */
     public static final class IncompleteSourceCleanupException extends IllegalStateException {
+        private final ActorId actorId;
+
         public IncompleteSourceCleanupException(ActorId actorId) {
-            super("actor " + actorId
+            super("actor " + Objects.requireNonNull(actorId)
                     + " stopped with unexecuted source defer/finally cleanup");
+            this.actorId = actorId;
+        }
+
+        /** The exact actor whose lexical cleanup was abandoned. */
+        public ActorId actorId() {
+            return actorId;
         }
     }
 
@@ -6687,12 +6695,30 @@ public final class ActorRuntime implements AutoCloseable {
                     if (primary != null) {
                         boolean alreadyReported = false;
                         for (Throwable suppressed : primary.getSuppressed()) {
-                            if (suppressed instanceof IncompleteSourceCleanupException) {
+                            if (suppressed instanceof IncompleteSourceCleanupException receipt
+                                    && receipt.actorId().equals(ref.id())) {
                                 alreadyReported = true;
                                 break;
                             }
                         }
-                        if (!alreadyReported) primary.addSuppressed(incomplete);
+                        if (!alreadyReported) {
+                            primary.addSuppressed(incomplete);
+                            boolean attached = false;
+                            for (Throwable suppressed : primary.getSuppressed()) {
+                                if (suppressed == incomplete) {
+                                    attached = true;
+                                    break;
+                                }
+                            }
+                            if (!attached) {
+                                // Throwable permits suppression to be disabled. In that
+                                // case addSuppressed silently discards the evidence:
+                                // publish the receipt as the primary failure and retain
+                                // the original cause rather than claiming safe cleanup.
+                                incomplete.initCause(primary);
+                                ref.terminationCause.set(incomplete);
+                            }
+                        }
                     }
                 }
             }
