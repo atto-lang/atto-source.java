@@ -44,6 +44,19 @@ final class WithUsingKeywordBoundaryAuditTest {
         assertDoesNotThrow(() -> DeclaredEffectVerifier.verify(valid));
     }
 
+    @Test void repeatedAndMixedEffectClausesAreExplicitErrors() {
+        String scoped = "using state.read(|s| -> { return s.x; })";
+        for (String declaration : new String[] {
+                "with state.read with state.write",
+                "with state.read using state.write",
+                "using state.read with state.write"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(actor(scoped).replace("with state.read", declaration)));
+            assertTrue(error.getMessage().contains("duplicate function effect clause"));
+        }
+    }
+
     @Test void scopedLoanRejectsOwnershipCommandsOnActorState() {
         for (String op : new String[] { "take", "share", "copy", "borrow" }) {
             String source = actor("using state.read(|s| -> { return rt "
