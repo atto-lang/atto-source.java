@@ -15,6 +15,7 @@ model BinaryArtifact {
   @pattern("^[0-9a-f]{64}$")
   file_sha256: string;
   @minValue(1)
+  @maxValue(9007199254740991)
   size_bytes: safeint;
   format: "native-executable" | "static-library" | "wasm-module";
   @minLength(1)
@@ -23,19 +24,22 @@ model BinaryArtifact {
   abi: string;
 }
 
+@minLength(1)
+scalar CapabilityName extends string;
+
 model RuntimeGenerationPolicy {
   runtime_macro_expansion: false;
   runtime_annotation_generation: false;
   runtime_guest_compilation: false;
   @uniqueItems
-  required_capabilities: string[];
+  required_capabilities: CapabilityName[];
 }
 
 model ArtifactSignature {
   algorithm: "ed25519";
   @minLength(1)
   key_id: string;
-  @pattern("^[A-Za-z0-9+/]{86}==$")
+  @pattern("^[A-Za-z0-9+/]{85}[AQgw]==$")
   value_base64: string;
 }
 
