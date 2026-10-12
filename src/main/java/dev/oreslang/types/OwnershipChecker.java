@@ -291,6 +291,15 @@ public final class OwnershipChecker {
             if (loopDepth == 0) throw error("'continue' may only appear inside loop or for");
             return;
         }
+        if (stmt instanceof Ast.ArmReturnStmt arm) {
+            if (arm.value() == null)
+                throw error("value match/switch arm cannot return without a value");
+            ValueInfo returned = checkExpr(arm.value(), scope, true);
+            if (containsMutexGuardType(returned.type))
+                throw error("match/switch value cannot escape a MutexGuard lifetime");
+            validateReturnedBorrow(arm.value(), returned);
+            return;
+        }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (discardingSelectReturn) {
                 // The returned expression is evaluated as a side effect only.
@@ -689,6 +698,18 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.ValueMatchExpr matched) {
+            checkStatement(new Ast.MatchStmt(
+                    matched.subject(), matched.ordered(), matched.arms()), scope,
+                    Ast.TypeRef.inferred());
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+        }
+        if (expr instanceof Ast.ValueSwitchExpr switched) {
+            checkStatement(new Ast.SwitchStmt(
+                    switched.subject(), switched.cases(), switched.defaultBody()),
+                    scope, Ast.TypeRef.inferred());
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }

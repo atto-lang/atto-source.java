@@ -241,6 +241,60 @@ final class OresFuturesTest {
     }
 
     @Test
+    void timedGetDetachesWaiterWithoutCancellingOrCompletingSharedProducer()
+            throws Exception {
+        OresFuture<Integer> pending = new OresFuture<>();
+        for (int i = 0; i < 160; i++) {
+            assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> pending.get(1, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertEquals(0, pending.pendingRuntimeWaiterCount(),
+                    "timed host waits must not accumulate callbacks in shared Future");
+            assertFalse(pending.isDone());
+        }
+        assertThrows(java.util.concurrent.TimeoutException.class,
+                () -> pending.get(0, java.util.concurrent.TimeUnit.NANOSECONDS));
+        assertEquals(0, pending.pendingRuntimeWaiterCount());
+
+        assertTrue(pending.completeFromRuntime(41));
+        assertEquals(41, pending.get(1, java.util.concurrent.TimeUnit.SECONDS));
+        assertEquals(0, pending.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void interruptedBlockingGetDetachesOnlyItsOwnWaiter() throws Exception {
+        OresFuture<Integer> pending = new OresFuture<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> observed =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.CountDownLatch starting =
+                new java.util.concurrent.CountDownLatch(1);
+        Thread blocked = Thread.ofVirtual().start(() -> {
+            starting.countDown();
+            try {
+                pending.get();
+                observed.set(new AssertionError("interrupted waiter unexpectedly returned"));
+            } catch (Throwable failure) {
+                observed.set(failure);
+            }
+        });
+        assertTrue(starting.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+        while (pending.pendingRuntimeWaiterCount() == 0
+                && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertEquals(1, pending.pendingRuntimeWaiterCount());
+        blocked.interrupt();
+        blocked.join(5000);
+        assertFalse(blocked.isAlive());
+        assertInstanceOf(InterruptedException.class, observed.get());
+        assertEquals(0, pending.pendingRuntimeWaiterCount(),
+                "interrupted host waiter must release its Future registration");
+        assertFalse(pending.isCancelled());
+        assertTrue(pending.completeFromRuntime(17));
+        assertEquals(17, pending.get(1, java.util.concurrent.TimeUnit.SECONDS));
+    }
+
+    @Test
     void raceCompletesWithFirstCompletion() {
         CompletableFuture<Integer> slow = new CompletableFuture<>();
         CompletableFuture<Integer> fast = new CompletableFuture<>();
@@ -250,4 +304,29 @@ final class OresFuturesTest {
 
         assertEquals(7, race.join());
     }
+    @Test
+    void runtimeCancellationReleasesHookRetainedByObservedTerminalFuture() throws Exception {
+        // Inspect runtime-only ownership to catch a retention regression that
+        // cannot be detected by asking a completed Future to cancel again.
+        java.lang.reflect.Field hookField = OresFuture.class.getDeclaredField("cancelHook");
+        hookField.setAccessible(true);
+        var hookInvocations = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = new OresFuture<>(
+                () -> true, hookInvocations::incrementAndGet, true);
+        @SuppressWarnings("unchecked")
+        var hook = (java.util.concurrent.atomic.AtomicReference<Runnable>)
+                hookField.get(future);
+        assertNotNull(hook.get());
+
+        var cancellation = new java.util.concurrent.CancellationException("shutdown");
+        assertTrue(future.cancelFromRuntime(cancellation));
+        assertNull(hook.get(),
+                "terminal Futures must not retain a scheduler/task cancellation hook");
+        assertSame(cancellation, assertThrows(
+                java.util.concurrent.CancellationException.class, future::join));
+        assertFalse(future.cancel(false));
+        assertEquals(0, hookInvocations.get(),
+                "late cancellation must not rerun a completed producer's hook");
+    }
+
 }

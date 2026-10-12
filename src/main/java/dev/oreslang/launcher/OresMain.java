@@ -33,6 +33,16 @@ public final class OresMain {
     private OresMain() { }
 
     public static void main(String[] args) throws Exception {
+        // Deliberately opt-in test hook so the AOT/hybrid executable can run
+        // cancellation/finalization assertions in its actual native process.
+        if (args.length == 1 && args[0].equals("--internal-native-shutdown-selftest")) {
+            if (!"1".equals(System.getenv("ORES_ENABLE_INTERNAL_SELFTEST"))) {
+                throw new SecurityException(
+                        "internal native shutdown self-test requires explicit test environment");
+            }
+            dev.oreslang.runtime.NativeActorShutdownSelfTest.run();
+            return;
+        }
         if (args.length == 1 && args[0].equals("--build-info")) {
             System.out.println("{\"build_mode\":\"" + NativeBuildMode.kind().name().toLowerCase(Locale.ROOT)
                     + "\",\"default_execution_mode\":\"" + NativeBuildMode.defaultExecutionMode()

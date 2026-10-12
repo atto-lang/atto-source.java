@@ -279,7 +279,7 @@ final class PrivateVisibilityTest {
         PolyglotException staticFailure = assertThrows(
                 PolyglotException.class,
                 () -> runLinked(staticMain));
-        assertTrue(staticFailure.getMessage().contains("private static function"));
+        assertTrue(staticFailure.getMessage().contains("private static function"), staticFailure.getMessage());
 
         Path methodMain = temp.resolve("method-main.ores");
         Files.writeString(methodMain, """
@@ -295,7 +295,7 @@ final class PrivateVisibilityTest {
         PolyglotException methodFailure = assertThrows(
                 PolyglotException.class,
                 () -> runLinked(methodMain));
-        assertTrue(methodFailure.getMessage().contains("private method"));
+        assertTrue(methodFailure.getMessage().contains("private method"), methodFailure.getMessage());
 
         Path destructureMain = temp.resolve("destructure-main.ores");
         Files.writeString(destructureMain, """

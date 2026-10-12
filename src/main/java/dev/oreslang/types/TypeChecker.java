@@ -43,6 +43,18 @@ public final class TypeChecker {
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    // Identity-keyed proof certificates established while checking each
+    // statement. The return-path verifier must never assume all match arms
+    // returning means every possible value is covered.
+    private final Set<Ast.MatchStmt> provenExhaustiveMatches =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Set<Ast.SwitchStmt> provenExhaustiveSwitches =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private final java.util.ArrayDeque<List<Type>> armValueTypes = new java.util.ArrayDeque<>();
+    // Nearest callable/lexical block return contract. Value-dispatch arms
+    // yield locally, but a nested 'do match' still returns from the function
+    // and must be checked against its declared return type.
+    private Type enclosingReturnType = Unknown.INSTANCE;
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
@@ -68,6 +80,9 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private int loopDepth;
+    // A break/continue must not escape the nearest finally and replace a
+    // pending return. Each entry records the enclosing loop depth.
+    private final java.util.ArrayDeque<Integer> finallyLoopBoundaries = new java.util.ArrayDeque<>();
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
 
@@ -1306,8 +1321,15 @@ public final class TypeChecker {
     }
 
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
-        Env env = new Env(parent);
-        for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+        Type previousReturn = enclosingReturnType;
+        if (expectedReturn != Unknown.INSTANCE) enclosingReturnType = expectedReturn;
+        try {
+            Env env = new Env(parent);
+            for (Ast.Stmt stmt : body)
+                checkStatement(stmt, env, generics, expectedReturn, self);
+        } finally {
+            enclosingReturnType = previousReturn;
+        }
     }
 
     private void checkLoopBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
@@ -1323,12 +1345,35 @@ public final class TypeChecker {
         checkIsolatedArmBlock(body, parent, generics, expectedReturn, self, false);
     }
 
+    private <T> T inFreshCallableFinallyScope(java.util.function.Supplier<T> work) {
+        // Lambdas have their own lexical return/loop boundaries, even when
+        // defined in a finally. An inner lambda's own finally is still guarded.
+        java.util.ArrayDeque<Integer> previous = new java.util.ArrayDeque<>(finallyLoopBoundaries);
+        finallyLoopBoundaries.clear();
+        try { return work.get(); }
+        finally {
+            finallyLoopBoundaries.clear();
+            finallyLoopBoundaries.addAll(previous);
+        }
+    }
+
+    private void checkFinallyControlExit(String operation) {
+        for (int entryLoopDepth : finallyLoopBoundaries) {
+            if (loopDepth <= entryLoopDepth) {
+                throw new IllegalArgumentException(
+                        operation + " cannot escape a finally block");
+            }
+        }
+    }
+
     private void checkIsolatedArmBlock(List<Ast.Stmt> body, Env parent, Set<String> generics,
                                        Type expectedReturn, Type self, boolean discardReturn) {
         int previousLoopDepth = loopDepth;
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
         boolean previousDiscard = inDiscardingSelectArm;
+        java.util.ArrayDeque<Integer> previousFinally = new java.util.ArrayDeque<>(finallyLoopBoundaries);
+        finallyLoopBoundaries.clear();
         loopDepth = 0;
         currentGenerator = false;
         currentAsyncCallable = false;
@@ -1340,6 +1385,8 @@ public final class TypeChecker {
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             inDiscardingSelectArm = previousDiscard;
+            finallyLoopBoundaries.clear();
+            finallyLoopBoundaries.addAll(previousFinally);
         }
     }
 
@@ -1424,13 +1471,27 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.BreakStmt) {
             if (loopDepth == 0) throw new IllegalArgumentException("'break' may only appear inside loop or for");
+            checkFinallyControlExit("break");
             return;
         }
         if (stmt instanceof Ast.ContinueStmt) {
             if (loopDepth == 0) throw new IllegalArgumentException("'continue' may only appear inside loop or for");
+            checkFinallyControlExit("continue");
+            return;
+        }
+        if (stmt instanceof Ast.ArmReturnStmt ret) {
+            if (!finallyLoopBoundaries.isEmpty())
+                throw new IllegalArgumentException("return is forbidden inside finally");
+            if (armValueTypes.isEmpty()) throw new IllegalArgumentException(
+                    "match/switch arm return has no enclosing value expression");
+            if (ret.value() == null) throw new IllegalArgumentException(
+                    "value-producing match/switch arm must return a value");
+            armValueTypes.peek().add(typeOf(ret.value(), env, generics, self));
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
+            if (!finallyLoopBoundaries.isEmpty())
+                throw new IllegalArgumentException("return is forbidden inside finally");
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
                         ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
@@ -1532,6 +1593,26 @@ public final class TypeChecker {
             checkBlock(switched.defaultBody(), env, generics, expectedReturn, self);
             exits.add(env.initializationSnapshot());
             env.mergeInitialization(exits);
+            final boolean exhaustive = !switched.defaultBody().isEmpty()
+                    || switchCoversAllBooleanValues(switched, subject);
+            if (exhaustive) provenExhaustiveSwitches.add(switched);
+            if (switched.returnForm()) {
+                if (!exhaustive) {
+                    throw new IllegalArgumentException(
+                            "non-exhaustive return switch: add a default case or cover every finite value");
+                }
+                for (Ast.SwitchCase arm : switched.cases()) {
+                    if (!definitelyReturns(arm.body())) {
+                        throw new IllegalArgumentException(
+                                "return switch case must return on every path");
+                    }
+                }
+                if (!switched.defaultBody().isEmpty()
+                        && !definitelyReturns(switched.defaultBody())) {
+                    throw new IllegalArgumentException(
+                            "return switch default must return on every path");
+                }
+            }
             return;
         }
         if (stmt instanceof Ast.TryStmt attempted) {
@@ -1547,7 +1628,9 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> caughtExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(normalExit, caughtExit));
-            checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
+            finallyLoopBoundaries.push(loopDepth);
+            try { checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self); }
+            finally { finallyLoopBoundaries.pop(); }
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
@@ -1673,7 +1756,156 @@ public final class TypeChecker {
         return java.util.Collections.unmodifiableSet(declared);
     }
 
+    // The current source-task continuations have not yet been generalized
+    // to carry a value-match arm's lexical return across suspension.
+    // Reject explicit suspension during dispatch instead of blocking an actor
+    // carrier or misdirecting an async arm's result to the function return.
+    private boolean valueDispatchHasSuspension(Ast.Expr expr) {
+        if (expr == null) return false;
+        if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.ChannelOpExpr
+                || expr instanceof Ast.DynamicSelectExpr) return true;
+        if (expr instanceof Ast.UnaryExpr unary)
+            return valueDispatchHasSuspension(unary.operand());
+        if (expr instanceof Ast.BinaryExpr binary)
+            return valueDispatchHasSuspension(binary.left())
+                    || valueDispatchHasSuspension(binary.right());
+        if (expr instanceof Ast.AssignExpr assigned)
+            return valueDispatchHasSuspension(assigned.target())
+                    || valueDispatchHasSuspension(assigned.value());
+        if (expr instanceof Ast.ConditionalExpr conditional)
+            return valueDispatchHasSuspension(conditional.condition())
+                    || valueDispatchHasSuspension(conditional.whenTrue())
+                    || valueDispatchHasSuspension(conditional.whenFalse());
+        if (expr instanceof Ast.CallExpr call)
+            return valueDispatchHasSuspension(call.callee())
+                    || call.arguments().stream().anyMatch(this::valueDispatchHasSuspension);
+        if (expr instanceof Ast.RuntimeCallExpr call)
+            return call.arguments().stream().anyMatch(this::valueDispatchHasSuspension);
+        if (expr instanceof Ast.MemberExpr member)
+            return valueDispatchHasSuspension(member.receiver());
+        if (expr instanceof Ast.IndexExpr index)
+            return valueDispatchHasSuspension(index.receiver())
+                    || valueDispatchHasSuspension(index.index());
+        if (expr instanceof Ast.NewExpr newly)
+            return newly.arguments().stream().anyMatch(this::valueDispatchHasSuspension);
+        if (expr instanceof Ast.ListExpr list)
+            return list.elements().stream().anyMatch(this::valueDispatchHasSuspension);
+        if (expr instanceof Ast.TupleExpr tuple)
+            return tuple.elements().stream().anyMatch(this::valueDispatchHasSuspension);
+        if (expr instanceof Ast.ObjectExpr object)
+            return object.fields().stream().anyMatch(field -> valueDispatchHasSuspension(field.value()));
+        if (expr instanceof Ast.SpreadExpr spread)
+            return valueDispatchHasSuspension(spread.expression());
+        if (expr instanceof Ast.CastExpr cast)
+            return valueDispatchHasSuspension(cast.value());
+        if (expr instanceof Ast.TypeTestExpr typed)
+            return valueDispatchHasSuspension(typed.value());
+        if (expr instanceof Ast.PatternTestExpr pattern)
+            return valueDispatchHasSuspension(pattern.value());
+        if (expr instanceof Ast.LambdaExpr lambda)
+            return (lambda.expressionBody() != null
+                        && valueDispatchHasSuspension(lambda.expressionBody()))
+                    || (lambda.blockBody() != null
+                        && lambda.blockBody().stream().anyMatch(this::valueArmStmtSuspends));
+        if (expr instanceof Ast.ValueMatchExpr matched)
+            return valueDispatchHasSuspension(matched.subject())
+                    || matched.arms().stream().anyMatch(
+                        arm -> (arm.guard() != null && valueDispatchHasSuspension(arm.guard()))
+                            || arm.body().stream().anyMatch(this::valueArmStmtSuspends));
+        if (expr instanceof Ast.ValueSwitchExpr switched)
+            return valueDispatchHasSuspension(switched.subject())
+                    || switched.cases().stream().anyMatch(
+                        arm -> arm.body().stream().anyMatch(this::valueArmStmtSuspends))
+                    || switched.defaultBody().stream().anyMatch(this::valueArmStmtSuspends);
+        return false;
+    }
+
+    private boolean valueArmStmtSuspends(Ast.Stmt stmt) {
+        if (stmt instanceof Ast.ArmReturnStmt value)
+            return valueDispatchHasSuspension(value.value());
+        if (stmt instanceof Ast.ReturnStmt value)
+            return valueDispatchHasSuspension(value.value());
+        if (stmt instanceof Ast.ExprStmt value)
+            return valueDispatchHasSuspension(value.expression());
+        if (stmt instanceof Ast.BindingStmt value)
+            return valueDispatchHasSuspension(value.initializer());
+        if (stmt instanceof Ast.DestructureStmt value)
+            return valueDispatchHasSuspension(value.initializer());
+        if (stmt instanceof Ast.DeferStmt value)
+            return valueDispatchHasSuspension(value.expression());
+        // Yield and nested loops must never evade the value-arm suspension fence.
+        if (stmt instanceof Ast.YieldStmt) return true;
+        if (stmt instanceof Ast.LoopStmt loop)
+            return loop.body().stream().anyMatch(this::valueArmStmtSuspends);
+        if (stmt instanceof Ast.BlockStmt nested)
+            return nested.body().stream().anyMatch(this::valueArmStmtSuspends);
+        if (stmt instanceof Ast.IfStmt conditional)
+            return conditional.branches().stream().anyMatch(
+                    arm -> valueDispatchHasSuspension(arm.condition())
+                        || arm.body().stream().anyMatch(this::valueArmStmtSuspends))
+                    || conditional.elseBody().stream().anyMatch(this::valueArmStmtSuspends);
+        if (stmt instanceof Ast.MatchStmt matched)
+            return valueDispatchHasSuspension(matched.subject())
+                    || matched.arms().stream().anyMatch(
+                        arm -> (arm.guard() != null && valueDispatchHasSuspension(arm.guard()))
+                            || arm.body().stream().anyMatch(this::valueArmStmtSuspends));
+        if (stmt instanceof Ast.SwitchStmt switched)
+            return valueDispatchHasSuspension(switched.subject())
+                    || switched.cases().stream().anyMatch(
+                        arm -> arm.body().stream().anyMatch(this::valueArmStmtSuspends))
+                    || switched.defaultBody().stream().anyMatch(this::valueArmStmtSuspends);
+        if (stmt instanceof Ast.TryStmt attempted)
+            return attempted.body().stream().anyMatch(this::valueArmStmtSuspends)
+                    || attempted.catchBody().stream().anyMatch(this::valueArmStmtSuspends)
+                    || attempted.finallyBody().stream().anyMatch(this::valueArmStmtSuspends);
+        if (stmt instanceof Ast.SelectStmt
+                || stmt instanceof Ast.ForStmt || stmt instanceof Ast.ForOfStmt
+                || stmt instanceof Ast.ForOfDestructureStmt) return true;
+        return false;
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.ValueMatchExpr matched) {
+            final Type subject = deref(typeOf(matched.subject(), env, generics, self));
+            List<Type> values = new ArrayList<>();
+            armValueTypes.push(values);
+            try {
+                Ast.MatchStmt statement = new Ast.MatchStmt(
+                        matched.subject(), matched.ordered(), matched.arms(), false);
+                checkMatch(statement, subject, env, generics, enclosingReturnType, self);
+                if (!matchProvablyExhaustive(matched.arms(), subject, generics, self))
+                    throw new IllegalArgumentException("non-exhaustive value match");
+                for (Ast.MatchArm arm : matched.arms()) {
+                    if (!definitelyYieldsValue(arm.body()))
+                        throw new IllegalArgumentException(
+                                "value match arm does not return a value on every path");
+                }
+            } finally { armValueTypes.pop(); }
+            return joinArmValues(values, "match");
+        }
+        if (expr instanceof Ast.ValueSwitchExpr switched) {
+            final Type subject = deref(typeOf(switched.subject(), env, generics, self));
+            List<Type> values = new ArrayList<>();
+            armValueTypes.push(values);
+            try {
+                Ast.SwitchStmt statement = new Ast.SwitchStmt(
+                        switched.subject(), switched.cases(), switched.defaultBody(), false);
+                checkStatement(statement, env, generics, enclosingReturnType, self);
+                if (switched.defaultBody().isEmpty()
+                        && !switchCoversAllBooleanValues(statement, subject))
+                    throw new IllegalArgumentException(
+                            "non-exhaustive value switch: add default or cover every finite case");
+                for (Ast.SwitchCase arm : switched.cases()) {
+                    if (!definitelyYieldsValue(arm.body()))
+                        throw new IllegalArgumentException(
+                                "value switch case does not return a value on every path");
+                }
+                if (!switched.defaultBody().isEmpty() && !definitelyYieldsValue(switched.defaultBody()))
+                    throw new IllegalArgumentException(
+                            "value switch default does not return a value on every path");
+            } finally { armValueTypes.pop(); }
+            return joinArmValues(values, "switch");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
@@ -2285,6 +2517,13 @@ public final class TypeChecker {
                                     "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
                             yield Primitive.VOID;
                         }
+                        case "get_ready", "get_done" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef." + member.member() + " expects no arguments");
+                            }
+                            yield new Named("Future", List.of(Primitive.VOID));
+                        }
                         case "stop" -> {
                             if (!call.arguments().isEmpty()) {
                                 throw new IllegalArgumentException(
@@ -2804,7 +3043,7 @@ public final class TypeChecker {
                             List.of(Unknown.INSTANCE));
                     case "id" -> new Named("ActorId", List.of());
                     case "kind" -> new Named("ActorKind", List.of());
-                    case "send", "stop", "cancel", "kill" ->
+                    case "send", "stop", "cancel", "kill", "get_ready", "get_done" ->
                             throw new IllegalArgumentException(
                                     "ActorRef." + member.member()
                                             + " is direct-call-only; invoke it with (...)");
@@ -3266,7 +3505,8 @@ public final class TypeChecker {
             Type result;
             try {
                 if (lambda.expressionBody() != null) {
-                    result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+                    result = inFreshCallableFinallyScope(
+                            () -> typeOf(lambda.expressionBody(), lambdaEnv, generics, self));
                 } else {
                     checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
                     result = Unknown.INSTANCE;
@@ -3977,8 +4217,9 @@ public final class TypeChecker {
         if (nonLexical) currentClassOwner = null;
         try {
             if (lambda.expressionBody() != null) {
-                Type actual = typeOfAgainstExpected(
-                        lambda.expressionBody(), Primitive.VOID, lambdaEnv, generics, self);
+                Type actual = inFreshCallableFinallyScope(
+                        () -> typeOfAgainstExpected(
+                                lambda.expressionBody(), Primitive.VOID, lambdaEnv, generics, self));
                 requireAssignable(actual, Primitive.VOID, "mutex callback expression body");
             } else {
                 checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
@@ -4021,8 +4262,9 @@ public final class TypeChecker {
         if (nonLexical) currentClassOwner = null;
         try {
             if (lambda.expressionBody() != null) {
-                Type actual = typeOfAgainstExpected(
-                        lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
+                Type actual = inFreshCallableFinallyScope(
+                        () -> typeOfAgainstExpected(
+                                lambda.expressionBody(), expected.result(), lambdaEnv, generics, self));
                 requireReadonlyCapabilityPreserved(
                         actual,
                         expected.result(),
@@ -4573,11 +4815,39 @@ public final class TypeChecker {
             }
         }
 
-        if (!matchProvablyExhaustive(arms, subject, generics, self)) {
+        final boolean exhaustive = matchProvablyExhaustive(arms, subject, generics, self);
+        if (exhaustive) provenExhaustiveMatches.add(matched);
+        // Canonical ordinary match may be partial and continues execution
+        // after its arms. 'return match' requires coverage, while legacy
+        // non-over match retains the historical exhaustiveness rule.
+        if (!exhaustive && (matched.returnForm() || !matched.ordered())) {
             throw new IllegalArgumentException(
-                    "non-exhaustive match for " + subject
-                            + "; add an unguarded 'on _ -> { ... }' arm or cover every provable case");
+                    "non-exhaustive " + (matched.returnForm() ? "return match" : "match")
+                            + " for " + subject
+                            + "; add an unguarded 'on _ { ... }' arm or cover every provable case");
         }
+        if (matched.returnForm()) {
+            for (Ast.MatchArm arm : arms) {
+                if (!definitelyReturns(arm.body())) {
+                    throw new IllegalArgumentException(
+                            "return match arm must return on every path");
+                }
+            }
+        }
+    }
+
+    private boolean switchCoversAllBooleanValues(Ast.SwitchStmt switched, Type subject) {
+        if (subject != Primitive.BOOL) return false;
+        boolean yes = false, no = false;
+        for (Ast.SwitchCase arm : switched.cases()) {
+            for (Ast.Expr value : arm.constants()) {
+                if (value instanceof Ast.LiteralExpr literal) {
+                    if (Boolean.TRUE.equals(literal.value())) yes = true;
+                    if (Boolean.FALSE.equals(literal.value())) no = true;
+                }
+            }
+        }
+        return yes && no;
     }
 
     private void checkPattern(
@@ -4918,19 +5188,33 @@ public final class TypeChecker {
             }
             return yes && no;
         }
-        if (subject instanceof Named named && named.name().equals("Option")) {
+        if (subject instanceof Named named && named.name().equals("Option")
+                && named.arguments().size() == 1) {
             boolean some = false, none = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                some |= c.constructor().equals("Some");
-                none |= c.constructor().equals("None");
+            for (Ast.MatchArm arm : arms) {
+                if (arm.guard() != null || !(arm.pattern() instanceof Ast.ConstructorPattern c)) continue;
+                if (c.constructor().equals("Some") && c.arguments().size() == 1) {
+                    // Some(1) narrows its payload and does NOT cover every Some<T>.
+                    some |= patternCoversType(c.arguments().getFirst(),
+                            named.arguments().getFirst(), generics, self);
+                } else if (c.constructor().equals("None") && c.arguments().isEmpty()) {
+                    none = true;
+                }
             }
             return some && none;
         }
-        if (subject instanceof Named named && named.name().equals("Result")) {
+        if (subject instanceof Named named && named.name().equals("Result")
+                && named.arguments().size() == 2) {
             boolean ok = false, err = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                ok |= c.constructor().equals("Ok");
-                err |= c.constructor().equals("Err");
+            for (Ast.MatchArm arm : arms) {
+                if (arm.guard() != null || !(arm.pattern() instanceof Ast.ConstructorPattern c)) continue;
+                if (c.constructor().equals("Ok") && c.arguments().size() == 1) {
+                    ok |= patternCoversType(c.arguments().getFirst(),
+                            named.arguments().get(0), generics, self);
+                } else if (c.constructor().equals("Err") && c.arguments().size() == 1) {
+                    err |= patternCoversType(c.arguments().getFirst(),
+                            named.arguments().get(1), generics, self);
+                }
             }
             return ok && err;
         }
@@ -7366,6 +7650,43 @@ public final class TypeChecker {
         return false;
     }
 
+    private Type joinArmValues(List<Type> types, String kind) {
+        if (types.isEmpty()) throw new IllegalArgumentException(
+                "value " + kind + " has no value-producing returns");
+        Type result = types.getFirst();
+        for (int i = 1; i < types.size(); ++i) {
+            Type next = types.get(i);
+            if (assignable(next, result)) continue;
+            if (assignable(result, next)) { result = next; continue; }
+            result = commonType(result, next);
+            if (result == Unknown.INSTANCE)
+                throw new IllegalArgumentException(
+                        "incompatible value " + kind + " arm result types");
+        }
+        return result;
+    }
+
+    private boolean definitelyYieldsValue(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ArmReturnStmt result) return result.value() != null;
+            if (stmt instanceof Ast.BlockStmt nested && definitelyYieldsValue(nested.body())) return true;
+            if (stmt instanceof Ast.TryStmt attempted) {
+                // A finally cannot return or yield to the surrounding
+                // callable/value arm. Only try and catch contribute a result.
+                if (definitelyYieldsValue(attempted.body())
+                        && definitelyYieldsValue(attempted.catchBody())) return true;
+            }
+            if (stmt instanceof Ast.IfStmt conditional) {
+                if (!conditional.branches().isEmpty()
+                        && conditional.branches().stream().allMatch(
+                                branch -> definitelyYieldsValue(branch.body()))
+                        && !conditional.elseBody().isEmpty()
+                        && definitelyYieldsValue(conditional.elseBody())) return true;
+            }
+        }
+        return false;
+    }
+
     private boolean definitelyReturns(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
@@ -7379,14 +7700,16 @@ public final class TypeChecker {
                 if (allBranches) return true;
             }
             if (stmt instanceof Ast.MatchStmt matched
+                    && provenExhaustiveMatches.contains(matched)
                     && !matched.arms().isEmpty()
                     && matched.arms().stream().allMatch(arm -> definitelyReturns(arm.body()))) return true;
             if (stmt instanceof Ast.SwitchStmt switched
-                    && !switched.defaultBody().isEmpty()
+                    && provenExhaustiveSwitches.contains(switched)
                     && switched.cases().stream().allMatch(arm -> definitelyReturns(arm.body()))
-                    && definitelyReturns(switched.defaultBody())) return true;
+                    && (switched.defaultBody().isEmpty()
+                        || definitelyReturns(switched.defaultBody()))) return true;
             if (stmt instanceof Ast.TryStmt attempted) {
-                if (definitelyReturns(attempted.finallyBody())) return true;
+                // Finally runs on unwind, but cannot replace the pending return.
                 if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
             }
         }
