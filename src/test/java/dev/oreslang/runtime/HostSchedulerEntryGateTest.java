@@ -182,6 +182,60 @@ final class HostSchedulerEntryGateTest {
     }
 
     @Test
+    void executorThrowAfterGuestStartsDoesNotRevokePhysicalLease() throws Exception {
+        var gate = new HostSchedulerEntryGate(1);
+        var pool = Executors.newSingleThreadExecutor();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var failureCallbacks = new AtomicInteger();
+        try {
+            assertThrows(RejectedExecutionException.class,
+                    () -> gate.submitGuest(task -> {
+                        pool.execute(task);
+                        try {
+                            assertTrue(entered.await(5, TimeUnit.SECONDS));
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                        throw new RejectedExecutionException("executor threw after start");
+                    }, () -> {
+                        entered.countDown();
+                        try {
+                            assertTrue(release.await(5, TimeUnit.SECONDS));
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                    }, error -> failureCallbacks.incrementAndGet()));
+            gate.sealAdmission();
+            assertFalse(gate.physicallyQuiescent(),
+                    "a running guest retains its physical lease even after executor throws");
+        } finally {
+            release.countDown();
+            pool.shutdown();
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+        }
+        assertEquals(0, failureCallbacks.get(),
+                "a started task is never reported as an unstarted admission rejection");
+        assertTrue(gate.physicallyQuiescent());
+    }
+
+    @Test
+    void duplicateExecutorRunnableExecutesGuestBodyAtMostOnce() {
+        var gate = new HostSchedulerEntryGate(1);
+        var runs = new AtomicInteger();
+        gate.submitGuest(task -> {
+            task.run();
+            task.run();
+        }, runs::incrementAndGet, error -> fail("unexpected rejection", error));
+        gate.sealAdmission();
+        assertEquals(1, runs.get());
+        assertTrue(gate.physicallyQuiescent(),
+                "duplicate invocation cannot double release the entry lease");
+    }
+
+    @Test
     void queuedCancellationPreventsExecutionAndNotifiesExactlyOnce() throws Exception {
         var gate = new HostSchedulerEntryGate(2);
         var guestRuns = new AtomicInteger();
