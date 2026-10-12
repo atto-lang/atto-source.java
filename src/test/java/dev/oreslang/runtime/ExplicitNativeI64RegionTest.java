@@ -144,6 +144,48 @@ final class ExplicitNativeI64RegionTest {
     }
 
     @Test
+    void lastLoanCanRetryFailedNativeRetirementCallback() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "JDK25 FFM required");
+        var problem = new AtomicReference<Throwable>();
+        var done = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnPrivate(() -> (mail, ctx) -> {
+                try {
+                    var memory = ctx.actorOwnedMemory().orElseThrow();
+                    long before = memory.usedBytes();
+                    var failOnce = new java.util.concurrent.atomic.AtomicBoolean(true);
+                    var region = new ExplicitNativeI64Region(1, memory.reserveHeap(8L),
+                            memory::requireOwnerActive, () -> {
+                                if (failOnce.getAndSet(false)) {
+                                    throw new IllegalStateException("injected completion cleanup fault");
+                                }
+                            });
+                    var handle = region.allocate(42);
+                    var loan = region.borrow(handle);
+                    region.retireFromActor();
+                    assertFalse(region.physicallyClosed(), "borrow must pin arena");
+                    assertThrows(IllegalStateException.class, loan::close);
+                    assertFalse(region.physicallyClosed(), "cleanup fault must stay visible");
+                    assertEquals(before, memory.usedBytes(), "quota was released once");
+                    // A second close on the already-released Loan retries the
+                    // failed post-close callback without a second decrement.
+                    assertDoesNotThrow(loan::close);
+                    assertDoesNotThrow(loan::close);
+                    assertTrue(region.physicallyClosed());
+                    assertEquals(before, memory.usedBytes());
+                } catch (Throwable err) {
+                    problem.compareAndSet(null, err);
+                } finally {
+                    done.countDown();
+                }
+            });
+            actor.send("test");
+            assertTrue(done.await(20, TimeUnit.SECONDS));
+            if (problem.get() != null) fail(problem.get());
+        }
+    }
+
+    @Test
     void rejectsUnsupportedPhysicalArenaInsteadOfManagedFallback() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var ref = runtime.<String>spawnPrivate(() -> (mail, ctx) -> {});
