@@ -214,6 +214,70 @@ final class OresSchedulerQuiescenceTest {
     }
 
     @Test
+    void schedulerCloseCannotMissTaskWhoseAdmissionIsInProgress()
+            throws Exception {
+        CountDownLatch admissionEntered = new CountDownLatch(1);
+        CountDownLatch finishAdmission = new CountDownLatch(1);
+        CountDownLatch closeStarted = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>> result =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> error =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicInteger guestExecutions = new AtomicInteger();
+        AtomicInteger retireCount = new AtomicInteger();
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "race-close-admission", 1, runnable -> {
+                    // Deliberately pause the executor admission without
+                    // scheduling work. close must include this registered task.
+                    admissionEntered.countDown();
+                    try {
+                        if (!finishAdmission.await(3, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("timed out holding admission");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new java.util.concurrent.RejectedExecutionException(interrupted);
+                    }
+                });
+        Thread starter = Thread.ofPlatform().start(() -> {
+            try {
+                result.set(scheduler.start(resume -> {
+                    guestExecutions.incrementAndGet();
+                    return OresScheduler.done(5);
+                }, retireCount::incrementAndGet));
+            } catch (Throwable failure) {
+                error.set(failure);
+            }
+        });
+        Thread closer = null;
+        try {
+            assertTrue(admissionEntered.await(3, TimeUnit.SECONDS));
+            closer = Thread.ofPlatform().start(() -> {
+                closeStarted.countDown();
+                scheduler.close();
+            });
+            assertTrue(closeStarted.await(3, TimeUnit.SECONDS));
+        } finally {
+            finishAdmission.countDown();
+            starter.join(3_000);
+            if (closer != null) closer.join(3_000);
+            scheduler.close();
+        }
+        assertFalse(starter.isAlive());
+        if (closer != null) assertFalse(closer.isAlive());
+        assertEquals(null, error.get());
+        assertTrue(result.get() != null, "admitted task must be observable");
+        assertTrue(result.get().isCancelled(),
+                "shutdown must cancel the task admitted before its close fence");
+        assertEquals(0, guestExecutions.get());
+        assertEquals(1, retireCount.get());
+        java.lang.reflect.Field tasksField =
+                OresScheduler.class.getDeclaredField("tasks");
+        tasksField.setAccessible(true);
+        assertTrue(((java.util.Set<?>) tasksField.get(scheduler)).isEmpty());
+    }
+
+    @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
         AtomicInteger count = new AtomicInteger();
