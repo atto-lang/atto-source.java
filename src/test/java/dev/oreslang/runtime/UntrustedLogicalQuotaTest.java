@@ -15,6 +15,29 @@ import org.junit.jupiter.api.Timeout;
 /** No new actor quota may be minted by await, cooperate or carrier migration. */
 @Timeout(10)
 final class UntrustedLogicalQuotaTest {
+    // Host-side white-box test probes. Never capture these in an UNTRUSTED
+    // BehaviorFactory/Behavior instance: factories must remain stateless.
+    // This fixture instrumentation is not a guest-accessible capability API.
+    private record SiblingProbe(
+            AtomicReference<OresFuture<Integer>> retained,
+            AtomicReference<Throwable> secondRejected,
+            AtomicReference<Throwable> physicalBudgetDenied,
+            java.util.concurrent.CountDownLatch attempted,
+            OresFuture<Integer> wait) { }
+    private record NestedProbe(AtomicReference<OresFuture<Integer>> outerRef) { }
+    private record FuelProbe(
+            AtomicReference<OresFuture<Integer>> taskRef,
+            AtomicInteger dispatches) { }
+    private record DeadlineProbe(
+            AtomicReference<OresFuture<Integer>> taskRef,
+            AtomicInteger resumes,
+            OresFuture<Integer> awaited) { }
+
+    private static volatile SiblingProbe siblingProbe;
+    private static volatile NestedProbe nestedProbe;
+    private static volatile FuelProbe fuelProbe;
+    private static volatile DeadlineProbe deadlineProbe;
+
     @Test
     void fuelDebtSurvivesAnyNumberOfCooperateHandoffs() {
         AtomicLong wall = new AtomicLong();
@@ -196,25 +219,27 @@ final class UntrustedLogicalQuotaTest {
         java.util.concurrent.CountDownLatch attempted =
                 new java.util.concurrent.CountDownLatch(1);
         OresFuture<Integer> wait = new OresFuture<>();
+        siblingProbe = new SiblingProbe(retained, secondRejected, physicalBudgetDenied, attempted, wait);
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<String>spawnUntrusted(context -> (message, turn) -> {
+                SiblingProbe probe = siblingProbe;
                 if (message.equals("first")) {
-                    retained.set(turn.runtime().startActorTask(resume ->
-                            resume.initial() ? OresScheduler.<Integer>await(wait)
+                    probe.retained().set(turn.runtime().startActorTask(resume ->
+                            resume.initial() ? OresScheduler.<Integer>await(probe.wait())
                                     : OresScheduler.done(7)));
                 } else if (message.equals("sibling")) {
                     try {
                         turn.runtime().startActorTask(
                                 resume -> OresScheduler.done(999));
                     } catch (SecurityException expected) {
-                        secondRejected.set(expected);
+                        probe.secondRejected().set(expected);
                     } finally {
                         try {
                             turn.runtime().schedulerSafepoint();
                         } catch (SecurityException expected) {
-                            physicalBudgetDenied.set(expected);
+                            probe.physicalBudgetDenied().set(expected);
                         }
-                        attempted.countDown();
+                        probe.attempted().countDown();
                     }
                 }
             });
@@ -236,6 +261,8 @@ final class UntrustedLogicalQuotaTest {
             assertEquals(7, retained.get().get(3, TimeUnit.SECONDS));
             actor.stop();
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        } finally {
+            siblingProbe = null;
         }
     }
 
@@ -243,9 +270,10 @@ final class UntrustedLogicalQuotaTest {
     void nestedUntrustedTasksShareOneQuotaAndRetireWithoutUnderflow()
             throws Exception {
         AtomicReference<OresFuture<Integer>> outerRef = new AtomicReference<>();
+        nestedProbe = new NestedProbe(outerRef);
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<String>spawnUntrusted(context -> (message, turn) ->
-                    outerRef.set(turn.runtime().startActorTask(new OresScheduler.Task<>() {
+                    nestedProbe.outerRef().set(turn.runtime().startActorTask(new OresScheduler.Task<>() {
                         private OresFuture<Integer> child;
 
                         @Override
@@ -272,6 +300,8 @@ final class UntrustedLogicalQuotaTest {
             assertEquals(7, outerRef.get().get(3, TimeUnit.SECONDS));
             actor.stop();
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        } finally {
+            nestedProbe = null;
         }
     }
 
@@ -279,10 +309,11 @@ final class UntrustedLogicalQuotaTest {
     void actualUntrustedActorCannotRefuelThroughRepeatedCooperate() throws Exception {
         AtomicReference<OresFuture<Integer>> taskRef = new AtomicReference<>();
         AtomicInteger dispatches = new AtomicInteger();
+        fuelProbe = new FuelProbe(taskRef, dispatches);
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<String>spawnUntrusted(context -> (message, turn) ->
-                    taskRef.set(turn.runtime().startActorTask(resume -> {
-                        dispatches.incrementAndGet();
+                    fuelProbe.taskRef().set(turn.runtime().startActorTask(resume -> {
+                        fuelProbe.dispatches().incrementAndGet();
                         // The UNTRUSTED default budget is 250ms x 256 = 64,000
                         // fuel units. Six 13,000-checkpoint physical dispatches
                         // exceed that cumulative budget despite each individual
@@ -310,6 +341,8 @@ final class UntrustedLogicalQuotaTest {
             assertTrue(dispatches.get() >= 5, "fuel must be charged across physical resumes");
             actor.stop();
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        } finally {
+            fuelProbe = null;
         }
     }
 
@@ -318,12 +351,13 @@ final class UntrustedLogicalQuotaTest {
         AtomicReference<OresFuture<Integer>> taskRef = new AtomicReference<>();
         AtomicInteger resumes = new AtomicInteger();
         OresFuture<Integer> awaited = new OresFuture<>();
+        deadlineProbe = new DeadlineProbe(taskRef, resumes, awaited);
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<String>spawnUntrusted(context -> (message, turn) ->
-                    taskRef.set(turn.runtime().startActorTask(resume -> {
-                        int step = resumes.getAndIncrement();
+                    deadlineProbe.taskRef().set(turn.runtime().startActorTask(resume -> {
+                        int step = deadlineProbe.resumes().getAndIncrement();
                         turn.runtime().schedulerSafepoint();
-                        if (step == 0) return OresScheduler.await(awaited);
+                        if (step == 0) return OresScheduler.await(deadlineProbe.awaited());
                         return OresScheduler.done(42);
                     })));
             actor.send("start");
@@ -346,6 +380,8 @@ final class UntrustedLogicalQuotaTest {
                     ((ActorRuntime.UntrustedActorQuotaExceededException) failed.getCause()).resource());
             actor.stop();
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        } finally {
+            deadlineProbe = null;
         }
     }
 }
