@@ -461,7 +461,17 @@ public final class OresContext implements AutoCloseable {
                 entered = true;
                 turn.run();
             } finally {
-                if (entered) truffleContext.leave(null, previous);
+                if (entered) {
+                    try {
+                        truffleContext.leave(null, previous);
+                    } catch (RuntimeException | Error physicalFailure) {
+                        // Never release a supposedly reusable physical-entry
+                        // boundary after an unproven leave. Quarantine BEFORE
+                        // publishing the guest reservation's release.
+                        hostFutureAdmission.quarantineUnknownPhysicalExit();
+                        throw physicalFailure;
+                    }
+                }
             }
         } finally {
             try {
@@ -535,6 +545,12 @@ public final class OresContext implements AutoCloseable {
                 // even after its Future was cancelled. Its executor shutdown
                 // is a physical-exit barrier, not merely Future.isDone().
                 asyncRuntime.close();
+                // Scheduler terminal Futures cannot replace a failed physical
+                // Truffle leave. A poisoned incarnation must never retire.
+                if (hostFutureAdmission.physicalExitUnproven()) {
+                    throw new IllegalStateException(
+                            "context retirement refused: guest physical leave unproven");
+                }
                 // Only after all scheduler and async carriers prove physical
                 // exit may we revoke the residual admission gate.
                 hostFutureAdmission.close();
