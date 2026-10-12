@@ -77,8 +77,9 @@ public final class GpuBufferFence implements AutoCloseable {
         if (state.status != Status.IDLE) {
             throw new IllegalStateException("cannot transfer device buffer with pending/failed fence");
         }
+        var successor = new GpuBufferFence(state);
         moved = true;
-        return new GpuBufferFence(state);
+        return successor;
     
         }
     }
@@ -89,9 +90,11 @@ public final class GpuBufferFence implements AutoCloseable {
         if (!state.identity.equals(caller)) throw new SecurityException("foreign device/tenant/generation");
         if (state.status != Status.IDLE) throw new IllegalStateException("device buffer not idle");
         if (state.sequence == Long.MAX_VALUE) throw new IllegalStateException("device fence sequence overflow");
+        var ticket = new Ticket(state.identity.allocationGeneration(), state.sequence + 1);
+        ++state.sequence;
         state.backendQuiescent = false;
         state.status = Status.IN_FLIGHT;
-        return new Ticket(state.identity.allocationGeneration(), ++state.sequence);
+        return ticket;
     
         }
     }
