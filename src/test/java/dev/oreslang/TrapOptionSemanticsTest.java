@@ -399,6 +399,71 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
+    void aDeferredOrdinaryCastErrorCannotDowngradeUnwrapPanic() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                fnc deferred_cast(Animal animal): void {
+                  val Dog dog = animal as Dog;
+                  return;
+                }
+
+                trap fnc panic_then_cleanup(Animal animal): int {
+                  defer deferred_cast(animal);
+                  val Option<int> absent = None;
+                  return absent.unwrap();
+                }
+
+                pub fnc main(): void {
+                  val Option<int> ignored = panic_then_cleanup(new Cat());
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException panic = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(panic.getMessage().contains("Option::unwrap"));
+    }
+
+    @Test
+    void deferredUnwrapPanicOverridesRecoverableBodyCastError() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                fnc deferred_panic(): void {
+                  val Option<int> absent = None;
+                  val int invalid = absent.unwrap();
+                  return;
+                }
+
+                trap fnc cast_then_panic(Animal animal): int {
+                  defer deferred_panic();
+                  val Dog dog = animal as Dog;
+                  return 1;
+                }
+
+                pub fnc main(): void {
+                  val Option<int> ignored = cast_then_panic(new Cat());
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException panic = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(panic.getMessage().contains("Option::unwrap"));
+    }
+
+    @Test
     void expressionTrapIsNotSilentlyAcceptedBeforeItsEffectLoweringExists() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc invalid(): void {
