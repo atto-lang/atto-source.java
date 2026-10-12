@@ -774,6 +774,50 @@ final class OresSchedulerQuiescenceTest {
                 "all deadline reservations must be released across races");
     }
 
+
+    @Test
+    void blockedQuiescenceCallbacksCannotOccupyDeadlineTimerWorkers()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        OresFuture<Integer> unresolved = new OresFuture<>();
+        CountDownLatch twoRetirementsEntered = new CountDownLatch(2);
+        CountDownLatch releaseRetirements = new CountDownLatch(1);
+        CountDownLatch thirdRetired = new CountDownLatch(1);
+        try {
+            java.util.List<OresFuture<Integer>> results = new java.util.ArrayList<>();
+            for (int i = 0; i < 3; i++) {
+                final int index = i;
+                results.add(scheduler.startWithWallDeadline(
+                        resume -> OresScheduler.await(unresolved),
+                        () -> {
+                            if (index == 2) {
+                                thirdRetired.countDown();
+                            } else {
+                                twoRetirementsEntered.countDown();
+                                try {
+                                    releaseRetirements.await(3, TimeUnit.SECONDS);
+                                } catch (InterruptedException interrupted) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
+                        },
+                        TimeUnit.MILLISECONDS.toNanos(130),
+                        new IllegalStateException("expired-" + i)));
+            }
+            assertTrue(twoRetirementsEntered.await(3, TimeUnit.SECONDS));
+            assertTrue(thirdRetired.await(2, TimeUnit.SECONDS),
+                    "deadline worker must not wait for blocked actor retirement");
+            java.util.concurrent.ExecutionException expired =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> results.get(2).get(2, TimeUnit.SECONDS));
+            assertEquals("expired-2", expired.getCause().getMessage());
+        } finally {
+            releaseRetirements.countDown();
+            scheduler.close();
+        }
+    }
+
     @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
