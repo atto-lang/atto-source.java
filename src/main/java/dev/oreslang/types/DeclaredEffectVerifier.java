@@ -196,6 +196,18 @@ public final class DeclaredEffectVerifier {
             collect(await.expression(), effects, stateAccess, callableName, serial);
             return;
         }
+        // Source loops can lower into implicit cooperation at the backedge,
+        // even without a spelled-out 'rt cooperate'. Their suspend effect
+        // belongs in the enclosing 'with' upper bound. The sealed inline
+        // state callback is a synchronous, non-yielding scope and must not
+        // acquire an implicit permission to suspend with a live loan.
+        if (stateAccess == null
+                && (node instanceof Ast.ForStmt
+                    || node instanceof Ast.ForOfStmt
+                    || node instanceof Ast.ForOfDestructureStmt
+                    || node instanceof Ast.LoopStmt)) {
+            effects.add(FunctionEffects.Effect.SUSPEND);
+        }
         if (node instanceof Ast.NewExpr || node instanceof Ast.ListExpr
                 || node instanceof Ast.TupleExpr || node instanceof Ast.ObjectExpr) {
             effects.add(FunctionEffects.Effect.ALLOC);
