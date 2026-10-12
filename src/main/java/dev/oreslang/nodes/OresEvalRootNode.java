@@ -941,6 +941,8 @@ public final class OresEvalRootNode extends RootNode {
 
             private SourceValueCont awaitingContinuation;
             private OresScheduler.Step<Object> nextStep;
+            private OresScheduler.StructuredCancellationSignal structuredStop;
+            private int lexicalCleanupDepth;
 
             private SourceTask(
                     Ast.FunctionDecl function,
@@ -1044,6 +1046,9 @@ public final class OresEvalRootNode extends RootNode {
                             params,
                             this::finishSourceFlow);
                 } else {
+                    if (resume.failure() instanceof OresScheduler.StructuredCancellationSignal stopped) {
+                        structuredStop = stopped;
+                    }
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
                     if (continuation == null) {
@@ -1736,6 +1741,11 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 int index,
                 SourceFlowCont continuation) {
+            if (task.structuredStop != null && task.lexicalCleanupDepth == 0) {
+                finishBlock(task, env, defers,
+                        SourceFlow.throwing(task.structuredStop), continuation);
+                return;
+            }
             if (index >= statements.size()) {
                 finishBlock(
                         task,
@@ -1891,6 +1901,30 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation);
                         }
                     });
+        }
+
+        /**
+         * A lexical finally is privileged only while its own code runs.
+         * Scope the exception to the originating SourceTask continuation,
+         * including when the cleanup suspends and resumes on a new carrier.
+         */
+        private void runSourceFinallyBlock(
+                SourceTask task,
+                List<Ast.Stmt> statements,
+                Env env,
+                SourceFlowCont continuation) {
+            task.lexicalCleanupDepth++;
+            java.util.concurrent.atomic.AtomicBoolean exited =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            try {
+                runBlock(task, statements, env, (next, flow) -> {
+                    if (exited.compareAndSet(false, true)) task.lexicalCleanupDepth--;
+                    continuation.accept(next, flow);
+                });
+            } catch (RuntimeException | Error failure) {
+                if (exited.compareAndSet(false, true)) task.lexicalCleanupDepth--;
+                throw failure;
+            }
         }
 
         private void runSuspendableStatement(
@@ -2157,7 +2191,9 @@ public final class OresEvalRootNode extends RootNode {
                             env,
                             (t, flow) -> {
                                 if (flow.kind() == SourceFlowKind.THROW
-                                        && !(flow.failure() instanceof OresPanic)) {
+                                        && !(flow.failure() instanceof OresPanic)
+                                        && !(flow.failure() instanceof
+                                                OresScheduler.StructuredCancellationSignal)) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
@@ -2168,7 +2204,7 @@ public final class OresEvalRootNode extends RootNode {
                                             attempted.catchBody(),
                                             caught,
                                             (t2, catchFlow) ->
-                                                    runBlock(
+                                                    runSourceFinallyBlock(
                                                             t2,
                                                             attempted.finallyBody(),
                                                             env,
@@ -2177,7 +2213,7 @@ public final class OresEvalRootNode extends RootNode {
                                                                             t3,
                                                                             sourceFinally(catchFlow, finallyFlow))));
                                 } else {
-                                    runBlock(
+                                    runSourceFinallyBlock(
                                             t,
                                             attempted.finallyBody(),
                                             env,
