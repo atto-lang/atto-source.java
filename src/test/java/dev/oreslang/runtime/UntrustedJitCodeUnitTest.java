@@ -33,9 +33,9 @@ final class UntrustedJitCodeUnitTest {
         assertThrows(SecurityException.class, () ->
                 UntrustedJitCodeUnit.copyScalar("😀".repeat(4097)));
         assertThrows(SecurityException.class, () ->
-                UntrustedJitCodeUnit.copyScalar("\\uD800"));
+                UntrustedJitCodeUnit.copyScalar(Character.toString((char) 0xD800)));
         assertThrows(SecurityException.class, () ->
-                UntrustedJitCodeUnit.copyScalar("\\uDC00"));
+                UntrustedJitCodeUnit.copyScalar(Character.toString((char) 0xDC00)));
     }
 
     @Test
