@@ -76,6 +76,44 @@ final class TransformPipeActorRoleTest {
     }
 
     @Test
+    void actorClassCannotDeclareOrdinaryInstanceData() {
+        assertRejected(HEADER + "let value: int = 0;\n" + FORWARD + BACKWARD + "end",
+                "actor class instance data must be declared in its state map");
+        assertRejected(HEADER + "const value: int = 0;\n" + FORWARD + BACKWARD + "end",
+                "actor class instance data must be declared in its state map");
+        assertRejected(HEADER + "val value: int = 0;\n" + FORWARD + BACKWARD + "end",
+                "actor class instance data must be declared in its state map");
+    }
+
+    @Test
+    void stateMapIsSingleFixedKeyOwnedSchemaNotAnActorClassField() {
+        String body = "state { value: int = 0; }\n";
+        Ast.Program parsed = Parser.parse(HEADER + body + FORWARD + BACKWARD + "end");
+        assertTrue(role(parsed).fields().isEmpty());
+        assertNotNull(role(parsed).stateSpec());
+        assertEquals("value", role(parsed).stateSpec().entries().getFirst().name());
+        assertRejected(HEADER + body + body + FORWARD + BACKWARD + "end",
+                "actor may declare exactly one state map");
+        assertRejected(HEADER
+                + "state { value: int = 0; value: int = 3; }\n"
+                + FORWARD + BACKWARD + "end", "duplicate actor state key");
+    }
+
+    @Test
+    void compilerPassesPreserveStateSchemaAndFailClosedBeforeExecution() {
+        String source = HEADER.replace("define transform", "define pub transform")
+                + "state { value: int = 0; }\n" + FORWARD + BACKWARD + "end";
+        Ast.Program expanded = AnnotationExpander.expand(Parser.parse(source));
+        assertNotNull(role(expanded).stateSpec());
+        Ast.Program optimized = TreeShaker.shake(expanded,
+                BuildOptions.library(Map.of())).program();
+        assertNotNull(role(optimized).stateSpec());
+        assertEquals(1, role(optimized).stateSpec().entries().size());
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(optimized));
+    }
+
+    @Test
     void javaGuestRuntimeRemainsExplicitlyFailClosed() {
         IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse(
