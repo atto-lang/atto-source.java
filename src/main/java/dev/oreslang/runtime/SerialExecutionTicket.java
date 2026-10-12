@@ -64,8 +64,37 @@ final class SerialExecutionTicket {
                 && incarnation == candidateIncarnation;
     }
 
+    /**
+     * CONTROL admission is a three-way decision. A revoked task must be
+     * discarded without treating a full mailbox as a fatal actor overflow.
+     * In particular, serialize the live-ticket check and slot reservation
+     * with retire(): otherwise a completion can become stale while blocked
+     * on the mailbox-accounting lock and then fail-stop an unrelated turn.
+     *
+     * This lock protects only the host-side reservation decision; never run
+     * guest code or enqueue/publish a mailbox envelope from reserveSlot.
+     * The ActorCell lifecycle and carrier checks remain mandatory.
+     */
+    enum ControlReservation { REVOKED, FULL, RESERVED }
+
+    ControlReservation reserveControlSlotFor(
+            Object candidateActorId,
+            Object candidateIncarnation,
+            BooleanSupplier reserveSlot) {
+        Objects.requireNonNull(reserveSlot, "reserveSlot");
+        synchronized (this) {
+            if (!issuedFor(candidateActorId, candidateIncarnation) || !mayEnqueue()) {
+                return ControlReservation.REVOKED;
+            }
+            return reserveSlot.getAsBoolean()
+                    ? ControlReservation.RESERVED : ControlReservation.FULL;
+        }
+    }
+
     /** Revoke this task's authority independently of its enclosing actor handler. */
-    void retire() { retired.set(true); }
+    void retire() {
+        synchronized (this) { retired.set(true); }
+    }
 
     /** Distinguish ordinary task cancellation from invalid foreign authority. */
     boolean isRetired() { return retired.get(); }
