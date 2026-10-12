@@ -25,3 +25,44 @@ test("reject comma-spoofed tensor shape/stride fields",()=>{
  forged["shape,strides"]=[2,3];
  assert.throws(()=>validateTensor(forged),/unknown or missing tensor fields/);
 });
+
+test("reject accessor tensor shape even when getter returns valid data",()=>{
+ const forged=t();
+ Object.defineProperty(forged,"shape",{enumerable:true,get(){return [2,3];}});
+ assert.throws(()=>validateTensor(forged),/accessor/);
+});
+test("reject inherited custom tensor prototype",()=>{
+ const forged=Object.assign(Object.create({unsafe:true}),t());
+ assert.throws(()=>validateTensor(forged),/plain JSON/);
+});
+test("reject hidden non-enumerable tensor extras",()=>{
+ const forged=t();
+ Object.defineProperty(forged,"secret",{value:3});
+ assert.throws(()=>validateTensor(forged),/unknown or missing/);
+});
+test("reject sparse shape and strided vectors",()=>{
+ const shape=[2,3]; delete shape[0];
+ assert.throws(()=>validateTensor({...t(),shape}),/sparse/);
+ const strides=[3,1]; delete strides[1];
+ assert.throws(()=>validateTensor({...t(),strides}),/sparse/);
+});
+test("reject accessor in tensor stride vector",()=>{
+ const strides=[3,1];
+ Object.defineProperty(strides,"0",{enumerable:true,get(){return 3;}});
+ assert.throws(()=>validateTensor({...t(),strides}),/accessor/);
+});
+test("default wire path rejects borrowed and actor-turn values",()=>{
+ assert.throws(()=>validateTensor({...t(),ownership:"borrowed_local"}),/borrowed alias/);
+ assert.throws(()=>validateTensor({...t(),lifetime:"actor_turn"}),/actor turn lease/);
+});
+test("local-only explicit mode admits turn lifetime",()=>{
+ assert.equal(validateTensor({...t(),lifetime:"actor_turn"},{acrossActor:false}).requiredBytes,24);
+});
+test("reject backend evidence getter",()=>{
+ const p={};
+ Object.defineProperty(p,"ml_actor",{get(){return "verified";}});
+ assert.throws(()=>requireVerifiedBackend(p,"ml_actor"),/UNSUPPORTED_BACKEND/);
+});
+test("reject backend feature prototype selector",()=>{
+ assert.throws(()=>requireVerifiedBackend({constructor:"verified"},"constructor"),/UNSUPPORTED_BACKEND/);
+});
