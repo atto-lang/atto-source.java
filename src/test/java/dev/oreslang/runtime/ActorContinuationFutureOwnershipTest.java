@@ -62,10 +62,18 @@ final class ActorContinuationFutureOwnershipTest {
                 assertTrue(captured.await(3, TimeUnit.SECONDS));
                 assertNotNull(target.get());
 
+                // The first producer is legitimately adopted before stop.
+                // Stopping the actor must cancel exactly that owned Future.
+                OresFuture<Integer> owned = new OresFuture<>();
+                runtime.enqueueOnCompletion(owned, target.get(),
+                        (value, failure) -> callbacks.incrementAndGet());
+
                 // The carrier is still inside the source receive, so the old
                 // actor cell exists but is now stopped. A stale callback must
-                // not cancel a Future it does not own.
+                // not cancel another Future it never legally owned.
                 assertTrue(actor.cancel());
+                assertTrue(owned.isCancelled(),
+                        "a successfully registered pending Future must be canceled on stop");
                 OresFuture<Integer> external = new OresFuture<>();
                 runtime.enqueueOnCompletion(external, target.get(),
                         (value, failure) -> callbacks.incrementAndGet());
