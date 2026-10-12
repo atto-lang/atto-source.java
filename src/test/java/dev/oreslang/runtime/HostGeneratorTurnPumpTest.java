@@ -122,6 +122,24 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void replayedPhysicalDoneReceiptCannotAuthorizeAnotherGeneratorTurn() throws Exception {
+        HostGeneratorTurnPump pump = new HostGeneratorTurnPump(UUID.randomUUID(), () -> true);
+        var once = completedExit(pump);
+        var first = pump.request(pump.token(), () ->
+                new HostGeneratorTurnPump.Turn<>(OresFuture.completed(1), once));
+        assertTrue(pump.dispatchOne());
+        assertEquals(1, first.get(5, TimeUnit.SECONDS));
+        var second = pump.request(pump.token(), () ->
+                new HostGeneratorTurnPump.Turn<>(OresFuture.completed(2), once));
+        assertTrue(pump.dispatchOne());
+        assertInstanceOf(SecurityException.class,
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> second.get(5, TimeUnit.SECONDS)).getCause());
+        assertFalse(pump.isQuiescent(), "replayed DONE must poison context");
+        assertThrows(IllegalStateException.class, pump::close);
+    }
+
+    @Test
     void cancelledPullDoesNotFakePhysicalGuestExitOrAllowNewTurn() {
         HostGeneratorTurnPump pump = new HostGeneratorTurnPump(UUID.randomUUID(), () -> true);
         OresFuture<Integer> producerValue = new OresFuture<>();
@@ -158,7 +176,7 @@ final class HostGeneratorTurnPumpTest {
                     OresFuture.completed(22), completedExit(pump));
         });
         assertTrue(pump.dispatchOne());
-        assertTrue(exit.fail(new java.util.concurrent.CancellationException("physical exit cancelled")));
+        exit.fail(new java.util.concurrent.CancellationException("physical exit cancelled"));
         assertTrue(producer.isCancelled(),
                 "failed exit proof must request cancellation of the producer");
         assertTrue(second.isCancelled(), "a failed physical exit seals the pending queue");
@@ -241,7 +259,7 @@ final class HostGeneratorTurnPumpTest {
                 brokenNotifier.request(brokenNotifier.token(), () -> {
                     producerStarts.incrementAndGet();
                     return new HostGeneratorTurnPump.Turn<>(
-                            OresFuture.completed(5), completedExit(invalid));
+                            OresFuture.completed(5), completedExit(brokenNotifier));
                 }));
         assertTrue(brokenNotifier.isQuiescent());
         assertEquals(0, producerStarts.get(),
@@ -249,7 +267,7 @@ final class HostGeneratorTurnPumpTest {
         assertThrows(RejectedExecutionException.class,
                 () -> brokenNotifier.request(brokenNotifier.token(),
                         () -> new HostGeneratorTurnPump.Turn<>(
-                                OresFuture.completed(6), completedExit(invalid))));
+                                OresFuture.completed(6), completedExit(brokenNotifier))));
         brokenNotifier.close();
     }
 

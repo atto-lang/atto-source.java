@@ -33,10 +33,6 @@ public final class OresContext implements AutoCloseable {
     // real VM root turn may dispatch them; the current virtual-thread generator
     // producer is not yet allowed through this admission boundary.
     private final HostGeneratorTurnPump hostGeneratorTurns;
-    // Physical DONE receipts are minted on actual Truffle entry and published
-    // only after the corresponding leave path has completed.
-    private final PhysicalGuestExitLedger physicalGuestExits = new PhysicalGuestExitLedger(
-            new HostGeneratorTurnPump.OwnerToken(contextId, contextIncarnation));
     // A scheduler-current ThreadLocal by itself cannot prove a physical
     // Truffle guest entry. Scope this marker inside executeGuestTurn after
     // TruffleContext.enter succeeds and always clear it on leave.
@@ -52,6 +48,11 @@ public final class OresContext implements AutoCloseable {
 
     private final UUID contextId = UUID.randomUUID();
     private final UUID contextIncarnation = UUID.randomUUID();
+    // Physical DONE receipts are minted on actual Truffle entry and published
+    // only after the corresponding leave path has completed.
+    private final PhysicalGuestExitLedger physicalGuestExits = new PhysicalGuestExitLedger(
+            new HostGeneratorTurnPump.OwnerToken(contextId, contextIncarnation));
+
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final AtomicLong sourceLoopCooperates = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
