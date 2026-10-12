@@ -16,6 +16,58 @@ final class ReactiveReaderLeaseTest {
     }
 
     @Test
+    void normalStreamCompletionDoesNotInvokeRuntimeWaiterInsideReaderGate()
+            throws Exception {
+        var source = new OresFuture<OresNotification<Integer>>();
+        OresSubscription<Integer> subscription = new OresSubscription<>() {
+            @Override protected OresFuture<OresNotification<Integer>> nextFromRuntime() {
+                return source;
+            }
+        };
+        var gateField = OresSubscription.class.getDeclaredField("gate");
+        gateField.setAccessible(true);
+        Object gate = gateField.get(subscription);
+        var observed = new java.util.concurrent.atomic.AtomicBoolean();
+        var underGate = new java.util.concurrent.atomic.AtomicBoolean();
+        var pulled = subscription.next();
+        pulled.whenCompleteRuntime((value, failure) -> {
+            observed.set(true);
+            underGate.set(Thread.holdsLock(gate));
+        });
+
+        source.completeFromRuntime(OresNotification.next(5));
+        assertTrue(observed.get(), "runtime completion callback must execute");
+        assertFalse(underGate.get(), "completion callback must not hold subscription gate");
+        assertEquals(5, read(pulled).value());
+    }
+
+    @Test
+    void cancelledStreamCompletionDoesNotInvokeRuntimeWaiterInsideReaderGate()
+            throws Exception {
+        var source = new OresFuture<OresNotification<Integer>>();
+        OresSubscription<Integer> subscription = new OresSubscription<>() {
+            @Override protected OresFuture<OresNotification<Integer>> nextFromRuntime() {
+                return source;
+            }
+        };
+        var gateField = OresSubscription.class.getDeclaredField("gate");
+        gateField.setAccessible(true);
+        Object gate = gateField.get(subscription);
+        var observed = new java.util.concurrent.atomic.AtomicBoolean();
+        var underGate = new java.util.concurrent.atomic.AtomicBoolean();
+        var pulled = subscription.next();
+        pulled.whenCompleteRuntime((value, failure) -> {
+            observed.set(true);
+            underGate.set(Thread.holdsLock(gate));
+        });
+
+        assertTrue(source.cancel(false));
+        assertTrue(observed.get(), "cancelled Future callback must execute");
+        assertFalse(underGate.get(), "cancellation callback must not hold subscription gate");
+        assertTrue(pulled.isCancelled());
+    }
+
+    @Test
     void cancelDuringSourceRegistrationPreservesCancelledFutureAndCleansUp() throws Exception {
         var entered = new java.util.concurrent.CountDownLatch(1);
         var proceed = new java.util.concurrent.CountDownLatch(1);
