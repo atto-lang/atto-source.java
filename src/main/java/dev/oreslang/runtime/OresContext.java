@@ -30,6 +30,11 @@ public final class OresContext implements AutoCloseable {
     // bridge can safely resolve only a single live context on that thread.
     // Weak thread keys prevent abandoned embedding threads being kept alive.
     private static final Map<Thread, Set<OresContext>> HOST_CONTEXTS = new WeakHashMap<>();
+    // Value.getContext returns the EXACT embedding context, not just a host
+    // thread. This second registry makes multiple live contexts on one
+    // embedding thread safe without allowing cross-context ticket borrowing.
+    private static final Map<org.graalvm.polyglot.Context, OresContext>
+            POLYGLOT_CONTEXT_OWNERS = new WeakHashMap<>();
 
     public static OresContext singleHostOwnedContext() {
         synchronized (HOST_CONTEXTS) {
@@ -45,21 +50,58 @@ public final class OresContext implements AutoCloseable {
         }
     }
 
+    private volatile Thread hostCreator;
+
     public void registerHostOwner(Thread creator) {
         if (creator != Thread.currentThread()) {
             throw new SecurityException("context host ownership must be registered by its creator");
         }
+        // During createContext the Polyglot embedding context is current on
+        // this exact physical thread. Never map contexts by thread alone.
+        org.graalvm.polyglot.Context hostContext =
+                org.graalvm.polyglot.Context.getCurrent();
+        if (hostContext == null) {
+            throw new SecurityException("language context lacked a current Polyglot owner");
+        }
         synchronized (HOST_CONTEXTS) {
-            HOST_CONTEXTS.computeIfAbsent(creator, ignored -> new HashSet<>()).add(this);
+            synchronized (POLYGLOT_CONTEXT_OWNERS) {
+                if (POLYGLOT_CONTEXT_OWNERS.putIfAbsent(hostContext, this) != null) {
+                    throw new SecurityException("Polyglot host context already registered");
+                }
+                hostCreator = creator;
+                HOST_CONTEXTS.computeIfAbsent(creator, ignored -> new HashSet<>()).add(this);
+            }
+        }
+    }
+
+    public static OresContext forExactHostValueContext(
+            org.graalvm.polyglot.Context polyglotContext) {
+        if (polyglotContext == null) {
+            throw new SecurityException("host Future Value has no owning Polyglot context");
+        }
+        synchronized (POLYGLOT_CONTEXT_OWNERS) {
+            OresContext owner = POLYGLOT_CONTEXT_OWNERS.get(polyglotContext);
+            if (owner == null) {
+                throw new SecurityException("host Future Value context is not registered");
+            }
+            if (owner.hostCreator != Thread.currentThread()) {
+                throw new SecurityException(
+                        "host Future entry requires its context's creating physical thread");
+            }
+            return owner;
         }
     }
 
     public void unregisterHostOwner() {
         synchronized (HOST_CONTEXTS) {
-            HOST_CONTEXTS.values().removeIf(contexts -> {
-                contexts.remove(this);
-                return contexts.isEmpty();
-            });
+            synchronized (POLYGLOT_CONTEXT_OWNERS) {
+                POLYGLOT_CONTEXT_OWNERS.values().removeIf(owner -> owner == this);
+                HOST_CONTEXTS.values().removeIf(contexts -> {
+                    contexts.remove(this);
+                    return contexts.isEmpty();
+                });
+                hostCreator = null;
+            }
         }
     }
 
@@ -73,8 +115,9 @@ public final class OresContext implements AutoCloseable {
         if (isolatePolicy.adversarial()) {
             throw new SecurityException("adversarial context rejects scoped async host entry");
         }
-        if (singleHostOwnedContext() != this) {
-            throw new SecurityException("host entry scope belongs to a different context");
+        if (hostCreator != Thread.currentThread()) {
+            throw new SecurityException(
+                    "host entry must use its context's creating physical thread");
         }
         ContextEntryCoordinator.HostLease acquired = contextEntryCoordinator.enterHost();
         return acquired::close;
