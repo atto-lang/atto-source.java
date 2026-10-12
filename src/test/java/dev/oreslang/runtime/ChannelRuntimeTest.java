@@ -276,6 +276,66 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void reusedThreeArmPlanRemainsFairAcrossTenThousandReadySelections() {
+        ChannelRuntime.Channel<Integer> control = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> workers = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> timers = new ChannelRuntime.Channel<>(1);
+        assertTrue(control.tryWrite(0));
+        assertTrue(workers.tryWrite(1));
+        assertTrue(timers.tryWrite(2));
+
+        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
+                ChannelRuntime.read(control),
+                ChannelRuntime.read(workers),
+                ChannelRuntime.read(timers));
+        var descriptors = plan.cases();
+        int[] selected = new int[3];
+        for (int i = 0; i < 10_000; ++i) {
+            ChannelRuntime.SelectResult result =
+                    plan.selectAsync(ChannelRuntime.SelectPolicy.FAIR).join();
+            assertEquals(i % 3, result.index(),
+                    "simultaneously-ready cases must rotate on the reused plan");
+            assertEquals(result.index(), result.value());
+            selected[result.index()]++;
+            ChannelRuntime.Channel<Integer> won =
+                    switch (result.index()) {
+                        case 0 -> control;
+                        case 1 -> workers;
+                        case 2 -> timers;
+                        default -> throw new AssertionError("invalid select arm");
+                    };
+            assertTrue(won.tryWrite(result.index()),
+                    "every iteration must consume only the winning arm");
+            assertSame(descriptors, plan.cases(),
+                    "immutable plan descriptors must be reused each iteration");
+        }
+        assertArrayEquals(new int[] {3334, 3333, 3333}, selected);
+        assertEquals(1, control.size());
+        assertEquals(1, workers.size());
+        assertEquals(1, timers.size());
+    }
+
+    @Test
+    void cancelledGenerationCannotStealMessagesFromLaterPlanIteration() {
+        ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.SelectPlan plan =
+                ChannelRuntime.SelectPlan.of(ChannelRuntime.read(channel));
+        for (int i = 0; i < 1_000; ++i) {
+            OresFuture<ChannelRuntime.SelectResult> cancelled =
+                    plan.selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+            assertFalse(cancelled.isDone());
+            assertTrue(cancelled.cancel(false));
+            OresFuture<ChannelRuntime.SelectResult> next =
+                    plan.selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+            assertTrue(channel.tryWrite("turn-" + i));
+            assertEquals("turn-" + i, next.join().value());
+            assertThrows(CancellationException.class, cancelled::join);
+            assertTrue(channel.tryRead().isEmpty(),
+                    "cancelled generations must not retain a waiter or steal data");
+        }
+    }
+
+    @Test
     void selectPlanCanBeAssembledDynamicallyWithoutChangingSelectSetPath() {
         ChannelRuntime.Channel<String> first = new ChannelRuntime.Channel<>(1);
         ChannelRuntime.Channel<String> second = new ChannelRuntime.Channel<>(1);
