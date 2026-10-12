@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Supervisor-owned, ONE-isolate hosting substrate for multiple untrusted
@@ -23,6 +24,10 @@ import java.util.Set;
  */
 public final class SharedUntrustedIsolatePool implements AutoCloseable {
     private static final long MIN_ISOLATE_BYTES = 64L * 1024 * 1024;
+    // Process-local admission guard: a second pool would silently create an
+    // additional native-image isolate and violate the two-domain deployment.
+    // Do not release the slot until the engine has actually closed.
+    private static final AtomicBoolean ISOLATE_SLOT = new AtomicBoolean();
     private final Engine engine;
     private final long isolateHeapBytes;
     private final int maxGroups;
@@ -36,13 +41,23 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
      */
     public SharedUntrustedIsolatePool(long isolateHeapBytes, int maxGroups) {
         validateConfiguration(isolateHeapBytes, maxGroups);
+        if (!ISOLATE_SLOT.compareAndSet(false, true)) {
+            throw new IllegalStateException(
+                    "only one shared untrusted Graal isolate pool is permitted per application");
+        }
         this.isolateHeapBytes = isolateHeapBytes;
         this.maxGroups = maxGroups;
-        this.engine = Engine.newBuilder(OresLanguage.ID)
-                .sandbox(SandboxPolicy.UNTRUSTED)
-                .spawnIsolate(true)
-                .option("engine.MaxIsolateMemory", isolateHeapBytes + "B")
-                .build();
+        try {
+            this.engine = Engine.newBuilder(OresLanguage.ID)
+                    .sandbox(SandboxPolicy.UNTRUSTED)
+                    .spawnIsolate(true)
+                    .option("engine.MaxIsolateMemory", isolateHeapBytes + "B")
+                    .build();
+        } catch (RuntimeException | Error failure) {
+            // An unsuccessful engine build must not permanently prevent retry.
+            ISOLATE_SLOT.set(false);
+            throw failure;
+        }
     }
 
     public static void validateConfiguration(long isolateHeapBytes, int maxGroups) {
@@ -130,9 +145,17 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
             synchronized (SharedUntrustedIsolatePool.this) {
                 if (groupClosed) return;
                 groupClosed = true;
-                groups.remove(this);
             }
-            context.close(true);
+            // Do not take the group monitor: a currently executing guest call
+            // holds it. Context.close(true) must be able to interrupt that call.
+            // Keep the group counted until physical context close finishes.
+            try {
+                context.close(true);
+            } finally {
+                synchronized (SharedUntrustedIsolatePool.this) {
+                    groups.remove(this);
+                }
+            }
         }
     }
 
@@ -155,6 +178,9 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         }
         try {
             engine.close(true);
+            // A failed close may leave a live native isolate behind; keep the
+            // slot fenced in that case rather than admitting a second one.
+            ISOLATE_SLOT.set(false);
         } catch (RuntimeException error) {
             if (failure == null) failure = error;
             else failure.addSuppressed(error);
