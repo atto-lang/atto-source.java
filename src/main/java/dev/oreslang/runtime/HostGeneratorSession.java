@@ -20,13 +20,16 @@ final class HostGeneratorSession implements AutoCloseable {
     private final OresScheduler root;
     private final HostGeneratorTurnPump pump;
     private final GeneratorRuntime.SchedulerBacked<Object> frame;
+    private final GeneratorRuntime.SourceLowering lowered;
     private final AtomicBoolean sealed = new AtomicBoolean();
 
     private HostGeneratorSession(OresScheduler root, HostGeneratorTurnPump pump,
-                                 GeneratorRuntime.SchedulerBacked<Object> frame) {
+                                 GeneratorRuntime.SchedulerBacked<Object> frame,
+                                 GeneratorRuntime.SourceLowering lowered) {
         this.root = root;
         this.pump = pump;
         this.frame = frame;
+        this.lowered = lowered;
     }
 
     static HostGeneratorSession compile(
@@ -64,7 +67,7 @@ final class HostGeneratorSession implements AutoCloseable {
                 UUID.randomUUID(), physicallyEnteredRoot, signalRoot, 256, root);
         registered.set(pump);
         return new HostGeneratorSession(root, pump,
-                GeneratorRuntime.schedulerBacked(root, pump.token(), lowered));
+                GeneratorRuntime.schedulerBacked(root, pump.token(), lowered), lowered);
     }
 
     OresFuture<GeneratorRuntime.Step<Object>> nextStep() {
@@ -81,6 +84,11 @@ final class HostGeneratorSession implements AutoCloseable {
     }
 
     boolean isQuiescent() { return pump.isQuiescent(); }
+
+    // Internal verification probes; not guest or public Polyglot capabilities.
+    boolean awaitingSourceFuture() { return lowered.awaitingSourceFuture(); }
+    int cleanupRuns() { return lowered.cleanupRuns(); }
+    Object cleanupBinding(String name) { return lowered.cleanupBinding(name); }
 
     @Override
     public void close() {
