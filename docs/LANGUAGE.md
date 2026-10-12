@@ -942,15 +942,54 @@ const fill = gpu (GpuArray<f32> mut out) {
 This is equivalent in meaning to the longer direct GPU-lambda form and does not create
 an implicit host capture. GPU values must cross the kernel ABI explicitly.
 
+### GPU matrix math
+
+Dense GPU matrices use `GpuMatrix<T>`, a device-resident row-major buffer with explicit
+row and column metadata. Host/EJML matrix objects never cross the kernel ABI. Transfer a
+rectangular host nested Array/List with `GpuMatrix.from_cpu(...)`, and use
+`copy_to_cpu()` for a detached nested host copy.
+
+Matrix multiplication uses `@` at multiplicative precedence. The current accelerated
+form is an explicit top-level assignment to a mutable output matrix:
+
+```ores
+const multiply = gpu (
+  GpuMatrix<f32> a,
+  GpuMatrix<f32> b,
+  GpuMatrix<f32> mut out
+) {
+  out = a @ b;
+  return;
+};
+```
+
+The compiler launches one work-item per output cell. Each work-item computes one dot
+product over the shared inner dimension and writes one row-major output element. GPU ABI
+v3 carries each matrix's length, rows, and columns; generated device code checks storage
+consistency plus `a.cols == b.rows` and the expected output shape before writing.
+
+Supported matrix-multiply element types are `f32`, `f64`, `complex64`, and
+`complex128`. Complex values lower to OpenCL two-lane vectors, but multiplication and
+division use Oreslang-generated complex helpers; vector component-wise `*` is never used
+as a substitute for complex multiplication. `complex128` and `f64` require
+`cl_khr_fp64`. Integer matrix multiplication currently fails compilation until exact
+overflow semantics are specified.
+
+For this ABI revision, GPU matrix dimensions must be positive. Matrix `@` auto-SIMT
+lowering must be a direct top-level statement and cannot be mixed with explicit
+`gpu.index` / work-item-ID intrinsics in the same callable. Kernel-entry matrix buffers
+retain the existing no-alias contract, so an output cannot silently alias an input.
+
 ### Memory model
 
 GPU access is capability-scoped. Strict/adversarial isolate policies do not receive the
 `GPU` capability by default; developer/trusted policies may grant it explicitly.
-Resident host orchestration (`GpuArray.from_cpu`, `copy_to_cpu`, `stream`,
+Resident host orchestration (`GpuArray.from_cpu`, `GpuMatrix.from_cpu`, `copy_to_cpu`, `stream`,
 `GpuStream.from_array`, and `collect`) checks that capability again at runtime.
 
-GPU kernels operate on scalar registers and flat contiguous buffers. `GpuArray<T>` is
-the preferred device-resident random-access container; `Array<T>`/`List<T>` remain
+GPU kernels operate on scalar registers and flat contiguous buffers. `GpuArray<T>` and
+row-major `GpuMatrix<T>` are the preferred device-resident random-access containers;
+`Array<T>`/`List<T>` remain
 flat-buffer ABI forms for host/device boundary lowering. Nested buffer layouts, linked
 object graphs, host references, class instances, strings, `Option`, records, and other
 pointer-heavy host layouts are rejected by the current device ABI.
@@ -964,6 +1003,14 @@ fresh detached **mutable** host Array/List; mutating that host copy does not mut
 device allocation. `stream()` / `GpuStream.from_array()` preserve device ownership,
 and `collect()` materializes a device-resident array without routing elements through
 the host.
+
+Resident GPU values also expose host-side `release()`. Release is deterministic: using a
+released value or releasing the same Oreslang handle twice is an error. Array/stream/
+collected-array views may share one backend-native allocation; the runtime holds a shared
+resource lease and invokes the physical backend's release hook exactly once after the last
+live view is released. `release()` is forbidden inside GPU code. Future ownership/drop
+lowering may insert the same operation automatically at scope end; explicit release is the
+current portable lifetime surface.
 
 The compiler emits hidden lengths for every flat buffer and bounds-checks indexed access.
 Kernel-entry buffers emitted with `restrict` carry a no-alias launch contract that
@@ -1023,7 +1070,7 @@ when generated code actually needs `double`.
 
 The generated manifest records kernel symbols, helper symbols, parameter ABI metadata,
 launch shape, launch extent, result/error slot counts, required extensions, no-alias
-requirements, and a source digest. GPU ABI v2 also carries an explicit
+requirements, and a source digest. GPU ABI v3 carries matrix shape metadata and also preserves the explicit
 `skipLaunchWhenGlobalWorkItemsZero` contract: zero-extent data-parallel work is completed
 without submitting an invalid zero-size OpenCL 1.2 launch. The current Truffle evaluator
 still has no CPU

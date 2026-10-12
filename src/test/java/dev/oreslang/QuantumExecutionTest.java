@@ -1,14 +1,85 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 final class QuantumExecutionTest {
+    @Test
+    void quantumCallablesAreNeverEmittedAsOpenClKernels() {
+        var compilation = OresCompiler.compile("""
+                define module compute
+                  quantum fnc qpu(i32 x) => i32 { return x + 1; }
+                  define class QuantumOps as
+                    quantum static fnc solve(i32 x) => i32 { return x + 2; }
+                  end
+                  gpu fnc device(i32 x) => i32 { return x + 3; }
+                end
+                """);
+
+        var artifact = compilation.gpuProgram();
+        assertEquals(1, artifact.kernels().size());
+        assertEquals("device", artifact.kernels().getFirst().sourceName());
+        assertFalse(artifact.source().contains("qpu"));
+        assertFalse(artifact.source().contains("solve"));
+        assertFalse(artifact.manifest().contains("QuantumOps"));
+
+        var quantumOnly = OresCompiler.compile("""
+                quantum fnc qpu(i32 x) => i32 { return x + 1; }
+                """).gpuProgram();
+        assertFalse(quantumOnly.hasKernels());
+        assertTrue(quantumOnly.batches().isEmpty());
+    }
+
+    @Test
+    void quantumPlacementInvalidatesExportedFunctionAndStaticMethodAbi() {
+        for (String declaration : new String[] {
+                "pub %sfnc solve(i32 x) => i32 { return x; }",
+                "define class Ops as pub %sstatic fnc solve(i32 x) => i32 { return x; } end"
+        }) {
+            IncrementalCompiler compiler = new IncrementalCompiler();
+            String dependent = "import * as api from \"./api.ores\"; pub routine main() => void { return; }";
+            var first = compiler.compile(Map.of(
+                    "api.ores", declaration.formatted(""), "consumer.ores", dependent));
+            var quantum = compiler.compile(Map.of(
+                    "api.ores", declaration.formatted("quantum "), "consumer.ores", dependent));
+
+            assertNotEquals(first.units().get("api.ores").abiDigest(),
+                    quantum.units().get("api.ores").abiDigest());
+            assertTrue(quantum.rebuilt("consumer.ores"));
+            assertFalse(quantum.units().get("api.ores").gpuProgram().hasKernels());
+
+            var bodyChanged = compiler.compile(Map.of(
+                    "api.ores", declaration.formatted("quantum ").replace("return x;", "return x + 1;"),
+                    "consumer.ores", dependent));
+            assertTrue(bodyChanged.reused("consumer.ores"));
+        }
+    }
+
+    @Test
+    void quantumStaticInvocationFailsBeforeEnteringItsBody() throws Exception {
+        String program = """
+                define class QuantumOps as
+                  quantum static fnc solve(i32 x) => i32 { return x / 0; }
+                end
+                pub fnc main() => void { QuantumOps.solve(1); return; }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> context.eval(OresLanguage.ID, program));
+            assertTrue(failure.getMessage().contains("no quantum lowering/backend"));
+            assertTrue(failure.getMessage().contains("QuantumOps.solve"));
+        }
+    }
+
     @Test
     void parsesQuantumAsDistinctExecutionTarget() {
         Ast.Program program = Parser.parse("""

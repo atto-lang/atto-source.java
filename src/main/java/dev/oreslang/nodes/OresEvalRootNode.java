@@ -248,6 +248,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("GpuArray")) return new GpuArrayFactory(context);
+                if (name.name().equals("GpuMatrix")) return new GpuMatrixFactory(context);
                 if (name.name().equals("GpuStream")) return new GpuStreamFactory(context);
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
@@ -450,6 +451,12 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return (Invokable) factory::fromCpu;
             }
+            if (receiver instanceof GpuMatrixFactory factory) {
+                if (!name.equals("from_cpu")) {
+                    throw new IllegalArgumentException("unknown GpuMatrix core function " + name);
+                }
+                return (Invokable) factory::fromCpu;
+            }
             if (receiver instanceof GpuStreamFactory factory) {
                 if (!name.equals("from_array")) {
                     throw new IllegalArgumentException("unknown GpuStream core function " + name);
@@ -473,7 +480,44 @@ public final class OresEvalRootNode extends RootNode {
                         context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.length");
                         return array.length();
                     };
+                    case "release" -> (Invokable) args -> {
+                        requireZero(args, "GpuArray.release");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.release");
+                        context.gpuRuntime().release(array);
+                        return null;
+                    };
                     default -> throw new IllegalArgumentException("unknown GpuArray member " + name);
+                };
+            }
+            if (receiver instanceof GpuRuntime.MatrixHandle matrix) {
+                return switch (name) {
+                    case "copy_to_cpu" -> (Invokable) args -> {
+                        requireZero(args, "GpuMatrix.copy_to_cpu");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuMatrix.copy_to_cpu");
+                        return context.gpuRuntime().downloadMatrix(matrix);
+                    };
+                    case "rows" -> (Invokable) args -> {
+                        requireZero(args, "GpuMatrix.rows");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuMatrix.rows");
+                        return matrix.rows();
+                    };
+                    case "cols" -> (Invokable) args -> {
+                        requireZero(args, "GpuMatrix.cols");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuMatrix.cols");
+                        return matrix.cols();
+                    };
+                    case "length" -> (Invokable) args -> {
+                        requireZero(args, "GpuMatrix.length");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuMatrix.length");
+                        return matrix.length();
+                    };
+                    case "release" -> (Invokable) args -> {
+                        requireZero(args, "GpuMatrix.release");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuMatrix.release");
+                        context.gpuRuntime().release(matrix);
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException("unknown GpuMatrix member " + name);
                 };
             }
             if (receiver instanceof GpuRuntime.StreamHandle stream) {
@@ -487,6 +531,12 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "GpuStream.copy_to_cpu");
                         context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.copy_to_cpu");
                         return context.gpuRuntime().downloadStream(stream);
+                    };
+                    case "release" -> (Invokable) args -> {
+                        requireZero(args, "GpuStream.release");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.release");
+                        context.gpuRuntime().release(stream);
+                        return null;
                     };
                     default -> throw new IllegalArgumentException("unknown GpuStream member " + name);
                 };
@@ -962,7 +1012,10 @@ public final class OresEvalRootNode extends RootNode {
         private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
     }
 
-    private record Complex(double real, double imaginary) {
+    private record Complex(double real, double imaginary) implements GpuRuntime.Transferable {
+        @Override public Object freezeForGpu() {
+            return new GpuRuntime.ComplexValue(real, imaginary);
+        }
         private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
         private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
         private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
@@ -987,6 +1040,17 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("GpuArray.from_cpu expects an Array/List value");
             }
             return context.gpuRuntime().uploadArray(values);
+        }
+    }
+
+    private record GpuMatrixFactory(OresContext context) {
+        private Object fromCpu(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.GPU, "GpuMatrix.from_cpu");
+            requireOne(args, "GpuMatrix.from_cpu");
+            if (!(args.getFirst() instanceof List<?> rows)) {
+                throw new IllegalArgumentException("GpuMatrix.from_cpu expects a rectangular nested Array/List");
+            }
+            return context.gpuRuntime().uploadMatrix(rows);
         }
     }
 

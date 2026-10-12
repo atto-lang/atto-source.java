@@ -7,6 +7,11 @@ import org.graalvm.polyglot.Context;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 final class GpuResidentDataLanguageTest {
@@ -38,12 +43,7 @@ final class GpuResidentDataLanguageTest {
 
     @Test
     void hostOrchestrationExecutesThroughGpuRuntimeBackend() {
-        GpuRuntime.installBackend(new GpuRuntime.Backend() {
-            @Override public String name() { return "language-roundtrip"; }
-            @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
-            @Override public Object uploadArray(java.util.List<?> values) { return java.util.List.copyOf(values); }
-            @Override public java.util.List<?> downloadArray(Object token, long length) { return (java.util.List<?>) token; }
-        });
+        GpuRuntime.installBackend(new ResidentBackend("language-roundtrip"));
 
         assertDoesNotThrow(() -> {
             try (Context context = Context.newBuilder(OresLanguage.ID)
@@ -58,11 +58,78 @@ final class GpuResidentDataLanguageTest {
                           val collected = stream.collect();
                           let cpu_again = collected.copy_to_cpu();
                           cpu_again[0] = 99;
+                          collected.release();
+                          stream.release();
+                          values.release();
                           return;
                         }
                         """);
             }
         });
+    }
+
+    @Test
+    void hostOrchestrationTypesRoundTripThroughGpuMatrix() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc upload(Array<Array<f64>> values) => GpuMatrix<f64> {
+                  return GpuMatrix.from_cpu(values);
+                }
+
+                fnc download(GpuMatrix<f64> values) => Array<Array<f64>> {
+                  return values.copy_to_cpu();
+                }
+
+                fnc rows(GpuMatrix<f64> values) => int {
+                  return values.rows();
+                }
+
+                fnc cols(GpuMatrix<f64> values) => int {
+                  return values.cols();
+                }
+                """)));
+    }
+
+    @Test
+    void hostMatrixOrchestrationExecutesThroughGpuRuntimeBackend() {
+        GpuRuntime.installBackend(new ResidentBackend("matrix-language-roundtrip"));
+
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .build()) {
+                context.eval(OresLanguage.ID, """
+                        pub routine main() => void {
+                          val cpu = [[1.0, 2.0], [3.0, 4.0]];
+                          val matrix = GpuMatrix.from_cpu(cpu);
+                          val r = matrix.rows();
+                          val c = matrix.cols();
+                          val n = matrix.length();
+                          let cpu_again = matrix.copy_to_cpu();
+                          cpu_again[0][0] = 99.0;
+                          matrix.release();
+                          return;
+                        }
+                        """);
+            }
+        });
+    }
+
+    @Test
+    void gpuMatrixFlatIndexingIsDeviceOnly() {
+        IllegalArgumentException hostFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(GpuMatrix<f32> values) => f32 {
+                          return values[0];
+                        }
+                        """)));
+        assertTrue(hostFailure.getMessage().contains("GpuMatrix flat indexing is GPU-only"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                gpu fnc first(GpuMatrix<f32> values) => f32 {
+                  return values[0];
+                }
+                """)));
     }
 
     @Test
@@ -126,6 +193,16 @@ final class GpuResidentDataLanguageTest {
                         }
                         """)));
         assertTrue(download.getMessage().contains("host orchestration"));
+
+        IllegalArgumentException release = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        gpu fnc bad(GpuArray<i32> values) => void {
+                          values.release();
+                          return;
+                        }
+                        """)));
+        assertTrue(release.getMessage().contains("host orchestration"));
     }
 
     @Test
@@ -165,5 +242,37 @@ final class GpuResidentDataLanguageTest {
                         }
                         """)));
         assertTrue(nested.getMessage().contains("current device ABI"));
+    }
+
+    private static final class ResidentBackend implements GpuRuntime.Backend {
+        private final String name;
+        private final AtomicLong nextHandle = new AtomicLong(1L);
+        private final Map<Long, List<?>> buffers = new HashMap<>();
+
+        private ResidentBackend(String name) {
+            this.name = name;
+        }
+
+        @Override public String name() { return name; }
+        @Override public Object invoke(GpuRuntime.BackendInvocation invocation) { return null; }
+
+        @Override
+        public synchronized long uploadArray(String elementAbiType, List<?> values) {
+            long handle = nextHandle.getAndIncrement();
+            buffers.put(handle, List.copyOf(values));
+            return handle;
+        }
+
+        @Override
+        public synchronized List<?> downloadArray(String elementAbiType, long nativeHandle, long length) {
+            List<?> values = buffers.get(nativeHandle);
+            if (values == null) throw new IllegalStateException("stale resident test handle " + nativeHandle);
+            return values;
+        }
+
+        @Override
+        public synchronized void release(long nativeHandle) {
+            buffers.remove(nativeHandle);
+        }
     }
 }

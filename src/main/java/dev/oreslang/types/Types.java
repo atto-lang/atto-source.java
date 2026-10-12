@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, Function, ListType, GpuArrayType, GpuStreamType, Tuple, Union, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, Function, ListType, GpuArrayType, GpuMatrixType, GpuStreamType, Tuple, Union, Generic, StringLiteral, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -35,6 +35,9 @@ public final class Types {
 
     /** GPU-resident random-access buffer. Host indexing/iteration is forbidden. */
     public record GpuArrayType(Type element) implements Type { }
+
+    /** GPU-resident dense row-major matrix. Host indexing/iteration is forbidden. */
+    public record GpuMatrixType(Type element) implements Type { }
 
     /** GPU-resident sequential stream. Host consumption/iteration is forbidden. */
     public record GpuStreamType(Type element) implements Type { }
@@ -98,6 +101,10 @@ public final class Types {
         }
 
         if (from instanceof GpuArrayType source && to instanceof GpuArrayType target) {
+            return isAssignable(source.element(), target.element()) && isAssignable(target.element(), source.element());
+        }
+
+        if (from instanceof GpuMatrixType source && to instanceof GpuMatrixType target) {
             return isAssignable(source.element(), target.element()) && isAssignable(target.element(), source.element());
         }
 

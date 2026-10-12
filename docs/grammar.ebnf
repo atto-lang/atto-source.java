@@ -124,7 +124,7 @@ logic_or        = equality { "|" equality } ;
 equality        = comparison { ( "==" | "!=" ) comparison } ;
 comparison      = additive { ( "<" | "<=" | ">" | ">=" ) additive } ;
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
-multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
+multiplicative  = unary { ( "*" | "/" | "%" | "@" ) unary } ;
 unary           = [ "!" | "-" | "+" | "await" ] postfix
                 | "&" [ "mut" ] unary
                 | gpu_expression ;
@@ -265,11 +265,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      contextual word rather than a globally reserved identifier.
    - gpu and async cannot be combined. GPU routines, instance methods, structural
      parameters, generics, inferred lambda parameters, tuple device-ABI parameters,
-     complex arithmetic, host borrows, host objects, strings, list/tuple allocation,
+     host borrows, host objects, strings, list/tuple allocation,
      destructuring, for-of, await/defer/try, dynamic calls, recursion, and host/global
      captures are rejected by the current GPU ABI.
-   - GPU callables return only a supported scalar or void. Array/List results use an
-     explicit mutable Array<T>/List<T> output parameter.
+   - GPU callables return only a supported scalar or void. Array/List/GpuArray/GpuMatrix
+     results use an explicit mutable output parameter.
+   - GpuMatrix<T> is row-major. `out = a @ b` is an auto-SIMT top-level matrix-multiply
+     form for f32/f64/complex64/complex128; integer matrix multiply currently fails closed.
    - A kernel that explicitly or transitively (through a statically resolved GPU helper)
      uses gpu.index/gpu.*_id is data-parallel. Its 1-D extent comes from the unique mutable
      buffer parameter, or from the sole buffer when there is no mutable buffer. Ambiguous
@@ -284,7 +286,7 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Kernel-entry buffer pointers may carry restrict plus an enforceable host-side
      no-alias contract. Internal GPU helper pointer parameters do not carry restrict.
    - Data-parallel launch plans explicitly skip submission when their resolved global
-     work-item count is zero; this is part of GPU ABI v2.
+     work-item count is zero; this remains part of GPU ABI v3.
    - gpu parallel is coarse independent-kernel scheduling, not the primary SIMT/data-
      parallel programming model.
    - GPU placement never implies stable GPU-core affinity. The backend maps work
