@@ -3158,9 +3158,18 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         if (match(CRITICAL)) {
-            if (check(PIPE)) return parsePipeLambda(false, true);
-            if (check(LPAREN) && looksLikeLambda()) return parseLambda(false, true);
-            throw error(previous(), "'critical' in expression position must prefix a callback lambda");
+            Ast.CriticalMode mode = Ast.CriticalMode.EXCLUSIVE;
+            // 'read' and 'write' are contextual identifiers, not reserved globally.
+            if (check(IDENT) && peek().lexeme().equals("read")) {
+                advance();
+                mode = Ast.CriticalMode.READ;
+            } else if (check(IDENT) && peek().lexeme().equals("write")) {
+                advance();
+                mode = Ast.CriticalMode.WRITE;
+            }
+            if (check(PIPE)) return parsePipeLambda(false, mode);
+            if (check(LPAREN) && looksLikeLambda()) return parseLambda(false, mode);
+            throw error(previous(), "critical must prefix a lambda; handle_state needs critical read or critical write");
         }
         if (match(NLEX)) {
             if (check(PIPE)) return parsePipeLambda(true);
@@ -3238,22 +3247,22 @@ public final class Parser {
     }
 
     private Ast.LambdaExpr parseLambda(boolean nonLexical) {
-        return parseLambda(nonLexical, false);
+        return parseLambda(nonLexical, Ast.CriticalMode.NONE);
     }
 
-    private Ast.LambdaExpr parseLambda(boolean nonLexical, boolean critical) {
+    private Ast.LambdaExpr parseLambda(boolean nonLexical, Ast.CriticalMode criticalMode) {
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
-        return parseLambdaBody(params, nonLexical, critical);
+        return parseLambdaBody(params, nonLexical, criticalMode);
     }
 
     private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
-        return parsePipeLambda(nonLexical, false);
+        return parsePipeLambda(nonLexical, Ast.CriticalMode.NONE);
     }
 
-    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical, boolean critical) {
+    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical, Ast.CriticalMode criticalMode) {
         consume(PIPE, "expected '|'");
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
@@ -3271,18 +3280,18 @@ public final class Parser {
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
         consume(ARROW, "lambdas use the slim arrow '->'");
-        return parseLambdaBody(params, nonLexical, critical);
+        return parseLambdaBody(params, nonLexical, criticalMode);
     }
 
-    private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical, boolean critical) {
+    private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical, Ast.CriticalMode criticalMode) {
         // Only an immediate '{' denotes the statement-block form. Everything
         // else starts a normal expression body. This is intentionally lexical:
         // future prefix expressions such as `struct{...}{...}` must remain
         // expression bodies rather than being confused with a lambda block.
         if (check(LBRACE)) {
-            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, critical);
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, criticalMode);
         }
-        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical, critical);
+        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical, criticalMode);
     }
 
     private boolean looksLikeLambda() {
