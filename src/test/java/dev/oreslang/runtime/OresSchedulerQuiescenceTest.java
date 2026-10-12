@@ -181,7 +181,10 @@ final class OresSchedulerQuiescenceTest {
             }
             assertTrue(retired.await(3, TimeUnit.SECONDS));
             assertEquals(1, retireCount.get());
-            assertTrue(winner.isDone());
+            // Quiescence intentionally precedes terminal Future publication.
+            // Waiting for the publisher is necessary; isDone() immediately
+            // after the retirement latch is a race, not a VM invariant.
+            assertEquals(42, winner.get(3, TimeUnit.SECONDS));
         }
     }
 
