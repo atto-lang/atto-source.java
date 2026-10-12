@@ -2881,10 +2881,10 @@ public final class Parser {
         }
 
         if (!name.equals("copy") && !name.equals("take")
-                && !name.equals("borrow") && !name.equals("share")) {
+                && !name.equals("borrow") && !name.equals("share") && !name.equals("fail")) {
             throw error(operation,
                     "unknown rt operation '" + name
-                            + "'; supported operations are cooperate, copy, take, borrow, and share");
+                            + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
         // Mutable borrows use the same ownership checks as the legacy spelling.
@@ -2999,7 +2999,8 @@ public final class Parser {
         Token token = peek();
         if (token.type() == IDENT
                 || isReservedCallableName(token.type())
-                || isContextualStatementCallableName(token.type())) {
+                || isContextualStatementCallableName(token.type())
+                || token.type() == TRUE || token.type() == FALSE) {
             advance();
             return token.lexeme();
         }

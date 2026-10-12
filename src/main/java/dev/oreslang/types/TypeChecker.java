@@ -2081,6 +2081,10 @@ public final class TypeChecker {
                         "rt " + runtime.operation() + " expects exactly one argument");
             }
             Type operand = typeOf(runtime.arguments().getFirst(), env, generics, self);
+            if (runtime.operation().equals("fail")) {
+                requireAssignable(operand, Primitive.STRING, "rt fail message");
+                return Primitive.VOID;
+            }
             return switch (runtime.operation()) {
                 case "borrow" -> new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
