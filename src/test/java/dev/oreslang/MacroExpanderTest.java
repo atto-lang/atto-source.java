@@ -254,7 +254,7 @@ final class MacroExpanderTest {
 
     @Test
     void expressionCapturesMustBeCompleteSyntacticallyValidExpressions() {
-        String definition = "macro_rules! id { ($x:expr) => { $x }; }\\n";
+        String definition = "macro_rules! id { ($x:expr) => { $x }; }\n";
         for (String fragment : List.of("1 +", "1; 2", "return 2",
                 "let x = 1", "1 2", "@FromJson(\"key\")", "1 = 2")) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
