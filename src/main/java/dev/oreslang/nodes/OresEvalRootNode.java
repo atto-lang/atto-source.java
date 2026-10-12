@@ -4008,25 +4008,23 @@ public final class OresEvalRootNode extends RootNode {
                 Invocation invocation,
                 boolean declaredFuture,
                 SourceValueCont continuation) {
+            Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
-                }
+                result = invoke(invocation);
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
+                return;
+            }
+            // Continuation execution is *not* part of the invocation try.
+            // A failure in downstream continuation propagation must not call
+            // the same continuation again (and replay observable side effects).
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                task.suspend(
+                        future,
+                        (t, value, failure) ->
+                                continuation.accept(t, value, failure));
+            } else {
+                continuation.accept(task, result, null);
             }
         }
 
