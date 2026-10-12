@@ -181,3 +181,16 @@ The adapter still has no Oreslang AST/parser/typechecker intrinsics, no
 end-to-end dynamically restarted guest pipeline source fixture, and no LLVM
 runtime or native-image AOT evidence. Do not mistake the pre-existing 15-actor
 guest regression for proof of live hot replacement.
+
+### Additional capability audit
+
+The production host adapter now checks `ActorRuntime.ownsActorRef(ref)` **before**
+adding each returned actor to the provisional route. A provider must never
+use a failed pipeline build to STOP an actor owned by another runtime.
+The verification suite includes this foreign-runtime cleanup attack.
+
+Public send, pause, restart and close completion stages are read-only
+observations. Converting one to a caller-owned `CompletableFuture` and
+completing/cancelling that local copy cannot publish a fabricated barrier,
+admit messages, or permit a topology swap. Only controller/runtime-owned
+producer completions change authoritative lifecycle state.

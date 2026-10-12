@@ -104,11 +104,18 @@ public final class PipelineControlPlaneContractTest {
         PipelineRunner first = controller.start();
         check(first.generation() == 1 && engine.actorsConstructed == 3, "first generation");
         CompletionStage<Object> result = first.send(5);
+        result.toCompletableFuture().complete("forged delivery");
         failed(first.send(6));
         rejected(() -> controller.replace("transform",
                 stage("transform", "TransformV2", "Signal", Object::new)));
         CompletionStage<Void> paused = controller.pause();
         check(controller.state() == PipelineController.State.PAUSING, "pause must fence ingress");
+        // Observers must not carry settlement authority over physical pause.
+        paused.toCompletableFuture().complete(null);
+        check(controller.state() == PipelineController.State.PAUSING,
+                "forged pause result reopened controller");
+        check(!paused.toCompletableFuture().isDone(),
+                "caller forged the production physical-DONE observer");
         failed(first.send(7));
         check(!paused.toCompletableFuture().isDone(), "inflight DATA must finish before pause");
         engine.latest().reply(19);
@@ -131,6 +138,11 @@ public final class PipelineControlPlaneContractTest {
         check((Integer) settled(next) == 24, "new pipeline roundtrip");
         CompletionStage<Void> closed = controller.close();
         check(!closed.toCompletableFuture().isDone(), "close must await physical actors");
+        closed.toCompletableFuture().complete(null);
+        check(controller.state() != PipelineController.State.CLOSED,
+                "forged close observation retired live actors");
+        check(!closed.toCompletableFuture().isDone(),
+                "caller could complete the production close barrier");
         engine.latest().finalizeActors();
         settled(closed);
         check(controller.state() == PipelineController.State.CLOSED, "closed state");

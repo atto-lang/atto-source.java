@@ -126,7 +126,7 @@ public final class PipelineController {
         CompletableFuture<Void> result;
         synchronized (gate) {
             if (state == State.PAUSED) return CompletableFuture.completedFuture(null);
-            if (state == State.PAUSING) return pauseFuture;
+            if (state == State.PAUSING) return pauseFuture.minimalCompletionStage();
             if (state != State.RUNNING) {
                 return CompletableFuture.failedFuture(new IllegalStateException(
                         "pipeline pause requires RUNNING"));
@@ -140,7 +140,7 @@ public final class PipelineController {
             }
         }
         if (toQuiesce != null) beginQuiesce(toQuiesce, result);
-        return result;
+        return result.minimalCompletionStage();
     }
 
     private void beginQuiesce(Session session, CompletableFuture<Void> observer) {
@@ -213,7 +213,9 @@ public final class PipelineController {
             if (failure == null) result.complete(answer);
             else result.completeExceptionally(failure);
         });
-        return result;
+        // Never hand out producer settlement authority: cancellation or
+        // completion of the caller's observation cannot change real DATA.
+        return result.minimalCompletionStage();
     }
 
     public void install(PipelinePlan replacement) {
@@ -278,7 +280,7 @@ public final class PipelineController {
                     catch (Throwable error) { restarted.completeExceptionally(error); }
                 });
             } catch (Throwable error) { restarted.completeExceptionally(error); }
-            return restarted;
+            return restarted.minimalCompletionStage();
         }
         if (observed != State.RUNNING && observed != State.PAUSING) {
             return CompletableFuture.failedFuture(new IllegalStateException(
@@ -299,7 +301,7 @@ public final class PipelineController {
                 restarted.completeExceptionally(problem);
             }
         });
-        return restarted;
+        return restarted.minimalCompletionStage();
     }
 
     /** Close fences admission immediately, then waits for physical DONE. */
@@ -308,7 +310,7 @@ public final class PipelineController {
         Session failedSession;
         CompletableFuture<Void> completion;
         synchronized (gate) {
-            if (closeFuture != null) return closeFuture;
+            if (closeFuture != null) return closeFuture.minimalCompletionStage();
             if (state == State.OPENING) {
                 return CompletableFuture.failedFuture(new IllegalStateException(
                         "cannot close during in-progress provider activation"));
@@ -343,7 +345,7 @@ public final class PipelineController {
             if (failure == null) completion.complete(null);
             else completion.completeExceptionally(failure);
         });
-        return completion;
+        return completion.minimalCompletionStage();
     }
 
     private static RuntimeException asRuntime(Throwable failure) {
