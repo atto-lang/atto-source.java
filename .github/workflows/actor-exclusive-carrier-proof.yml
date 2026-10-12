@@ -1,0 +1,39 @@
+name: Oreslang actor-exclusive carrier proof
+
+on:
+  pull_request:
+  push:
+    branches: [feat/logical-race-snapshot-cas-v1-20261011]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  finite-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Explore actor claims and stale dispatch identities
+        run: |
+          python3 scripts/verify_actor_carrier_exclusivity.py
+          python3 scripts/verify_actor_dispatch_tickets.py
+
+  actor-runtime-exclusivity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Compile and run actual actor execution boundary tests
+        run: >
+          mvn -B -ntp -Dores.runtime.carriers=native
+          -Dtest=ActorDispatchIdentityTest,ActorMailboxExecutionBoundaryTest,ActorOffCarrierTurnExecutorTest,VersionedActorCellTest
+          test
