@@ -2007,20 +2007,24 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr receiver
-                    && receiver.name().equals("self")
                     && currentClassOwner != null
-                    && currentClassOwner.actorKind() != Ast.ActorKind.NONE) {
-                // Actor-local suspendable value matches must not launder
-                // implicit file/module callable access. Authorize only a
-                // statically declared, non-generic async method on this exact
-                // lexical actor. Runtime ticket and carrier checks remain
-                // independent obligations.
+                    && currentClassOwner.actorKind() != Ast.ActorKind.NONE
+                    && currentClassOwner.serial()
+                    && receiver.name().equals(currentClassOwner.name())
+                    && env.lookup(receiver.name()) == null
+                    && findClass(receiver.name()) == currentClassOwner) {
+                // Strictly static actor-local async call: no actor instance
+                // receiver is moved or borrowed across an await. Async
+                // instance methods still fail closed until receiver loans,
+                // state ownership and cancellation cleanup are proven.
+                // Static dispatch is anchored to the exact lexical actor,
+                // never an implicit external module/function alias.
                 return currentClassOwner.methods().stream().anyMatch(method ->
                         method.name().equals(member.member())
                         && method.parameters().isEmpty()
                         && method.genericParameters().isEmpty()
                         && method.async()
-                        && !method.isStatic()
+                        && method.isStatic()
                         && !method.isAbstract());
             }
             return false;
