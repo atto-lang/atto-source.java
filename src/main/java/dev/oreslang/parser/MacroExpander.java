@@ -315,6 +315,15 @@ public final class MacroExpander {
                             && (arg.size() != 1 || arg.getFirst().type() != IDENT)) {
                         throw fail(token, "macro parameter $" + parameter.name + " requires an identifier");
                     }
+                    if (parameter.kind.equals("expr")) {
+                        // Expand nested macro invocations first, then enforce
+                        // exactly-one-expression syntax using the ordinary
+                        // parser. A token sequence is not an AST expression.
+                        // Without this gate, return/assignment/semicolon
+                        // fragments could splice unchecked syntax into callers.
+                        arg = expandTokens(arg, definitions, depth + 1, emitted, budget);
+                        Parser.validateMacroExpressionFragment(arg);
+                    }
                     if (parameter.kind.equals("tt")) {
                         if (!(arg.size() == 1 || (opening(arg.getFirst().type())
                                 && close(arg, 0) == arg.size() - 1))) {
