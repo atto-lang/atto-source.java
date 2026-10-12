@@ -4216,7 +4216,10 @@ public final class TypeChecker {
             };
             case "HttpHandler" -> switch (name) {
                 case "isolated" -> Primitive.BOOL;
-                case "dispatch" -> new Function(List.of(new Borrow(exchange, true)), Primitive.VOID);
+                // Handler dispatch retains the exchange beyond this call until
+                // actor admission and delivery. It is an ownership transfer,
+                // never a scoped &mut loan.
+                case "dispatch" -> new Function(List.of(exchange), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
             };
             case "HttpServer" -> switch (name) {
