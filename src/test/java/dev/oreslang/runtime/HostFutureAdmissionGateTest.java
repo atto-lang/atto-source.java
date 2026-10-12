@@ -273,4 +273,44 @@ final class HostFutureAdmissionGateTest {
     }
 
 
+
+    @Test
+    void inlineGuestTurnCannotBypassSameThreadScopedHostEntry() {
+        HostFutureAdmissionGate gate = new HostFutureAdmissionGate();
+        gate.begin();
+        gate.begin();
+        assertThrows(IllegalStateException.class, gate::reserveGuestTurn,
+                "same-thread root callback must not bypass the host Value.execute scope");
+        assertThrows(IllegalStateException.class, gate::requirePhysicalQuiescence);
+        gate.end();
+        assertThrows(IllegalStateException.class, gate::reserveGuestTurn,
+                "inner host release is not the physical outer Value.execute exit");
+        gate.end();
+        Runnable lease = gate.reserveGuestTurn();
+        lease.run();
+        gate.requirePhysicalQuiescence();
+        gate.close();
+    }
+
+    @Test
+    void uncertainGuestEnterQuarantinesWithoutForgingPhysicalLeave() {
+        HostFutureAdmissionGate gate = new HostFutureAdmissionGate();
+        Runnable lease = gate.reserveGuestTurn();
+        // TruffleContext.enter can throw before returning its enter token.
+        // The coordination lease MUST NOT be interpreted as physical proof.
+        gate.quarantineUnknownPhysicalEntry();
+        lease.run();
+        assertTrue(gate.physicalEntryUnproven());
+        assertFalse(gate.physicalExitUnproven(),
+                "failed entry and failed exit remain distinct evidence");
+        assertThrows(IllegalStateException.class, gate::requirePhysicalQuiescence);
+        assertThrows(RejectedExecutionException.class, gate::reserveGuestTurn);
+        assertThrows(IllegalStateException.class, gate::begin);
+        assertThrows(IllegalStateException.class, lease::run);
+        gate.close();
+        assertTrue(gate.physicalEntryUnproven(),
+                "closing the gate must not erase physical-entry uncertainty");
+    }
+
+
 }
