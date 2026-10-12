@@ -90,18 +90,31 @@ final class HostFutureCarrierRendezvousExecutionTest {
             Value parsed = context.parse(Source.newBuilder(OresLanguage.ID, PROGRAM,
                     "two-thread-future-handoff.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build());
-            parsed.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+            // Bind before starting any guest producer. The resulting Java
+            // handle claims admission BEFORE every host Value.execute.
+            OresHostFutureBridge.BoundSource bound =
+                    OresHostFutureBridge.bindBeforeGuestStart(parsed);
+            bound.executeCommand(OresEvalRootNode.INIT_ONLY_COMMAND);
             @SuppressWarnings("unchecked")
             ChannelRuntime.Channel<Integer> cleanup = (ChannelRuntime.Channel<Integer>)
-                    parsed.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
-                            "exposeCleanup").asHostObject();
+                    bound.executeAndConvert(Value::asHostObject,
+                            OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
+                            "exposeCleanup");
             OresFuture<Integer> future;
             try {
-                future = OresHostFutureBridge.invokePublicFuture(parsed, "work");
+                future = bound.invokePublicFuture("work");
                 assertTrue(output.guestEntered.await(5, TimeUnit.SECONDS),
                         "scheduler did not reach actual guest stdout");
                 assertFalse(future.isDone(), "producer must remain active during rendezvous");
-                // Do not re-enter Polyglot Value for host Future extraction.
+                // A real CONTROL carrier has physically entered Truffle.
+                // This MUST fail on the host admission gate before a second
+                // Java Value.execute can enter, not after Truffle rejects it.
+                IllegalStateException denied = assertThrows(IllegalStateException.class,
+                        () -> bound.executeAndConvert(Value::asHostObject,
+                                OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
+                                "exposeCleanup"));
+                assertTrue(denied.getMessage().contains("idle guest-entry"),
+                        "expected pre-entry rejection, got: " + denied);
             } finally {
                 output.release.countDown();
             }
@@ -114,6 +127,9 @@ final class HostFutureCarrierRendezvousExecutionTest {
             assertThrows(CancellationException.class,
                     () -> future.get(5, TimeUnit.SECONDS));
             assertEquals("armed\ncleanup-entered\n33\n", output.snapshot());
+            bound.close();
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> bound.invokePublicFuture("work"));
         } finally {
             output.release.countDown();
         }

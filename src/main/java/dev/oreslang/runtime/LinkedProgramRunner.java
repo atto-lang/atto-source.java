@@ -230,6 +230,17 @@ public final class LinkedProgramRunner {
                         parsedUnits.put(id, context.parse(source));
                     }
 
+                    // Bind every parsed source before linking or initializer
+                    // guest tasks can start. Subsequent Java facade invocations
+                    // preclaim host entry, instead of discovering the context
+                    // only after an unsafe Value.execute has already begun.
+                    LinkedHashMap<String, OresHostFutureBridge.BoundSource> boundUnits =
+                            new LinkedHashMap<>();
+                    for (Map.Entry<String, Value> parsed : parsedUnits.entrySet()) {
+                        boundUnits.put(parsed.getKey(),
+                                OresHostFutureBridge.bindBeforeGuestStart(parsed.getValue()));
+                    }
+
                     for (Map.Entry<String, Map<String, String>> importer : importResolutions.entrySet()) {
                         Value parsed = parsedUnits.get(importer.getKey());
                         if (parsed == null) continue;
@@ -248,7 +259,8 @@ public final class LinkedProgramRunner {
 
                     LinkedHashMap<String, MixedInteropBridge.Invoker> bridgeInvokers = new LinkedHashMap<>();
                     for (Map.Entry<String, Value> parsed : parsedUnits.entrySet()) {
-                        Value unit = parsed.getValue();
+                        OresHostFutureBridge.BoundSource bound =
+                                boundUnits.get(parsed.getKey());
                         Ast.Program compiledProgram = programs.get(parsed.getKey());
                         bridgeInvokers.put(parsed.getKey(), (function, arguments) -> {
                             // Decide from the validated source AST before any guest
@@ -256,14 +268,14 @@ public final class LinkedProgramRunner {
                             // starting an async task may race CONTROL Truffle entry.
                             if (publicFunctionReturnsFuture(
                                     compiledProgram, function, arguments.length)) {
-                                return OresHostFutureBridge.invokePublicFuture(
-                                        unit, function, arguments);
+                                return bound.invokePublicFuture(function, arguments);
                             }
                             Object[] invocation = new Object[2 + arguments.length];
                             invocation[0] = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
                             invocation[1] = function;
                             System.arraycopy(arguments, 0, invocation, 2, arguments.length);
-                            return toHostValue(unit.execute(invocation));
+                            return bound.executeAndConvert(
+                                    LinkedProgramRunner::toHostValue, invocation);
                         });
                     }
 
@@ -274,6 +286,10 @@ public final class LinkedProgramRunner {
                             Value entryPoint = parsedUnits.get(entryId);
                             if (entryPoint == null) throw new IllegalStateException("entry unit was not linked: " + entryId);
                             exitStatus = requireExitStatus(entryPoint.execute(OresEvalRootNode.MAIN_ONLY_COMMAND));
+                        }
+                    } finally {
+                        for (OresHostFutureBridge.BoundSource bound : boundUnits.values()) {
+                            bound.close();
                         }
                     }
                 }
