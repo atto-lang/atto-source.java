@@ -85,59 +85,67 @@ public final class OresMain {
         String filename = null;
 
         for (String arg : args) {
-            if (arg.equals("--strict-isolate")) strict = true;
-            else if (arg.equals("--check")) checkOnly = true;
-            else if (arg.equals("--core-perf")) corePerf = true;
-            else if (arg.equals("--no-core-perf")) corePerf = false;
-            else if (arg.equals("--core-debug")) coreDebug = true;
-            else if (arg.equals("--no-core-debug")) coreDebug = false;
-            else if (arg.equals("--build-analysis")) buildAnalysis = true;
-            else if (arg.equals("--no-prompt")) {
-                // Oreslang permissions never prompt. This Deno-compatible
-                // spelling is accepted so automation can state that intent.
-            } else if (arg.startsWith("--permission-check=")) {
-                permissionCheckMode = PermissionCheckMode.parse(
-                        arg.substring("--permission-check=".length()));
-            } else if (arg.equals("--allow-all")) {
-                for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
-                    permissionBuilder.allowAll(permission);
-                    touchedPermissions.add(permission);
-                }
-            } else if (parsePermissionFlag(arg, permissionBuilder, touchedPermissions)) {
-                // handled by the scoped Deno-style permission parser
-            } else if (arg.startsWith("--define=")) {
-                String raw = arg.substring("--define=".length()).trim();
-                if (raw.isEmpty()) throw new IllegalArgumentException("--define requires name=value");
-                buildDefines.add(raw);
-            } else if (arg.startsWith("--entry=")) {
-                String raw = arg.substring("--entry=".length()).trim();
-                if (raw.isEmpty()) throw new IllegalArgumentException("--entry requires a symbol name");
-                buildEntryPoints.add(raw);
-            } else if (arg.startsWith("--mode=")) mode = arg.substring("--mode=".length());
-            else if (arg.startsWith("--platform=")) platform = arg.substring("--platform=".length());
-            else if (arg.startsWith("--allow=")) {
-                String raw = arg.substring("--allow=".length());
-                if (!raw.isBlank()) {
-                    for (String value : raw.split(",")) {
-                        additionalCapabilities.add(IsolatePolicy.Capability.valueOf(
-                                value.trim().toUpperCase(Locale.ROOT)));
+            try {
+                if (arg.equals("--strict-isolate")) strict = true;
+                else if (arg.equals("--check")) checkOnly = true;
+                else if (arg.equals("--core-perf")) corePerf = true;
+                else if (arg.equals("--no-core-perf")) corePerf = false;
+                else if (arg.equals("--core-debug")) coreDebug = true;
+                else if (arg.equals("--no-core-debug")) coreDebug = false;
+                else if (arg.equals("--build-analysis")) buildAnalysis = true;
+                else if (arg.equals("--no-prompt")) {
+                    // Oreslang permissions never prompt. This Deno-compatible
+                    // spelling is accepted so automation can state that intent.
+                } else if (arg.startsWith("--permission-check=")) {
+                    permissionCheckMode = PermissionCheckMode.parse(
+                            arg.substring("--permission-check=".length()));
+                } else if (arg.equals("--allow-all")) {
+                    for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
+                        permissionBuilder.allowAll(permission);
+                        touchedPermissions.add(permission);
                     }
-                }
-            } else if (arg.startsWith("--allow-host-class=")) {
-                String raw = arg.substring("--allow-host-class=".length()).trim();
-                if (raw.isEmpty()) {
-                    throw new IllegalArgumentException("--allow-host-class requires a fully qualified Java class name");
-                }
-                allowedHostClasses.add(raw);
-            } else if (arg.startsWith("--")) {
-                throw new UsageException("unknown option: " + arg);
-            } else if (filename == null) filename = arg;
-            else throw new UsageException("only one .ores or .java source file may be supplied");
+                } else if (parsePermissionFlag(arg, permissionBuilder, touchedPermissions)) {
+                    // handled by the scoped Deno-style permission parser
+                } else if (arg.startsWith("--define=")) {
+                    String raw = arg.substring("--define=".length()).trim();
+                    if (raw.isEmpty()) throw new IllegalArgumentException("--define requires name=value");
+                    buildDefines.add(raw);
+                } else if (arg.startsWith("--entry=")) {
+                    String raw = arg.substring("--entry=".length()).trim();
+                    if (raw.isEmpty()) throw new IllegalArgumentException("--entry requires a symbol name");
+                    buildEntryPoints.add(raw);
+                } else if (arg.startsWith("--mode=")) mode = arg.substring("--mode=".length());
+                else if (arg.startsWith("--platform=")) platform = arg.substring("--platform=".length());
+                else if (arg.startsWith("--allow=")) {
+                    String raw = arg.substring("--allow=".length());
+                    if (!raw.isBlank()) {
+                        for (String value : raw.split(",")) {
+                            additionalCapabilities.add(IsolatePolicy.Capability.valueOf(
+                                    value.trim().toUpperCase(Locale.ROOT)));
+                        }
+                    }
+                } else if (arg.startsWith("--allow-host-class=")) {
+                    String raw = arg.substring("--allow-host-class=".length()).trim();
+                    if (raw.isEmpty()) {
+                        throw new IllegalArgumentException("--allow-host-class requires a fully qualified Java class name");
+                    }
+                    allowedHostClasses.add(raw);
+                } else if (arg.startsWith("--")) {
+                    throw new UsageException("unknown option: " + arg);
+                } else if (filename == null) filename = arg;
+                else throw new UsageException("only one .ores or .java source file may be supplied");
+            } catch (IllegalArgumentException invalidOption) {
+                throw new UsageException(invalidOption.getMessage());
+            }
         }
 
         CorePerf.configure(corePerf);
         CoreDebug.configure(coreDebug);
-        NativeBuildMode.requireCompatible(ExecutionProfile.parse(mode, platform));
+        try {
+            NativeBuildMode.requireCompatible(ExecutionProfile.parse(mode, platform));
+        } catch (IllegalArgumentException invalidOption) {
+            throw new UsageException(invalidOption.getMessage());
+        }
         Path path;
         if (filename == null) {
             OresProjectConfig project = OresProjectConfig.discover(
@@ -156,7 +164,7 @@ public final class OresMain {
         if (!Files.isRegularFile(path)) throw new IllegalArgumentException("not a file: " + path);
 
         if (checkOnly && buildAnalysis) {
-            throw new IllegalArgumentException("--check and --build-analysis are mutually exclusive");
+            throw new UsageException("--check and --build-analysis are mutually exclusive");
         }
 
         String directOresSource = filename.endsWith(".ores") ? Files.readString(path) : null;
@@ -191,7 +199,7 @@ public final class OresMain {
 
         if (buildAnalysis) {
             if (!filename.endsWith(".ores")) {
-                throw new IllegalArgumentException("--build-analysis currently requires a .ores source file");
+                throw new UsageException("--build-analysis currently requires a .ores source file");
             }
             String source = Files.readString(path);
             if (permissionCheckMode == PermissionCheckMode.COMPILE) {
@@ -211,7 +219,7 @@ public final class OresMain {
         }
 
         if (!buildDefines.isEmpty() || !buildEntryPoints.isEmpty()) {
-            throw new IllegalArgumentException("--define/--entry require --build-analysis until the artifact build command is wired");
+            throw new UsageException("--define/--entry require --build-analysis until the artifact build command is wired");
         }
 
         if (checkOnly) {
