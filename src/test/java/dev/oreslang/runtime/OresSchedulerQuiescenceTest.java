@@ -404,6 +404,85 @@ final class OresSchedulerQuiescenceTest {
         }
     }
 
+
+    @Test
+    void blockedCloseSubscriberCannotDelayOtherTasksInternalRevocation()
+            throws Exception {
+        // Cancel() invokes runtime Future subscribers synchronously. If one
+        // subscriber blocks inside close(), every task in the close snapshot
+        // must nevertheless have detached its await and retired its idle
+        // internal resources before the first subscriber was notified.
+        java.util.concurrent.ExecutorService carrier =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "blocked-close-multiple-tasks", 1, carrier);
+        OresFuture<Integer> neverCompletes = new OresFuture<>();
+        java.util.List<OresFuture<Integer>> results = new java.util.ArrayList<>();
+        CountDownLatch retired = new CountDownLatch(3);
+        CountDownLatch subscriberEntered = new CountDownLatch(1);
+        CountDownLatch releaseSubscriber = new CountDownLatch(1);
+        AtomicInteger retireCount = new AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<Throwable> closeFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread closer = null;
+        try {
+            for (int i = 0; i < 3; i++) {
+                OresFuture<Integer> result = scheduler.start(
+                        resume -> OresScheduler.await(neverCompletes),
+                        () -> {
+                            retireCount.incrementAndGet();
+                            retired.countDown();
+                        });
+                results.add(result);
+            }
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (neverCompletes.pendingRuntimeWaiterCount() != 3
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(3, neverCompletes.pendingRuntimeWaiterCount(),
+                    "all three tasks must suspend before shutdown");
+            for (OresFuture<Integer> result : results) {
+                result.whenCompleteRuntime((value, failure) -> {
+                    subscriberEntered.countDown();
+                    try {
+                        releaseSubscriber.await(3, TimeUnit.SECONDS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+            }
+
+            closer = Thread.ofPlatform().start(() -> {
+                try {
+                    scheduler.close();
+                } catch (Throwable failure) {
+                    closeFailure.set(failure);
+                }
+            });
+            assertTrue(subscriberEntered.await(3, TimeUnit.SECONDS),
+                    "a close subscriber must be blocked before inspecting other tasks");
+            assertTrue(retired.await(2, TimeUnit.SECONDS),
+                    "all tasks must retire before delivering any terminal subscriber");
+            assertEquals(3, retireCount.get());
+            assertEquals(0, neverCompletes.pendingRuntimeWaiterCount(),
+                    "all suspended await registrations must be detached");
+        } finally {
+            releaseSubscriber.countDown();
+            if (closer != null) {
+                closer.join(3_000);
+                assertFalse(closer.isAlive(), "close failed to finish after subscriber release");
+            }
+            scheduler.close();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(3, TimeUnit.SECONDS));
+        }
+        assertEquals(null, closeFailure.get());
+        for (OresFuture<Integer> result : results) {
+            assertTrue(result.isCancelled(), "shutdown must publish cancellation");
+        }
+    }
+
     @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
