@@ -5850,6 +5850,20 @@ public final class ActorRuntime implements AutoCloseable {
             for (ActorCell<?> cell : snapshot) {
                 if (dispatcherFor(cell.kind).isShutdown()) {
                     cell.cancelQueuedScheduleOnShutdown();
+                } else {
+                    // Same-kind pool cannot be stopped while it carries source
+                    // cleanup. Interrupt stopped non-cleanup actor turns
+                    // individually, without poisoning the whole dispatcher.
+                    // Holding lifecycleLock prevents the carrier from exiting
+                    // and being reused between identity check and interrupt.
+                    synchronized (cell.lifecycleLock) {
+                        if (!cell.sourceCleanupRoutable()
+                                && cell.carrierActive
+                                && cell.enteredCarrierThread != null
+                                && cell.enteredCarrierThread != Thread.currentThread()) {
+                            cell.enteredCarrierThread.interrupt();
+                        }
+                    }
                 }
             }
         }
@@ -6083,6 +6097,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object executionDomain = new Object();
         private int activeTurns;
         private boolean carrierActive;
+        /** Captured under lifecycleLock; never interrupt after this turn exits. */
+        private Thread enteredCarrierThread;
         /**
          * Set when the currently executing actor envelope enqueues a source
          * continuation. The batch must then unwind through TurnExecutor before
@@ -6613,6 +6629,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
 
                     carrierActive = true;
+                    enteredCarrierThread = Thread.currentThread();
                     carrierEntered = true;
                 }
 
@@ -6627,7 +6644,10 @@ public final class ActorRuntime implements AutoCloseable {
                     // The actor remains logically scheduled until TurnExecutor
                     // returns. Truffle context exit belongs to that boundary.
                     synchronized (lifecycleLock) {
-                        if (carrierEntered) carrierActive = false;
+                        if (carrierEntered) {
+                            carrierActive = false;
+                            enteredCarrierThread = null;
+                        }
                         if (scheduled.get()) scheduled.set(false);
                         if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                         reschedule = !finalized && !forceKillFenced
