@@ -34,6 +34,40 @@ cumulative CPU budget expires. One group Context has
 Contexts can run within the same isolated Engine to achieve concurrency,
 subject to hard aggregate memory/CPU bounds.
 
+### Source-level placement and hot loading (2026-10-12 hardening)
+
+Trusted-context `spawn UntrustedActor()` and direct UNTRUSTED
+actor-callable invocation now **fail closed** before dispatching onto the
+host's ActorRuntime. The guest-side `OresEvalRootNode` source actor control
+plane still supports UNTRUSTED execution *inside* the pooled guest Context.
+The missing fully transparent host-to-isolate source `ActorRef` router remains
+a release blocker: returning a host-local `ActorRef` would be unsafe, and a
+remote actor must preserve ready/done Future semantics, typed mailbox,
+terminal CONTROL, cancellation and version/actor generation fencing.
+
+`HotReloadManager.forUntrustedActors()` now owns the singleton pooled
+UNTRUSTED Engine lazily. It admits bounded source metadata in the host without
+parsing or type checking attacker-controlled syntax there. Each generation
+allocates a distinct sandboxed Context in the **same** physical Engine.
+On start, adversarial generations only parse, link and initialize guest code:
+they never execute an arbitrary `main` under the Context's long-lived
+12-hour cumulative CPU budget. Only the isolated actor control plane is
+allowed to dispatch guest actor turns. Guest `Value` and exception objects
+are sanitized at the loader boundary; the supervisor receives no guest
+object references from an untrusted `Generation.start()`.
+
+The singleton slot rejects additional pools and closes only after the
+underlying Engine closes. Separate classloaders or processes still need an
+external application supervisor to enforce that deployment-wide cardinality.
+There is no auto-fallback to ordinary trusted JVM execution if the native
+language-isolate library is missing.
+
+The `untrusted-isolate-e2e.yml` workflow builds an Oreslang native language
+isolate and requires all isolated actor tests to **execute without skips**.
+Until that job actually runs and passes, image loading and actual GC/JIT
+separation are unverified. Host fail-closed unit tests alone do not establish
+physical security.
+
 The host's AOT Native Image compilation is distinct from AOT-lowering
 native Oreslang actor functions. Current Java/Graal host AOT build modes
 exist, but full LLVM Oreslang AOT codegen for actors is still unfinished.
