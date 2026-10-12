@@ -85,16 +85,16 @@ final class SerialExecutionTicket {
             Object executingActorId,
             Object executingIncarnation,
             SerialActorAdmission.Lease activeReceive) {
-        if (retired.get()) throw new RetiredTaskException();
-        // A foreign actor/incarnation is an authority violation even if the
-        // source actor happens to have stopped. A correctly issued ticket
-        // revoked by STOP is instead a benign retired continuation to drop:
-        // normal cancellation must not poison the old actor's done() result.
+        // Always validate immutable provenance before classifying a queued
+        // continuation as benignly retired. Otherwise a foreign actor ticket
+        // marked retired can bypass an authorization violation when the
+        // carrier catches RetiredTaskException and silently drops it.
+        // A genuine same-incarnation STOP race is still harmless to discard.
         if (!actorId.equals(executingActorId)
                 || incarnation != executingIncarnation) {
             throw new IllegalStateException("foreign actor continuation ticket");
         }
-        if (!actorAlive.getAsBoolean()) {
+        if (retired.get() || !actorAlive.getAsBoolean()) {
             throw new RetiredTaskException();
         }
         // A finished receive can leave an already-queued continuation behind
