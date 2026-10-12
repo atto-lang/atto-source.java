@@ -14,6 +14,69 @@ import org.junit.jupiter.api.Test;
 
 final class ChannelRuntimeTest {
     @Test
+    void internalDrainReleasesBufferedCapacityAndWakesPendingWriter() {
+        ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(1);
+        assertTrue(channel.tryWrite("first"));
+        OresFuture<Void> waitingWriter = channel.writeAsync("second");
+        assertFalse(waitingWriter.isDone());
+
+        java.util.concurrent.atomic.AtomicReference<String> delivered =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        assertTrue(channel.drainOne(delivered::set));
+        assertEquals("first", delivered.get());
+        assertTrue(waitingWriter.isDone(),
+                "opening capacity must commit a queued writer without a second wake");
+        waitingWriter.join();
+        assertEquals("second", channel.tryRead().orElseThrow());
+        assertFalse(channel.drainOne(ignored -> {
+            throw new AssertionError("empty drain must not invoke consumer");
+        }));
+    }
+
+    @Test
+    void drainConsumerFailureStillDeliversPendingWriterCompletion() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        assertTrue(channel.tryWrite(1));
+        OresFuture<Void> queued = channel.writeAsync(2);
+        assertThrows(IllegalStateException.class,
+                () -> channel.drainOne(ignored -> {
+                    throw new IllegalStateException("consumer failed");
+                }));
+        assertTrue(queued.isDone(),
+                "runtime completion cannot remain pending after an exception");
+        queued.join();
+        assertEquals(2, channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void uncontendedImmediateProbesAndRendezvousPreserveChannelSemantics() {
+        ChannelRuntime.Channel<Integer> buffered = new ChannelRuntime.Channel<>(1);
+        for (int i = 0; i < 10_000; i++) {
+            assertTrue(buffered.tryWrite(i));
+            assertFalse(buffered.tryWrite(-1), "full buffer must reject a probe");
+            assertEquals(i, buffered.tryRead().orElseThrow());
+            assertTrue(buffered.tryRead().isEmpty());
+        }
+        buffered.close();
+        assertThrows(ChannelRuntime.ChannelClosedException.class,
+                () -> buffered.tryWrite(1));
+        assertThrows(ChannelRuntime.ChannelClosedException.class, buffered::tryRead);
+
+        ChannelRuntime.Channel<Integer> rendezvous = new ChannelRuntime.Channel<>(0);
+        assertFalse(rendezvous.tryWrite(17));
+        assertTrue(rendezvous.tryRead().isEmpty());
+        OresFuture<Integer> reader = rendezvous.readAsync();
+        assertTrue(rendezvous.tryWrite(18),
+                "registered rendezvous reader must force slow-path arbitration");
+        assertEquals(18, reader.join());
+
+        OresFuture<Void> writer = rendezvous.writeAsync(19);
+        assertEquals(19, rendezvous.tryRead().orElseThrow(),
+                "registered rendezvous writer must force slow-path arbitration");
+        writer.join();
+    }
+
+    @Test
     void pendingWriterCannotOvertakeBufferedValue() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
         assertTrue(channel.tryWrite(1));
