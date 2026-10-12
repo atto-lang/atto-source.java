@@ -41,8 +41,8 @@ public final class DeclaredEffectVerifier {
                     }
                 }
             }
-            if (annotation.name().equals("$using$")) {
-                if (using != null) throw new IllegalArgumentException("duplicate using effect declaration");
+            if (annotation.name().equals("$with$") || annotation.name().equals("$using$")) {
+                if (using != null) throw new IllegalArgumentException("duplicate function effect declaration");
                 using = annotation;
             }
         }
@@ -75,7 +75,7 @@ public final class DeclaredEffectVerifier {
         for (FunctionEffects.Effect effect : inferred) {
             if (allowed != null && !allowed.contains(effect)) {
                 throw new IllegalArgumentException(name + " uses effect " + effect.sourceName()
-                        + " not permitted by its using signature");
+                        + " not permitted by its declared effect bound");
             }
         }
     }
