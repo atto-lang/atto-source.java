@@ -96,8 +96,12 @@ public final class SealedActorState {
 
     public final class Access {
         private final long token;
+        private final boolean writable;
         private boolean live = true;
-        private Access(long token) { this.token = token; }
+        private Access(long token, boolean writable) {
+            this.token = token;
+            this.writable = writable;
+        }
         private void check() {
             requireOwner();
             if (!live || current != this || token <= 0) {
@@ -115,6 +119,7 @@ public final class SealedActorState {
         }
         public void write(String name, Object value) {
             check();
+            if (!writable) throw new SecurityException("critical read cannot write actor state");
             validateValue(name, value);
             int previousBytes = stringBytes(values.get(name));
             int nextBytes = stringBytes(value);
@@ -128,11 +133,16 @@ public final class SealedActorState {
     }
 
     public <T> T critical(Function<Access, T> callback) {
+        return critical(true, callback); // trusted Java-side internal callers
+    }
+
+    /** Guest source must supply its verified read/write mode. */
+    public <T> T critical(boolean writable, Function<Access, T> callback) {
         Objects.requireNonNull(callback, "critical state callback");
         requireOwner();
         if (serial == Long.MAX_VALUE) throw new IllegalStateException("actor loan serial exhausted");
         Access previous = current;
-        Access access = new Access(++serial);
+        Access access = new Access(++serial, writable);
         current = access;
         try {
             T result = callback.apply(access);
