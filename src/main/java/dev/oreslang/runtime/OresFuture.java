@@ -79,9 +79,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * only prevents this runtime continuation waiter from retaining or being
      * invoked after its owning scheduler/task has been cancelled.</p>
      */
+    /** Scheduler-only generation-tagged completion, never a guest callback. */
+    @FunctionalInterface
+    interface TaggedRuntimeWaiter {
+        void accept(long generation, Object value, Throwable failure);
+    }
+
     static final class RuntimeWaiterRegistration<T> {
         private final OresFuture<T> owner;
         private final BiConsumer<? super T, ? super Throwable> callback;
+        private final TaggedRuntimeWaiter taggedCallback;
+        private final long generation;
         private final AtomicBoolean claimed = new AtomicBoolean();
 
         private RuntimeWaiterRegistration(
@@ -89,6 +97,16 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 BiConsumer<? super T, ? super Throwable> callback) {
             this.owner = Objects.requireNonNull(owner, "owner");
             this.callback = Objects.requireNonNull(callback, "callback");
+            this.taggedCallback = null;
+            this.generation = 0;
+        }
+
+        private RuntimeWaiterRegistration(
+                OresFuture<T> owner, TaggedRuntimeWaiter callback, long generation) {
+            this.owner = Objects.requireNonNull(owner, "owner");
+            this.callback = null;
+            this.taggedCallback = Objects.requireNonNull(callback, "callback");
+            this.generation = generation;
         }
 
         boolean detach() {
@@ -99,6 +117,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private final BooleanSupplier cancelAdmission;
+    private final boolean deferredTaskCancel;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
@@ -121,10 +140,25 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * Guest code never receives the admission capability.</p>
      */
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook) {
-        this.cancelAdmission = Objects.requireNonNull(
-                cancelAdmission, "cancelAdmission");
-        this.cancelHook = new AtomicReference<>(
-                Objects.requireNonNull(cancelHook, "cancelHook"));
+        this(cancelAdmission, cancelHook, false);
+    }
+
+    /** Only scheduler Task Futures defer terminal publication until cleanup. */
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook, boolean deferredTaskCancel) {
+        this.cancelAdmission = Objects.requireNonNull(cancelAdmission, "cancelAdmission");
+        this.deferredTaskCancel = deferredTaskCancel;
+        this.cancelHook = new AtomicReference<>(Objects.requireNonNull(cancelHook, "cancelHook"));
+    }
+
+    /** The scheduler alone settles a cancelled Task Future after its cleanup drain. */
+    boolean cancelFromRuntime(CancellationException reason) {
+        boolean cancelled = settle(new Cancelled(Objects.requireNonNull(reason, "reason")));
+        // A scheduler-close cancellation can settle a deferred task without
+        // ever calling the public cancel() hook. Drop that hook just as normal
+        // success/failure publication does, so an observed terminal Future
+        // cannot retain its completed TaskRunner and owning scheduler.
+        if (cancelled) cancelHook.set(null);
+        return cancelled;
     }
 
     public static <T> OresFuture<T> completed(T value) {
@@ -403,9 +437,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     RuntimeWaiterRegistration<T> whenCompleteRuntimeCancellable(
             BiConsumer<? super T, ? super Throwable> callback) {
-        Objects.requireNonNull(callback, "callback");
-        RuntimeWaiterRegistration<T> waiter =
-                new RuntimeWaiterRegistration<>(this, callback);
+        return registerRuntimeWaiter(new RuntimeWaiterRegistration<>(this, callback));
+    }
+
+    RuntimeWaiterRegistration<T> whenCompleteRuntimeCancellableTagged(
+            TaggedRuntimeWaiter callback, long generation) {
+        return registerRuntimeWaiter(
+                new RuntimeWaiterRegistration<>(this, callback, generation));
+    }
+
+    private RuntimeWaiterRegistration<T> registerRuntimeWaiter(
+            RuntimeWaiterRegistration<T> waiter) {
         waiters.add(waiter);
 
         Object observed = state.get();
@@ -430,9 +472,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         if (state.get() != PENDING) return false;
         if (!cancelAdmission.getAsBoolean()) return false;
 
-        CancellationException cancelled =
-                new CancellationException("OresFuture was cancelled");
-        if (!settle(new Cancelled(cancelled))) return false;
+        if (!deferredTaskCancel) {
+            CancellationException cancelled =
+                    new CancellationException("OresFuture was cancelled");
+            if (!settle(new Cancelled(cancelled))) return false;
+        }
 
         Runnable hook = cancelHook.getAndSet(null);
         if (hook != null && cancelHookRun.compareAndSet(false, true)) {
@@ -571,14 +615,24 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private void notifyWaiter(RuntimeWaiterRegistration<T> waiter, Object terminal) {
         if (!waiter.claimed.compareAndSet(false, true)) return;
         try {
+            T value;
+            Throwable failure;
             if (terminal instanceof Success<?> success) {
-                waiter.callback.accept((T) success.value(), null);
+                value = (T) success.value();
+                failure = null;
             } else if (terminal instanceof Failure failed) {
-                waiter.callback.accept(null, failed.failure());
+                value = null;
+                failure = failed.failure();
             } else if (terminal instanceof Cancelled cancelled) {
-                waiter.callback.accept(null, cancelled.failure());
+                value = null;
+                failure = cancelled.failure();
             } else {
                 throw new IllegalStateException("attempted to notify waiter from pending Future");
+            }
+            if (waiter.taggedCallback != null) {
+                waiter.taggedCallback.accept(waiter.generation, value, failure);
+            } else {
+                waiter.callback.accept(value, failure);
             }
         } catch (RuntimeException | Error ignored) {
             // Runtime waiter failures must not stop delivery to other waiters or
@@ -596,20 +650,34 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         requireBlockingAllowed();
 
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-        whenCompleteRuntime((value, failure) -> done.countDown());
-
-        if (unit == null) {
-            done.await();
-        } else if (!done.await(timeout, unit)) {
-            return state.get() == PENDING ? PENDING : state.get();
+        RuntimeWaiterRegistration<T> waiter =
+                whenCompleteRuntimeCancellable((value, failure) -> done.countDown());
+        try {
+            if (unit == null) {
+                done.await();
+            } else if (!done.await(timeout, unit)) {
+                return state.get();
+            }
+            return state.get();
+        } finally {
+            // Timeout and interruption must not retain a completed host
+            // blocking call's latch in a still-pending shared Future.
+            // A concurrently claimed completion remains single-delivery.
+            waiter.detach();
         }
-        return state.get();
     }
 
     private static void requireBlockingAllowed() {
-        if (ActorRuntime.inActorExecution()) {
+        // An OresScheduler carrier cannot wait for an incomplete Future: the
+        // continuation that completes it may require this exact scheduler's
+        // sole available carrier. This includes post-turn callbacks, where
+        // current() is already null but the physical carrier is still busy.
+        if (ActorRuntime.inActorExecution()
+                || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()) {
             throw new IllegalStateException(
-                    "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
+                    "blocking Future wait on an actor/scheduler carrier is forbidden; "
+                            + "use a scheduler-owned await continuation");
         }
     }
 

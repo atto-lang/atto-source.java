@@ -13,6 +13,74 @@ import static org.junit.jupiter.api.Assertions.*;
 final class SourceActorSpawnExecutionTest {
 
     @Test
+    void inferredStructTypedMessagesAreDeliveredThroughTwoActorMailboxes() throws Exception {
+        String program = """
+                define actor DeltaWorker as
+                  receive(ActorMail<{delta: int}> mail): void {
+                    self.send(mail.value.delta);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  const a = spawn DeltaWorker();
+                  const b = spawn DeltaWorker();
+                  await a.get_ready();
+                  await b.get_ready();
+
+                  a.send(infer struct{delta: 20});
+                  b.send(infer struct{delta: 30});
+
+                  const outA = (await a.outputs.next()).value.unwrap();
+                  const outB = (await b.outputs.next()).value.unwrap();
+                  stdio.stdout.write(outA.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(outB.value);
+
+                  await a.get_done();
+                  await b.get_done();
+                  return;
+                }
+                """;
+        assertEquals("20|30",
+                run(program, "source-actor-inferred-typed-message.ores"),
+                "declared ActorMail<T> messages must be delivered, isolated and finalized");
+    }
+
+    @Test
+    void idiomaticLifecycleMethodsAwaitReadyAndPhysicalDoneInGuestSource() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val a = spawn Worker();
+                  val b = spawn Worker();
+
+                  await a.get_ready();
+                  await b.get_ready();
+
+                  a.send("finish");
+                  b.send("finish");
+
+                  await a.get_done();
+                  await b.get_done();
+                  stdio.stdout.write("lifecycle-methods-done");
+                  return;
+                }
+                """;
+
+        assertEquals("lifecycle-methods-done",
+                run(program, "source-actor-get-ready-get-done.ores"),
+                "source actor lifecycle methods must suspend on owned futures");
+    }
+
+    @Test
     void spawnRunsOnStartReceiveAndDoneAcrossActorKinds() throws Exception {
         String program = """
                 define actor SharedWorker as
@@ -53,17 +121,17 @@ final class SourceActorSpawnExecutionTest {
                   val privateWorker = spawn PrivateWorker();
                   val sandboxed = spawn SandboxedWorker();
 
-                  await shared.ready;
-                  await privateWorker.ready;
-                  await sandboxed.ready;
+                  await shared.get_ready();
+                  await privateWorker.get_ready();
+                  await sandboxed.get_ready();
 
                   shared.send("stop");
                   privateWorker.send("stop");
                   sandboxed.send("stop");
 
-                  await shared.done;
-                  await privateWorker.done;
-                  await sandboxed.done;
+                  await shared.get_done();
+                  await privateWorker.get_done();
+                  await sandboxed.get_done();
 
                   stdio.stdout.write("actors-done");
                   return;
@@ -96,8 +164,8 @@ final class SourceActorSpawnExecutionTest {
                   val left = spawn Counter();
                   val right = spawn Counter();
 
-                  await left.ready;
-                  await right.ready;
+                  await left.get_ready();
+                  await right.get_ready();
 
                   left.send("go");
                   right.send("go");
@@ -109,8 +177,8 @@ final class SourceActorSpawnExecutionTest {
                   stdio.stdout.write("|");
                   stdio.stdout.write(rightOut.value);
 
-                  await left.done;
-                  await right.done;
+                  await left.get_done();
+                  await right.get_done();
                   return;
                 }
                 """;
@@ -139,7 +207,7 @@ final class SourceActorSpawnExecutionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
                   return;
                 }
                 """;
@@ -194,7 +262,7 @@ final class SourceActorSpawnExecutionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
 
                   // Queue both messages before the first receive cooperates.
                   worker.send("first");
@@ -209,7 +277,7 @@ final class SourceActorSpawnExecutionTest {
                   stdio.stdout.write("|");
                   stdio.stdout.write(c.value);
 
-                  await worker.done;
+                  await worker.get_done();
                   return;
                 }
                 """;

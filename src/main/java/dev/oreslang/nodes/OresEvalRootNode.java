@@ -101,7 +101,14 @@ public final class OresEvalRootNode extends RootNode {
                 && INVOKE_PUBLIC_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String functionName) {
             current.link();
-            return current.invokePublic(functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+            Object result = current.invokePublic(
+                    functionName, java.util.Arrays.copyOfRange(arguments, 2, arguments.length));
+            // A raw Java Future is not a valid Truffle interop return value.
+            // Only this host-invocation boundary adapts the scheduler-owned
+            // handle to an embedding-compatible guest value; ordinary guest
+            // dispatch still receives the exact OresFuture instance.
+            if (result instanceof OresFuture<?>) return context.env().asGuestValue(result);
+            return result;
         }
 
         // Backward-compatible single-source execution. Multi-file hosts use
@@ -123,6 +130,40 @@ public final class OresEvalRootNode extends RootNode {
 
     private static boolean isControl(Object[] arguments, String command) {
         return arguments.length == 1 && command.equals(arguments[0]);
+    }
+
+    /**
+     * Preserve a pending failure when later cleanup fails. Identity checks
+     * make self-suppression and double-reporting impossible even if a broken
+     * completion source delivers the same throwable more than once.
+     */
+    static Throwable preserveSuppressedCleanupFailure(
+            Throwable cleanupFailure, Throwable pendingFailure) {
+        Objects.requireNonNull(cleanupFailure, "cleanupFailure");
+        Objects.requireNonNull(pendingFailure, "pendingFailure");
+        if (cleanupFailure != pendingFailure) {
+            for (Throwable suppressed : cleanupFailure.getSuppressed()) {
+                if (suppressed == pendingFailure) return cleanupFailure;
+            }
+            cleanupFailure.addSuppressed(pendingFailure);
+        }
+        return cleanupFailure;
+    }
+
+    /**
+     * Cancellation is not a guest-catchable exception, even when a nested
+     * finally/defer fails and replaces its throwable while preserving the
+     * cancellation as suppressed evidence. Ordinary errors raised by an
+     * already admitted cleanup block may still be handled by its own catch.
+     *
+     * The cancellation flag is published by the scheduler before its
+     * cancellation continuation can re-enter the source task.
+     */
+    static boolean shouldEnterSourceCatch(
+            Throwable failure, boolean cancellationRequested, boolean inCleanup) {
+        Objects.requireNonNull(failure, "failure");
+        return !(failure instanceof OresScheduler.TaskCancelledException)
+                && (!cancellationRequested || inCleanup);
     }
 
     private static final class Evaluator
@@ -805,7 +846,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private enum SourceFlowKind {
-            NORMAL, RETURN, BREAK, CONTINUE, THROW
+            NORMAL, RETURN, ARM_RETURN, BREAK, CONTINUE, THROW
         }
 
         private record SourceFlow(
@@ -820,6 +861,10 @@ public final class OresEvalRootNode extends RootNode {
                 return new SourceFlow(SourceFlowKind.RETURN, value, null);
             }
 
+            private static SourceFlow armReturning(Object value) {
+                return new SourceFlow(SourceFlowKind.ARM_RETURN, value, null);
+            }
+
             private static SourceFlow breaking() {
                 return new SourceFlow(SourceFlowKind.BREAK, null, null);
             }
@@ -829,10 +874,14 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private static SourceFlow throwing(Throwable failure) {
-                return new SourceFlow(
-                        SourceFlowKind.THROW,
-                        null,
-                        Objects.requireNonNull(failure, "failure"));
+                Objects.requireNonNull(failure, "failure");
+                // Internal lexical returns are never guest exceptions. An
+                // awaited value arm may carry a containing-function return
+                // through expression callbacks until it reaches this boundary.
+                if (failure instanceof ReturnSignal returned) {
+                    return returning(returned.value);
+                }
+                return new SourceFlow(SourceFlowKind.THROW, null, failure);
             }
         }
 
@@ -842,7 +891,37 @@ public final class OresEvalRootNode extends RootNode {
          * current continuation is stored here and OresScheduler.Task returns
          * Await to unwind the carrier completely.
          */
-        private final class SourceTask implements OresScheduler.Task<Object> {
+        private final class SourceTask
+                implements OresScheduler.CancellationAwareTask<Object> {
+            private final ArrayDeque<SourceCleanupScope> activeScopes = new ArrayDeque<>();
+            private volatile boolean cancellationRequested;
+            private volatile OresScheduler.TaskCancelledException cancellationReason;
+            // Observed by cancellation admission on arbitrary host threads.
+            // Mutations remain exclusive to the owning scheduler/actor lane,
+            // but a plain int is a data race and may misclassify a suspended
+            // finally/defer await as normal work, discarding its cleanup.
+            private volatile int cleanupDepth;
+            private boolean awaitingCooperate;
+
+            @Override
+            public boolean cleanupInProgress() {
+                return cleanupDepth > 0;
+            }
+
+            @Override
+            public void cancellationRequested(
+                    OresScheduler.TaskCancelledException reason) {
+                cancellationReason = Objects.requireNonNull(reason, "reason");
+                cancellationRequested = true;
+            }
+
+            private SourceFlow cancellationFlow() {
+                OresScheduler.TaskCancelledException reason = cancellationReason;
+                if (reason == null) {
+                    throw new IllegalStateException("source cancellation missing scheduler reason");
+                }
+                return SourceFlow.throwing(reason);
+            }
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             private static final int LOOP_SAFEPOINT_INTERVAL = 32;
@@ -965,14 +1044,25 @@ public final class OresEvalRootNode extends RootNode {
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
-                    if (continuation == null) {
-                        throw new IllegalStateException(
-                                "source task resumed without a pending source continuation");
+                    boolean wasCooperating = awaitingCooperate;
+                    awaitingCooperate = false;
+                    if (resume.failure() instanceof OresScheduler.TaskCancelledException
+                            && wasCooperating) {
+                        pendingLoopContinuation = null;
+                        pendingLoopGuardEnv = null;
+                        SourceCleanupScope inner = activeScopes.peekFirst();
+                        if (inner == null) {
+                            throw new IllegalStateException(
+                                    "source cancellation has no live lexical scope");
+                        }
+                        inner.finish(cancellationFlow());
+                    } else {
+                        if (continuation == null) {
+                            throw new IllegalStateException(
+                                    "source task resumed without a pending source continuation");
+                        }
+                        continuation.accept(this, resume.value(), resume.failure());
                     }
-                    continuation.accept(
-                            this,
-                            resume.value(),
-                            resume.failure());
                 }
 
                 // Finish each source loop back-edge iteratively. The unexecuted
@@ -1014,6 +1104,18 @@ public final class OresEvalRootNode extends RootNode {
                     boolean untrusted = ActorRuntime.currentActorKind()
                             == ActorRuntime.ActorKind.UNTRUSTED;
                     if (untrusted || (backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0) {
+                        if (cancellationRequested && cleanupDepth == 0
+                                && !guardEnv.hasLiveMutexGuards()) {
+                            pendingLoopContinuation = null;
+                            pendingLoopGuardEnv = null;
+                            SourceCleanupScope inner = activeScopes.peekFirst();
+                            if (inner == null) {
+                                throw new IllegalStateException(
+                                        "source cancellation has no live loop scope");
+                            }
+                            inner.finish(cancellationFlow());
+                            return;
+                        }
                         // Untrusted fuel is charged at EVERY loop backedge, not
                         // once per 32 iterations. Trusted tasks poll at 32.
                         context.schedulerSafepoint();
@@ -1043,6 +1145,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "source continuation attempted two terminal steps in one turn");
                 }
+                awaitingCooperate = false;
                 awaitingContinuation = continuation;
                 nextStep = OresScheduler.await(future);
             }
@@ -1053,6 +1156,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "source continuation attempted two terminal steps in one turn");
                 }
+                awaitingCooperate = true;
                 awaitingContinuation = continuation;
                 nextStep = OresScheduler.cooperate();
             }
@@ -1079,9 +1183,9 @@ public final class OresEvalRootNode extends RootNode {
                             done(null);
                         }
                         case THROW -> throw sourceFailure(flow.failure());
-                        case BREAK, CONTINUE ->
+                        case BREAK, CONTINUE, ARM_RETURN ->
                                 throw new IllegalStateException(
-                                        "loop control crossed a source continuation boundary");
+                                        "lexical control flow crossed a source continuation boundary");
                     }
                     return;
                 }
@@ -1090,9 +1194,9 @@ public final class OresEvalRootNode extends RootNode {
                     case NORMAL -> done(shapeSourceReturn(null, null));
                     case RETURN -> done(shapeSourceReturn(flow.value(), null));
                     case THROW -> throw sourceFailure(flow.failure());
-                    case BREAK, CONTINUE ->
+                    case BREAK, CONTINUE, ARM_RETURN ->
                             throw new IllegalStateException(
-                                    "loop control crossed a source function boundary");
+                                    "lexical control flow crossed a source function boundary");
                 }
             }
 
@@ -1319,6 +1423,10 @@ public final class OresEvalRootNode extends RootNode {
                         && expressionContainsPotentialSuspension(
                                 ret.value(), seen);
             }
+            if (stmt instanceof Ast.ArmReturnStmt ret) {
+                return ret.value() != null
+                        && expressionContainsPotentialSuspension(ret.value(), seen);
+            }
             if (stmt instanceof Ast.ExprStmt expr) {
                 return expressionContainsPotentialSuspension(
                         expr.expression(), seen);
@@ -1423,6 +1531,24 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr expr,
                 Set<Object> seen) {
             if (expr == null) return false;
+            if (expr instanceof Ast.ValueMatchExpr matched) {
+                return expressionContainsPotentialSuspension(matched.subject(), seen)
+                        || matched.arms().stream().anyMatch(arm ->
+                            (arm.guard() != null
+                                && expressionContainsPotentialSuspension(arm.guard(), seen))
+                            || arm.body().stream().anyMatch(stmt ->
+                                statementContainsPotentialSuspension(stmt, seen)));
+            }
+            if (expr instanceof Ast.ValueSwitchExpr switched) {
+                return expressionContainsPotentialSuspension(switched.subject(), seen)
+                        || switched.cases().stream().anyMatch(arm ->
+                            arm.constants().stream().anyMatch(constant ->
+                                expressionContainsPotentialSuspension(constant, seen))
+                            || arm.body().stream().anyMatch(stmt ->
+                                statementContainsPotentialSuspension(stmt, seen)))
+                        || switched.defaultBody().stream().anyMatch(stmt ->
+                            statementContainsPotentialSuspension(stmt, seen));
+            }
             if (expr instanceof Ast.AwaitExpr
                     || expr instanceof Ast.ChannelOpExpr channel
                         && channel.mode() == Ast.WaitMode.BLOCKING
@@ -1551,6 +1677,43 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
+        /**
+         * A heap-owned lexical scope is the unique finalization owner. A source
+         * cancellation suspended at a loop cooperate point can enter this frame
+         * directly without replaying the abandoned loop continuation.
+         */
+        private final class SourceCleanupScope {
+            private final SourceTask task;
+            private final Env env;
+            private final ArrayDeque<Ast.Expr> defers;
+            private final SourceFlowCont downstream;
+            private boolean claimed;
+
+            private SourceCleanupScope(SourceTask task, Env env,
+                    ArrayDeque<Ast.Expr> defers, SourceFlowCont downstream) {
+                this.task = task;
+                this.env = env;
+                this.defers = defers;
+                this.downstream = downstream;
+            }
+
+            private void finish(SourceFlow flow) {
+                if (claimed) {
+                    throw new IllegalStateException("lexical cleanup scope finalized twice");
+                }
+                claimed = true;
+                task.cleanupDepth++;
+                finishBlock(task, env, defers, flow, (resumed, completed) -> {
+                    if (task.activeScopes.peekFirst() != this) {
+                        throw new IllegalStateException("lexical cleanup stack lost scope ordering");
+                    }
+                    task.activeScopes.removeFirst();
+                    task.cleanupDepth--;
+                    downstream.accept(resumed, completed);
+                });
+            }
+        }
+
         private void runBlock(
                 SourceTask task,
                 List<Ast.Stmt> statements,
@@ -1558,14 +1721,21 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
-            runStatements(
-                    task,
-                    statements,
-                    env,
-                    defers,
-                    0,
-                    (ignored, flow) ->
-                            finishBlock(task, env, defers, flow, continuation));
+            SourceCleanupScope scope =
+                    new SourceCleanupScope(task, env, defers, continuation);
+            task.activeScopes.addFirst(scope);
+            runStatements(task, statements, env, defers, 0,
+                    (ignored, flow) -> scope.finish(flow));
+        }
+
+        /** The entire finally body is cleanup, including its awaited expressions. */
+        private void runFinallyBlock(SourceTask task,
+                List<Ast.Stmt> statements, Env parent, SourceFlowCont downstream) {
+            task.cleanupDepth++;
+            runBlock(task, statements, parent, (resumed, flow) -> {
+                task.cleanupDepth--;
+                downstream.accept(resumed, flow);
+            });
         }
 
         /**
@@ -1608,91 +1778,77 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 int index,
                 SourceFlowCont continuation) {
+            // Only runBlock owns finalization. These statements produce a flow;
+            // the caller drains defers and releases live guards exactly once.
+            // No unrelated guest statements may run after cancellation; code
+            // within an already-admitted finally/defer retains cleanupDepth.
+            if (task.cancellationRequested && task.cleanupDepth == 0) {
+                continuation.accept(task, task.cancellationFlow());
+                return;
+            }
             if (index >= statements.size()) {
-                finishBlock(
-                        task,
-                        env,
-                        defers,
-                        SourceFlow.normal(),
-                        continuation);
+                continuation.accept(task, SourceFlow.normal());
                 return;
             }
 
             Ast.Stmt stmt = statements.get(index);
-            // Source tasks must carry returns as SourceFlow, not as a tail-call
-            // signal, including when a discarded do-select value is a call.
             if (!(stmt instanceof Ast.ReturnStmt)
+                    && !(stmt instanceof Ast.ArmReturnStmt)
                     && !containsSourceLoop(stmt)
                     && !statementContainsPotentialSuspension(
-                    stmt,
-                    java.util.Collections.newSetFromMap(
-                            new IdentityHashMap<>()))) {
+                            stmt, java.util.Collections.newSetFromMap(
+                                    new IdentityHashMap<>()))) {
                 try {
                     executeStatement(stmt, env, defers, false);
+                } catch (ArmReturnSignal returned) {
+                    continuation.accept(task, SourceFlow.armReturning(returned.value));
+                    return;
                 } catch (ReturnSignal returned) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.returning(returned.value),
-                            continuation);
+                    continuation.accept(task, SourceFlow.returning(returned.value));
                     return;
                 } catch (BreakSignal ignored) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.breaking(),
-                            continuation);
+                    continuation.accept(task, SourceFlow.breaking());
                     return;
                 } catch (ContinueSignal ignored) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.continuing(),
-                            continuation);
+                    continuation.accept(task, SourceFlow.continuing());
                     return;
                 } catch (RuntimeException | Error failure) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.throwing(failure),
-                            continuation);
+                    continuation.accept(task, SourceFlow.throwing(failure));
                     return;
                 }
-                // A later source statement or completion callback is not part
-                // of this statement's exception scope. Never reinterpret its
-                // error as another completion for the current block.
-                runStatements(
-                        task, statements, env, defers, index + 1, continuation);
+                // Do not catch downstream continuation failures as errors from
+                // this statement: they belong to a different lexical scope.
+                runStatements(task, statements, env, defers, index + 1, continuation);
                 return;
             }
 
-            runSuspendableStatement(
-                    task,
-                    stmt,
-                    env,
-                    defers,
-                    (ignored, flow) -> {
-                        if (flow.kind() == SourceFlowKind.NORMAL) {
-                            runStatements(
-                                    task,
-                                    statements,
-                                    env,
-                                    defers,
-                                    index + 1,
-                                    continuation);
-                        } else {
-                            finishBlock(
-                                    task,
-                                    env,
-                                    defers,
-                                    flow,
-                                    continuation);
-                        }
-                    });
+            runSuspendableStatement(task, stmt, env, defers, (resumed, flow) -> {
+                if (flow.kind() == SourceFlowKind.NORMAL) {
+                    runStatements(resumed, statements, env, defers,
+                            index + 1, continuation);
+                } else {
+                    continuation.accept(resumed, flow);
+                }
+            });
+        }
+
+        /**
+         * A failed finally/defer/guard-release supersedes a pending exit,
+         * including a pending return. Preserve an earlier exceptional exit as
+         * suppressed evidence without illegally converting lexical returns to
+         * catchable guest exceptions.
+         */
+        private SourceFlow mergeCleanupFlow(SourceFlow pending, SourceFlow cleanup) {
+            if (cleanup.kind() == SourceFlowKind.NORMAL) return pending;
+            if (cleanup.kind() == SourceFlowKind.THROW
+                    && pending.kind() == SourceFlowKind.THROW) {
+                preserveSuppressedCleanupFailure(cleanup.failure(), pending.failure());
+            }
+            return cleanup;
+        }
+
+        private SourceFlow cleanupFailure(SourceFlow pending, Throwable failure) {
+            return mergeCleanupFlow(pending, SourceFlow.throwing(failure));
         }
 
         private void finishBlock(
@@ -1707,7 +1863,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = cleanupFailure(initialFlow, failure);
                 }
                 // The consumer owns any failure it throws. Do not call it twice.
                 continuation.accept(task, completed);
@@ -1735,7 +1891,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = cleanupFailure(currentFlow, failure);
                 }
                 continuation.accept(task, completed);
                 return;
@@ -1747,14 +1903,11 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
-                            if (currentFlow.failure() != null) {
-                                failure.addSuppressed(currentFlow.failure());
-                            }
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    SourceFlow.throwing(failure),
+                                    cleanupFailure(currentFlow, failure),
                                     continuation);
                         } else {
                             runOneDefer(
@@ -1772,7 +1925,31 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Stmt stmt,
                 Env env,
                 ArrayDeque<Ast.Expr> defers,
-                SourceFlowCont continuation) {
+                SourceFlowCont downstream) {
+            // A completion callback may synchronously invoke downstream code
+            // that throws. That is NOT a second outcome for this statement.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicReference<Throwable> consumerFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            SourceFlowCont continuation = (resumed, flow) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    // A nested producer catch may erroneously retry after its
+                    // consumer throws. Never disguise the consumer's original
+                    // security/type diagnostic as a duplicate-completion error.
+                    Throwable prior = consumerFailure.get();
+                    if (prior instanceof RuntimeException runtime) throw runtime;
+                    if (prior instanceof Error error) throw error;
+                    throw new IllegalStateException(
+                            "suspendable statement completed more than once");
+                }
+                try {
+                    downstream.accept(resumed, flow);
+                } catch (RuntimeException | Error failure) {
+                    consumerFailure.compareAndSet(null, failure);
+                    throw failure;
+                }
+            };
             try {
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
@@ -1846,6 +2023,20 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure2));
                                 }
                             });
+                    return;
+                }
+
+                if (stmt instanceof Ast.ArmReturnStmt returned) {
+                    if (returned.value() == null) {
+                        continuation.accept(task, SourceFlow.throwing(
+                                new IllegalStateException("value arm completed without result")));
+                    } else {
+                        evalSuspendableExpr(task, returned.value(), env,
+                                (t, value, failure) ->
+                                    continuation.accept(t, failure == null
+                                            ? SourceFlow.armReturning(value)
+                                            : SourceFlow.throwing(failure)));
+                    }
                     return;
                 }
 
@@ -1985,7 +2176,11 @@ public final class OresEvalRootNode extends RootNode {
                             attempted.body(),
                             env,
                             (t, flow) -> {
-                                if (flow.kind() == SourceFlowKind.THROW) {
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && shouldEnterSourceCatch(
+                                                flow.failure(),
+                                                t.cancellationRequested,
+                                                t.cleanupInProgress())) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
@@ -1996,29 +2191,23 @@ public final class OresEvalRootNode extends RootNode {
                                             attempted.catchBody(),
                                             caught,
                                             (t2, catchFlow) ->
-                                                    runBlock(
+                                                    runFinallyBlock(
                                                             t2,
                                                             attempted.finallyBody(),
                                                             env,
                                                             (t3, finallyFlow) ->
                                                                     continuation.accept(
                                                                             t3,
-                                                                            finallyFlow.kind()
-                                                                                            != SourceFlowKind.NORMAL
-                                                                                    ? finallyFlow
-                                                                                    : catchFlow)));
+                                                                            mergeCleanupFlow(catchFlow, finallyFlow))));
                                 } else {
-                                    runBlock(
+                                    runFinallyBlock(
                                             t,
                                             attempted.finallyBody(),
                                             env,
                                             (t2, finallyFlow) ->
                                                     continuation.accept(
                                                             t2,
-                                                            finallyFlow.kind()
-                                                                            != SourceFlowKind.NORMAL
-                                                                    ? finallyFlow
-                                                                    : flow));
+                                                            mergeCleanupFlow(flow, finallyFlow)));
                                 }
                             });
                     return;
@@ -2127,9 +2316,11 @@ public final class OresEvalRootNode extends RootNode {
                         "unsupported suspendable statement "
                                 + stmt.getClass().getName());
             } catch (RuntimeException | Error failure) {
-                continuation.accept(
-                        task,
-                        SourceFlow.throwing(failure));
+                // If the consumer has already claimed the result, propagating
+                // its failure is safer than replaying it and running cleanup
+                // for a second time.
+                if (delivered.get()) throw failure;
+                continuation.accept(task, SourceFlow.throwing(failure));
             }
         }
 
@@ -2188,11 +2379,10 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             if (index >= matched.arms().size()) {
                 if (fallback == null) {
-                    continuation.accept(
-                            task,
-                            SourceFlow.throwing(
-                                    new IllegalStateException(
-                                            "exhaustive match invariant violated")));
+                    continuation.accept(task, matched.returnForm()
+                            ? SourceFlow.throwing(new IllegalStateException(
+                                    "exhaustive return do match invariant violated"))
+                            : SourceFlow.normal());
                     return;
                 }
                 LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
@@ -2881,12 +3071,206 @@ public final class OresEvalRootNode extends RootNode {
                     Map.copyOf(bindings));
         }
 
+        /**
+         * Completes a heap-backed value arm after all defers/finalizers have run.
+         * An arm-local return is a distinct flow, not a guest exception or
+         * containing-function return. The SourceTask retains this callback
+         * across Await without retaining a native carrier stack.
+         */
+        private void finishSuspendableValueArm(
+                SourceTask task, List<Ast.Stmt> body, Env env,
+                SourceValueCont continuation) {
+            runBlock(task, body, env, (resumed, flow) -> {
+                switch (flow.kind()) {
+                    case ARM_RETURN ->
+                            continuation.accept(resumed, flow.value(), null);
+                    case THROW ->
+                            continuation.accept(resumed, null, flow.failure());
+                    case NORMAL ->
+                            continuation.accept(resumed, null,
+                                    new IllegalStateException(
+                                            "value dispatch arm completed without result"));
+                    case RETURN ->
+                            // A procedural do match/do switch nested in this
+                            // value arm may return from the containing callable.
+                            // Carry that lexical exit through expression callbacks
+                            // and never hand it to a source catch arm as an error.
+                            continuation.accept(resumed, null,
+                                    new ReturnSignal(flow.value()));
+                    case BREAK, CONTINUE ->
+                            continuation.accept(resumed, null,
+                                    new IllegalStateException(
+                                            "invalid loop control from suspendable value arm: "
+                                                    + flow.kind()));
+                }
+            });
+        }
+
+        private void evalSuspendableValueMatch(
+                SourceTask task, Ast.ValueMatchExpr match,
+                Env env, SourceValueCont continuation) {
+            evalSuspendableExpr(task, match.subject(), env, (t, subject, failure) -> {
+                if (failure != null) {
+                    continuation.accept(t, null, failure);
+                    return;
+                }
+                selectSuspendableValueMatchArm(t, match, subject, env, 0,
+                        null, null, continuation);
+            });
+        }
+
+        private void selectSuspendableValueMatchArm(
+                SourceTask task, Ast.ValueMatchExpr matched, Object subject,
+                Env env, int index, Ast.MatchArm selected, Env selectedEnv,
+                SourceValueCont continuation) {
+            if (index == matched.arms().size()) {
+                if (selected == null) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "exhaustive value match reached uncovered input"));
+                } else {
+                    finishSuspendableValueArm(task, selected.body(),
+                            selectedEnv, continuation);
+                }
+                return;
+            }
+            Ast.MatchArm arm = matched.arms().get(index);
+            boolean fallback = !matched.ordered() && arm.guard() == null
+                    && (arm.pattern() instanceof Ast.WildcardPattern
+                        || arm.pattern() instanceof Ast.BindingPattern);
+            LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+            if (!patternMatches(arm.pattern(), subject, bindings)) {
+                selectSuspendableValueMatchArm(task, matched, subject, env,
+                        index + 1, selected, selectedEnv, continuation);
+                return;
+            }
+            Env armEnv = new Env(env);
+            bindings.forEach((name, value) -> armEnv.define(
+                    name, value, Ast.BindingKind.VAL));
+            if (fallback) {
+                // An unguarded fallback is considered only after concrete arms.
+                selectSuspendableValueMatchArm(task, matched, subject, env,
+                        index + 1, selected == null ? arm : selected,
+                        selected == null ? armEnv : selectedEnv, continuation);
+                return;
+            }
+            SourceValueCont matchedGuard = (resumed, value, failure) -> {
+                if (failure != null) {
+                    continuation.accept(resumed, null, failure);
+                    return;
+                }
+                if (!truth(value)) {
+                    selectSuspendableValueMatchArm(resumed, matched, subject, env,
+                            index + 1, selected, selectedEnv, continuation);
+                    return;
+                }
+                if (matched.ordered()) {
+                    finishSuspendableValueArm(resumed, arm.body(), armEnv, continuation);
+                } else if (selected != null) {
+                    continuation.accept(resumed, null, new IllegalStateException(
+                            "exclusive value match selected more than one arm"));
+                } else {
+                    selectSuspendableValueMatchArm(resumed, matched, subject, env,
+                            index + 1, arm, armEnv, continuation);
+                }
+            };
+            if (arm.guard() == null) {
+                matchedGuard.accept(task, true, null);
+            } else {
+                evalSuspendableExpr(task, arm.guard(), armEnv, matchedGuard);
+            }
+        }
+
+        private void evalSuspendableValueSwitch(
+                SourceTask task, Ast.ValueSwitchExpr switched,
+                Env env, SourceValueCont continuation) {
+            evalSuspendableExpr(task, switched.subject(), env, (t, subject, failure) -> {
+                if (failure != null) {
+                    continuation.accept(t, null, failure);
+                    return;
+                }
+                selectSuspendableValueSwitchCase(t, switched, subject, env, 0,
+                        0, continuation);
+            });
+        }
+
+        private void selectSuspendableValueSwitchCase(
+                SourceTask task, Ast.ValueSwitchExpr switched, Object subject,
+                Env env, int caseIndex, int constantIndex,
+                SourceValueCont continuation) {
+            if (caseIndex >= switched.cases().size()) {
+                if (switched.defaultBody().isEmpty()) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "exhaustive value switch reached uncovered input"));
+                } else {
+                    finishSuspendableValueArm(task, switched.defaultBody(),
+                            env, continuation);
+                }
+                return;
+            }
+            Ast.SwitchCase arm = switched.cases().get(caseIndex);
+            if (constantIndex >= arm.constants().size()) {
+                selectSuspendableValueSwitchCase(task, switched, subject, env,
+                        caseIndex + 1, 0, continuation);
+                return;
+            }
+            evalSuspendableExpr(task, arm.constants().get(constantIndex), env,
+                    (resumed, value, failure) -> {
+                        if (failure != null) {
+                            continuation.accept(resumed, null, failure);
+                        } else if (valueEquals(subject, value)) {
+                            finishSuspendableValueArm(resumed, arm.body(),
+                                    env, continuation);
+                        } else {
+                            selectSuspendableValueSwitchCase(resumed, switched,
+                                    subject, env, caseIndex,
+                                    constantIndex + 1, continuation);
+                        }
+                    });
+        }
+
         private void evalSuspendableExpr(
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
-                SourceValueCont continuation) {
+                SourceValueCont downstream) {
+            // One expression has exactly one consumer, even when it suspends
+            // or its consumer fails while unwinding an outer block.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicReference<Throwable> consumerFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            SourceValueCont continuation = (resumed, value, failure) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    Throwable prior = consumerFailure.get();
+                    if (prior instanceof RuntimeException runtime) throw runtime;
+                    if (prior instanceof Error error) throw error;
+                    throw new IllegalStateException(
+                            "suspendable expression completed more than once");
+                }
+                try {
+                    downstream.accept(resumed, value, failure);
+                } catch (RuntimeException | Error raised) {
+                    consumerFailure.compareAndSet(null, raised);
+                    throw raised;
+                }
+            };
             try {
+                // A source-task expression can now preserve the selected value
+                // arm and cleanup obligations across a pending Await.
+                if (expr instanceof Ast.ValueMatchExpr matched
+                        && expressionContainsPotentialSuspension(expr,
+                                java.util.Collections.newSetFromMap(
+                                        new IdentityHashMap<>()))) {
+                    evalSuspendableValueMatch(task, matched, env, continuation);
+                    return;
+                }
+                if (expr instanceof Ast.ValueSwitchExpr switched
+                        && expressionContainsPotentialSuspension(expr,
+                                java.util.Collections.newSetFromMap(
+                                        new IdentityHashMap<>()))) {
+                    evalSuspendableValueSwitch(task, switched, env, continuation);
+                    return;
+                }
                 if (!expressionContainsPotentialSuspension(
                         expr,
                         java.util.Collections.newSetFromMap(
@@ -3375,6 +3759,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 continuation.accept(task, eval(expr, env), null);
             } catch (RuntimeException | Error failure) {
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
@@ -3537,14 +3922,17 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (future.isDone()) {
+                // Future failure and consumer failure are distinct. Never call
+                // a lexical continuation twice if its first invocation throws
+                // (it might already have released ownership or run defers).
+                final Object completed;
                 try {
-                    continuation.accept(
-                            task,
-                            future.join(),
-                            null);
+                    completed = future.join();
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(task, null, failure);
+                    return;
                 }
+                continuation.accept(task, completed, null);
                 return;
             }
 
@@ -4588,7 +4976,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
             } catch (TailCallSignal signal) {
                 throw signal;
-            } catch (ReturnSignal | BreakSignal | ContinueSignal signal) {
+            } catch (ReturnSignal | ArmReturnSignal | BreakSignal | ContinueSignal signal) {
                 throw signal;
             } catch (RuntimeException | Error failure) {
                 abnormalExit = true;
@@ -4645,6 +5033,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 return;
+            }
+            if (stmt instanceof Ast.ArmReturnStmt arm) {
+                // Lexically scoped: never returns from the containing function.
+                throw new ArmReturnSignal(eval(arm.value(), env));
             }
             if (stmt instanceof Ast.ReturnStmt ret) {
                 returnFrom(
@@ -4758,8 +5150,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (selected == null) {
+                    if (!matched.returnForm()) return; // partial do match
                     throw new IllegalStateException(
-                            "exhaustive match invariant violated at runtime: no arm matched");
+                            "exhaustive return do match invariant violated at runtime");
                 }
                 Env selectedEnv = new Env(env);
                 selectedBindings.forEach((name, value) ->
@@ -4806,7 +5199,8 @@ public final class OresEvalRootNode extends RootNode {
                 // caller still owns exception/cleanup semantics after the call.
                 try { executeBlock(tried.body(), env, true); }
                 catch (TailCallSignal signal) { throw signal; }
-                catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
+                // A value-dispatch arm yield is lexical control flow, never a catchable error.
+                catch (ReturnSignal | ArmReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
                 catch (OresPanic panic) { throw panic; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
@@ -5576,6 +5970,78 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.ValueMatchExpr match) {
+                Object subject = eval(match.subject(), env);
+                Ast.MatchArm selected = null, fallback = null;
+                Env selectedEnv = null;
+                for (Ast.MatchArm arm : match.arms()) {
+                    boolean catchAll = arm.guard() == null
+                            && (arm.pattern() instanceof Ast.WildcardPattern
+                                || arm.pattern() instanceof Ast.BindingPattern);
+                    if (!match.ordered() && catchAll) {
+                        fallback = arm;
+                        continue;
+                    }
+                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                    if (!patternMatches(arm.pattern(), subject, bindings)) continue;
+                    Env armEnv = new Env(env);
+                    bindings.forEach((name, value) ->
+                            armEnv.define(name, value, Ast.BindingKind.VAL));
+                    if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
+                    if (match.ordered()) {
+                        selected = arm;
+                        selectedEnv = armEnv;
+                        break;
+                    }
+                    if (selected != null) throw new IllegalStateException(
+                            "exclusive value match selected more than one arm");
+                    selected = arm;
+                    selectedEnv = armEnv;
+                }
+                if (selected == null && fallback != null) {
+                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                    if (!patternMatches(fallback.pattern(), subject, bindings))
+                        throw new IllegalStateException("value match fallback rejected subject");
+                    selected = fallback;
+                    selectedEnv = new Env(env);
+                    Env matchedEnv = selectedEnv;
+                    bindings.forEach((name, value) ->
+                            matchedEnv.define(name, value, Ast.BindingKind.VAL));
+                }
+                if (selected == null) throw new IllegalStateException(
+                        "exhaustive value match reached uncovered input");
+                try {
+                    executeBlock(selected.body(), selectedEnv, true);
+                } catch (ArmReturnSignal result) {
+                    return result.value;
+                }
+                throw new IllegalStateException("value match arm completed without result");
+            }
+            if (expr instanceof Ast.ValueSwitchExpr switched) {
+                Object subject = eval(switched.subject(), env);
+                List<Ast.Stmt> selectedBody = switched.defaultBody();
+                for (Ast.SwitchCase arm : switched.cases()) {
+                    boolean found = false;
+                    for (Ast.Expr constant : arm.constants()) {
+                        if (valueEquals(subject, eval(constant, env))) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found) {
+                        selectedBody = arm.body();
+                        break;
+                    }
+                }
+                if (selectedBody.isEmpty()) throw new IllegalStateException(
+                        "exhaustive value switch reached uncovered input");
+                try {
+                    executeBlock(selectedBody, env, true);
+                } catch (ArmReturnSignal result) {
+                    return result.value;
+                }
+                throw new IllegalStateException("value switch arm completed without result");
+            }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
@@ -6401,6 +6867,14 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "ready" -> actorRef.ready();
                     case "done" -> actorRef.done();
+                    case "get_ready" -> (Invokable) args -> {
+                        requireZero(args, "ActorRef.get_ready");
+                        return actorRef.get_ready();
+                    };
+                    case "get_done" -> (Invokable) args -> {
+                        requireZero(args, "ActorRef.get_done");
+                        return actorRef.get_done();
+                    };
                     case "outputs" -> actorRef.outputs();
                     case "id" -> actorRef.id();
                     case "kind" -> actorRef.kind();
@@ -8580,6 +9054,11 @@ public final class OresEvalRootNode extends RootNode {
         private Object value;
         private final Ast.BindingKind kind;
         private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+    }
+
+    private static final class ArmReturnSignal extends RuntimeException {
+        private final Object value;
+        private ArmReturnSignal(Object value) { super(null, null, false, false); this.value = value; }
     }
 
     private static final class ReturnSignal extends RuntimeException {

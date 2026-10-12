@@ -458,7 +458,7 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
+    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ArmReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
@@ -512,6 +512,9 @@ public final class Ast {
     }
 
     public record ReturnStmt(Expr value) implements Stmt { }
+    /** Lexically local return: yields a value to the nearest match/switch expression. */
+    public record ArmReturnStmt(Expr value) implements Stmt { }
+
     public record YieldStmt(Expr value, boolean delegated) implements Stmt {
         public YieldStmt(Expr value) {
             this(value, false);
@@ -585,8 +588,12 @@ public final class Ast {
      * flag is retained for AST compatibility; canonical source syntax is
      * always ordered and the parser emits true.
      */
-    public record MatchStmt(Expr subject, boolean ordered, List<MatchArm> arms) implements Stmt {
+    public record MatchStmt(
+            Expr subject, boolean ordered, List<MatchArm> arms, boolean returnForm) implements Stmt {
         public MatchStmt { arms = List.copyOf(arms); }
+        public MatchStmt(Expr subject, boolean ordered, List<MatchArm> arms) {
+            this(subject, ordered, arms, false);
+        }
     }
 
     public record SwitchCase(List<Expr> constants, List<Stmt> body) {
@@ -596,10 +603,15 @@ public final class Ast {
         }
     }
 
-    public record SwitchStmt(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody) implements Stmt {
+    public record SwitchStmt(
+            Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody,
+            boolean returnForm) implements Stmt {
         public SwitchStmt {
             cases = List.copyOf(cases);
             defaultBody = List.copyOf(defaultBody);
+        }
+        public SwitchStmt(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody) {
+            this(subject, cases, defaultBody, false);
         }
     }
 
@@ -757,7 +769,7 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, ValueMatchExpr, ValueSwitchExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -766,6 +778,17 @@ public final class Ast {
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
+    public record ValueMatchExpr(Expr subject, boolean ordered, List<MatchArm> arms) implements Expr {
+        public ValueMatchExpr { arms = List.copyOf(arms); }
+    }
+    public record ValueSwitchExpr(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody)
+            implements Expr {
+        public ValueSwitchExpr {
+            cases = List.copyOf(cases);
+            defaultBody = List.copyOf(defaultBody);
+        }
+    }
+
 
     /** "value is Type [binding]" -- a nominal/refinement test, not general pattern matching. */
     public record TypeTestExpr(Expr value, TypeRef targetType, String binding) implements Expr { }

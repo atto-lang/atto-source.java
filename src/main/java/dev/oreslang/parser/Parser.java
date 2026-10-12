@@ -22,6 +22,11 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    private int valueArmDepth;
+    // Return is forbidden in a finally lexical scope. A nested lambda
+    // starts a new return boundary and does not inherit this restriction.
+    private int finallyDepth;
+    private boolean lastDispatchUsedLegacyArrows;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -1547,9 +1552,20 @@ public final class Parser {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
         if (match(RETURN)) {
+            if (finallyDepth > 0) {
+                throw error(previous(), "return is forbidden inside finally; a nested lambda may return from itself");
+            }
+            if (match(DO)) {
+                if (match(MATCH)) return parseMatch(true, false, false);
+                if (match(SWITCH)) return parseSwitch(true, false, false);
+                throw error(peek(), "'return do' requires match or switch");
+            }
+            // 'return match' / 'return switch' evaluate the expression's
+            // arm-local result; a nested return targets its lexical arm.
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
-            return new Ast.ReturnStmt(value);
+            return valueArmDepth > 0
+                    ? new Ast.ArmReturnStmt(value) : new Ast.ReturnStmt(value);
         }
         if (match(YIELD)) {
             boolean delegated = match(STAR);
@@ -1582,8 +1598,23 @@ public final class Parser {
             return new Ast.ContinueStmt();
         }
         if (match(IF)) return parseIf();
-        if (match(MATCH)) return parseMatch();
-        if (match(SWITCH)) return parseSwitch();
+        if (match(DO)) {
+            if (match(MATCH)) return parseMatch(false, false, false);
+            if (match(SWITCH)) return parseSwitch(false, false, false);
+            throw error(peek(), "'do' must introduce a statement such as 'do match' or 'do switch'");
+        }
+        // A bare match/switch is a result-producing expression whose value
+        // may be discarded by the expression-statement context.
+        if (match(MATCH)) {
+            Ast.MatchStmt body = parseMatch(false, true, true);
+            if (lastDispatchUsedLegacyArrows) return body;
+            return new Ast.ExprStmt(new Ast.ValueMatchExpr(body.subject(), body.ordered(), body.arms()));
+        }
+        if (match(SWITCH)) {
+            Ast.SwitchStmt body = parseSwitch(false, true, true);
+            if (lastDispatchUsedLegacyArrows) return body;
+            return new Ast.ExprStmt(new Ast.ValueSwitchExpr(body.subject(), body.cases(), body.defaultBody()));
+        }
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
@@ -2361,7 +2392,8 @@ public final class Parser {
         return expr;
     }
 
-    private Ast.MatchStmt parseMatch() {
+    private Ast.MatchStmt parseMatch(boolean returnForm, boolean valueMode,
+                                      boolean legacyStatementContext) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
         //     on Pattern -> { ... }
@@ -2385,6 +2417,7 @@ public final class Parser {
         if (!canonicalOver) match(SEMICOLON);
 
         List<Ast.MatchArm> arms = new ArrayList<>();
+        Boolean arrowSpelling = null;
         while (!check(END) && !check(EOF)) {
             if (canonicalOver) {
                 if (!matchContextualIdentifier("on")) {
@@ -2406,8 +2439,22 @@ public final class Parser {
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
-            consume(ARROW, "match arms use the slim arrow '->'");
-            List<Ast.Stmt> body = parseBlock();
+            // Canonical 'match expr over' uses 'on Pattern as binding { ... }'.
+            // Keep the historical '-> {' spelling for existing sources.
+            final boolean arrow = match(ARROW);
+            if (!arrow && !canonicalOver)
+                throw error(peek(), "legacy match arms use the slim arrow '->'");
+            if (!arrow && !check(LBRACE))
+                throw error(peek(), "match arm requires a braced body");
+            if (legacyStatementContext && arrowSpelling != null && arrowSpelling != arrow)
+                throw error(peek(), "mixed arrow and arrowless match arms have ambiguous return semantics");
+            arrowSpelling = arrow;
+            int savedArmDepth = valueArmDepth;
+            valueArmDepth = valueMode && !(legacyStatementContext && arrow)
+                    ? savedArmDepth + 1 : 0;
+            List<Ast.Stmt> body;
+            try { body = parseBlock(); }
+            finally { valueArmDepth = savedArmDepth; }
             arms.add(new Ast.MatchArm(pattern, guard, body));
         }
         consume(END, "expected 'end' to close match");
@@ -2417,10 +2464,10 @@ public final class Parser {
                     : "match requires at least one arm");
         }
 
-        // Canonical match is source-ordered. Legacy bare match retains the
-        // old exclusivity/proof semantics unless explicitly written
-        // `match first ...`.
-        return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms);
+        // Arrow-based direct statements keep the historical return behavior.
+        lastDispatchUsedLegacyArrows = legacyStatementContext
+                && Boolean.TRUE.equals(arrowSpelling);
+        return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms, returnForm);
     }
 
     private Ast.Pattern parsePattern() {
@@ -2434,7 +2481,9 @@ public final class Parser {
 
         if (match(IS)) {
             Ast.TypeRef target = parseTypeRef();
-            String binding = check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
+            String binding = match(AS)
+                    ? consume(IDENT, "expected binding after 'as' in match arm").lexeme()
+                    : check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
             return new Ast.TypePattern(target, binding);
         }
 
@@ -2464,9 +2513,23 @@ public final class Parser {
             int patternStart = current;
             try {
                 Ast.TypeRef target = parseTypeRef();
+                if (match(AS)) {
+                    String binding = consume(IDENT,
+                            "expected binding after 'as' in match arm").lexeme();
+                    return new Ast.TypePattern(target, binding);
+                }
                 if (check(IDENT) && !peek().lexeme().equals("_")) {
                     String binding = advance().lexeme();
                     return new Ast.TypePattern(target, binding);
+                }
+                // Qualified nominal enum cases may be matched without a
+                // binding. Bare names retain historical constructor semantics.
+                boolean qualified = false;
+                for (int i = patternStart; i < current; i++) {
+                    if (tokens.get(i).type() == DOT) { qualified = true; break; }
+                }
+                if (qualified && (check(LBRACE) || check(ARROW))) {
+                    return new Ast.TypePattern(target, null);
                 }
             } catch (IllegalArgumentException ignored) {
                 // Fall through to constructor/binding parsing from the same token.
@@ -2497,23 +2560,37 @@ public final class Parser {
         throw error(peek(), "expected match pattern");
     }
 
-    private Ast.SwitchStmt parseSwitch() {
+    private Ast.SwitchStmt parseSwitch(boolean returnForm, boolean valueMode,
+                                        boolean legacyStatementContext) {
         Ast.Expr subject = parseExpression();
         match(SEMICOLON);
         List<Ast.SwitchCase> cases = new ArrayList<>();
         List<Ast.Stmt> defaultBody = List.of();
         boolean sawDefault = false;
+        Boolean arrowSpelling = null;
 
         while (!check(END) && !check(EOF)) {
             if (matchContextualKeyword("case")) {
-                if (sawDefault) throw error(previous(), "switch case cannot appear after default");
+                // The default arm is a fallback independent of source position.
+                // Retain concrete case order; only a second default is rejected.
                 List<Ast.Expr> constants = new ArrayList<>();
                 do constants.add(parseExpression()); while (match(COMMA));
                 if (check(FAT_ARROW)) {
                     throw error(peek(), "switch implementations use the slim arrow '->'; '=>' is reserved for type definitions");
                 }
-                consume(ARROW, "switch cases use the slim arrow '->'");
-                cases.add(new Ast.SwitchCase(constants, parseBlock()));
+                final boolean arrow = match(ARROW);
+                if (!arrow && !check(LBRACE))
+                    throw error(peek(), "switch case requires a braced body");
+                if (legacyStatementContext && arrowSpelling != null && arrowSpelling != arrow)
+                    throw error(peek(), "mixed arrow and arrowless switch arms have ambiguous return semantics");
+                arrowSpelling = arrow;
+                int savedArmDepth = valueArmDepth;
+                valueArmDepth = valueMode && !(legacyStatementContext && arrow)
+                        ? savedArmDepth + 1 : 0;
+                List<Ast.Stmt> body;
+                try { body = parseBlock(); }
+                finally { valueArmDepth = savedArmDepth; }
+                cases.add(new Ast.SwitchCase(constants, body));
                 continue;
             }
             if (match(DEFAULT)) {
@@ -2522,15 +2599,26 @@ public final class Parser {
                 if (check(FAT_ARROW)) {
                     throw error(peek(), "switch implementations use the slim arrow '->'; '=>' is reserved for type definitions");
                 }
-                consume(ARROW, "switch default uses the slim arrow '->'");
-                defaultBody = parseBlock();
+                final boolean arrow = match(ARROW);
+                if (!arrow && !check(LBRACE))
+                    throw error(peek(), "switch default requires a braced body");
+                if (legacyStatementContext && arrowSpelling != null && arrowSpelling != arrow)
+                    throw error(peek(), "mixed arrow and arrowless switch arms have ambiguous return semantics");
+                arrowSpelling = arrow;
+                int savedArmDepth = valueArmDepth;
+                valueArmDepth = valueMode && !(legacyStatementContext && arrow)
+                        ? savedArmDepth + 1 : 0;
+                try { defaultBody = parseBlock(); }
+                finally { valueArmDepth = savedArmDepth; }
                 continue;
             }
             throw error(peek(), "expected 'case', 'default', or 'end' in switch");
         }
 
         consume(END, "expected 'end' to close switch");
-        return new Ast.SwitchStmt(subject, cases, defaultBody);
+        lastDispatchUsedLegacyArrows = legacyStatementContext
+                && Boolean.TRUE.equals(arrowSpelling);
+        return new Ast.SwitchStmt(subject, cases, defaultBody, returnForm);
     }
 
     private Ast.TryStmt parseTry() {
@@ -2540,7 +2628,12 @@ public final class Parser {
         String error = consume(IDENT, "expected catch binding").lexeme();
         consume(RPAREN, "expected ')' after catch binding");
         List<Ast.Stmt> catchBody = parseBlock();
-        List<Ast.Stmt> finallyBody = match(FINALLY) ? parseBlock() : List.of();
+        List<Ast.Stmt> finallyBody = List.of();
+        if (match(FINALLY)) {
+            finallyDepth++;
+            try { finallyBody = parseBlock(); }
+            finally { finallyDepth--; }
+        }
         return new Ast.TryStmt(body, error, catchBody, finallyBody);
     }
 
@@ -2959,6 +3052,14 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        if (match(MATCH)) {
+            Ast.MatchStmt body = parseMatch(false, true, false);
+            return new Ast.ValueMatchExpr(body.subject(), body.ordered(), body.arms());
+        }
+        if (match(SWITCH)) {
+            Ast.SwitchStmt body = parseSwitch(false, true, false);
+            return new Ast.ValueSwitchExpr(body.subject(), body.cases(), body.defaultBody());
+        }
         if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
@@ -3139,14 +3240,20 @@ public final class Parser {
     }
 
     private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
-        // Only an immediate '{' denotes the statement-block form. Everything
-        // else starts a normal expression body. This is intentionally lexical:
-        // future prefix expressions such as `struct{...}{...}` must remain
-        // expression bodies rather than being confused with a lambda block.
-        if (check(LBRACE)) {
-            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        // Lambdas are fresh lexical return scopes. A lambda declared inside
+        // a value match arm must NOT inherit that arm's return target.
+        int outerArmDepth = valueArmDepth;
+        int outerFinallyDepth = finallyDepth;
+        valueArmDepth = 0;
+        finallyDepth = 0;
+        try {
+            if (check(LBRACE))
+                return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+            return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
+        } finally {
+            valueArmDepth = outerArmDepth;
+            finallyDepth = outerFinallyDepth;
         }
-        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
     }
 
     private boolean looksLikeLambda() {
