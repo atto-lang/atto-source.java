@@ -25,6 +25,11 @@ final class ActorReadinessLifecycleTest {
                     "get_ready must return the runtime-owned readiness ticket");
             assertSame(ref.done(), ref.get_done(),
                     "get_done must return the physical finalization ticket");
+            assertSame(ref.shutdownResult(), ref.get_shutdown_result(),
+                    "shutdown result must be distinct from physical done");
+            assertNotSame(ref.done(), ref.shutdownResult());
+            assertFalse(ref.get_shutdown_result().cancel(false),
+                    "shutdown outcome is a runtime-owned read-only observer");
             assertFalse(ref.get_ready().cancel(true),
                     "get_ready cannot be used as actor cancellation authority");
             ref.get_ready().get(5, TimeUnit.SECONDS);
@@ -34,6 +39,7 @@ final class ActorReadinessLifecycleTest {
 
             ref.stop();
             ref.get_done().get(5, TimeUnit.SECONDS);
+            ref.get_shutdown_result().get(5, TimeUnit.SECONDS);
             assertFalse(ref.isAlive());
             assertFalse(ref.get_done().cancel(true),
                     "get_done is an observer, not a stop or cancellation capability");
