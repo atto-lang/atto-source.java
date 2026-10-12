@@ -20,7 +20,13 @@ public final class NativeHttp implements AutoCloseable {
     // Rejected aborts retain their socket and actor reservations until an
     // observed physical I/O-carrier exit authorizes a synchronous close.
     private final Set<State> rejectedAborts = ConcurrentHashMap.newKeySet();
+    // Explicit source-side ownership of submitted HTTP operations; a completed
+    // Future or closed socket alone cannot prove that a response writer exited.
     private final ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
+    // Fault-injection is package-private and disabled by default. The test
+    // consumes precisely one rejected ABORT dispatch without disrupting writes.
+    static final java.util.concurrent.atomic.AtomicBoolean REJECT_NEXT_ABORT_FOR_TEST =
+            new java.util.concurrent.atomic.AtomicBoolean();
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
     });
@@ -292,6 +298,7 @@ public final class NativeHttp implements AutoCloseable {
         int bodyBytes;
         volatile boolean terminal;
         boolean transportClosed;
+        int inFlightOperations;
         String ticket;
         final String requestId = UUID.randomUUID().toString();
         final long admittedNanos = System.nanoTime();
@@ -316,8 +323,12 @@ public final class NativeHttp implements AutoCloseable {
             // Never perform socket I/O or actor cancellation while holding the ownership monitor.
             if (actor != null && !alreadyClosed) actor.cancel();
             if (alreadyClosed) { release(); return; }
-            try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException rejected) {
+            try {
+                if (REJECT_NEXT_ABORT_FOR_TEST.compareAndSet(true, false)) {
+                    throw new RejectedExecutionException("injected HTTP abort rejection");
+                }
+                io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } });
+            } catch (RejectedExecutionException rejected) {
                 // A rejected abort cannot be treated as transport closure.
                 // In particular a queued/write operation may still own the
                 // socket. The root close barrier will reclaim it only after
@@ -356,7 +367,8 @@ public final class NativeHttp implements AutoCloseable {
             // Admission includes the actor lifetime, even after the response ends.
             // A handler that forgets self.end cannot accumulate unbounded actors.
             synchronized (this) {
-                if (!transportClosed || (actor != null && !actor.done().isDone())) return;
+                if (!transportClosed || inFlightOperations != 0
+                        || (actor != null && !actor.done().isDone())) return;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 if (deadline != null) deadline.cancel(false);
             }
@@ -548,6 +560,9 @@ public final class NativeHttp implements AutoCloseable {
                 checkOwner();
                 if (state.busy) throw new IllegalStateException("await the pending HTTP operation first");
                 state.busy = true;
+                // Increment before submission, not after a task starts: a
+                // concurrent abort must observe even an as-yet-queued write.
+                state.inFlightOperations++;
             }
             OresFuture<Object> result = new OresFuture<>(() -> false, () -> { });
             long queued = CorePerf.start();
@@ -568,10 +583,25 @@ public final class NativeHttp implements AutoCloseable {
                         if (failure instanceof ThreadDeath fatal) throw fatal;
                         if (failure instanceof LinkageError fatal) throw fatal;
                     } finally {
+                        synchronized (state) {
+                            state.inFlightOperations--;
+                            if (state.inFlightOperations < 0) {
+                                throw new IllegalStateException("HTTP operation ownership underflow");
+                            }
+                        }
+                        state.release();
                         CorePerf.end(CorePerf.HTTP_IO_WORK, workPerf);
                     }
                 });
-            } catch (RuntimeException failure) { state.abort(500); result.failFromRuntime(failure); }
+            } catch (RuntimeException failure) {
+                synchronized (state) {
+                    state.busy = false;
+                    state.inFlightOperations--;
+                }
+                state.abort(500);
+                state.release();
+                result.failFromRuntime(failure);
+            }
             return result;
         }
     }
