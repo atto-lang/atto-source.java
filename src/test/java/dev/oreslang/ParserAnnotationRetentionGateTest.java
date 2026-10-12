@@ -95,6 +95,28 @@ final class ParserAnnotationRetentionGateTest {
     }
 
     @Test
+    void rejectsImplementedTypeOnlyMetadataOnUnsupportedTargets() {
+        String[] sources = {
+                "@Align(16) define module demo as end",
+                "define module demo as @Align(16) fnc sample(): int { return 1; } end",
+                """
+                define module demo as
+                  define class Packet as
+                    @Align(16)
+                    fnc read(): int { return 1; }
+                  end
+                end
+                """
+        };
+        for (String source : sources) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source), source);
+            assertTrue(error.getMessage().contains("compile-time type metadata"),
+                    () -> source + ": " + error.getMessage());
+        }
+    }
+
+    @Test
     void retainsSpecializedCallableAnnotationError() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("@structural define class Example as end"));
