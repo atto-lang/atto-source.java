@@ -464,6 +464,63 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
+    void finallyCastErrorCannotDowngradeAnUnwrapPanic() throws Exception {
+        String source = """
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                trap fnc panic_with_finally(Animal animal): int {
+                  try {
+                    val Option<int> absent = None;
+                    return absent.unwrap();
+                  } catch (err) {
+                    return 7;
+                  } finally {
+                    val Dog impossible = animal as Dog;
+                  }
+                }
+
+                pub fnc main(): void {
+                  val Option<int> ignored = panic_with_finally(new Cat());
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        PolyglotException panic = assertThrows(PolyglotException.class, () -> run(source));
+        assertTrue(panic.getMessage().contains("Option::unwrap"));
+    }
+
+    @Test
+    void suspendableTryCatchCannotCatchUnwrapPanic() throws Exception {
+        String source = """
+                async fnc answer(): int { return 1; }
+                async fnc panics(): int {
+                  val int received = await answer();
+                  try {
+                    val Option<int> absent = None;
+                    return absent.unwrap();
+                  } catch (err) {
+                    return received;
+                  } finally {
+                    val int done = received + 1;
+                  }
+                }
+                pub fnc main(): void {
+                  val int impossible = await panics();
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertThrows(PolyglotException.class, () -> run(source));
+    }
+
+    @Test
     void expressionTrapIsNotSilentlyAcceptedBeforeItsEffectLoweringExists() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc invalid(): void {
