@@ -422,9 +422,9 @@ final class HostGeneratorTurnPumpTest {
                 assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
                 assertFalse(pump.dispatchOne(),
                         "overlapping host pull may not enter a second physical turn");
-                assertThrows(SecurityException.class,
+                assertThrows(IllegalStateException.class,
                         () -> frame.nextTurn().start(),
-                        "internal bypass without one-use reservation is rejected prestart");
+                        "live frame rejects overlap before reaching certified start");
                 assertEquals(1, resumes.get());
                 assertFalse(second.isDone());
             } finally {
