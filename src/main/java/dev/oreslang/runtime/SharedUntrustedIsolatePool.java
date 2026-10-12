@@ -134,20 +134,22 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         private volatile boolean groupClosed;
         // Exactly-once close task: contenders cannot return a false success
         // while another thread still executes Context.close(true).
-        private final VerifiedCloseFence closeFence = new VerifiedCloseFence(() -> {
-            try {
-                context.close(true);
-                // A close that throws keeps the Context counted. Never
-                // release a group slot just because admission was revoked.
-                synchronized (SharedUntrustedIsolatePool.this) {
-                    groups.remove(this);
+        private final VerifiedCloseFence closeFence;
+        private Group(Context context) {
+            this.context = context;
+            this.closeFence = new VerifiedCloseFence(() -> {
+                try {
+                    this.context.close(true);
+                    // Only a verified Context.close may release group capacity.
+                    synchronized (SharedUntrustedIsolatePool.this) {
+                        groups.remove(this);
+                    }
+                } catch (RuntimeException | Error error) {
+                    // No guest exception or native cause chain reaches the host.
+                    throw new IllegalStateException("untrusted group retirement failed");
                 }
-            } catch (RuntimeException | Error error) {
-                // Do not leak guest exception/cause objects to the host.
-                throw new IllegalStateException("untrusted group retirement failed");
-            }
-        });
-        private Group(Context context) { this.context = context; }
+            });
+        }
 
         /** Host adapter entrypoint; actual actor routing must be supplied separately. */
         public synchronized Context contextForSupervisor() {
