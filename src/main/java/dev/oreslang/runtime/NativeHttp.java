@@ -323,15 +323,21 @@ public final class NativeHttp implements AutoCloseable {
             String length = raw.getRequestHeaders().getFirst("Content-Length");
             if (length != null && Long.parseLong(length) > bodyLimit) throw new IllegalArgumentException("body too large");
         }
-        public synchronized OresFuture<Object> shutdown(int graceMillis) {
+        public OresFuture<Object> shutdown(int graceMillis) {
             supervisor();
             if (graceMillis < 0) throw new IllegalArgumentException("negative drain deadline");
-            if (drained != null) return drained;
-            drained = new OresFuture<>(() -> false, () -> { });
-            stopAccepting();
+            final OresFuture<Object> result;
+            synchronized (this) {
+                if (drained != null) return drained;
+                drained = new OresFuture<>(() -> false, () -> { });
+                stopAccepting();
+                result = drained;
+            }
             // A concurrent NativeHttp.close() may have shut down the I/O
             // executor. Still stop the listener, settle drain and release all
             // in-flight exchanges instead of leaving this Future pending.
+            // In the rejected-executor path, transport.stop() runs inline and
+            // may block: never retain the server monitor across this call.
             executeAbortCleanup(io, () -> {
                 try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
                 finally {
@@ -341,7 +347,7 @@ public final class NativeHttp implements AutoCloseable {
                     completeDrain();
                 }
             });
-            return drained;
+            return result;
         }
         private synchronized void completeDrain() {
             if (transportStopped && active.isEmpty() && drained != null) drained.completeFromRuntime(null);
