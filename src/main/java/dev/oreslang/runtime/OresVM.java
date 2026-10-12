@@ -89,9 +89,17 @@ public final class OresVM implements AutoCloseable {
     /** Host handoff lease released only after the outer Value.execute returns. */
     public static final class HostHandoffLease implements AutoCloseable {
         private final RootHandoffGate gate;
+        // The host thread that opened the physical admission scope must also
+        // release it. A foreign close could otherwise dispatch queued root
+        // work before the original host Value.execute had physically exited.
+        private final Thread ownerThread = Thread.currentThread();
         private final AtomicBoolean released = new AtomicBoolean();
         private HostHandoffLease(RootHandoffGate gate) { this.gate = gate; }
         @Override public void close() {
+            if (Thread.currentThread() != ownerThread) {
+                throw new SecurityException(
+                        "host handoff entry lease belongs to another thread");
+            }
             if (released.compareAndSet(false, true)) gate.release();
         }
     }
