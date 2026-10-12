@@ -195,7 +195,9 @@ public final class Parser {
         consume(ROUTINE, "expected 'routine' after 'init'");
         consume(LPAREN, "init routine requires '()'");
         consume(RPAREN, "init routine cannot accept parameters");
-        consume(FAT_ARROW, "init routine requires explicit '=> void'");
+        if (!match(ARROW, COLON)) {
+            throw error(peek(), "init routine requires explicit '-> void' or ': void'");
+        }
         consume(VOID, "init routine must return void");
         return new Ast.InitDecl(parseBlock());
     }
@@ -204,12 +206,18 @@ public final class Parser {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         String name = consume(IDENT, "expected callable name").lexeme();
+        if (kind == Ast.CallableKind.ROUTINE && check(EQUAL)) {
+            throw error(peek(), "routines are declaration-only and cannot use function-expression syntax; use 'routine "
+                    + name + "(...) -> Type { ... }' or 'routine " + name + "(...) : Type { ... }'. Use 'fnc' for first-class function values");
+        }
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.TypeRef returnType = kind == Ast.CallableKind.ROUTINE
+                ? parseRoutineReturnType(annotations)
+                : parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, generics, params,
                 returnType, annotations, body);
@@ -363,11 +371,9 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
-            if (check(INIT)) throw error(peek(), "traits cannot declare init routines; trait state initializes as part of the host object");
+            if (check(INIT)) throw error(peek(), "traits cannot declare init routines; traits are storage-free reusable behavior");
             if (isBindingKind(peek().type())) {
-                if (mods.isStatic) throw error(peek(), "traits cannot declare static data");
-                fields.add(parseField(mods.visibility));
-                continue;
+                throw error(peek(), "traits are storage-free reusable behavior and cannot declare instance fields; put state on the composing class/struct");
             }
             if (mods.isStatic) throw error(peek(), "traits contain instance behavior only; static functions belong on classes or modules");
             if (check(FNC)) throw error(peek(), "trait instance methods omit 'fnc', like class instance methods");
@@ -405,7 +411,7 @@ public final class Parser {
                 continue;
             }
 
-            throw error(peek(), "interfaces are storage-free contracts; put state in a trait or class and declare functions with 'fnc'");
+            throw error(peek(), "interfaces are storage-free contracts; put state in a class or struct and declare functions with 'fnc'");
         }
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
@@ -530,6 +536,16 @@ public final class Parser {
             else progress = false;
         } while (progress);
         return new Modifiers(visibility, visibilityExplicit, async, isStatic, isAbstract);
+    }
+
+    private Ast.TypeRef parseRoutineReturnType(List<Ast.Annotation> annotations) {
+        if (!annotations.isEmpty()) {
+            throw error(peek(), "routine declarations use an explicit '-> Type' or ': Type' return type");
+        }
+        if (!match(ARROW, COLON)) {
+            throw error(peek(), "routine declarations require an explicit return type using '-> Type' or ': Type'");
+        }
+        return parseTypeRef();
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -717,14 +733,14 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         if (match(STRUCT)) return new Ast.TypeDeclStmt(parseStruct(true));
-        if (match(TRAIT)) return new Ast.TypeDeclStmt(parseTrait());
+        if (match(TRAIT)) throw error(previous(), "traits are declaration-level composition units and cannot be declared inside callables");
         if (match(INTERFACE)) return new Ast.TypeDeclStmt(parseInterface(Ast.Visibility.PRIVATE));
         if (match(TYPE)) return new Ast.TypeDeclStmt(parseTypeAlias());
         if (match(DEFINE)) {
             if (match(STRUCT)) return new Ast.TypeDeclStmt(parseStruct(false));
-            if (match(TRAIT)) return new Ast.TypeDeclStmt(parseTrait());
+            if (match(TRAIT)) throw error(previous(), "traits are declaration-level composition units and cannot be declared inside callables");
             if (match(INTERFACE)) return new Ast.TypeDeclStmt(parseInterface(Ast.Visibility.PRIVATE));
-            throw error(previous(), "callable-local 'define' only supports struct, trait, or interface declarations; type aliases use 'type Name = ...'");
+            throw error(previous(), "callable-local 'define' only supports struct or interface declarations; type aliases use 'type Name = ...'");
         }
         if (isBindingKind(peek().type())) return parseBindingStatement();
         if (check(LBRACKET) && looksLikeDestructure()) return parseDestructure();

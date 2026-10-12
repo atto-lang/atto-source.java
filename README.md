@@ -9,7 +9,7 @@ The language is intentionally opinionated:
 - static nominal typing by default, with explicit structural compatibility at selected call boundaries;
 - private functions by default (`fnc`), with `pub` for exported functions;
 - class methods omit `fnc` and have an implicit `self` receiver;
-- four distinct type constructs: storage-free `interface`, composable state/behavior `trait`, value-semantic `struct`, and identity-bearing `class`; compact `interface Foo { ... }`, `trait Foo { ... }`, and `struct Foo { ... }` forms are supported;
+- four distinct type constructs: storage-free `interface`, storage-free reusable-behavior `trait`, value-semantic `struct`, and identity-bearing `class`; compact `interface Foo { ... }`, `trait Foo { ... }`, and `struct Foo { ... }` forms are supported;
 - one return value only (tuples/arrays/records are ordinary single values);
 - `val`, `const`, and `let` are the only variable declarations;
 - actor heaps are isolated: mutable values are never shared between actors;
@@ -26,7 +26,7 @@ The language is intentionally opinionated:
 - hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
 - direct method calls reuse shared class method definitions; extracted method values bind their receiver safely without rebinding `self`;
 - class/module declarations use the mandatory `as` body marker; `as` and `is` are reserved keywords;
-- `init routine() => void` is actor-local at file/ordinary-module scope and process-local inside a singleton module;
+- `init routine() -> void` is actor-local at file/ordinary-module scope and process-local inside a singleton module;
 - multiple named modules may appear in one source file;
 - explicit `return` statements;
 - generics, tuples, arrays, complex numbers, futures/`await`, lambdas, `defer`, and `try/catch/finally` are language-level features.

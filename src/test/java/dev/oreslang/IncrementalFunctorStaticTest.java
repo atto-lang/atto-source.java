@@ -109,7 +109,7 @@ final class IncrementalFunctorStaticTest {
                 "config.ores", "pub val setting = 1;",
                 "consumer.ores", """
                         import * as config from "./config.ores";
-                        pub routine main() => void { return; }
+                        pub routine main() -> void { return; }
                         """);
         compiler.compile(first);
 
@@ -126,7 +126,7 @@ final class IncrementalFunctorStaticTest {
     void compiledUnitsCanStageDirectlyAsIndependentHotReloadGenerations() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         var build = compiler.compile(Map.of(
-                "worker.ores", "pub routine main() => void { return; }",
+                "worker.ores", "pub routine main() -> void { return; }",
                 "helper.ores", "pub fnc help() => int { return 1; }"));
         var worker = build.units().get("worker.ores");
         var helper = build.units().get("helper.ores");
@@ -150,7 +150,7 @@ final class IncrementalFunctorStaticTest {
         assertThrows(IllegalArgumentException.class, () -> compiler.compile(Map.of(
                 "app.ores", """
                         import fnc {missing} from "./missing.ores";
-                        pub routine main() => void { return; }
+                        pub routine main() -> void { return; }
                         """)));
     }
 
@@ -171,7 +171,7 @@ final class IncrementalFunctorStaticTest {
                   end
                 end
 
-                pub routine main() => void {
+                pub routine main() -> void {
                   val c = new model.Counter();
                   stdio.stdout.write(model.Counter.twice(c.read()));
                 }
@@ -223,7 +223,7 @@ final class IncrementalFunctorStaticTest {
                   };
                 }
 
-                pub routine main() => void {
+                pub routine main() -> void {
                   val F result = find(true);
                   val ((bool flag) -> void) callback = sink();
                   stdio.stdout.write(result());

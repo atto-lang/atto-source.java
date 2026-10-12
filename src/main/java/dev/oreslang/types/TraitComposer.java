@@ -155,6 +155,10 @@ public final class TraitComposer {
                 return;
             }
             if (declaration instanceof Ast.TraitDecl trait) {
+                if (!trait.fields().isEmpty()) {
+                    throw new IllegalArgumentException("trait '" + trait.name()
+                            + "' is storage-free reusable behavior and cannot declare instance fields; put state on the composing class/struct");
+                }
                 Set<String> generics = withGenerics(outerGenerics, trait.genericParameters());
                 for (Ast.TypeRef iface : trait.interfaces()) {
                     rejectTraitType(moduleName, iface, generics, "interface conformance of trait " + trait.name());
@@ -197,6 +201,10 @@ public final class TraitComposer {
                 Set<String> generics) {
             for (Ast.Stmt stmt : statements) {
                 if (stmt instanceof Ast.TypeDeclStmt local) {
+                    if (local.declaration() instanceof Ast.TraitDecl trait) {
+                        throw new IllegalArgumentException("trait '" + trait.name()
+                                + "' is a declaration-level composition unit and cannot be declared inside a callable");
+                    }
                     String localName = switch (local.declaration()) {
                         case Ast.ClassDecl klass -> klass.name();
                         case Ast.InterfaceDecl iface -> iface.name();

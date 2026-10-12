@@ -42,7 +42,7 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
                   "(" [ param_list ] ")" return_spec block ;
 callable_kind   = "fnc" | "routine" ;
 
-init_decl       = "init" "routine" "(" ")" "=>" "void" block ;
+init_decl       = "init" "routine" "(" ")" ("->" | ":") "void" block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -254,22 +254,20 @@ struct_field_terminator = ";" | "," | STRUCT_CLOSING_BOUNDARY | NEXT_NAME_COLON_
      use "as" as the body marker. "as", "is", "with", and "trait" are reserved.
    - Interfaces are storage-free contracts: they declare function signatures only.
      They never allocate fields or contribute object layout.
-   - Stateful reusable composition uses traits. A class satisfies interfaces with
+   - Reusable behavior composition uses storage-free traits. A class satisfies interfaces with
      "is" and composes traits with "with". "implements"/"impl" remain migration
      aliases for "is".
-   - Traits may contain initialized state, concrete methods, and abstract method
+   - Traits may contain concrete methods and abstract method
      requirements, but are never directly instantiated and have no object identity.
-     Trait state is flattened into the host class before runtime.
+     Traits contribute behavior only; stored state belongs to classes or structs.
    - Traits are composition units, not runtime types. Trait names are rejected in
      parameter/field/return/alias/generic-argument type positions, and a trait name
      may not collide with a class/interface/type alias in the same module.
-   - Trait fields require initializers and are not positional constructor parameters.
-     Private trait state remains lexical to the defining trait.
-   - Multiple traits that contribute the same field are rejected. Multiple concrete
-     methods with the same name/arity require an explicit class override.
+   - Traits cannot declare fields or stored state. Private trait methods remain lexical to the defining trait.
+   - Multiple concrete trait methods with the same name/arity require an explicit class override.
    - v0 trait composition is module-local so flattening cannot silently change a
      trait method's lexical module environment.
-   - "init routine() => void { ... }" is a lifecycle declaration, not an ordinary
+   - "init routine() -> void { ... }" is a lifecycle declaration, not an ordinary
      callable. At file/root or ordinary-module scope it runs once per actor-local
      module state. Inside a singleton module it runs exactly once when the
      process singleton state cell is first created. Classes cannot declare it.

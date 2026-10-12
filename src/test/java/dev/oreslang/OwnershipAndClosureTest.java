@@ -24,7 +24,7 @@ final class OwnershipAndClosureTest {
                   };
                 }
 
-                pub routine main() => void {
+                pub routine main() -> void {
                   val (() -> int) counter = makeCounter();
                   stdio.stdout.write(counter());
                   stdio.stdout.write(counter());
@@ -62,7 +62,7 @@ final class OwnershipAndClosureTest {
                   return b;
                 }
 
-                pub routine main() => void {
+                pub routine main() -> void {
                   let Bar b = new Bar();
                   let Bar changed = change(b);
                   stdio.stdout.write(changed.foo);
@@ -84,7 +84,7 @@ final class OwnershipAndClosureTest {
                   return;
                 }
 
-                pub routine main() => void {
+                pub routine main() -> void {
                   let Bar b = new Bar();
                   change(&mut b);
                   stdio.stdout.write(b.foo);

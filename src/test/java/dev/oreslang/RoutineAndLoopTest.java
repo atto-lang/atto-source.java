@@ -37,7 +37,7 @@ final class RoutineAndLoopTest {
                   end
                 end
 
-                pub routine main() => void {
+                pub routine main() -> void {
                   val y = new x.y();
                   stdio.stdout.write(y)
                 }
@@ -49,7 +49,7 @@ final class RoutineAndLoopTest {
     @Test
     void routinesCannotParticipateInRecursionButFncsCan() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                routine spin() => void {
+                routine spin() -> void {
                   spin();
                 }
                 """)));
@@ -64,6 +64,50 @@ final class RoutineAndLoopTest {
                   fi
                 }
                 """)));
+    }
+
+
+    @Test
+    void routinesAcceptOnlyNamedDeclarationSyntaxWithArrowOrColonReturnTypes() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub routine arrow() -> void { return; }
+                pub routine colon() : void { return; }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub routine legacy() -> void { return; }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub routine inferred() { return; }
+                """));
+    }
+
+    @Test
+    void routinesAreDeclarationOnlyAndNeverFirstClassValues() {
+        IllegalArgumentException expressionStyle = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine work = || -> {
+                        }
+                        """));
+        assertTrue(expressionStyle.getMessage().contains("declaration-only"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                routine work() -> void { return; }
+                fnc caller() => void {
+                  work();
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException extracted = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        routine work() -> void { return; }
+                        fnc bad() => void {
+                          val callback = work;
+                          return;
+                        }
+                        """)));
+        assertTrue(extracted.getMessage().contains("cannot be used as a first-class value"));
     }
 
     @Test
@@ -95,7 +139,7 @@ final class RoutineAndLoopTest {
     @Test
     void explicitlyTypedLambdasCanRecurse() throws Exception {
         String output = run("""
-                pub routine main() => void {
+                pub routine main() -> void {
                   let Fnc<int, int> fact = |int n| -> {
                     return n == 0 ? 1 : n * fact(n - 1);
                   };
@@ -167,7 +211,7 @@ final class RoutineAndLoopTest {
     @Test
     void forOfInjectsSchedulerSafepoints() throws Exception {
         String output = run("""
-                pub routine main() => void {
+                pub routine main() -> void {
                   for (val item of arr[1, 2, 3]) {
                     stdio.stdout.write(item);
                   }
@@ -181,7 +225,7 @@ final class RoutineAndLoopTest {
     @Test
     void conventionalForLoopAlsoInjectsSafepoints() throws Exception {
         String output = run("""
-                pub routine main() => void {
+                pub routine main() -> void {
                   for (let i = 0; i < 3; i = i + 1) {
                     stdio.stdout.write(i);
                   }
@@ -202,7 +246,7 @@ final class RoutineAndLoopTest {
                   end
                 end
 
-                pub routine main() => void {
+                pub routine main() -> void {
                   val bag = new collections.Bag();
                   for (val item of bag) {
                     stdio.stdout.write(item)
