@@ -50,7 +50,22 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         domain.cases().stream().map(TaggedMessageContracts.Case::qualifiedName)
                 .sorted().forEach(n -> fingerprint.append(n.length()).append(':').append(n).append(';'));
         String domainHash = digestHex(fingerprint.toString());
+        Set<String> wireTags = new java.util.HashSet<>();
         for (TaggedMessageContracts.Case source : domain.cases()) {
+            // A host-constructed Domain must obey the same admission rules
+            // as the compiler registry, including unambiguous owner+tag.
+            if (source.owner() == null || source.owner().isBlank()
+                    || source.name() == null || source.name().isBlank()
+                    || source.tag() < 1
+                    || (source.sourcePayload() == null) != (source.payload() == null)) {
+                throw new IllegalArgumentException(
+                        "invalid enum case or mismatched payload descriptor");
+            }
+            if (!wireTags.add(source.owner() + "#" + source.tag())) {
+                throw new IllegalArgumentException(
+                        "duplicate enum wire tag in domain " + source.owner()
+                                + "#" + source.tag());
+            }
             var tuple = source.payload() == null
                     ? MessagePackCollectionCodec.tuple(
                         MessagePackCollectionCodec.string(),
