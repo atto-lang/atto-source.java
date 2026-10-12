@@ -313,6 +313,20 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "proxy actor declarations");
                 return parseProxyActor(modifiers.visibility);
             }
+            if (matchContextualIdentifier("transform")) {
+                consumeContextualIdentifier("pipe",
+                        "transform must be followed by 'pipe actor'");
+                consume(ACTOR, "transform pipe must modify an actor");
+                rejectCallableStructuralAnnotation(annotations,
+                        "transform pipe actor declarations");
+                if (modifiers.async || modifiers.generator || modifiers.structural
+                        || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
+                        || modifiers.isAbstract || modifiers.shared || modifiers.untrusted)
+                    throw error(previous(),
+                        "transform pipe actor accepts only visibility modifiers");
+                return parseActorClass(
+                        Ast.ActorKind.SHARED, modifiers.visibility, null, false, true);
+            }
             Ast.ClassDecl configuredActor = parseProtocolActorHeader(modifiers, annotations);
             if (configuredActor != null) return configuredActor;
             if (match(ACTOR, ISOACTOR)) {
