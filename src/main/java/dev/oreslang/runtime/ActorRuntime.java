@@ -1839,7 +1839,8 @@ public final class ActorRuntime implements AutoCloseable {
         // An old or foreign task must not be able to exhaust a newer
         // incarnation's bounded CONTROL lane, even momentarily. Carrier-time
         // requireAdmissible() remains the authoritative live-lease check.
-        if (taskTicket != null && !taskTicket.issuedFor(actorId, cell.executionDomain)) {
+        if (taskTicket != null && (!taskTicket.issuedFor(actorId, cell.executionDomain)
+                || !taskTicket.mayEnqueue())) {
             return false;
         }
         if (!cell.reserveContinuationSlot()) {
@@ -1855,7 +1856,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // Cell retirement/replacement might race slot reservation.
                 // Recheck immutable ticket provenance at publication too.
                 if (taskTicket != null
-                        && !taskTicket.issuedFor(actorId, cell.executionDomain)) return false;
+                        && (!taskTicket.issuedFor(actorId, cell.executionDomain)
+                            || !taskTicket.mayEnqueue())) return false;
                 if (!cell.continuationMailbox.tryWrite(
                         MessageEnvelope.continuation(continuation, taskTicket))) {
                     throw new IllegalStateException(
