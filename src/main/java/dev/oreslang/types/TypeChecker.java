@@ -1197,7 +1197,13 @@ public final class TypeChecker {
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
-            currentMaySuspend = method.async() || method.suspends();
+            // A source actor receive is declared synchronously because the
+            // mailbox owns its logical turn, but explicit await/rt cooperate
+            // execute through the heap-owned SourceTask continuation scheduler.
+            // Treat only that reserved lifecycle hook as a suspending body:
+            // ordinary synchronous methods still cannot await, and receive
+            // declarations themselves remain forbidden from being async.
+            currentMaySuspend = method.async() || method.suspends() || actorReceiveHook;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
