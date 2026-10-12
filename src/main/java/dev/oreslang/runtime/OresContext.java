@@ -11,7 +11,10 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -23,6 +26,50 @@ import java.util.concurrent.locks.ReentrantLock;
 
 public final class OresContext implements AutoCloseable {
     private static final ContextReference<OresContext> REFERENCE = ContextReference.create(OresLanguage.class);
+    // Bound to the physical embedding thread at context creation. An implicit
+    // bridge can safely resolve only a single live context on that thread.
+    // Weak thread keys prevent abandoned embedding threads being kept alive.
+    private static final Map<Thread, Set<OresContext>> HOST_CONTEXTS = new WeakHashMap<>();
+
+    public static OresContext singleHostOwnedContext() {
+        synchronized (HOST_CONTEXTS) {
+            Set<OresContext> candidates = HOST_CONTEXTS.get(Thread.currentThread());
+            if (candidates == null || candidates.size() != 1) {
+                throw new SecurityException(
+                        "scoped host Future entry requires exactly one context "
+                        + "created by the invoking host thread");
+            }
+            return candidates.iterator().next();
+        }
+    }
+
+    public void registerHostOwner(Thread creator) {
+        if (creator != Thread.currentThread()) {
+            throw new SecurityException("context host ownership must be registered by its creator");
+        }
+        synchronized (HOST_CONTEXTS) {
+            HOST_CONTEXTS.computeIfAbsent(creator, ignored -> new HashSet<>()).add(this);
+        }
+    }
+
+    public void unregisterHostOwner() {
+        synchronized (HOST_CONTEXTS) {
+            HOST_CONTEXTS.values().removeIf(contexts -> {
+                contexts.remove(this);
+                return contexts.isEmpty();
+            });
+        }
+    }
+
+    public ContextEntryCoordinator.HostLease acquireScopedHostEntry() {
+        if (isolatePolicy.adversarial()) {
+            throw new SecurityException("adversarial context rejects scoped async host entry");
+        }
+        if (singleHostOwnedContext() != this) {
+            throw new SecurityException("host entry scope belongs to a different context");
+        }
+        return contextEntryCoordinator.enterHost();
+    }
 
     private final OresLanguage language;
     private final TruffleLanguage.Env env;
@@ -46,6 +93,8 @@ public final class OresContext implements AutoCloseable {
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
+    private final ContextEntryCoordinator contextEntryCoordinator =
+            new ContextEntryCoordinator();
     // Separate from the context monitor used by code/image registration: an
     // unwinding guest continuation may still need that monitor while close()
     // waits for its carrier to finish.
@@ -395,15 +444,20 @@ public final class OresContext implements AutoCloseable {
 
     private void executeGuestTurn(Runnable turn, boolean serialize) {
         if (serialize) adversarialActorTurnLock.lock();
-        TruffleContext truffleContext = env.getContext();
-        Object previous = null;
-        boolean entered = false;
         try {
-            previous = truffleContext.enter(null);
-            entered = true;
-            turn.run();
+            contextEntryCoordinator.executeGuest(() -> {
+                TruffleContext truffleContext = env.getContext();
+                Object previous = null;
+                boolean entered = false;
+                try {
+                    previous = truffleContext.enter(null);
+                    entered = true;
+                    turn.run();
+                } finally {
+                    if (entered) truffleContext.leave(null, previous);
+                }
+            });
         } finally {
-            if (entered) truffleContext.leave(null, previous);
             if (serialize) adversarialActorTurnLock.unlock();
         }
     }
@@ -449,6 +503,7 @@ public final class OresContext implements AutoCloseable {
             }
             closeOwner = Thread.currentThread();
             try {
+                contextEntryCoordinator.beginRetirement();
                 // Actor-owned finalizers may still need the VM CONTROL scheduler,
                 // async workers, imported code, network or native I/O. Never
                 // retire those dependencies before actor quiescence is proven.
@@ -458,6 +513,7 @@ public final class OresContext implements AutoCloseable {
                 // even after its Future was cancelled. Its executor shutdown
                 // is a physical-exit barrier, not merely Future.isDone().
                 asyncRuntime.close();
+                contextEntryCoordinator.finishRetirement();
 
                 // Physical guest and host carriers are now retired. Only then
                 // revoke the remaining external resources and linked code.
