@@ -79,6 +79,8 @@ final class ActorStateLoanRuntimeTest {
                     } else if (mail.value().equals("verify")) {
                         assertEquals(8L, state.read(s -> s.get("count")));
                         completed.countDown();
+                    } else if (mail.value().equals("stop")) {
+                        runtime.endCurrentActor();
                     }
                 }
             };
@@ -93,7 +95,7 @@ final class ActorStateLoanRuntimeTest {
             assertTrue(completed.await(5, TimeUnit.SECONDS));
             assertEquals(7L, value.get());
             assertEquals(8L, incremented.get());
-            actor.cancel();
+            actor.send("stop");
             actor.done().get(3, TimeUnit.SECONDS);
             assertThrows(IllegalStateException.class, () -> expired.get().get("count"));
             assertThrows(IllegalStateException.class, () -> leaked.get().read(s -> s.get("count")));
