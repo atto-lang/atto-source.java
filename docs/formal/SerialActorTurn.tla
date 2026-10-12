@@ -1,20 +1,25 @@
 ---------------------- MODULE SerialActorTurn ----------------------
 EXTENDS Naturals, FiniteSets
-CONSTANTS Mails, Tickets, NoMail
+CONSTANTS Mails, Tickets, NoMail, MaxEpoch
 ASSUME /\ Mails # {}
        /\ Tickets # {}
        /\ IsFiniteSet(Mails)
        /\ IsFiniteSet(Tickets)
        /\ NoMail \notin Mails
+       /\ MaxEpoch \in Nat
+       /\ MaxEpoch > 0
 
-VARIABLES owner, pending, issued, stopped
-vars == <<owner, pending, issued, stopped>>
+(* Ticket numbers may be reused in a later actor incarnation, but their
+   full authority is the pair <<incarnation, ticket>>. *)
+VARIABLES owner, pending, issued, stopped, epoch
+vars == <<owner, pending, issued, stopped, epoch>>
 
 Init ==
     /\ owner = NoMail
     /\ pending = {}
     /\ issued = {}
     /\ stopped = FALSE
+    /\ epoch = 0
 
 Hold(mail, ticket) ==
     /\ ~stopped
@@ -22,19 +27,20 @@ Hold(mail, ticket) ==
     /\ ticket \in Tickets \ issued
     /\ (owner = NoMail \/ owner = mail)
     /\ owner' = mail
-    /\ pending' = pending \cup {ticket}
+    /\ pending' = pending \cup {<<epoch, ticket>>}
     /\ issued' = issued \cup {ticket}
-    /\ UNCHANGED stopped
+    /\ UNCHANGED <<stopped, epoch>>
 
-Complete(ticket) ==
-    /\ ticket \in pending
-    /\ pending' = pending \ {ticket}
+Complete(ticketAuthority) ==
+    /\ ticketAuthority \in pending
+    /\ pending' = pending \ {ticketAuthority}
     /\ owner' = IF pending' = {} THEN NoMail ELSE owner
-    /\ UNCHANGED <<issued, stopped>>
+    /\ UNCHANGED <<issued, stopped, epoch>>
 
-(* Duplicates, late completions and foreign tickets carry no authority. *)
-Replay(ticket) ==
-    /\ ticket \in Tickets \ pending
+(* Duplicate, forged and prior-incarnation completions are pure no-ops,
+   including when the same ticket *number* was reused in a new incarnation. *)
+Replay(ticketAuthority) ==
+    /\ ticketAuthority \in ((0..MaxEpoch) \X Tickets) \ pending
     /\ UNCHANGED vars
 
 Retire ==
@@ -42,19 +48,21 @@ Retire ==
     /\ stopped' = TRUE
     /\ owner' = NoMail
     /\ pending' = {}
-    /\ UNCHANGED issued
+    /\ UNCHANGED <<issued, epoch>>
 
 Restart ==
     /\ stopped
+    /\ epoch < MaxEpoch
+    /\ epoch' = epoch + 1
     /\ stopped' = FALSE
     /\ owner' = NoMail
     /\ pending' = {}
-    /\ UNCHANGED issued
+    /\ issued' = {}
 
 Next ==
-    \/ \E m \in Mails : \E t \in Tickets : Hold(m, t)
-    \/ \E t \in Tickets : Complete(t)
-    \/ \E t \in Tickets : Replay(t)
+    \/ \E mail \in Mails : \E t \in Tickets : Hold(mail, t)
+    \/ \E authority \in ((0..MaxEpoch) \X Tickets) : Complete(authority)
+    \/ \E authority \in ((0..MaxEpoch) \X Tickets) : Replay(authority)
     \/ Retire
     \/ Restart
 
@@ -62,12 +70,14 @@ Spec == Init /\ [][Next]_vars
 
 TypeOK ==
     /\ owner \in Mails \cup {NoMail}
-    /\ pending \subseteq issued
-    /\ issued \subseteq Tickets
+    /\ epoch \in 0..MaxEpoch
     /\ stopped \in BOOLEAN
+    /\ issued \subseteq Tickets
+    /\ pending \subseteq ({epoch} \X issued)
 
 SingleFlight == (owner = NoMail) <=> (pending = {})
 StoppedFenced == stopped => (owner = NoMail /\ pending = {})
-NoReuse == Cardinality(issued) >= Cardinality(pending)
+DistinctBarriers == Cardinality(pending) = Cardinality({p[2] : p \in pending})
+OnlyCurrentIncarnation == \A p \in pending : p[1] = epoch
 
 ===============================================================
