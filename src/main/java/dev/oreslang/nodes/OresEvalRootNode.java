@@ -197,6 +197,15 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+        // Module fields are static within this source evaluator/context.
+        // Re-evaluating field initializers on every member access creates
+        // different Channel/Future values for callers of the same declaration.
+        private final Object moduleFieldLock = new Object();
+        private final IdentityHashMap<Ast.FieldDecl, Object> moduleFieldValues =
+                new IdentityHashMap<>();
+        private final Set<Ast.FieldDecl> moduleFieldsInitializing =
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
@@ -7728,10 +7737,37 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
                     if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
-                    return eval(field.initializer(), new Env(null));
+                    return staticModuleField(module, field);
                 }
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
+        }
+
+        /**
+         * Each declared module field has one physical value per evaluator and
+         * Polyglot context. Initialization is serialized across guest carriers,
+         * including two concurrent actors resolving the same module member.
+         * Java's monitor is reentrant; a recursive initializer must be rejected
+         * rather than silently manufacturing multiple channel identities.
+         */
+        private Object staticModuleField(Ast.ModuleDecl module, Ast.FieldDecl field) {
+            synchronized (moduleFieldLock) {
+                if (moduleFieldValues.containsKey(field)) {
+                    return moduleFieldValues.get(field);
+                }
+                if (!moduleFieldsInitializing.add(field)) {
+                    throw new IllegalStateException(
+                            "recursive module field initializer: " + module.name()
+                                    + "." + field.name());
+                }
+                try {
+                    Object value = eval(field.initializer(), new Env(null));
+                    moduleFieldValues.put(field, value);
+                    return value;
+                } finally {
+                    moduleFieldsInitializing.remove(field);
+                }
+            }
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
