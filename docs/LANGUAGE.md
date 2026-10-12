@@ -1864,3 +1864,34 @@ Explicit `rt take` of a move-only field/index projection is rejected until
 partial-move/drop tracking exists. Borrow the projection, or move its named
 owner. Copyable field reads remain available. `rt copy`/`rt share` continue to
 reject unsupported move-only operands rather than aliasing them.
+
+
+### Automatic loop cooperation and ownership (2026-10-12 integration draft)
+
+A source loop can produce a **compiler-inserted suspension** at an iteration
+backedge, even when its source contains no explicit `await` or `rt cooperate`.
+Until continuation lowering carries explicit loan-generation and lifetime
+provenance, ordinary lexical borrows must not remain live across that boundary.
+
+- A loan held in an outer lexical scope is rejected for `for`, `loop`,
+  `for-of`, and destructuring `for-of`; nested `borrow` type arguments
+  are included in the admission check.
+- A borrowed iterable passed directly to `for-of` is rejected even if it was
+  never stored in a local. That temporary iterator capability would be
+  retained across iterations.
+- A read-only borrow created and released within **one** iteration, or loaned
+  only during a synchronous call inside that iteration, is permitted.
+- The implicit actor `self` capability is not a user-owned borrow and can
+  survive carrier handoff under the actor's single-flight execution lease.
+  A separately created alias/borrow of `self` does not inherit this exception.
+- Synchronous critical `handle_state` callbacks and held mutex-guard regions
+  are **not** auto-preempted. Their non-suspension rules remain independent
+  safety barriers; this is not permission to retain a state loan over `await`.
+- `using` signatures must account for possible compiler-inserted `suspend`
+  on ordinary loop forms. A `requires no_block` clause alone does not forbid
+  cooperative scheduling (which is nonblocking).
+
+These are conservative source-admission rules and do not by themselves prove
+that all GraalVM or LLVM lowering paths enforce the same runtime invariants.
+The integration must pass exact-head Java/JDK25, native-image, LLVM and
+formal verification before promotion.
