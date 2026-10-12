@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.parser.Token;
@@ -83,6 +84,45 @@ final class ActorStateBoundaryKeywordTest {
                         """)));
         assertTrue(failure.getMessage().contains("actor state is sealed"),
                 failure.getMessage());
+    }
+
+    @Test
+    void semanticCheckerRejectsSynthesizedReservedActorFields() {
+        Ast.FieldDecl forged = new Ast.FieldDecl(
+                "state", Ast.Visibility.PRIVATE, Ast.BindingKind.LET,
+                Ast.TypeRef.simple("int"), null);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(syntheticActor(List.of(forged), List.of())));
+        assertTrue(failure.getMessage().contains("reserved runtime-owned storage"),
+                failure.getMessage());
+    }
+
+    @Test
+    void semanticCheckerRejectsSynthesizedSealedMethodsEvenStatic() {
+        for (boolean isStatic : List.of(false, true)) {
+            Ast.MethodDecl forged = new Ast.MethodDecl(
+                    "handle_state", Ast.Visibility.PRIVATE, isStatic,
+                    false, false, null, List.of(), List.of(),
+                    Ast.TypeRef.simple("void"), List.of(), List.of());
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(syntheticActor(List.of(), List.of(forged))));
+            assertTrue(failure.getMessage().contains("handle_state is sealed"),
+                    failure.getMessage());
+        }
+    }
+
+    private static Ast.Program syntheticActor(
+            List<Ast.FieldDecl> fields, List<Ast.MethodDecl> methods) {
+        Ast.Program parsed = Parser.parse("define actor Foo as end");
+        Ast.ModuleDecl root = parsed.modules().getFirst();
+        Ast.ClassDecl original = (Ast.ClassDecl) root.declarations().getFirst();
+        Ast.ClassDecl forged = new Ast.ClassDecl(
+                original.name(), original.visibility(), original.isAbstract(),
+                original.actorKind(), original.genericParameters(),
+                original.parents(), original.interfaces(), fields, null, methods);
+        return new Ast.Program(parsed.namespace(), parsed.imports(),
+                List.of(new Ast.ModuleDecl(root.name(), root.annotations(),
+                        root.contracts(), List.of(forged))));
     }
 
     @Test
