@@ -174,19 +174,31 @@ final class HostGeneratorTurnPump implements AutoCloseable {
             throw new SecurityException(
                     "context-owned generator pulls require a certified physical DONE receipt");
         }
-        return requestInternal(token, start, false);
+        return requestInternal(token, start, false, null);
     }
 
     /** Only a root-scheduler-issued physical DONE receipt may retire this pull. */
     <T> OresFuture<T> requestCertified(OwnerToken token, Start<T> start) {
+        return requestCertified(token, start, null);
+    }
+
+    /**
+     * Register the accepted host Future BEFORE notifying the root scheduler.
+     * This permits a session close to cancel the enqueued request even when
+     * the owner wake notifier blocks indefinitely. Never call this callback
+     * while holding the pump's admission monitor.
+     */
+    <T> OresFuture<T> requestCertified(OwnerToken token, Start<T> start,
+            java.util.function.Consumer<OresFuture<T>> onAccepted) {
         if (owningScheduler == null) {
             throw new SecurityException("no owning root scheduler for certified generator pulls");
         }
-        return requestInternal(token, start, true);
+        return requestInternal(token, start, true, onAccepted);
     }
 
     private <T> OresFuture<T> requestInternal(
-            OwnerToken token, Start<T> start, boolean certified) {
+            OwnerToken token, Start<T> start, boolean certified,
+            java.util.function.Consumer<OresFuture<T>> onAccepted) {
         Objects.requireNonNull(start, "start");
         Request<T> request = new Request<>(this, start, certified);
         boolean wake;
@@ -203,7 +215,17 @@ final class HostGeneratorTurnPump implements AutoCloseable {
             pending.addLast(request);
             wake = active == null;
         }
-        if (wake) {
+        if (onAccepted != null) {
+            try {
+                onAccepted.accept(request.future);
+            } catch (RuntimeException | Error rejectedRegistration) {
+                // The caller may never receive a handle. Fail closed rather
+                // than leave work it cannot subsequently cancel.
+                seal();
+                throw rejectedRegistration;
+            }
+        }
+        if (wake && !request.future.isDone()) {
             try {
                 signalOwner.run();
             } catch (RuntimeException | Error wakeFailure) {
