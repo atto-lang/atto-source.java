@@ -80,6 +80,11 @@ public final class SupervisorChildRegistry {
     private final Map<UUID, Snapshot> children = new HashMap<>();
     private final Map<ActorRuntime.ActorId, UUID> activeActors = new HashMap<>();
     private final Map<UUID, RestartReservation> reservations = new HashMap<>();
+    private enum ReplacementPhase { SPAWNED, ADMITTED, CLEANED }
+    private record ReplacementState(ActorRuntime.ActorId actor, long generation,
+                                    ReplacementPhase phase) {}
+    private final Map<UUID, ReplacementState> replacements = new HashMap<>();
+    private boolean restartClosed;
     private final Map<UUID, StopReservation> stopReservations = new HashMap<>();
     /** Per logical-child ledger: bounded by the existing child registry. */
     private final Map<UUID, StopReceipt> stopReceipts = new HashMap<>();
@@ -154,6 +159,8 @@ public final class SupervisorChildRegistry {
     synchronized RestartReservation beginRestart(
             ChildId child, ActorRuntime.ActorId failedActor, long incarnation) {
         requireExpected(child, failedActor, incarnation, Phase.FINALIZED);
+        if (restartClosed || replacements.containsKey(child.logicalId()))
+            throw new IllegalStateException("supervisor restart admission closed or conflicting");
         if (incarnation == Long.MAX_VALUE)
             throw new IllegalStateException("logical child generation exhausted");
         RestartReservation permit = new RestartReservation(
