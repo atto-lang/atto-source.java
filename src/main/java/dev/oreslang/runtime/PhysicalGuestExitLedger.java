@@ -77,12 +77,14 @@ final class PhysicalGuestExitLedger {
 
     void completedAfterTruffleLeave(Entry entry, Throwable leaveFailure) {
         Objects.requireNonNull(entry, "entry");
-        if (entry.ledger != this || entry.thread != Thread.currentThread()
-                || entered.get() != entry) {
-            throw new SecurityException("physical guest exit belongs to a different entry");
+        if (entry.ledger != this || entry.thread != Thread.currentThread()) {
+            throw new SecurityException("physical guest exit belongs to a different ledger or thread");
         }
         synchronized (entry) {
             if (entry.exited) throw new IllegalStateException("duplicate physical guest exit");
+            if (entered.get() != entry) {
+                throw new SecurityException("physical guest exit is not the current entered turn");
+            }
             entry.exited = true;
         }
         if (entry.previous == null) entered.remove();

@@ -245,7 +245,7 @@ final class HostGeneratorTurnPumpTest {
         assertTrue(invalid.dispatchOne());
         var failure = assertThrows(java.util.concurrent.ExecutionException.class,
                 () -> pull.get(5, TimeUnit.SECONDS));
-        assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+        assertInstanceOf(SecurityException.class, failure.getCause());
         assertFalse(invalid.isQuiescent(),
                 "foreign starter exit receipt cannot certify physical quiescence");
         assertThrows(IllegalStateException.class, invalid::close,
