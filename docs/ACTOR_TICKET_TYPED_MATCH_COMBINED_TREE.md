@@ -97,3 +97,58 @@ The new host JUnit tests and combined Graal guest suites have **not been
 executed** on this exact integration tree. Source-org Actions jobs still
 fail before runner allocation; a safe model does not replace executable
 Maven/JVM/native-image evidence.
+
+## Two-phase physical finalization implementation (October 12)
+
+On PR #722, `ActorRuntime.ActorCell` now separates finalization
+ownership from reentrant cleanup effects:
+
+1. `stopEffectsPending` seals terminal publication until mailbox channel
+   closure, envelope draining, pending Future cancellation, and descendant
+   stop dispatch complete. Channel closure and envelope close/release are
+   performed outside the actor lifecycle monitor.
+2. `maybeFinalize()` claims a unique `finalizationStarted` owner under
+   `lifecycleLock`, only when the active turn/carrier and queued dispatch
+   have quiesced, stop effects have settled, and every child has passed
+   its physical barrier.
+3. Scheduler shutdown, serial admission closure, guest-state retirement,
+   memory/output release, exit hooks and actor unregister execute outside
+   the lifecycle monitor. Cleanup failures are recorded while other
+   teardown stages still run.
+4. The per-`ActorRef` `physicalTerminationFuture` survives actor-registry
+   removal. `awaitTermination()` now uses this physical barrier rather
+   than guessing from a missing actor-map entry.
+5. Parent finalization is notified only after the child's physical barrier
+   settles. An exit hook running on the finalization-owning thread is
+   prohibited from awaiting its own still-unpublished physical barrier.
+
+New unexecuted Java regressions:
+- `ActorTwoPhaseFinalizationTest.actorExitHookNeverOwnsLifecycleMonitorAndCompletionWaitsForHook`
+- `ActorTwoPhaseFinalizationTest.terminalFutureObserverRunsOutsideActorLifecycleMonitor`
+- `ActorTwoPhaseFinalizationTest.exitHookCannotWaitForItsOwnUnpublishedPhysicalBarrier`
+- Previous `ActorSourceCompletionStopLockTest` remains the fail-stop hook/race gate.
+
+Formal verification:
+- `verification/actor_cleanup/ActorTwoPhaseFinalization.tla` plus one
+  good configuration and five negative mutations.
+- [Private-source-safe funded TLC #38273654691](https://github.com/zed-pkg-test/java-app/actions/runs/38273654691)
+  successfully checked the exact model Git blobs, the bounded safe
+  finalization protocol and all five intended mutant counterexamples
+  (early publication, callback under lifecycle lock, duplicate ownership,
+  child physical barrier omission, and channel-close callback under lock).
+- Safe TLC exploration: 17 distinct states, 26 generated; no violations.
+  This is a protocol abstraction, not Java/GraalVM refinement proof.
+
+Machine-readable conformance event contracts:
+`verification/actor_cleanup/contracts/actor-finalization-trace.v1.tsp`
+and `actor-finalization-trace.v1.schema.json`. The schema syntax was
+validated when authored; TypeSpec compilation and runtime trace emission
+are still outstanding.
+
+**Release blockers:** No executed full-tree Maven/JVM/native-image run
+on the current PR #722 head. A complete guest cleanup-only continuation
+path for abruptly canceled, already-suspended `SourceTask` remains
+unimplemented/unproven. In particular, terminal Future cancellation and
+scheduler close must not be mistaken for LIFO guest `defer/finally`
+unwinding. Do not merge until real guest cancellation tests and a
+cross-layer refinement/conformance run succeed.
