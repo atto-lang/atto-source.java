@@ -179,8 +179,13 @@ public final class GeneratorRuntime {
         private final List<YieldOperation> operations;
         private final List<Ast.BindingStmt> finallyBindings;
         private final Map<String, Object> arguments;
-        private final Map<String, Object> cleanupValues = new LinkedHashMap<>();
-        private final AtomicInteger cleanupRuns = new AtomicInteger();
+        // Null means cleanup has not completed. Publish the entire immutable
+        // lexical-cleanup snapshot through one atomic release operation: the
+        // host must never observe "finally completed" with only some of its
+        // bindings visible. A real interpreter frame will use the same
+        // linearization point after executing its cleanup continuation.
+        private final AtomicReference<Map<String, Object>> completedCleanup =
+                new AtomicReference<>();
         private final AtomicBoolean finalized = new AtomicBoolean();
         private volatile boolean cancellationRequested;
         private volatile boolean waitingOnFuture;
@@ -245,6 +250,24 @@ public final class GeneratorRuntime {
                 bindings.put(external.getKey(), external.getValue());
             }
 
+            // The standalone staged lowerer flattens a single lexical try.
+            // It cannot insert a later yield before the try's finally (or
+            // execute that finally for an earlier yield on cancellation).
+            // Until actual SourceTask lexical scope lowering is integrated,
+            // require the try to wrap every executable yield in this body.
+            List<Ast.Stmt> sourceBody = target.body();
+            boolean containsTopLevelTry =
+                    sourceBody.stream().anyMatch(Ast.TryStmt.class::isInstance);
+            if (containsTopLevelTry && (sourceBody.isEmpty()
+                    || !(sourceBody.getFirst() instanceof Ast.TryStmt)
+                    || sourceBody.size() > 2
+                    || sourceBody.size() == 2
+                        && !(sourceBody.get(1) instanceof Ast.ReturnStmt ret
+                             && ret.value() == null))) {
+                throw new IllegalArgumentException(
+                        "staged generator try/finally must enclose all yields "
+                        + "and be followed only by a bare return");
+            }
             List<Ast.Stmt> body = new ArrayList<>();
             List<Ast.BindingStmt> cleanup = new ArrayList<>();
             boolean foundFinally = false;
@@ -339,16 +362,25 @@ public final class GeneratorRuntime {
         }
 
         private void finishFinally() {
-            if (!finalized.compareAndSet(false, true)) return;
-            cleanupRuns.incrementAndGet();
+            if (finalized.get()) return;
+            // Build off to the side. Finalization becomes visible only after
+            // the entire snapshot is immutable, never during map mutation.
+            Map<String, Object> values = new LinkedHashMap<>();
             for (Ast.BindingStmt binding : finallyBindings) {
-                cleanupValues.put(binding.name(),
+                values.put(binding.name(),
                         ((Ast.LiteralExpr) binding.initializer()).value());
+            }
+            Map<String, Object> immutable = java.util.Collections.unmodifiableMap(values);
+            if (completedCleanup.compareAndSet(null, immutable)) {
+                finalized.set(true);
             }
         }
 
-        int cleanupRuns() { return cleanupRuns.get(); }
-        Object cleanupBinding(String name) { return cleanupValues.get(name); }
+        int cleanupRuns() { return completedCleanup.get() == null ? 0 : 1; }
+        Object cleanupBinding(String name) {
+            Map<String, Object> snapshot = completedCleanup.get();
+            return snapshot == null ? null : snapshot.get(name);
+        }
         boolean awaitingSourceFuture() { return waitingOnFuture; }
     }
 

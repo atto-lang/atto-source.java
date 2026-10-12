@@ -459,6 +459,7 @@ final class HostGeneratorTurnPumpTest {
                   } catch (err) {
                   } finally {
                     val int cleanup_marker = 1;
+                    val int cleanup_second = 2;
                   }
                   return;
                 }
@@ -508,6 +509,8 @@ final class HostGeneratorTurnPumpTest {
                     "cancellation must wait for authenticated physical DONE");
             assertEquals(1, frame.cleanupRuns(), "source finally must run exactly once");
             assertEquals(1, ((Number) frame.cleanupBinding("cleanup_marker")).intValue());
+            assertEquals(2, ((Number) frame.cleanupBinding("cleanup_second")).intValue(),
+                    "both lexical cleanup bindings must publish atomically");
             assertFalse(unresolved.isDone(), "do not cancel an externally owned Future");
             pump.close();
         }
@@ -524,6 +527,51 @@ final class HostGeneratorTurnPumpTest {
         assertThrows(IllegalArgumentException.class,
                 () -> GeneratorRuntime.SourceLowering.compile(
                         source, "numbers", java.util.Map.of()));
+    }
+
+    @Test
+    void stagedSourceRejectsTryFinallyScopeReorderingBeforeDispatch() {
+        // Flattening these statements would incorrectly delay lexical finally
+        // until AFTER yield 3, or execute it when a preceding yield cancels.
+        String afterTry = """
+                async generator fnc values(): int {
+                  try { yield 1; } catch (err) { }
+                  finally { val int cleaned = 1; }
+                  yield 2;
+                  return;
+                }
+                """;
+        String beforeTry = """
+                async generator fnc values(): int {
+                  yield 1;
+                  try { yield 2; } catch (err) { }
+                  finally { val int cleaned = 1; }
+                  return;
+                }
+                """;
+        for (String source : new String[]{afterTry, beforeTry}) {
+            IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                    () -> GeneratorRuntime.SourceLowering.compile(
+                            source, "values", java.util.Map.of()));
+            assertTrue(rejected.getMessage().contains("must enclose all yields"),
+                    rejected::getMessage);
+        }
+    }
+
+    @Test
+    void stagedSourceRejectsMultipleDisjointTryFinallyRegions() {
+        String source = """
+                async generator fnc values(): int {
+                  try { yield 1; } catch (err) { }
+                  finally { val int first = 1; }
+                  try { yield 2; } catch (err) { }
+                  finally { val int second = 2; }
+                  return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> GeneratorRuntime.SourceLowering.compile(
+                        source, "values", java.util.Map.of()));
     }
 
     @Test
