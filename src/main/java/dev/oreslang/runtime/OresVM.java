@@ -100,7 +100,14 @@ public final class OresVM implements AutoCloseable {
                 throw new SecurityException(
                         "host handoff entry lease belongs to another thread");
             }
-            if (released.compareAndSet(false, true)) gate.release();
+            if (released.compareAndSet(false, true)) {
+                gate.release();
+            } else {
+                // A prior close may have released this host scope but failed
+                // to hand queued work to a rejecting executor. Retrying must
+                // never decrement hostScopes a second time.
+                gate.retryHeldDrain();
+            }
         }
     }
 
@@ -218,6 +225,19 @@ public final class OresVM implements AutoCloseable {
                 if (--hostScopes != 0 || draining) return;
                 draining = true;
             }
+            drainHeld();
+        }
+
+        /** Retry failed downstream submission without releasing a host lease twice. */
+        private void retryHeldDrain() {
+            synchronized (this) {
+                if (hostScopes != 0 || draining || held.isEmpty()) return;
+                draining = true;
+            }
+            drainHeld();
+        }
+
+        private void drainHeld() {
             while (true) {
                 Runnable next;
                 synchronized (this) {
@@ -235,8 +255,8 @@ public final class OresVM implements AutoCloseable {
                     submitGuarded(next);
                 } catch (RuntimeException | Error failure) {
                     synchronized (this) {
-                        // Preserve scheduler ownership on rejection; do NOT
-                        // convert a failed submission into a physical DONE.
+                        // Requeue with exactly the same physical admission
+                        // authority; a rejected executor proves no guest DONE.
                         held.addFirst(next);
                         draining = false;
                     }
