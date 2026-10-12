@@ -299,7 +299,7 @@ public final class LinkedProgramRunner {
                         && fn.parameters().size() == arity
                         && fn.visibility() == Ast.Visibility.PUBLIC) {
                     return !fn.generator() && (fn.async()
-                            || "Future".equals(fn.returnType().name()));
+                            || (fn.returnType() != null && "Future".equals(fn.returnType().name())));
                 }
             }
         }

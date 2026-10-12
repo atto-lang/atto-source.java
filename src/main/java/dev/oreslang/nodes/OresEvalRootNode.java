@@ -809,7 +809,7 @@ public final class OresEvalRootNode extends RootNode {
             // Pull-driven async generators are not Futures and keep their
             // separate iterator protocol.
             if (!requireAsync && !fn.generator()
-                    && (fn.async() || "Future".equals(fn.returnType().name()))) {
+                    && (fn.async() || (fn.returnType() != null && "Future".equals(fn.returnType().name())))) {
                 throw new IllegalArgumentException(
                         "legacy public Future return is unsafe; use "
                         + "OresHostFutureBridge.invokePublicFuture: " + name);
@@ -818,7 +818,7 @@ public final class OresEvalRootNode extends RootNode {
             // executes. Otherwise the host Future bridge may throw after
             // running user side effects and misreporting a rejected request.
             if (requireAsync && !fn.async()
-                    && !"Future".equals(fn.returnType().name())) {
+                    && !(fn.returnType() != null && "Future".equals(fn.returnType().name()))) {
                 throw new IllegalArgumentException(
                         "host Future handoff requires an async public function or "
                         + "a public function returning Future<T>: " + name);

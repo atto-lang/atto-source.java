@@ -132,7 +132,7 @@ public final class MixedJavaCompiler {
             // runtime-owned Futures to Java. Do not generate a synchronous int
             // facade for an async Oreslang function returning int.
             String returnType = !fn.generator()
-                    && (fn.async() || "Future".equals(fn.returnType().name()))
+                    && (fn.async() || (fn.returnType() != null && "Future".equals(fn.returnType().name())))
                     ? "dev.oreslang.runtime.OresFuture<?>"
                     : javaReturnType(fn.returnType(), importedJavaTypes);
             out.append("  public static ").append(returnType).append(' ').append(fn.name()).append('(');
