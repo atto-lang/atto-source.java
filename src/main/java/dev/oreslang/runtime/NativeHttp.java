@@ -657,6 +657,26 @@ public final class NativeHttp implements AutoCloseable {
     private static void reject(HttpExchange raw, int status) {
         try { raw.sendResponseHeaders(status, -1); } catch (IOException ignored) { } finally { raw.close(); }
     }
+    /**
+     * Begin context teardown without waiting for actor finalization. Context
+     * shutdown has a dependency cycle unless HTTP first revokes exchanges,
+     * then ActorRuntime drains their lexical cleanup, then HTTP joins its
+     * own socket and worker exit barrier. This phase deliberately leaves
+     * the HTTP executor and timers alive for already-owned cleanup work.
+     */
+    void beginContextShutdown() {
+        synchronized (retirementLock) {
+            if (retired) return;
+            List<Server> closing;
+            synchronized (this) {
+                closed = true;
+                if (retiringServers == null) retiringServers = List.copyOf(servers);
+                closing = retiringServers;
+            }
+            for (Server server : closing) server.close();
+        }
+    }
+
     @Override public void close() {
         synchronized (retirementLock) {
             if (retired) return;
