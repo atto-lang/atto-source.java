@@ -4379,6 +4379,15 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         "actor " + ref.id() + " failed source cleanup shutdown", failure);
             }
+            Throwable nativeFailure = cell.nativeMemoryRetirementFailure;
+            if (nativeFailure == null) {
+                nativeFailure = cell.memorySlice.nativePhysicalReleaseFailure.get();
+            }
+            if (nativeFailure != null) {
+                throw new IllegalStateException(
+                        "actor " + ref.id() + " failed physical native retirement",
+                        nativeFailure);
+            }
             throw new IllegalStateException(
                     "actor " + ref.id()
                             + " or one of its child actors did not finalize within the stop deadline");
@@ -6490,7 +6499,10 @@ public final class ActorRuntime implements AutoCloseable {
         private void awaitFinalized(long remainingNanos) throws InterruptedException {
             long deadline = System.nanoTime() + Math.max(0L, remainingNanos);
             synchronized (lifecycleLock) {
-                while (!finalized && sourceShutdownFailure == null) {
+                while (!finalized
+                        && sourceShutdownFailure == null
+                        && nativeMemoryRetirementFailure == null
+                        && memorySlice.nativePhysicalReleaseFailure.get() == null) {
                     long remaining = deadline - System.nanoTime();
                     if (remaining <= 0) return;
                     long millis = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining));
