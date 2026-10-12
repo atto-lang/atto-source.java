@@ -30,6 +30,8 @@ public final class AsyncRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_MILLIS = 500L;
     private static final ThreadLocal<Boolean> ASYNC_CARRIER =
             ThreadLocal.withInitial(() -> Boolean.FALSE);
+    private static final java.util.Set<Thread> ACTIVE_ASYNC_CARRIERS =
+            ConcurrentHashMap.newKeySet();
 
     @FunctionalInterface
     public interface TurnExecutor {
@@ -74,6 +76,11 @@ public final class AsyncRuntime implements AutoCloseable {
      */
     public static boolean isAsyncCarrierThread() {
         return Boolean.TRUE.equals(ASYNC_CARRIER.get());
+    }
+
+    /** Check the carrier being admitted, not Thread.currentThread(). */
+    public static boolean isAsyncCarrierThread(Thread thread) {
+        return thread != null && ACTIVE_ASYNC_CARRIERS.contains(thread);
     }
 
     /**
@@ -174,6 +181,7 @@ public final class AsyncRuntime implements AutoCloseable {
         AtomicReference<T> value = new AtomicReference<>();
         AtomicReference<Throwable> failure = new AtomicReference<>();
         ASYNC_CARRIER.set(Boolean.TRUE);
+        ACTIVE_ASYNC_CARRIERS.add(Thread.currentThread());
         try {
             turnExecutor.execute(() -> {
                 if (completion.isCancelled()) return;
@@ -186,6 +194,7 @@ public final class AsyncRuntime implements AutoCloseable {
         } catch (Throwable thrown) {
             failure.compareAndSet(null, thrown);
         } finally {
+            ACTIVE_ASYNC_CARRIERS.remove(Thread.currentThread());
             ASYNC_CARRIER.remove();
         }
 

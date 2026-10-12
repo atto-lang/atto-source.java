@@ -65,6 +65,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long UNTRUSTED_MIN_FUEL = 256L;
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    private static final Set<Thread> ACTIVE_ACTOR_CARRIERS = ConcurrentHashMap.newKeySet();
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
     private static final ThreadLocal<ActorGroupMailmanExecution> CURRENT_ACTOR_GROUP_MAILMAN =
             new ThreadLocal<>();
@@ -116,6 +117,11 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static boolean isActorCarrierThread() {
         return Boolean.TRUE.equals(ACTOR_CARRIER.get());
+    }
+
+    /** Truffle can validate access on behalf of another thread. */
+    public static boolean isActorCarrierThread(Thread thread) {
+        return thread != null && ACTIVE_ACTOR_CARRIERS.contains(thread);
     }
 
     public static boolean inActorExecution() {
@@ -630,15 +636,15 @@ public final class ActorRuntime implements AutoCloseable {
      * private, and untrusted actors executing the same AST from mutating one
      * hidden cross-actor scheduler counter.</p>
      */
-    public long nextActorLocalSelectTicket(Object selectSite) {
+    public ChannelRuntime.FairCursor actorLocalSelectCursor(Object selectSite) {
         Objects.requireNonNull(selectSite, "selectSite");
-        requireCallerRuntimeAffinity("advance actor-local select fairness");
+        requireCallerRuntimeAffinity("get actor-local select fairness");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
                     "actor-local select fairness is only available during an actor turn");
         }
-        return cell.nextStaticSelectTicket(selectSite);
+        return cell.staticSelectCursor(selectSite);
     }
 
     /**
@@ -6030,7 +6036,7 @@ public final class ActorRuntime implements AutoCloseable {
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
          */
-        private final IdentityHashMap<Object, Long> staticSelectCursors =
+        private final IdentityHashMap<Object, ChannelRuntime.FairCursor> staticSelectCursors =
                 new IdentityHashMap<>();
         /** Settles only after the actor has fully crossed its TurnExecutor boundary. */
         private final OresFuture<Void> finalizedFuture = new OresFuture<>();
@@ -6123,12 +6129,11 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = new ActorMemorySlice(ref.id(), policy.maxHeapBytes());
         }
 
-        private long nextStaticSelectTicket(Object selectSite) {
+        private ChannelRuntime.FairCursor staticSelectCursor(Object selectSite) {
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized) throw terminated(ref);
-                long ticket = staticSelectCursors.getOrDefault(selectSite, 0L);
-                staticSelectCursors.put(selectSite, Math.addExact(ticket, 1L));
-                return ticket;
+                return staticSelectCursors.computeIfAbsent(
+                        selectSite, ignored -> new ChannelRuntime.FairCursor());
             }
         }
 
@@ -6332,6 +6337,11 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             drainMailboxReservations();
+            // Retire first so a post-shutdown channel callback cannot spend
+            // this actor's cursor credit or resurrect retained source state.
+            for (ChannelRuntime.FairCursor cursor : staticSelectCursors.values()) {
+                cursor.retire();
+            }
             staticSelectCursors.clear();
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
@@ -6528,6 +6538,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void runBatch() {
             ACTOR_CARRIER.set(Boolean.TRUE);
+            ACTIVE_ACTOR_CARRIERS.add(Thread.currentThread());
             boolean carrierEntered = false;
             boolean reschedule = false;
             try {
@@ -6577,6 +6588,7 @@ public final class ActorRuntime implements AutoCloseable {
                 } finally {
                     // Finalization hooks and reservation checks are allowed to
                     // fail closed; neither may strand carrier-local VM identity.
+                    ACTIVE_ACTOR_CARRIERS.remove(Thread.currentThread());
                     ACTOR_CARRIER.remove();
                 }
                 if (reschedule) schedule();

@@ -328,4 +328,42 @@ final class SourcePendingCleanupExecutionTest {
         }
     }
 
+
+    @Test
+    void cancelledBlockingStaticSelectRevokesAllPendingChannelRegistrations()
+            throws Exception {
+        String source = """
+                pub async fnc work(): int {
+                  try {
+                    stdio.println("armed");
+                    select {
+                      case readch gates.startGate: val value {
+                        stdio.println("INVALID-selected");
+                      }
+                    }
+                  } catch (cancelled) {
+                    stdio.println("INVALID-caught");
+                  } finally {
+                    stdio.println("cleanup-once");
+                  }
+                  return 17;
+                }
+                """;
+        SafeOutput output = new SafeOutput();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(true).out(output).build()) {
+            Started started = start(context, source);
+            awaitOutput(output, "armed");
+            awaitChannelRegistration(started.startGate());
+            assertTrue(started.task().cancel(false));
+            assertThrows(CancellationException.class,
+                    () -> started.task().get(5, TimeUnit.SECONDS));
+            assertEquals(0, activeChannelRegistrations(started.startGate()),
+                    "a cancelled select must revoke its owned pending channel case");
+            assertFalse(started.startGate().tryWrite(41),
+                    "late producer must not complete an abandoned select read");
+            assertEquals("armed\ncleanup-once\n", output(output));
+        }
+    }
+
 }

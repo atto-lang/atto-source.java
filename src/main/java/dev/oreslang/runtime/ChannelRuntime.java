@@ -254,29 +254,94 @@ public final class ChannelRuntime {
      * Reusable select descriptor. Static and dynamic source select lower to
      * this same primitive.
      */
-    public static final class SelectSet {
-        private final List<SelectCase> cases;
-        private final AtomicLong fairCursor = new AtomicLong();
+    /**
+     * Shareable, actor-owned FAIR state for source select sites. Access to the
+     * cursor itself never takes the actor lifecycle lock while COORDINATOR
+     * is held. Retired actor cursors are terminal and cannot be revived by a
+     * late channel completion.
+     */
+    public static final class FairCursor {
+        private static final long RETIRED = Long.MIN_VALUE;
+        private final AtomicLong index;
 
-        public SelectSet(Collection<? extends SelectCase> cases) {
-            this(cases, 0L);
+        public FairCursor() {
+            this(0L);
         }
 
-        /**
-         * Compiler/runtime hook for static select sites that rebuild evaluated
-         * case values each execution but retain one deterministic fairness
-         * ticket.
-         */
+        private FairCursor(long initialIndex) {
+            this.index = new AtomicLong(initialIndex);
+        }
+
+        public void retire() {
+            // Retirement is an admission AND commit barrier, not merely a
+            // fairness-accounting sentinel. Without the coordinator gate a
+            // stopped actor's already-registered selection could still
+            // consume a later write, and fresh selections could be admitted.
+            ArrayList<Runnable> cancellations = new ArrayList<>();
+            COORDINATOR.lock();
+            try {
+                if (index.get() == RETIRED) return;
+                index.set(RETIRED);
+                for (SelectRegistration selection : List.copyOf(ACTIVE)) {
+                    if (selection.set.fairCursor != this || selection.decided) continue;
+                    selection.decided = true;
+                    unregisterLocked(selection);
+                    cancellations.add(() -> selection.future.cancelFromRuntime(
+                            new java.util.concurrent.CancellationException(
+                                    "source select cursor retired")));
+                }
+            } finally {
+                COORDINATOR.unlock();
+            }
+            // Never invoke scheduler callbacks while holding COORDINATOR.
+            runCompletions(cancellations);
+        }
+
+        private boolean isRetired() {
+            return index.get() == RETIRED;
+        }
+
+        private long current() {
+            long snapshot = index.get();
+            if (snapshot == RETIRED) {
+                throw new IllegalStateException(
+                        "retired source select cursor cannot be admitted");
+            }
+            return snapshot;
+        }
+
+        private void committed(int selectedIndex, int caseCount) {
+            index.updateAndGet(current ->
+                    current == RETIRED ? RETIRED : (selectedIndex + 1L) % caseCount);
+        }
+    }
+
+    public static final class SelectSet {
+        private final List<SelectCase> cases;
+        private final FairCursor fairCursor;
+
+        public SelectSet(Collection<? extends SelectCase> cases) {
+            this(cases, new FairCursor());
+        }
+
+        /** A standalone set with a specified initial FAIR index. */
+        public SelectSet(Collection<? extends SelectCase> cases, long initialFairCursor) {
+            this(cases, new FairCursor(initialFairCursor));
+        }
+
+        /** Source static-select sites pass an actor-owned cursor shared by
+         * their freshly rebuilt case descriptors. Only a committed I/O arm or
+         * terminally ready failure rotates the cursor under COORDINATOR. */
         public SelectSet(
                 Collection<? extends SelectCase> cases,
-                long initialFairCursor) {
+                FairCursor fairCursor) {
+            this.fairCursor = Objects.requireNonNull(fairCursor, "fairCursor");
             Objects.requireNonNull(cases, "cases");
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
             }
             this.cases = List.copyOf(cases);
-            this.fairCursor.set(initialFairCursor);
             long defaults = this.cases.stream()
                     .filter(DefaultCase.class::isInstance)
                     .count();
@@ -347,7 +412,7 @@ public final class ChannelRuntime {
             }
 
             if (policy == SelectPolicy.FAIR) {
-                int start = Math.floorMod(fairCursor.get(), count);
+                int start = Math.floorMod(fairCursor.current(), count);
                 for (int i = 0; i < count; i++) {
                     order[i] = (start + i) % count;
                 }
@@ -366,7 +431,7 @@ public final class ChannelRuntime {
 
         private void selected(int index, SelectPolicy policy) {
             if (policy == SelectPolicy.FAIR && !cases.isEmpty()) {
-                fairCursor.set((index + 1L) % cases.size());
+                fairCursor.committed(index, cases.size());
             }
         }
     }
@@ -470,7 +535,7 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        private final int[] order;
+        private int[] order;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
         private final int defaultIndex;
@@ -481,7 +546,6 @@ public final class ChannelRuntime {
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
             this.policy = policy;
-            this.order = set.initialOrder(policy);
 
             int foundDefault = -1;
             for (int i = 0; i < set.cases.size(); i++) {
@@ -512,22 +576,33 @@ public final class ChannelRuntime {
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
-                registerLocked(this);
-                pumpLocked(completions);
-
-                if (!decided && defaultIndex >= 0) {
-                    commitSingleLocked(
-                            caseOrDefault(defaultIndex),
-                            new SelectResult(
-                                    defaultIndex,
-                                    SelectOperation.DEFAULT,
-                                    null),
-                            completions);
-                }
-
-                if (!decided && immediateOnly) {
+                // Snapshot reusable FAIR state at the same linearization point
+                // as admission and commitment. Otherwise concurrent callers
+                // can both observe a cursor before either reaches the lock.
+                if (set.fairCursor.isRetired()) {
                     decided = true;
-                    unregisterLocked(this);
+                    completions.add(() -> future.cancelFromRuntime(
+                            new java.util.concurrent.CancellationException(
+                                    "source select cursor retired")));
+                } else {
+                    order = set.initialOrder(policy);
+                    registerLocked(this);
+                    pumpLocked(completions);
+
+                    if (!decided && defaultIndex >= 0) {
+                        commitSingleLocked(
+                                caseOrDefault(defaultIndex),
+                                new SelectResult(
+                                        defaultIndex,
+                                        SelectOperation.DEFAULT,
+                                        null),
+                                completions);
+                    }
+
+                    if (!decided && immediateOnly) {
+                        decided = true;
+                        unregisterLocked(this);
+                    }
                 }
             } finally {
                 COORDINATOR.unlock();
@@ -671,7 +746,12 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int index : selection.order) {
+        // Only FAIR tracks subsequent coordinator commits. RANDOM must keep
+        // its one-time randomized admission order throughout this wait.
+        int[] currentOrder = selection.policy == SelectPolicy.FAIR
+                ? selection.set.initialOrder(selection.policy)
+                : selection.order;
+        for (int index : currentOrder) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -708,7 +788,10 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
-        for (int index : selection.order) {
+        int[] currentOrder = selection.policy == SelectPolicy.FAIR
+                ? selection.set.initialOrder(selection.policy)
+                : selection.order;
+        for (int index : currentOrder) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -838,7 +921,11 @@ public final class ChannelRuntime {
         if (selection.decided) return;
 
         selection.decided = true;
-        selection.set.selected(result.index(), selection.policy);
+        // DEFAULT is an observation of no readiness, not a committed I/O
+        // operation. It must not spend another arm's FAIR rotation credit.
+        if (result.operation() != SelectOperation.DEFAULT) {
+            selection.set.selected(result.index(), selection.policy);
+        }
         unregisterLocked(selection);
         completions.add(() ->
                 selection.future.completeFromRuntime(result));
