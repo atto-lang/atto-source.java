@@ -5758,6 +5758,26 @@ public final class ActorRuntime implements AutoCloseable {
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
 
+        // Preserve the established interruption semantics for ordinary actors:
+        // their guest turns may be blocked in host calls that require the
+        // dispatcher shutdown interrupt. Only source-task cleanup actors need
+        // their carrier dispatcher retained until the lexical drain finishes.
+        boolean sourceCleanupRequiresCarriers = false;
+        for (ActorCell<?> cell : snapshot) {
+            synchronized (cell.lifecycleLock) {
+                if (cell.sourceCleanupRoutable()) {
+                    sourceCleanupRequiresCarriers = true;
+                    break;
+                }
+            }
+        }
+        if (firstClose && !sourceCleanupRequiresCarriers) {
+            privateDispatcher.shutdownNow();
+            sharedDispatcher.shutdownNow();
+            untrustedDispatcher.shutdownNow();
+            for (ActorCell<?> cell : snapshot) cell.cancelQueuedScheduleOnShutdown();
+        }
+
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
         boolean interrupted = false;
         List<ActorId> stillRunning = new ArrayList<>();
@@ -5774,10 +5794,10 @@ public final class ActorRuntime implements AutoCloseable {
             if (!cell.finalized()) stillRunning.add(cell.ref.id());
         }
 
-        if (firstClose) {
-            // Keep physical carriers available while source-task finalizers
-            // run on the cleanup-only CONTROL lane. Interrupt/retire carriers
-            // only after drain has completed or the shutdown deadline expires.
+        if (firstClose && sourceCleanupRequiresCarriers) {
+            // An actor-owned source finalizer needs the physical carrier during
+            // shutdown; never interrupt that dispatcher before the drain gate.
+            // If it fails to drain, runtime close must report failure.
             privateDispatcher.shutdownNow();
             sharedDispatcher.shutdownNow();
             untrustedDispatcher.shutdownNow();
