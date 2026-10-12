@@ -4666,6 +4666,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null) return;
 
         cell.stop();
+        if (cell.cleanupOnlyRequested && !cell.stopped.get()) return;
 
         // Only a host/supervisor stop is a synchronization point. Actor turns
         // may stop self/descendants but must never park a bounded carrier while
