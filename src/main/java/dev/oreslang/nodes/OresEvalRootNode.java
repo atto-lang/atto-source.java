@@ -1399,9 +1399,10 @@ public final class OresEvalRootNode extends RootNode {
                 context.actors().ownCurrentActorFuture(future);
             } else {
                 OresScheduler current = OresScheduler.current();
-                future = (current != null
+                OresScheduler scheduler = current != null
                         ? current
-                        : context.vm().rootScheduler()).start(task);
+                        : context.vm().rootScheduler();
+                future = OresHostFutureBridge.startSourceTask(context, scheduler, task);
             }
             return future;
         }
@@ -1431,9 +1432,10 @@ public final class OresEvalRootNode extends RootNode {
                 context.actors().ownCurrentActorFuture(future);
             } else {
                 OresScheduler current = OresScheduler.current();
-                future = (current != null
+                OresScheduler scheduler = current != null
                         ? current
-                        : context.vm().rootScheduler()).start(task);
+                        : context.vm().rootScheduler();
+                future = OresHostFutureBridge.startSourceTask(context, scheduler, task);
             }
             return future;
         }

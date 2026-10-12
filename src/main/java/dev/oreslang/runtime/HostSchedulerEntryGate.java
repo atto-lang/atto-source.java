@@ -4,8 +4,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
@@ -24,16 +26,62 @@ import java.util.function.Consumer;
  * subset of those paths into a production context.
  */
 final class HostSchedulerEntryGate {
-    private record GuestTurn(
-            Executor executor, Runnable body, Consumer<Throwable> onAdmissionFailure) { }
+    /**
+     * A revocable pre-start admission ticket, not the task's Future.
+     * State is monotonic: PENDING -> RUNNING -> SETTLED or
+     * PENDING -> SETTLED on cancellation/rejection.
+     */
+    final class GuestTicket {
+        private static final int PENDING = 0;
+        private static final int RUNNING = 1;
+        private static final int SETTLED = 2;
+        private final Executor executor;
+        private final Runnable body;
+        private final Consumer<Throwable> onAdmissionFailure;
+        private final AtomicInteger state = new AtomicInteger(PENDING);
+        // Protected by the surrounding HostSchedulerEntryGate monitor.
+        private boolean reserved;
+
+        private GuestTicket(Executor executor, Runnable body,
+                            Consumer<Throwable> onAdmissionFailure) {
+            this.executor = executor;
+            this.body = body;
+            this.onAdmissionFailure = onAdmissionFailure;
+        }
+
+        /**
+         * Cancel only before body execution claims the ticket. A previously
+         * accepted Runnable will check the fence again before running guest.
+         * A false return means the guest started or another transition won.
+         */
+        boolean cancelBeforeStart() {
+            boolean hadReservation;
+            synchronized (HostSchedulerEntryGate.this) {
+                if (!state.compareAndSet(PENDING, SETTLED)) return false;
+                queued.remove(this);
+                hadReservation = reserved;
+                HostSchedulerEntryGate.this.notifyAll();
+            }
+            try {
+                if (hadReservation) physicallyExitedGuest();
+            } finally {
+                onAdmissionFailure.accept(
+                        new CancellationException("guest entry cancelled before start"));
+            }
+            return true;
+        }
+    }
 
     private final int queueCapacity;
-    private final ArrayDeque<GuestTurn> queued = new ArrayDeque<>();
+    private final ArrayDeque<GuestTicket> queued = new ArrayDeque<>();
     private Thread hostOwner;
     private int hostDepth;
     private int hostWaiters;
     private int activeGuests;
     private boolean sealed;
+    // Prevent a direct/inline guest carrier from trying to obtain a host
+    // lease while its own physical guest reservation is still outstanding.
+    private final ThreadLocal<Boolean> executingGuest = new ThreadLocal<>();
 
     HostSchedulerEntryGate(int queueCapacity) {
         if (queueCapacity <= 0) {
@@ -43,8 +91,12 @@ final class HostSchedulerEntryGate {
     }
 
     HostLease enterHost() throws InterruptedException {
+        if (Boolean.TRUE.equals(executingGuest.get())) {
+            throw new SecurityException(
+                    "guest turn cannot re-enter host admission before physical exit");
+        }
         Thread caller = Thread.currentThread();
-        List<GuestTurn> newlyAdmissible = List.of();
+        List<GuestTicket> newlyAdmissible = List.of();
         boolean acquired = false;
         try {
             synchronized (this) {
@@ -83,9 +135,9 @@ final class HostSchedulerEntryGate {
      * Scheduling, unlike guest entry, never blocks a carrier behind a host.
      * onAdmissionFailure must settle the owning task if executor.execute fails.
      */
-    void submitGuest(Executor executor, Runnable body,
-                     Consumer<Throwable> onAdmissionFailure) {
-        GuestTurn guest = new GuestTurn(
+    GuestTicket submitGuest(Executor executor, Runnable body,
+                            Consumer<Throwable> onAdmissionFailure) {
+        GuestTicket guest = new GuestTicket(
                 Objects.requireNonNull(executor, "executor"),
                 Objects.requireNonNull(body, "body"),
                 Objects.requireNonNull(onAdmissionFailure, "onAdmissionFailure"));
@@ -94,6 +146,7 @@ final class HostSchedulerEntryGate {
             rejectIfSealed();
             dispatchImmediately = hostOwner == null && hostWaiters == 0;
             if (dispatchImmediately) {
+                guest.reserved = true;
                 activeGuests++;
             } else {
                 if (queued.size() >= queueCapacity) {
@@ -103,6 +156,7 @@ final class HostSchedulerEntryGate {
             }
         }
         if (dispatchImmediately) dispatchOne(guest);
+        return guest;
     }
 
     synchronized void sealAdmission() {
@@ -126,43 +180,74 @@ final class HostSchedulerEntryGate {
     }
 
     /** Called with this monitor held. Each admitted turn owns one reservation. */
-    private List<GuestTurn> releaseQueuedIfAllowed() {
+    private List<GuestTicket> releaseQueuedIfAllowed() {
         if (hostOwner != null || hostWaiters > 0 || queued.isEmpty()) return List.of();
-        List<GuestTurn> ready = new ArrayList<>(queued);
+        List<GuestTicket> ready = new ArrayList<>(queued);
         queued.clear();
+        for (GuestTicket guest : ready) guest.reserved = true;
         activeGuests += ready.size();
         return ready;
     }
 
-    private void dispatch(List<GuestTurn> ready) {
-        for (GuestTurn guest : ready) dispatchOne(guest);
+    private void dispatch(List<GuestTicket> ready) {
+        RuntimeException firstException = null;
+        Error firstError = null;
+        // Every ready ticket owns a permit. One inline task's failure must
+        // not abandon later reservations that were already published.
+        for (GuestTicket guest : ready) {
+            try {
+                dispatchOne(guest);
+            } catch (RuntimeException failure) {
+                if (firstException == null) firstException = failure;
+                else if (firstException != failure) firstException.addSuppressed(failure);
+            } catch (Error failure) {
+                if (firstError == null) firstError = failure;
+                else if (firstError != failure) firstError.addSuppressed(failure);
+            }
+        }
+        if (firstError != null) {
+            if (firstException != null) firstError.addSuppressed(firstException);
+            throw firstError;
+        }
+        if (firstException != null) throw firstException;
     }
 
-    private void dispatchOne(GuestTurn guest) {
-        // Some Executors legally execute inline. If guest code throws from
-        // an inline executor, its finally already released the permit; that
-        // is NOT an admission rejection and must never release it twice.
-        java.util.concurrent.atomic.AtomicBoolean started =
-                new java.util.concurrent.atomic.AtomicBoolean();
+    private void dispatchOne(GuestTicket guest) {
+        if (guest.state.get() != GuestTicket.PENDING) return;
         try {
-            guest.executor().execute(() -> {
-                started.set(true);
+            guest.executor.execute(() -> {
+                // If the executor accepted then threw before the Runnable
+                // started, cancellation/rejection wins and late work is inert.
+                if (!guest.state.compareAndSet(
+                        GuestTicket.PENDING, GuestTicket.RUNNING)) return;
+                boolean nestedGuest = Boolean.TRUE.equals(executingGuest.get());
+                executingGuest.set(Boolean.TRUE);
                 try {
-                    guest.body().run();
+                    guest.body.run();
                 } finally {
+                    if (nestedGuest) executingGuest.set(Boolean.TRUE);
+                    else executingGuest.remove();
+                    guest.state.set(GuestTicket.SETTLED);
                     physicallyExitedGuest();
                 }
             });
         } catch (RuntimeException | Error rejected) {
-            if (started.get()) throw rejected;
-            // execute() rejected before any worker took ownership.
-            physicallyExitedGuest();
-            guest.onAdmissionFailure().accept(rejected);
+            if (guest.state.compareAndSet(
+                    GuestTicket.PENDING, GuestTicket.SETTLED)) {
+                try {
+                    physicallyExitedGuest();
+                } finally {
+                    guest.onAdmissionFailure.accept(rejected);
+                }
+            } else {
+                // Inline execution has already started and owns its release.
+                throw rejected;
+            }
         }
     }
 
     private void physicallyExitedGuest() {
-        List<GuestTurn> ready;
+        List<GuestTicket> ready;
         synchronized (this) {
             if (--activeGuests < 0) {
                 throw new IllegalStateException("guest entry reservation underflow");
@@ -183,7 +268,7 @@ final class HostSchedulerEntryGate {
 
         @Override
         public void close() {
-            List<GuestTurn> ready;
+            List<GuestTicket> ready;
             synchronized (HostSchedulerEntryGate.this) {
                 if (Thread.currentThread() != thread) {
                     throw new SecurityException("host entry lease belongs to another thread");
