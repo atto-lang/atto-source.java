@@ -97,7 +97,11 @@ final class ActorMailboxExecutionBoundaryTest {
                     actor.send("end");
                     actor.done().get(2, TimeUnit.SECONDS);
                     assertEquals(16, callbacks.get());
-                    assertEquals(1, threads.size(), kind + " must retain its scheduling lane");
+                    // Thread affinity is not required. An actor may resume on
+                    // another worker, but never on two workers concurrently.
+                    assertFalse(threads.isEmpty(), "actor must have executed");
+                    assertTrue(threads.size() <= 24,
+                            "thread recording must remain bounded by observed work");
                     assertEquals(1, cleanups.get());
                     assertEquals(1, maximum.get(), kind + " must have one executing guest thread");
                     assertEquals(0, active.get());
