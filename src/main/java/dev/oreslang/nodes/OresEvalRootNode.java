@@ -926,7 +926,14 @@ public final class OresEvalRootNode extends RootNode {
                 if (resume.initial()) {
                     if (criticalTicket != null) {
                         OresFuture<Void> ready = criticalTicket.enterAsync();
-                        if (ready.isDone()) {
+                        // Declaring suspend critical is a guaranteed logical
+                        // suspension boundary even when entry is uncontended.
+                        // Awaiting an already-completed Future still gives the
+                        // carrier back: OresScheduler.armAwait() requeues only
+                        // after the current guest turn has fully unwound.
+                        boolean alwaysYield = function != null && function.suspends()
+                                || method != null && method.suspends();
+                        if (ready.isDone() && !alwaysYield) {
                             if (!criticalTicket.isHeld()) {
                                 throw new IllegalStateException(
                                         "critical admission settled without a live ownership ticket");

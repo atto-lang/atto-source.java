@@ -98,4 +98,31 @@ final class CriticalKeywordTest {
         assertTrue(owner.methods().get(0).critical());
         assertTrue(owner.methods().get(1).critical());
     }
+
+    @Test void uncontendedSuspendCriticalWithNoBodyAwaitStillCompletes() throws Exception {
+        // The admission Future is already complete. The SourceTask must yield
+        // anyway, resume with its logical gate ticket, and then return.
+        String code = """
+                pub critical fnc synchronous(): int { return 6; }
+                suspend critical fnc guaranteed_handoff(): int { return 7; }
+                async fnc outer(): int { return guaranteed_handoff(); }
+                pub fnc main(): void {
+                    stdio.stdout.write(synchronous());
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(await outer());
+                    return;
+                }
+                """;
+        dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(code);
+        java.io.ByteArrayOutputStream stdout = new java.io.ByteArrayOutputStream();
+        try (org.graalvm.polyglot.Context context =
+                     org.graalvm.polyglot.Context.newBuilder(OresLanguage.ID)
+                             .allowAllAccess(false).out(stdout).build()) {
+            context.eval(org.graalvm.polyglot.Source
+                    .newBuilder(OresLanguage.ID, code, "critical-guaranteed-handoff.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("6|7", stdout.toString().strip());
+    }
+
 }
