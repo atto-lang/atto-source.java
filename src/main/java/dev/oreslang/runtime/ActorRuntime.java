@@ -1480,7 +1480,8 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
-        if (cell == null || cell.stopped.get() || closed.get()) return false;
+        if (cell == null || cell.stopped.get() || closed.get()
+                || cell.restartUnpublished) return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
@@ -1490,7 +1491,8 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if (cell.stopped.get() || cell.finalized || closed.get()) return false;
+                if (cell.stopped.get() || cell.finalized || closed.get()
+                        || cell.restartUnpublished) return false;
                 if (!cell.continuationMailbox.tryWrite(
                         MessageEnvelope.continuation(continuation))) {
                     throw new IllegalStateException(
@@ -1621,7 +1623,12 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public OresFuture<Void> ready() {
             ActorCell<?> cell = actors.get(id);
-            if (cell != null && !cell.stopped.get()) cell.schedule();
+            if (cell != null) {
+                if (cell.restartUnpublished)
+                    throw new IllegalStateException(
+                            "unpublished RESTART candidate cannot initialize");
+                if (!cell.stopped.get()) cell.schedule();
+            }
             return readyFuture;
         }
 
@@ -2013,6 +2020,95 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * Trusted host-only RESTART spawn. The real ActorCell exists, but
+         * remains invisible to ordinary mail, initializers and other groups
+         * until this ActorGroup commits its exact logical child identity.
+         * Rejected candidates must be physically stopped before registry
+         * cleanup/abort; no guest can call these package-private methods.
+         */
+        <M> ActorRef<M> spawnUnpublishedRestartCandidate(
+                ActorKind kind, IsolatePolicy policy,
+                BehaviorFactory<M> factory) {
+            requireSupervisorContext("spawn unpublished supervisor RESTART");
+            if (currentActor.get() != null)
+                throw new IllegalStateException("RESTART spawn requires host CONTROL");
+            synchronized (authorityLock) { requireOpen(); }
+            return ActorRuntime.this.spawnInternal(
+                    kind, policy, factory, true, null, null, null, true);
+        }
+
+        /**
+         * Publication is linearized while holding physical actor lifecycle,
+         * group ownership and registry admission locks, in that order.
+         * No host callback or user behavior is invoked under these locks.
+         * The candidate is still hidden on every exceptional exit before
+         * the registry commit and must be cleaned before aborting RESTART.
+         */
+        SupervisorChildRegistry.Snapshot commitUnpublishedRestart(
+                SupervisorChildRegistry.RestartReservation permit,
+                ActorRef<?> replacement) {
+            requireSupervisorContext("commit scheduler-guarded RESTART");
+            Objects.requireNonNull(permit);
+            Objects.requireNonNull(replacement);
+            if (!replacement.ownedBy(ActorRuntime.this)
+                    || !supervisorId.equals(permit.child().supervisorId())
+                    || !id.equals(permit.child().groupId()))
+                throw new SecurityException("foreign RESTART candidate or owner");
+            ActorCell<?> cell = actors.get(replacement.id());
+            if (cell == null)
+                throw new IllegalStateException("replacement is not physically present");
+            synchronized (cell.lifecycleLock) {
+                synchronized (authorityLock) {
+                    requireOpen();
+                    if (actors.get(replacement.id()) != cell
+                            || cell.stopped.get() || cell.finalized
+                            || cell.forceKillFenced || !cell.restartUnpublished
+                            || cell.activeTurns != 0 || cell.carrierActive
+                            || cell.scheduled.get() || cell.parent != null
+                            || cell.managedByGroup.get() != null
+                            || cell.supervisedChild.get() != null
+                            || !cell.children.isEmpty()
+                            || managedWorkers.containsKey(replacement.id())) {
+                        throw new IllegalStateException(
+                                "replacement is not an idle, unpublished ActorCell");
+                    }
+                    if (managedWorkers.size() >= memberLimit)
+                        throw new IllegalStateException(
+                                "supervisor managed-worker capacity exhausted");
+                    // Prepare all allocating ownership records in advance.
+                    var expected = new SupervisorChildRegistry.Snapshot(
+                            permit.child(), replacement.id(),
+                            Math.addExact(permit.incarnation(), 1),
+                            SupervisorChildRegistry.Phase.ACTIVE);
+                    var tracking = new SupervisedChild(childRegistry, expected);
+                    childRegistry.stageReplacement(permit, replacement.id());
+                    // This callback is a pure, nonblocking ActorCell read,
+                    // kept stable by lifecycleLock, never an external probe.
+                    childRegistry.acknowledgeReplacementAdmission(
+                            permit, replacement.id(),
+                            () -> actors.get(replacement.id()) == cell
+                                    && !cell.stopped.get() && !cell.finalized
+                                    && cell.restartUnpublished);
+                    // A close racing after commit must see and stop this
+                    // physical worker when it snapshots managedWorkers.
+                    managedWorkers.put(replacement.id(), replacement);
+                    try {
+                        var committed = childRegistry.replace(permit, replacement.id());
+                        cell.managedByGroup.set(id);
+                        cell.supervision.set(supervisorControl);
+                        cell.supervisedChild.set(tracking);
+                        // The routing flip itself cannot allocate or fail.
+                        cell.restartUnpublished = false;
+                        return committed;
+                    } catch (RuntimeException | Error failure) {
+                        managedWorkers.remove(replacement.id(), replacement);
+                        throw failure;
+                    }
+                }
+            }
+        }
+
+        /**
          * Trusted host acknowledgement for an already-finalized STOP-only
          * failure. A successful host decision must be bound to the exact
          * physical actor, logical child and CONTROL turn; stale generations
@@ -2326,7 +2422,8 @@ public final class ActorRuntime implements AutoCloseable {
                 requireOpen();
                 ActorCell<?> cell = actors.get(worker.id());
                 if (cell != admissionCell || cell.stopped.get() || cell.finalized
-                        || stoppingWorkers.contains(worker.id())) {
+                        || cell.restartUnpublished
+                    || stoppingWorkers.contains(worker.id())) {
                     throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
                 }
                 if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
@@ -4059,6 +4156,19 @@ public final class ActorRuntime implements AutoCloseable {
             SharedCodeImageStore.CodeImage codeImage,
             ActorCodeExecutor codeExecutor,
             String codeActorType) {
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory,
+                codeImage, codeExecutor, codeActorType, false);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor,
+            String codeActorType,
+            boolean restartUnpublished) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -4136,6 +4246,7 @@ public final class ActorRuntime implements AutoCloseable {
                         codeExecutor,
                         codeActorType,
                         parent);
+                cell.restartUnpublished = restartUnpublished;
 
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
@@ -4918,6 +5029,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (cell.restartUnpublished)
+            throw new IllegalStateException(
+                    "RESTART candidate is not yet published: " + ref.id());
         if (!cell.reserveMailboxSlot()) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
@@ -4994,6 +5108,9 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.stopped.get()) {
                         throw terminated(ref);
                     }
+                    if (cell.restartUnpublished)
+                        throw new IllegalStateException(
+                                "RESTART candidate is not yet published: " + ref.id());
                     if (cell.forceKillFenced) {
                         throw new IllegalStateException(
                                 "actor " + ref.id()
@@ -6442,6 +6559,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
+        /** Physically spawned, but not yet published to the message router. */
+        private volatile boolean restartUnpublished;
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
@@ -6639,7 +6758,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
-                if (stopped.get() || forceKillFenced || finalized) return false;
+                if (stopped.get() || forceKillFenced || finalized
+                        || restartUnpublished) return false;
                 if (activeTurns != 0) {
                     throw new IllegalStateException(
                             "actor single-writer execution lease violation for " + ref.id()
@@ -6890,7 +7010,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void schedule() {
-            if (stopped.get() || forceKillFenced || closed.get()) return;
+            if (stopped.get() || forceKillFenced || closed.get()
+                    || restartUnpublished) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);
