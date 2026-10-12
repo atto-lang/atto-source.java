@@ -550,4 +550,96 @@ final class SupervisorChildRegistryTest {
         registry.abortRestart(retry);
     }
 
+
+    @Test
+    void actualRegistryTransitionsAreOrderedAndExcludeRejectedActions() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var initialActor = ActorRuntime.ActorId.create();
+        var child = registry.register(initialActor);
+        registry.finalized(child.child(), initialActor, 1);
+        var claim = registry.beginRestart(child.child(), initialActor, 1);
+        var staged = ActorRuntime.ActorId.create();
+        registry.stageReplacement(claim, staged);
+        assertThrows(IllegalStateException.class, () -> registry.replace(claim, staged));
+        registry.acknowledgeReplacementAdmission(claim, staged, () -> true);
+        var replacement = registry.replace(claim, staged);
+        registry.finalized(replacement.child(), staged, 2);
+        var retry = registry.beginRestart(replacement.child(), staged, 2);
+        var doomed = ActorRuntime.ActorId.create();
+        registry.stageReplacement(retry, doomed);
+        assertThrows(IllegalStateException.class, () -> registry.abortRestart(retry));
+        registry.acknowledgeReplacementCleanup(retry, doomed, () -> true);
+        registry.abortRestart(retry);
+        var entries = registry.committedTransitions();
+        var operations = entries.stream().map(
+                SupervisorChildRegistry.Transition::operation).toList();
+        var expected = java.util.List.of("register", "finalize-asserted", "restart.reserve",
+                "restart.spawn-asserted", "restart.admit-verified", "restart.commit",
+                "finalize-asserted", "restart.reserve", "restart.spawn-asserted",
+                "restart.cleanup-verified", "restart.abort");
+        assertEquals(expected, operations,
+                "only actual committed registry mutations belong to the journal");
+        for (int i = 0; i < entries.size(); i++) {
+            assertEquals(i + 1L, entries.get(i).sequence());
+            assertEquals(child.child(), entries.get(i).state().child());
+        }
+        assertEquals(claim.nonce(), entries.get(2).restartPermit());
+        assertEquals(claim.nonce(), entries.get(5).restartPermit());
+        assertEquals(retry.nonce(), entries.get(7).restartPermit());
+        assertEquals(retry.nonce(), entries.get(10).restartPermit());
+        assertNotEquals(claim.nonce(), retry.nonce());
+        assertEquals(staged, entries.get(5).state().actor());
+        assertEquals(2, entries.get(5).state().incarnation());
+        assertTrue(registry.auditTraceComplete());
+        assertThrows(UnsupportedOperationException.class, () -> entries.clear());
+        System.out.println("SUPERVISOR_REGISTRY_TRANSITIONS_V1="
+                + String.join(">", operations));
+    }
+
+    @Test
+    void uncertainStopJournalNeverFakesInvocationOrExternalProof() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var actor = ActorRuntime.ActorId.create();
+        var child = registry.register(actor);
+        registry.finalized(child.child(), actor, 1);
+        var permit = registry.beginStop(child.child(), actor, 1, 43);
+        registry.markStopUncertain(permit);
+        assertThrows(IllegalStateException.class, () -> registry.commitStop(permit));
+        registry.markStopUncertain(permit); // idempotent, not a new transition
+        assertEquals(java.util.List.of("register", "finalize-asserted", "stop.reserve",
+                "stop.uncertain"), registry.committedTransitions().stream()
+                .map(SupervisorChildRegistry.Transition::operation).toList());
+        assertEquals(43, registry.committedTransitions().get(3).stopTurn());
+        assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                registry.snapshot(child.child()).phase());
+        registry.reconcileVerifiedStop(permit); // host proof is external
+        assertEquals("stop.ack-reconciled",
+                registry.committedTransitions().get(4).operation());
+        assertEquals(5, registry.committedTransitions().size());
+    }
+
+    @Test
+    void closeFencesReplacementAndJournalRecordsOnlySuccessfulCleanup() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var actor = ActorRuntime.ActorId.create();
+        var child = registry.register(actor);
+        registry.finalized(child.child(), actor, 1);
+        var permit = registry.beginRestart(child.child(), actor, 1);
+        var candidate = ActorRuntime.ActorId.create();
+        registry.stageReplacement(permit, candidate);
+        registry.acknowledgeReplacementAdmission(permit, candidate, () -> true);
+        registry.closeRestartAdmission();
+        assertThrows(IllegalStateException.class, () -> registry.replace(permit, candidate));
+        assertThrows(IllegalStateException.class, () -> registry.abortRestart(permit));
+        registry.acknowledgeReplacementCleanup(permit, candidate, () -> true);
+        registry.abortRestart(permit);
+        assertEquals(java.util.List.of("register", "finalize-asserted",
+                "restart.reserve", "restart.spawn-asserted", "restart.admit-verified",
+                "restart.close", "restart.cleanup-verified", "restart.abort"),
+                registry.committedTransitions().stream()
+                        .map(SupervisorChildRegistry.Transition::operation).toList());
+    }
 }
