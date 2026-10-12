@@ -161,11 +161,11 @@ public final class OresVM implements AutoCloseable {
         // own close guard throws after the VM has been irreversibly poisoned.
         // An ordinary actor/Mailman must likewise delegate blocking VM teardown
         // to its supervising host after its turn finishes.
-        if (isRootSchedulerCurrent()
+        if (OresScheduler.current() != null
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new IllegalStateException(
-                    "OresVM must be closed outside actor and CONTROL scheduler turns");
+                    "OresVM must be closed outside actor, Mailman and scheduler turns");
         }
         synchronized (this) {
             if (!closed.compareAndSet(false, true)) return;

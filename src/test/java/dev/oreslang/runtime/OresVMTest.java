@@ -67,7 +67,7 @@ final class OresVMTest {
             OresFuture<Integer> first = vm.rootScheduler().start(resume -> {
                 IllegalStateException denied = org.junit.jupiter.api.Assertions.assertThrows(
                         IllegalStateException.class, vm::close);
-                assertTrue(denied.getMessage().contains("outside actor and CONTROL"));
+                assertTrue(denied.getMessage().contains("outside actor, Mailman and scheduler"));
                 assertTrue(vm.started(),
                         "failed self-close must never poison the live VM's STARTED state");
                 return OresScheduler.done(41);
@@ -118,6 +118,24 @@ final class OresVMTest {
             holdingMonitor.join(5000);
             assertTrue(!holdingMonitor.isAlive());
             vm.close();
+        }
+    }
+
+    @Test
+    void independentUserSchedulerCannotCloseVmWhileItsOwnTaskIsExecuting() throws Exception {
+        try (OresVM vm = OresVM.create(Runnable::run);
+             OresScheduler user = new OresScheduler(1)) {
+            OresFuture<Integer> attempted = user.startSync(() -> {
+                assertEquals(user, OresScheduler.current());
+                IllegalStateException denied = org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalStateException.class, vm::close);
+                assertTrue(denied.getMessage().contains("outside actor, Mailman and scheduler"));
+                return 87;
+            });
+            assertEquals(87, attempted.get(5, TimeUnit.SECONDS));
+            assertTrue(vm.started(), "foreign scheduler cannot poison VM lifecycle state");
+            assertEquals(88, vm.rootScheduler()
+                    .startSync(() -> 88).get(5, TimeUnit.SECONDS));
         }
     }
 
