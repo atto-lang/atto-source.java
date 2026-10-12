@@ -164,8 +164,31 @@ The default sandbox limits are:
 - HTTP request metadata budget: **64 KiB**, including an **8 KiB** path ceiling and at most **128** header lookups;
 - HTTP response body write budget: **16 MiB**;
 - HTTP response metadata budget: **128 headers / 64 KiB**;
+- concurrent outbound HTTP/HTTPS calls: **5 per actor by default** (configurable, runtime-enforced);
 - isolated actor heap: **64 MiB**;
 - mailbox: **128 messages**.
+
+Outbound networking is also object-capability based. If the supervisor supplies an
+`OutboundHttpTransport`, the untrusted actor receives an owner-only
+`OutboundHttpCapability`. It exposes asynchronous HTTP/HTTPS request futures,
+not sockets. The capability uses a per-actor semaphore whose default is five.
+Admission is fail-fast: once five host operations are actually in flight, a
+sixth future completes with `HttpConcurrencyLimitExceededException` without
+invoking the transport. Cancellation does not release that semaphore permit
+until the underlying transport itself completes, preventing cancel/retry churn
+from exceeding the real network concurrency budget. Actor teardown cancels all
+tracked outbound operations.
+
+The capability rejects `CONNECT`, protocol-upgrade/WebSocket headers,
+non-HTTP(S) schemes, and user-info-bearing URLs. Request and response bodies use
+the same bounded HTTP byte budgets as the sandbox. The host may maintain
+HTTP/1.1 keep-alive or HTTP/2/3 connection pooling internally, but no raw TCP
+handle, pool handle, stateful session, or cookie jar is exposed to guest code.
+
+`OresFuture<T>` is backed by `CompletionStage` at the host boundary, and
+`OresFutures.all` / `race` compose operations without creating more actors
+or OS threads. Actor-side `await` must be lowered to a suspended continuation;
+blocking a carrier on `get()` or `join()` is forbidden.
 
 HTTP is granted as an **object capability to one accepted exchange**, not as ambient network access. A host may bind `HttpRequestTransport` / `HttpResponseTransport` to its HTTP parser, event loop, `SocketChannel`, or equivalent. The actor receives owner-bound `HttpRequestCapability` / `HttpResponseCapability` handles through its turn context. Request-body chunks are read from the host request stream and response-body chunks are written to the host response stream directly; they are not serialized through the actor mailbox. `PrivateMemoryBlock.readFrom(...)` and `writeTo(...)` can bind those streams directly to the actor's FFM-backed native region, avoiding an intermediate JVM heap byte array as well. The handles are not Sendable, cannot be transferred to another actor, and expose no general socket/file-descriptor operations. This also keeps the model valid for HTTP/2 or HTTP/3, where a raw connection fd would be the wrong abstraction.
 

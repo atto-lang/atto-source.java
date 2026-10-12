@@ -483,6 +483,7 @@ public final class TypeChecker {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
+            if (name.name().equals("Futures")) return new Named("$FuturesFactory", List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
@@ -627,6 +628,30 @@ public final class TypeChecker {
                             label);
                 }
             }
+            if (call.callee() instanceof Ast.MemberExpr futuresCall
+                    && futuresCall.receiver() instanceof Ast.NameExpr futures
+                    && futures.name().equals("Futures")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "Futures." + futuresCall.member() + " does not accept call-site type arguments");
+                }
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Futures." + futuresCall.member() + " expects exactly one list of Future values");
+                }
+                Type collection = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+                Type payload = futureCollectionPayload(
+                        collection,
+                        "Futures." + futuresCall.member());
+                return switch (futuresCall.member()) {
+                    case "all" -> new Named(
+                            "Future",
+                            List.of(new ListType(payload)));
+                    case "race" -> new Named("Future", List.of(payload));
+                    default -> throw new IllegalArgumentException(
+                            "unknown Futures member '" + futuresCall.member() + "'");
+                };
+            }
             if (call.callee() instanceof Ast.MemberExpr factoryCall
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
                     && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -768,6 +793,8 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "unknown " + sumNamed.name() + " member '" + member.member() + "'");
             }
+            Type futureMember = builtinFutureMember(sumReceiver, member.member());
+            if (futureMember != null) return futureMember;
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
             receiver = unwrapMutexGuard(receiver);
@@ -1282,6 +1309,61 @@ public final class TypeChecker {
             };
         }
         return null;
+    }
+
+    private Type builtinFutureMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named)
+                || !named.name().equals("Future")
+                || named.arguments().size() != 1) {
+            return null;
+        }
+        return switch (member) {
+            case "is_done", "is_cancelled", "cancel" ->
+                    new Function(List.of(), Primitive.BOOL);
+            default -> null;
+        };
+    }
+
+    private Type futureCollectionPayload(Type collection, String operation) {
+        collection = deref(collection);
+        if (collection instanceof ListType list) {
+            return futurePayload(list.element(), operation);
+        }
+        if (collection instanceof Tuple tuple) {
+            if (tuple.elements().isEmpty()) return Unknown.INSTANCE;
+            Type payload = Unknown.INSTANCE;
+            for (Type element : tuple.elements()) {
+                Type next = futurePayload(element, operation);
+                payload = payload == Unknown.INSTANCE
+                        ? next
+                        : Types.unionOf(payload, next);
+            }
+            return payload;
+        }
+        throw new IllegalArgumentException(
+                operation + " expects a list/tuple of Future<T> values");
+    }
+
+    private Type futurePayload(Type type, String operation) {
+        type = deref(type);
+        if (type == Unknown.INSTANCE) return Unknown.INSTANCE;
+        if (type instanceof Named named
+                && named.name().equals("Future")
+                && named.arguments().size() == 1) {
+            return named.arguments().getFirst();
+        }
+        if (type instanceof Union union) {
+            Type payload = Unknown.INSTANCE;
+            for (Type option : union.options()) {
+                Type next = futurePayload(option, operation);
+                payload = payload == Unknown.INSTANCE
+                        ? next
+                        : Types.unionOf(payload, next);
+            }
+            return payload;
+        }
+        throw new IllegalArgumentException(
+                operation + " expects only Future<T> elements, found " + type);
     }
 
     private Type builtinMutexMember(Type receiver, String member) {
