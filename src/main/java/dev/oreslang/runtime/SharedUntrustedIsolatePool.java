@@ -11,6 +11,8 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.ExecutionException;
 
 /**
  * Supervisor-owned, ONE-isolate hosting substrate for multiple untrusted
@@ -132,6 +134,22 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
     public final class Group implements AutoCloseable {
         private final Context context;
         private volatile boolean groupClosed;
+        // Exactly-once close task: contenders cannot return a false success
+        // while another thread still executes Context.close(true).
+        private final FutureTask<Void> closeOnce = new FutureTask<>(() -> {
+            try {
+                context.close(true);
+                // A close that throws keeps the Context counted. Never
+                // release a group slot just because admission was revoked.
+                synchronized (SharedUntrustedIsolatePool.this) {
+                    groups.remove(this);
+                }
+            } catch (RuntimeException | Error error) {
+                // Do not leak guest exception/cause objects to the host.
+                throw new IllegalStateException("untrusted group retirement failed");
+            }
+            return null;
+        });
         private Group(Context context) { this.context = context; }
 
         /** Host adapter entrypoint; actual actor routing must be supplied separately. */
@@ -142,18 +160,21 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
 
         @Override
         public void close() {
-            synchronized (SharedUntrustedIsolatePool.this) {
-                if (groupClosed) return;
-                groupClosed = true;
-            }
-            // Do not take the group monitor: a currently executing guest call
-            // holds it. Context.close(true) must be able to interrupt that call.
-            // Keep the group counted until physical context close finishes.
-            context.close(true);
-            // Only a confirmed close can release group capacity. If close
-            // failed, retain the exhausted slot until pool retirement.
-            synchronized (SharedUntrustedIsolatePool.this) {
-                groups.remove(this);
+            // Fence admission immediately, without acquiring the execution
+            // monitor held by a possibly stuck guest. FutureTask serializes
+            // closing; every concurrent caller awaits the same completion.
+            groupClosed = true;
+            closeOnce.run();
+            try {
+                closeOnce.get();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "interrupted before untrusted Context retirement was confirmed");
+            } catch (ExecutionException failed) {
+                // A Context whose close failed still occupies one pool slot.
+                throw new IllegalStateException(
+                        "untrusted Context close was not confirmed; group remains reserved");
             }
         }
     }
