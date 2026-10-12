@@ -464,6 +464,14 @@ final class HostGeneratorTurnPumpTest {
                 GeneratorRuntime.Step<Integer> step = pull.get(5, TimeUnit.SECONDS);
                 assertFalse(step.done());
                 assertEquals(expected, step.value());
+                // A Future can become publicly visible slightly before the
+                // pump finishes its post-publication bookkeeping. Wait for
+                // the actual exit + reservation-release condition; never
+                // weaken requireQuiescent() just to hide this race.
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!pump.isQuiescent() && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
                 assertTrue(pump.isQuiescent(),
                         "public publication requires physical guest DONE");
             }
@@ -472,6 +480,12 @@ final class HostGeneratorTurnPumpTest {
             assertTrue(pump.dispatchOne());
             assertTrue(finalPull.get(5, TimeUnit.SECONDS).done());
             assertTrue(frame.isTerminal());
+            long finalDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!pump.isQuiescent() && System.nanoTime() < finalDeadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(pump.isQuiescent(),
+                    "completed host pull must eventually release physical ownership");
             pump.close();
             assertEquals(4, next.get());
         }
