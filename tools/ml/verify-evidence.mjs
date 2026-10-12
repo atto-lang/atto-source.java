@@ -3,14 +3,20 @@
 const sha40=/^[0-9a-f]{40}$/, sha256=/^[0-9a-f]{64}$/;
 const workloads=new Set(["inference_pipeline","cpu_numerical","training_feeder","mpa_fleet"]);
 const fields=["schema_version","workload","backend","mode","source_sha","compiler_sha","artifact_sha256","fixture_sha256","reference_sha256","budget_sha256","source_mirror_is_public","hardware","measurements","correctness","execution"];
-const finiteNonnegative=(n,k)=>{if(typeof n!=="number"||!Number.isFinite(n)||n<0)throw new TypeError(k+" must be nonnegative finite");};
+const finiteNonnegative=(n,k)=>{if(typeof n!=="number"||!Number.isFinite(n)||n<0||Object.is(n,-0))throw new TypeError(k+" must be nonnegative finite and canonical");};
 function closed(value,keys,name){
  if(!value||typeof value!=="object"||Array.isArray(value))throw new TypeError(name+" must be object");
- // Comparing comma-joined key lists is unsafe: a single property named
- // "a,b" can masquerade as two required properties "a" and "b".
- const actual=Object.keys(value),expected=new Set(keys);
- if(actual.length!==keys.length||actual.some(k=>!expected.has(k))||
+ const proto=Object.getPrototypeOf(value);
+ if(proto!==Object.prototype&&proto!==null)throw new TypeError(name+" must be plain JSON object");
+ // Include hidden keys, symbols and non-enumerable fields in the closed shape.
+ const actual=Reflect.ownKeys(value),expected=new Set(keys);
+ if(actual.length!==keys.length||actual.some(k=>typeof k!=="string"||!expected.has(k))||
     keys.some(k=>!Object.hasOwn(value,k)))throw new TypeError(name+" must have exactly: "+keys.join(","));
+ for(const key of keys){
+   const descriptor=Object.getOwnPropertyDescriptor(value,key);
+   if(!descriptor||!("value" in descriptor)||!descriptor.enumerable)
+     throw new TypeError(name+" accessor or hidden field forbidden");
+ }
 }
 export function verifyMlEvidence(receipt){
  closed(receipt,fields,"receipt");
@@ -26,10 +32,16 @@ export function verifyMlEvidence(receipt){
  for(const k of ["cpu","arch","gpu","driver","numa","os"])if(typeof receipt.hardware[k]!=="string"||receipt.hardware[k].length===0)throw new TypeError("hardware."+k);
  if(!Number.isSafeInteger(receipt.hardware.ram_bytes)||receipt.hardware.ram_bytes<1)
    throw new TypeError("ram_bytes must be positive safe integer");
- for(const k of ["cpu","arch","gpu","driver","numa","os"])
-   if(receipt.hardware[k].length>256)throw new RangeError("hardware."+k+" too long");
+ for(const k of ["cpu","arch","gpu","driver","numa","os"]){
+   const value=receipt.hardware[k];
+   if(value.length>256)throw new RangeError("hardware."+k+" too long");
+   if(!/^[A-Za-z0-9][A-Za-z0-9 ._:/+()@=-]*$/.test(value))
+     throw new TypeError("hardware."+k+" invalid characters");
+ }
  closed(receipt.execution,["ci_url","exit_code","compiled_source","evidence_kind"],"execution");
- if(typeof receipt.execution.ci_url!=="string"||!/^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/[1-9][0-9]*$/.test(receipt.execution.ci_url))throw new Error("missing canonical CI run proof");
+ if(typeof receipt.execution.ci_url!=="string"||
+    !/^https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\/actions\/runs\/[1-9][0-9]{0,19}$/.test(receipt.execution.ci_url))
+   throw new Error("missing canonical CI run proof");
  if(receipt.execution.exit_code!==0||receipt.execution.compiled_source!==true||receipt.execution.evidence_kind!=="source_execution")throw new Error("no executed compiled-source proof");
  closed(receipt.correctness,["max_abs_error","abs_tolerance","max_rel_error","rel_tolerance","sample_count"],"correctness");
  for(const k of ["max_abs_error","abs_tolerance","max_rel_error","rel_tolerance"])finiteNonnegative(receipt.correctness[k],k);
