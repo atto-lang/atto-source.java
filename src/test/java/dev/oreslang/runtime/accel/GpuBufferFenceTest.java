@@ -47,4 +47,19 @@ final class GpuBufferFenceTest {
         fence.close();
         assertThrows(IllegalArgumentException.class, () -> new GpuBufferFence(id, 0));
     }
+    @Test void deviceEventAndClaimApisRemainInternalAndTicketsCannotBeForged() throws Exception {
+        var ticketConstructor = GpuBufferFence.Ticket.class
+                .getDeclaredConstructor(long.class, long.class);
+        assertTrue(java.lang.reflect.Modifier.isPrivate(ticketConstructor.getModifiers()));
+        for (var method : new String[]{
+                "beginCommand", "complete", "cancelPending",
+                "acknowledgeCancelledDeviceEvent", "retireAfterBackendRelease",
+                "claimPair"}) {
+            boolean exposed = java.util.Arrays.stream(GpuBufferFence.class.getDeclaredMethods())
+                    .anyMatch(m -> m.getName().equals(method)
+                            && java.lang.reflect.Modifier.isPublic(m.getModifiers()));
+            assertFalse(exposed, "guest-visible GPU event API: " + method);
+        }
+    }
+
 }
