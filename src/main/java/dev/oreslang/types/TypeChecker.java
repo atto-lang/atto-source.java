@@ -2003,7 +2003,8 @@ public final class TypeChecker {
                 && lexicalClassOrigin != null
                 && lexicalClassOrigin.actorKind() != Ast.ActorKind.NONE
                 && currentClassOwner == lexicalClassOrigin
-                && receiver.name().equals(lexicalClassOrigin.name())) {
+                && receiver.name().equals(lexicalClassOrigin.name())
+                && env.lookup(receiver.name()) == null) {
             int matches = 0;
             for (Ast.MethodDecl candidate : lexicalClassOrigin.methods()) {
                 if (candidate.name().equals(member.member())
