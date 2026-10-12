@@ -1969,14 +1969,17 @@ public final class ActorRuntime implements AutoCloseable {
             }, completionTicket)) {
                 // Rejected work has no carrier on which to retire its ticket.
                 completionTicket.retire();
-                synchronized (cell.lifecycleLock) {
-                    if (!cell.stopped.get() && !cell.finalized) {
-                        cell.sourceReceiveSuspended = false;
-                        cell.activeMail = null;
-                        cell.fail(new IllegalStateException(
-                                "actor source receive completion could not re-enter its continuation lane"));
-                    }
-                }
+                // Do NOT fail-stop while holding lifecycleLock. terminateTree()
+                // cancels pending Futures after releasing its *own* lock, but
+                // the caller's reentrant monitor would still be held and a
+                // cancellation hook may wait for the actor lifecycle monitor.
+                //
+                // Retain sourceReceiveSuspended until terminateTree drains the
+                // old receive. Releasing that barrier here would let another
+                // user-mail receive start before fail-stop is committed.
+                // A concurrent orderly stop wins without a spurious failure.
+                cell.failIfRunning(new IllegalStateException(
+                        "actor source receive completion could not re-enter its continuation lane"));
             }
         });
     }
@@ -7245,6 +7248,15 @@ public final class ActorRuntime implements AutoCloseable {
             terminateTree(failure, true);
         }
 
+        /**
+         * Fail only if this actor has not already begun orderly stop.
+         * The check and failure transition are serialized by lifecycleLock,
+         * but Future cancellation runs only after that monitor is released.
+         */
+        private void failIfRunning(Throwable failure) {
+            terminateTree(failure, true, true);
+        }
+
         private void stop() {
             terminateTree(null, false);
         }
@@ -7254,10 +7266,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void terminateTree(Throwable cause, boolean recordCause) {
+            terminateTree(cause, recordCause, false);
+        }
+
+        private void terminateTree(
+                Throwable cause, boolean recordCause, boolean onlyIfRunning) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             synchronized (lifecycleLock) {
-                if (finalized) return;
+                if (finalized || (onlyIfRunning && stopped.get())) return;
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
