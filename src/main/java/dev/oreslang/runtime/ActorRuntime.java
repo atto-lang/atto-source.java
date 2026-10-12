@@ -318,6 +318,15 @@ public final class ActorRuntime implements AutoCloseable {
         @Override public Reason reason() { return Reason.SEALED; }
     }
 
+    /** A caller has exceeded the bounded number of outstanding drain observers. */
+    public static final class ActorResourceExhaustedException
+            extends IllegalStateException implements SendError {
+        public ActorResourceExhaustedException(ActorId id) {
+            super("actor drain observer limit exceeded for " + id);
+        }
+        @Override public Reason reason() { return Reason.RESOURCE_EXHAUSTED; }
+    }
+
     public static final class ActorInvalidReferenceException
             extends IllegalArgumentException implements SendError {
         public ActorInvalidReferenceException(String message) { super(message); }
@@ -4513,9 +4522,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null) return ref.done();
         final OresFuture<Void> barrier;
         synchronized (cell.lifecycleLock) {
-            if (cell.stopped.get() || cell.finalized) return ref.done();
+            if (cell.stopped.get() || cell.finalized || cell.sealing) return ref.done();
             cell.sealing = true;
-            barrier = cell.drainAcceptedMessages();
+            // Reserve a single shutdown waiter even when public observers hit
+            // their per-actor quota. Repeated gracefulStop calls reuse ref.done().
+            barrier = cell.drainAcceptedMessages(true);
         }
         barrier.whenCompleteRuntime((ignored, failure) -> {
             if (failure == null) cell.stop();
@@ -6075,6 +6086,7 @@ public final class ActorRuntime implements AutoCloseable {
         private long nextUserMessageSequence;
         private long lastProcessedUserMessageSequence = -1L;
         private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
+        private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
@@ -6222,12 +6234,21 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private OresFuture<Void> drainAcceptedMessages() {
+            return drainAcceptedMessages(false);
+        }
+
+        private OresFuture<Void> drainAcceptedMessages(boolean shutdownBarrier) {
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized) return OresFuture.failed(terminated(ref));
                 final long target = nextUserMessageSequence - 1L;
                 if (lastProcessedUserMessageSequence >= target)
                     return OresFuture.completed(null);
-                // Observers cannot cancel the barrier, or forge progress.
+                // Public observers are bounded independently of mailbox slots:
+                // a stalled actor must not permit unlimited host-side Futures.
+                // gracefulStop reserves at most one extra waiter and cannot be
+                // starved by callers exhausting the public observer capacity.
+                if (!shutdownBarrier && pendingDrains.size() >= MAX_PENDING_DRAIN_WAITERS)
+                    return OresFuture.failed(new ActorResourceExhaustedException(ref.id()));
                 OresFuture<Void> result = new OresFuture<>(() -> false, () -> { });
                 pendingDrains.add(new DrainWaiter(target, result));
                 return result;
@@ -6235,6 +6256,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void markMessageProcessed(long sequence) {
+            List<OresFuture<Void>> completed = new ArrayList<>();
             synchronized (lifecycleLock) {
                 if (sequence != lastProcessedUserMessageSequence + 1L) {
                     throw new IllegalStateException(
@@ -6245,10 +6267,13 @@ public final class ActorRuntime implements AutoCloseable {
                     DrainWaiter waiter = pendingDrains.get(i);
                     if (waiter.sequence() <= sequence) {
                         pendingDrains.remove(i);
-                        waiter.completion().completeFromRuntime(null);
+                        completed.add(waiter.completion());
                     }
                 }
             }
+            // Complete outside the lifecycle monitor: Future callbacks may
+            // synchronously request actor stop or another lifecycle operation.
+            for (OresFuture<Void> waiter : completed) waiter.completeFromRuntime(null);
         }
 
         private boolean hasQueuedWork() {
