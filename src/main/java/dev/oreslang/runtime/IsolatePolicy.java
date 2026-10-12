@@ -212,6 +212,15 @@ public record IsolatePolicy(
             RuntimePermissions permissions,
             PermissionCheckMode permissionCheckMode,
             org.graalvm.polyglot.Engine sharedEngine) {
+        // Never silently create one new polyglot Engine/isolate per adversarial
+        // Context. The application owns ONE pooled untrusted Engine; admission
+        // without it is a security/topology error, not a reason to fall back to
+        // an isolated ad-hoc Engine or the JVM interpreter.
+        if (adversarial && sharedEngine == null) {
+            throw new SecurityException(
+                    "untrusted execution requires SharedUntrustedIsolatePool; "
+                    + "standalone per-context Graal isolates are disabled");
+        }
         // The normal context must match the native HOST image mode. A separate
         // guest engine can include its own JIT inside its own isolate, even if
         // the host was compiled AOT-only.
@@ -276,14 +285,10 @@ public record IsolatePolicy(
                     .option("sandbox.MaxThreads", "1")
                     .option("sandbox.MaxOutputStreamSize", bytes(maxOutput))
                     .option("sandbox.MaxErrorStreamSize", "64KB");
-            if (sharedEngine == null) {
-                builder.spawnIsolate(true)
-                        .option("engine.MaxIsolateMemory", bytes(maxHeapBytes));
-            } else {
-                // The supervisor owns this engine; every group context uses
-                // the same physical isolate heap and GC/JIT compiler.
-                builder.engine(sharedEngine);
-            }
+            // A standalone adversarial Engine would break the exactly-one
+            // untrusted-isolate topology. Admission above requires a pool-
+            // managed Engine and the matching UNTRUSTED sandbox policy.
+            builder.engine(sharedEngine);
         }
 
         return builder;
