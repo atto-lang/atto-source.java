@@ -271,14 +271,50 @@ final class BorrowedContinuationBoundaryTest {
     }
 
     @Test
-    void deferCannotCaptureMoveOnlyLocalWithoutLifetimePlan() {
-        reject(BOX + """
-                fnc unsafe(): void {
+    void deferMayReadMoveOnlyLocalWhileItsOwnerIsLive() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(BOX + """
+                fnc safe(): void {
                   let Box box = new Box();
                   defer stdio.println(box.value);
                   return;
                 }
-                """, "defer cannot capture borrowed or move-only binding 'box'");
+                """)));
+    }
+
+    @Test
+    void deferPinnedMoveOnlyLocalCannotBeMovedBeforeScopeExit() {
+        reject(BOX + """
+                fnc unsafe(): void {
+                  let Box box = new Box();
+                  defer stdio.println(box.value);
+                  val Box moved = rt take box;
+                  return;
+                }
+                """, "cannot move 'box' while a defer capture is registered");
+    }
+
+    @Test
+    void deferPinnedMoveOnlyLocalCannotBeReboundBeforeScopeExit() {
+        reject(BOX + """
+                fnc unsafe(): void {
+                  let Box box = new Box();
+                  defer stdio.println(box.value);
+                  box = new Box();
+                  return;
+                }
+                """, "cannot rebind 'box' while a defer capture is registered");
+    }
+
+    @Test
+    void deferCanSequentiallyReborrowIncomingMutableParameter() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(BOX + """
+                fnc consume(borrow mut Box box): void { box.value = 9; return; }
+                fnc safe(borrow mut Box box): void {
+                  defer consume(rt borrow mut box);
+                  defer consume(rt borrow mut box);
+                  return;
+                }
+                """)));
     }
 
     @Test
