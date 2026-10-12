@@ -861,31 +861,33 @@ public final class ActorRuntime implements AutoCloseable {
             if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
             if (bytes == 0) return new MemoryReservation(this, 0, false);
 
-            long current = usedBytes.get();
-            long next;
-            try {
-                next = Math.addExact(current, bytes);
-            } catch (ArithmeticException overflow) {
-                throw new IllegalStateException(purpose + " accounting overflow");
+            // Reservation, physical-loan refund, and actor-local counter
+            // publication use the same budget monitor. In particular, a
+            // late completion thread cannot observe an aggregate reservation
+            // before its actor-local bytes have been credited.
+            synchronized (memoryBudgetLock) {
+                long current = usedBytes.get();
+                long next;
+                try {
+                    next = Math.addExact(current, bytes);
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalStateException(purpose + " accounting overflow");
+                }
+                ActorCell<?> cell = actors.get(owner);
+                long mailboxBytes = cell == null ? 0 : cell.sharedMailboxBytes.get();
+                long outstandingOutput = cell == null ? 0 : cell.outputBytes.get();
+                if (next > limitBytes || mailboxBytes > limitBytes - next
+                        || outstandingOutput > limitBytes - next - mailboxBytes) {
+                    throw new IllegalStateException(purpose + " actor limit exceeded for " + owner
+                            + ": requested=" + bytes + " used=" + current
+                            + " mailbox=" + mailboxBytes + " output=" + outstandingOutput
+                            + " limit=" + limitBytes);
+                }
+                reservePrivateRuntimeBytes(bytes, owner, purpose);
+                usedBytes.addAndGet(bytes);
+                if (retainPhysicalNativeBytes) retainedNativeBytes.addAndGet(bytes);
+                return new MemoryReservation(this, bytes, retainPhysicalNativeBytes);
             }
-            ActorCell<?> cell = actors.get(owner);
-            long mailboxBytes = cell == null ? 0 : cell.sharedMailboxBytes.get();
-            long outstandingOutput = cell == null ? 0 : cell.outputBytes.get();
-            if (next > limitBytes || mailboxBytes > limitBytes - next
-                    || outstandingOutput > limitBytes - next - mailboxBytes) {
-                throw new IllegalStateException(purpose + " actor limit exceeded for " + owner
-                        + ": requested=" + bytes + " used=" + current
-                        + " mailbox=" + mailboxBytes + " output=" + outstandingOutput
-                        + " limit=" + limitBytes);
-            }
-
-            reservePrivateRuntimeBytes(bytes, owner, purpose);
-            // A retired actor must not refund native bytes that a pending
-            // FFM loan still physically pins. Atomic add cannot overwrite a
-            // concurrent completion-thread release.
-            usedBytes.addAndGet(bytes);
-            if (retainPhysicalNativeBytes) retainedNativeBytes.addAndGet(bytes);
-            return new MemoryReservation(this, bytes, retainPhysicalNativeBytes);
         }
 
         private ActorCell<?> requireCurrentOwner() {
