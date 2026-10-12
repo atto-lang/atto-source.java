@@ -32,12 +32,11 @@ Source JUnit regression cases:
 `src/test/java/dev/oreslang/TransformPipeActorRoleTest.java`.
 
 Focused exact-source funded JDK25 validation:
-https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/38300510224
+https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/38300778417
 
 This verified 12 source blobs, javac compilation of the actual parser,
 AST, checker, ownership checker, annotation expander and tree-shaker,
-and 14 parser/compiler smoke cases. Later AST metadata hardening requires
-its own final exact-head funded rerun. This gate does **not** execute the
+and 14 parser/compiler smoke cases. The final funded rerun also verified the stricter forged-AST and type-checker guards. This gate does **not** execute the
 source JUnit suite, full Maven, Native Image, source-level actor DATA
 delivery, or a Java 15-actor round trip.
 
