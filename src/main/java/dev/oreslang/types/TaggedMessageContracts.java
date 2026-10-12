@@ -179,6 +179,16 @@ public final class TaggedMessageContracts {
                             }
                         }
                     }
+                    if (shape != null) {
+                        // Every compiler-bound actor enum case must have a
+                        // finite, bounded descriptor before it can be sent.
+                        // Otherwise the first send could perform expensive
+                        // descriptor expansion in the actor's hot path.
+                        MessagePackCollectionCodec.shapeDigest(
+                                MessagePackCollectionCodec.tuple(
+                                        MessagePackCollectionCodec.string(),
+                                        MessagePackCollectionCodec.int64(), shape));
+                    }
                     entries.add(new Case(enumDecl.name(), entry.name(), entry.tag(),
                             entry.payload(), shape));
                 }
