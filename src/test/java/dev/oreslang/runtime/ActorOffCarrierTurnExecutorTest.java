@@ -15,6 +15,26 @@ import org.junit.jupiter.api.Timeout;
  */
 @Timeout(15)
 final class ActorOffCarrierTurnExecutorTest {
+    private static String actorTerminationState(ActorRuntime runtime, ActorRuntime.ActorId id) {
+        try {
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((java.util.Map<?, ?>) actorsField.get(runtime)).get(id);
+            if (cell == null) return "actor removed from registry";
+            StringBuilder out = new StringBuilder("Actor " + id + " ");
+            for (String name : new String[] {
+                    "scheduled", "scheduledDispatchToken", "carrierActive",
+                    "carrierOwnerThread", "activeTurns", "stopped", "finalized", "children"
+            }) {
+                var field = cell.getClass().getDeclaredField(name);
+                field.setAccessible(true);
+                out.append(name).append("=").append(field.get(cell)).append(" ");
+            }
+            return out.toString();
+        } catch (ReflectiveOperationException e) {
+            return "diagnostic reflection failed: " + e;
+        }
+    }
     @Test
     void returningBeforeActorTurnRunsCannotDelegateGuestCodeToProducerThread()
             throws Exception {
@@ -43,7 +63,9 @@ final class ActorOffCarrierTurnExecutorTest {
 
             // The host's no-op execute() must fail the actor immediately,
             // not wait indefinitely for an escaped callback to be invoked.
-            assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS),
+                    () -> actorTerminationState(runtime, ref.id())
+                            + " failure=" + ref.failure());
             assertTrue(ref.failure().isPresent(),
                     "TurnExecutor returning without executing must fail closed");
             // A delayed callback cannot revive an already-retired actor or
@@ -80,7 +102,9 @@ final class ActorOffCarrierTurnExecutorTest {
                 }
                 return (message, context) -> { };
             });
-            assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS),
+                    () -> actorTerminationState(runtime, ref.id())
+                            + " failure=" + ref.failure());
             assertTrue(callbackDuplicated.get());
             assertNotNull(violation.get());
             assertTrue(factoryExecuted.get());
@@ -108,7 +132,9 @@ final class ActorOffCarrierTurnExecutorTest {
                 assertTrue(factoryExecuted.compareAndSet(false, true));
                 return (message, context) -> { };
             });
-            assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS),
+                    () -> actorTerminationState(runtime, ref.id())
+                            + " failure=" + ref.failure());
             assertTrue(suppressedError.get());
             assertTrue(factoryExecuted.get());
             assertTrue(ref.failure().isPresent(),
