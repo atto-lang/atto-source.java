@@ -1,4 +1,4 @@
-# Declarative macros: AOT versus JIT, actor safety, and generation fencing
+# Declarative macros: AOT-only expansion, actor safety, and generation fencing
 
 Status: **first-phase implementation**. This document describes only features actually
 implemented on the macro feature branch and separates future extensions.
@@ -15,7 +15,7 @@ macro_rules! increment {
   ($value:expr) => { ($value + 1) };
 }
 
-@expand(jit)
+@expand(rebuildable)
 macro_rules! decrease {
   ($value:expr) => { ($value - 1) };
 }
@@ -31,14 +31,14 @@ end
   the same fingerprint across compilation generations. The caller passes the
   preceding macro snapshot to the next compile; removal or mutation fails closed.
   Changing an AOT macro requires starting a fresh compilation lineage / deployment.
-- **JIT** (`@expand(jit)`): a new code generation may reexpand a changed macro,
+- **Rebuildable** (`@expand(rebuildable)`): a new, explicitly compiled code generation may reexpand a changed macro,
   using the freshly parsed, type-checked, ownership-checked output. **This is not
   a runtime token expander or permission to rewrite running actor frames.** The
   host must publish a new immutable generation and fence continuations/wakeups.
-- Both modes expand **at compilation time**. Existing Graal/Truffle JIT compilation
-  and runtime optimization is independent of macro expansion mode. A JIT-mode
-  macro is usable in AOT binaries; the mode controls *recompilation policy*, not
-  whether execution is interpreted, AOT compiled or JIT optimized.
+- Both policies expand **only at compilation time**, before the guest AOT build.
+  `@expand(jit)` is a compile error. `rebuildable` is not a runtime compilation
+  capability: its new generation must complete a separate full AOT build and
+  validation before any new native deployment may execute it.
 - Macro bodies never gain actor privileges, shared-memory aliases, or exemptions
   from generated-code validation. The compiler validates expanded code normally.
 
@@ -91,7 +91,7 @@ returning a program and a new macro snapshot. `IncrementalCompiler` now persists
 per-code-unit snapshots transactionally, and `HotReloadManager` fences AOT
 definitions before staging a replacement generation. Retiring a generation does
 not discard its AOT lineage; `IncrementalCompiler.clear()` or closing the hot
-reload manager starts a new lineage. The macro mode itself cannot switch within
+reload manager starts a new lineage. The macro update policy itself cannot switch within
 one lineage. Other clients calling raw `Parser.parse()` initiate fresh,
 independent compilation lineages; they must use the snapshot-aware API to
 enforce a reload boundary.
@@ -126,7 +126,7 @@ currently implemented versus pending physical actor protections.
 ## Next steps
 
 - Integrate snapshot persistence in code-unit reload planning and invalidate
-  dependents when JIT macros change.
+  dependents when rebuildable macros change.
 - Add symbol-identity hygiene and expression AST validation, before allowing
   binding-generating declarative macros or repetitions.
 - Implement compiler-derived `Sendable`, `SharedSafe`, and `RegionSafe`
@@ -144,3 +144,17 @@ proves only the isolated parser/macro behavior; it does not cover
 actor isolation, or native images. Full exact-head GraalVM validation remains
 a prerequisite to moving the PR out of draft. The source branch and test carrier
 must be compared again after every source change.
+
+## Non-negotiable native AOT admission gate
+
+A source-level annotation or macro cannot require guest JIT compilation, `eval`, runtime
+source parsing, live-class mutation, runtime macro discovery, or a runtime code generator.
+Every macro invocation must be expanded, semantically checked, and lowered before
+shipping the guest executable. A `rebuildable` macro changes only at a *new build*;
+immutable running native images never patch macro-expanded machine code.
+
+A Native Image that merely embeds an interpreter is **not** proof of Oreslang guest
+AOT. Release evidence must compile and run a generated fixture through the actual
+Java/GraalVM guest-AOT path and LLVM backend, compare the expanded contract and
+symbol manifest, and reject unsupported target attributes before code generation.
+This is a release requirement, not a claim that either backend has passed it yet.
