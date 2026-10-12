@@ -169,8 +169,18 @@ public final class OresEvalRootNode extends RootNode {
 
         Evaluator current = evaluator(context);
         if (generatorBridgeCommand) {
-            // The actual source callable is typechecked before admission,
-            // but opening a host session may not run its guest body.
+            // A host handoff is a public API: package/private generator
+            // declarations cannot be reached by forging an internal command.
+            String requestedName = (String) arguments[1];
+            boolean exported = program.modules().stream()
+                    .flatMap(module -> module.declarations().stream())
+                    .anyMatch(decl -> decl instanceof Ast.FunctionDecl fn
+                            && fn.name().equals(requestedName)
+                            && fn.visibility() == Ast.Visibility.PUBLIC
+                            && fn.async() && fn.generator());
+            if (!exported) {
+                throw new SecurityException("host generator is not a public async generator");
+            }
             current.link();
             GeneratorRuntime.HostPullSession session =
                     context.openStagedSourceGenerator(
