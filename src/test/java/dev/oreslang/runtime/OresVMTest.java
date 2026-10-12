@@ -18,9 +18,16 @@ final class OresVMTest {
         java.util.concurrent.Executor broken = admitted -> {
             Thread carrier = Thread.ofPlatform().daemon(true).start(admitted);
             worker.set(carrier);
-            if (!entered.await(5, TimeUnit.SECONDS)) {
+            try {
+                if (!entered.await(5, TimeUnit.SECONDS)) {
+                    throw new java.util.concurrent.RejectedExecutionException(
+                            "physical guest turn failed to start in test");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
                 throw new java.util.concurrent.RejectedExecutionException(
-                        "physical guest turn failed to start in test");
+                        "executor interrupted while observing physical guest entry",
+                        interrupted);
             }
             // The executor reports failure WHILE its accepted guest carrier
             // remains entered. It is not safe to replay or retire that turn.
