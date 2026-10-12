@@ -222,6 +222,16 @@ cancelling that registered task. Task references are retained through
 terminal Future settlement until the physical guest dispatch is quiescent;
 a stale duplicate dispatch cannot clear the legitimate dispatch's lease.
 
+Close uses a two-phase snapshot: it first revokes every task and detaches all
+suspended wait registrations, then publishes Future cancellation. A synchronous
+completion subscriber blocking on the first cancelled Future must not prevent
+other tasks from losing their runtime authority. Terminal callbacks run only
+after guest task quiescence, and quiescent-task accounting retires before any
+external terminal subscriber executes. Callback-triggered close from the
+scheduler's own physical carrier also must not wait for that same executor
+thread to terminate (even though the logical task binding is already cleared).
+These guarantees are checked by deterministic callback/cancel/close races.
+
 **Not an authorization to enable UNTRUSTED automatic loop cooperation.**
 Other continuation/cancellation/cleanup paths, nested source scopes, early
 termination and isolate-level hard revocation still need full cross-backend
