@@ -93,13 +93,22 @@ public final class DeclaredEffectVerifier {
                         || callback.parameters().size() != 1) {
                     throw new IllegalArgumentException("invalid handle_state effect callback");
                 }
-                if ((!callback.critical() && !serial) || callback.nonLexical()) {
+                if (!callback.explicitStateMode() || callback.nonLexical()) {
                     throw new IllegalArgumentException(
-                            "non-serial handle_state requires a critical lexical callback");
+                            "handle_state needs a lexical critical read or critical write callback");
                 }
                 String name = callback.parameters().getFirst().name();
-                collect(callback.expressionBody(), effects, name, callableName, serial);
-                collect(callback.blockBody(), effects, name, callableName, serial);
+                EnumSet<FunctionEffects.Effect> callbackEffects =
+                        EnumSet.noneOf(FunctionEffects.Effect.class);
+                collect(callback.expressionBody(), callbackEffects, name, callableName, serial);
+                collect(callback.blockBody(), callbackEffects, name, callableName, serial);
+                // Mode grants authority, using only constrains declared effects.
+                if (callback.criticalMode() == Ast.CriticalMode.READ
+                        && callbackEffects.contains(FunctionEffects.Effect.STATE_WRITE)) {
+                    throw new IllegalArgumentException(
+                            "critical read cannot write state, regardless of using state.write");
+                }
+                effects.addAll(callbackEffects);
                 return;
             }
             if (call.callee() instanceof Ast.MemberExpr member
