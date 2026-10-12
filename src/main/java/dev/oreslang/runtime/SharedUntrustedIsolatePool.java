@@ -11,8 +11,6 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.FutureTask;
-import java.util.concurrent.ExecutionException;
 
 /**
  * Supervisor-owned, ONE-isolate hosting substrate for multiple untrusted
@@ -136,7 +134,7 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         private volatile boolean groupClosed;
         // Exactly-once close task: contenders cannot return a false success
         // while another thread still executes Context.close(true).
-        private final FutureTask<Void> closeOnce = new FutureTask<>(() -> {
+        private final VerifiedCloseFence closeFence = new VerifiedCloseFence(() -> {
             try {
                 context.close(true);
                 // A close that throws keeps the Context counted. Never
@@ -148,7 +146,6 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
                 // Do not leak guest exception/cause objects to the host.
                 throw new IllegalStateException("untrusted group retirement failed");
             }
-            return null;
         });
         private Group(Context context) { this.context = context; }
 
@@ -164,18 +161,7 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
             // monitor held by a possibly stuck guest. FutureTask serializes
             // closing; every concurrent caller awaits the same completion.
             groupClosed = true;
-            closeOnce.run();
-            try {
-                closeOnce.get();
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException(
-                        "interrupted before untrusted Context retirement was confirmed");
-            } catch (ExecutionException failed) {
-                // A Context whose close failed still occupies one pool slot.
-                throw new IllegalStateException(
-                        "untrusted Context close was not confirmed; group remains reserved");
-            }
+            closeFence.awaitConfirmedClose("untrusted Context");
         }
     }
 
