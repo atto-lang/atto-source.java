@@ -22,3 +22,15 @@ test("reject nonfinite metric",()=>assert.throws(()=>verifyMlEvidence({...receip
 test("reject reversed latency quantiles",()=>assert.throws(()=>verifyMlEvidence({...receipt(),measurements:{...receipt().measurements,p99_ms:0}}),/unordered/));
 test("reject unknown receipt fields",()=>assert.throws(()=>verifyMlEvidence({...receipt(),claims_speedup:true}),/exactly/));
 test("reject absent sample comparisons",()=>assert.throws(()=>verifyMlEvidence({...receipt(),correctness:{...receipt().correctness,sample_count:0}}),/no numerical/));
+test("reject comma-joined spoofed metric keys",()=>{
+ const measurements={...receipt().measurements};
+ delete measurements.p50_ms;
+ delete measurements.p95_ms;
+ measurements["p50_ms,p95_ms"]=2;
+ assert.throws(()=>verifyMlEvidence({...receipt(),measurements}),/exactly/);
+});
+test("reject fractional byte counters",()=>assert.throws(()=>verifyMlEvidence({...receipt(),measurements:{...receipt().measurements,copied_bytes:1.5}}),/safe integer/));
+test("reject imprecise large counters",()=>assert.throws(()=>verifyMlEvidence({...receipt(),measurements:{...receipt().measurements,allocations:Number.MAX_SAFE_INTEGER+1}}),/safe integer/));
+test("reject fractional host RAM",()=>assert.throws(()=>verifyMlEvidence({...receipt(),hardware:{...receipt().hardware,ram_bytes:1.5}}),/positive safe integer/));
+test("reject unbounded hardware descriptor",()=>assert.throws(()=>verifyMlEvidence({...receipt(),hardware:{...receipt().hardware,cpu:"x".repeat(257)}}),/too long/));
+test("reject impossible zero measured throughput",()=>assert.throws(()=>verifyMlEvidence({...receipt(),measurements:{...receipt().measurements,throughput_per_sec:0}}),/zero measured throughput/));
