@@ -68,6 +68,30 @@ final class ActorRuntimeRestartAdmissionTest {
     }
 
     @Test
+    void groupCloseCancelsUnpublishedPhysicalActorBeforeItCanInitialize() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            java.util.concurrent.atomic.AtomicInteger initialized =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            ActorRuntime.ActorRef<Integer> hidden = group.spawnUnpublishedRestartCandidate(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    context -> {
+                        initialized.incrementAndGet();
+                        return (value, turn) -> {};
+                    });
+            assertThrows(IllegalStateException.class, hidden::ready);
+            assertEquals(0, initialized.get(), "hidden actor initialized prematurely");
+            assertThrows(IllegalStateException.class, () -> hidden.send(10));
+            group.close();
+            assertTrue(hidden.awaitTermination(5, TimeUnit.SECONDS),
+                    "group close leaked a pending physical RESTART candidate");
+            assertEquals(0, initialized.get(),
+                    "a cancelled hidden actor ran its guest initializer");
+            assertFalse(runtime.isAlive(hidden));
+        }
+    }
+
+    @Test
     void physicalStopBeforePublicationCannotCreateLogicalReplacement() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup();
