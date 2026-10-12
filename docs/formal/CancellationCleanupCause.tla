@@ -1,44 +1,50 @@
 -------------------- MODULE CancellationCleanupCause --------------------
 EXTENDS Naturals
 
-\* Models the observable termination receipt when a scheduler source task
-\* has registered cleanup, but actor STOP/CANCEL cannot execute it.
-\* The primary cancellation cause must remain intact and the missing cleanup
-\* must still be discoverable as a single supplemental diagnostic receipt.
-\* This is a safety model, NOT a proof of guest cleanup execution.
+\* Observable cancellation diagnostics for an abandoned source cleanup.
+\* Suppression capability is nondeterministic: Java Throwable may silently
+\* discard addSuppressed(), in which case the incomplete receipt must become
+\* primary and preserve the original cancellation as its nested cause.
+\* This is a diagnostic safety model, NOT guest cleanup execution.
 CONSTANT UnsafeDropIncompleteSuppressedReceipt
-VARIABLES cleanup, cause, finalCause, receipt
-vars == <<cleanup, cause, finalCause, receipt>>
+VARIABLES cleanup, cause, finalCause, receipt, suppressionEnabled, retainsOriginal
+vars == <<cleanup, cause, finalCause, receipt, suppressionEnabled, retainsOriginal>>
 
 Init ==
   /\ cleanup = "absent"
   /\ cause = "none"
   /\ finalCause = "pending"
   /\ receipt = "none"
+  /\ suppressionEnabled \in BOOLEAN
+  /\ retainsOriginal = FALSE
 
 RegisterCleanup ==
   /\ finalCause = "pending"
   /\ cleanup = "absent"
   /\ cleanup' = "registered"
-  /\ UNCHANGED <<cause, finalCause, receipt>>
+  /\ UNCHANGED <<cause, finalCause, receipt, suppressionEnabled, retainsOriginal>>
 
 Cancel ==
   /\ finalCause = "pending"
   /\ cause = "none"
   /\ cause' = "cancel"
-  /\ UNCHANGED <<cleanup, finalCause, receipt>>
+  /\ UNCHANGED <<cleanup, finalCause, receipt, suppressionEnabled, retainsOriginal>>
 
 Finalize ==
   /\ finalCause = "pending"
-  /\ finalCause' = IF cause = "cancel" THEN "cancel"
+  /\ finalCause' = IF cause = "cancel"
+                   THEN IF cleanup = "registered" /\ ~suppressionEnabled
+                        THEN "incomplete" ELSE "cancel"
                    ELSE IF cleanup = "registered" THEN "incomplete"
                    ELSE "success"
   /\ receipt' = IF cleanup = "absent" THEN "none"
-                ELSE IF cause = "cancel" THEN
+                ELSE IF cause = "cancel" /\ suppressionEnabled THEN
                        IF UnsafeDropIncompleteSuppressedReceipt
                        THEN "none" ELSE "suppressed"
                 ELSE "primary"
-  /\ UNCHANGED <<cleanup, cause>>
+  /\ retainsOriginal' = cause = "cancel" /\ cleanup = "registered"
+                        /\ ~suppressionEnabled
+  /\ UNCHANGED <<cleanup, cause, suppressionEnabled>>
 
 Next == RegisterCleanup \/ Cancel \/ Finalize
 Spec == Init /\ [][Next]_vars
@@ -48,9 +54,13 @@ TypeOK ==
   /\ cause \in {"none", "cancel"}
   /\ finalCause \in {"pending", "cancel", "incomplete", "success"}
   /\ receipt \in {"none", "primary", "suppressed"}
+  /\ suppressionEnabled \in BOOLEAN
+  /\ retainsOriginal \in BOOLEAN
 
 PreserveCancelCause ==
-  (cause = "cancel" /\ finalCause # "pending") => finalCause = "cancel"
+  (cause = "cancel" /\ finalCause # "pending") =>
+    (finalCause = "cancel" \/
+      (finalCause = "incomplete" /\ retainsOriginal))
 
 NeverLoseIncompleteCleanupReceipt ==
   (cleanup = "registered" /\ finalCause # "pending") =>
