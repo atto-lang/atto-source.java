@@ -88,6 +88,12 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             Object executionDomain) { }
 
+    /**
+     * Executes the actor turn synchronously on the calling scheduler worker.
+     * The callback must return before execute returns; off-thread submission
+     * or post-return execution is forbidden. ActorRuntime checks the physical
+     * execution owner at turn entry/exit and rejects violations.
+     */
     @FunctionalInterface
     public interface TurnExecutor {
         void execute(Runnable turn);
@@ -1312,6 +1318,21 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean enqueue(Runnable continuation) {
             return enqueueContinuation(actorId, continuation);
+        }
+    }
+
+    /**
+     * Package-private runtime proof hook, not exposed to Oreslang source:
+     * actor methods, continuation callbacks and lifecycle cleanup must all
+     * execute with the same temporary physical owner and active turn lease.
+     */
+    boolean currentThreadOwnsActorExecutionLease() {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) return false;
+        synchronized (cell.lifecycleLock) {
+            return cell.carrierActive && cell.scheduled.get()
+                    && cell.carrierOwnerThread == Thread.currentThread()
+                    && cell.activeTurns == 1;
         }
     }
 
