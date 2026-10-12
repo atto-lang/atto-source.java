@@ -178,8 +178,31 @@ final class MacroExpanderTest {
 
     @Test
     void preservesUnrelatedAnnotationsWithSimilarNames() {
-        List<Token> original = new Lexer("@expand(foo) fnc unrelated(): void {}").scan();
+        List<Token> original = new Lexer("@expand_policy(foo) fnc unrelated(): void {}").scan();
         assertEquals(original, MacroExpander.expand(original).tokens());
+    }
+
+    @Test
+    void rejectsMisplacedOrMalformedExpansionPolicyInsteadOfSilentlyIgnoringIt() {
+        for (String source : List.of(
+                "@expand(aot) fnc run(): int { return 1; }",
+                "@expand(rebuildable) define module app as end",
+                "@expand aot macro_rules! m { () => { 1 }; }",
+                "@expand(aot, rebuildable) macro_rules! m { () => { 1 }; }")) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(source).scan()), source);
+            assertTrue(ex.getMessage().contains("@expand is reserved"), ex.getMessage());
+        }
+    }
+
+    @Test
+    void bareTokenTreesCannotInjectStatementsOrAnnotations() {
+        String prefix = "macro_rules! single { ($x:tt) => { $x }; }\\n";
+        for (String bad : List.of("return", "end", ";", "@", "$", "let", "if", "=")) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(prefix + "single!(" + bad + ")").scan()), bad);
+            assertTrue(ex.getMessage().contains("unsafe bare token tree"), ex.getMessage());
+        }
     }
 
     @Test
@@ -536,7 +559,7 @@ final class MacroExpanderTest {
                     () -> MacroExpander.expand(
                             new Lexer("@expand(" + mode + ")\n" + definition).scan()), mode);
         }
-        List<Token> ordinary = new Lexer("@expand(foo) fnc ordinary(): void {}").scan();
+        List<Token> ordinary = new Lexer("@expand_policy(foo) fnc ordinary(): void {}").scan();
         assertEquals(ordinary, MacroExpander.expand(ordinary).tokens());
     }
 
