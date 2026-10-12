@@ -33,6 +33,7 @@ final class ActorMutexFutureAuthorityTest {
         var waitingDomain = new AtomicReference<Object>();
         var ownerDomain = new AtomicReference<Object>();
         var callbackDomain = new AtomicReference<Object>();
+        var foreignCallbackObserved = new CountDownLatch(1);
         var waiterRef = new AtomicReference<ActorRuntime.ActorRef<String>>();
 
         try (ActorRuntime runtime = new ActorRuntime(
@@ -43,6 +44,24 @@ final class ActorMutexFutureAuthorityTest {
                     if ("queue".equals(message)) {
                         waitingDomain.set(ActorRuntime.currentExecutionDomain());
                         var stage = mutex.lockAsync();
+                        // Raw Java CompletionStage callbacks run on the producer
+                        // (here actor A's releasing carrier). They are HOST
+                        // callbacks, never actor B's authorized guest turn.
+                        stage.whenComplete((guard, completionError) -> {
+                            try {
+                                assertNull(completionError);
+                                assertEquals(ownerDomain.get(),
+                                        ActorRuntime.currentExecutionDomain(),
+                                        "raw host callback unexpectedly ran as waiting actor B");
+                                assertThrows(OresMutex.WrongMutexDomainException.class,
+                                        guard::release,
+                                        "producer callback must not release B's guard");
+                            } catch (Throwable problem) {
+                                failure.compareAndSet(null, problem);
+                            } finally {
+                                foreignCallbackObserved.countDown();
+                            }
+                        });
                         OresFuture<OresMutex.Guard<int[]>> awaited = OresFuture.from(stage);
                         // Runtime-only plumbing; never execute B's guest logic here.
                         awaited.whenCompleteRuntime((guard, problem) -> {
@@ -99,6 +118,8 @@ final class ActorMutexFutureAuthorityTest {
             assertNull(failure.get());
             owner.send("release");
             assertTrue(resumed.await(4, TimeUnit.SECONDS), "actor B did not resume from mailbox");
+            assertTrue(foreignCallbackObserved.await(2, TimeUnit.SECONDS),
+                    "raw CompletableFuture completion callback was never exercised");
             assertNull(failure.get(), String.valueOf(failure.get()));
             assertNotNull(callbackDomain.get(), "runtime completion plumbing was never notified");
             var observed = mutex.lockFor(Duration.ofSeconds(2)).orElseThrow();
