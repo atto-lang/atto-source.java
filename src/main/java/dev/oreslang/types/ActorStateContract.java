@@ -207,10 +207,14 @@ public final class ActorStateContract {
         }
         if (node instanceof Ast.RuntimeCallExpr op && activeAccess != null
                 && (op.operation().equals("borrow") || op.operation().equals("borrow_mut")
-                    || op.operation().equals("borrowMut"))
+                    || op.operation().equals("borrowMut") || op.operation().equals("take")
+                    || op.operation().equals("share"))
                 && referencesAccess(op.arguments(), activeAccess)) {
+            // A borrowed state projection cannot be moved out of the map or
+            // published as Shared<T>. A primitive copy is permitted, but
+            // ownership-changing operations need a proven snapshot lowering.
             throw new IllegalArgumentException(
-                    "actor state-backed borrow requires continuation-aware loan lowering");
+                    "actor state-backed borrow/take/share cannot escape its lexical loan");
         }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) visit(item, actor, keys, activeAccess, nestedClosure, instanceMethod, accessMode);
