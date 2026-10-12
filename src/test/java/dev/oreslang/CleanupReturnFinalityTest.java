@@ -335,6 +335,61 @@ final class CleanupReturnFinalityTest {
     }
 
     @Test
+    void callbackReassignedAfterDeferRegistrationFailsClosed() {
+        // The deferred call executes on exit, after this rebinding. A
+        // checker that only scans the initially captured empty lambda misses
+        // the mutation of the already-evaluated return binding.
+        String source = """
+                fnc make(): Box {
+                  let mut Box result = new Box();
+                  let mut callback = || -> {};
+                  defer callback();
+                  callback = || -> { result = new Box(); };
+                  return result;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ReturnCleanupChecker.check(Parser.parse(BOX + source)));
+        assertTrue(error.getMessage().contains(
+                "defer cannot verify reassigned or dynamic local callback 'callback'"),
+                error::getMessage);
+    }
+
+    @Test
+    void deferredAliasReassignedAfterRegistrationFailsClosed() {
+        String source = """
+                fnc make(): Box {
+                  let mut Box result = new Box();
+                  const original = || -> {};
+                  let mut alias = original;
+                  defer alias();
+                  alias = || -> { result = new Box(); };
+                  return result;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ReturnCleanupChecker.check(Parser.parse(BOX + source)));
+        assertTrue(error.getMessage().contains(
+                "defer cannot verify reassigned or dynamic local callback 'alias'"),
+                error::getMessage);
+    }
+
+    @Test
+    void rebindingOriginalAfterCapturingStableAliasDoesNotRebindAlias() {
+        String source = """
+                fnc make(): Box {
+                  let mut Box result = new Box();
+                  let mut original = || -> {};
+                  const alias = original;
+                  defer alias();
+                  original = || -> { result = new Box(); };
+                  return result;
+                }
+                """;
+        assertDoesNotThrow(() -> ReturnCleanupChecker.check(Parser.parse(BOX + source)));
+    }
+
+    @Test
     void deferredArrayMutationPreservesTheOriginalReturnedObject() throws Exception {
         String code = """
                 fnc make(): Array<int> {
