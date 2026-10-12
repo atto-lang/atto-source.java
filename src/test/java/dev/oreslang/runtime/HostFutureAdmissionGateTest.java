@@ -227,4 +227,21 @@ final class HostFutureAdmissionGateTest {
         assertFalse(worker.isAlive());
     }
 
+    @Test
+    void failedPhysicalLeaveQuarantinesHostAndGuestEvenAfterLeaseRelease() {
+        HostFutureAdmissionGate gate = new HostFutureAdmissionGate();
+        Runnable entered = gate.reserveGuestTurn();
+        gate.quarantineUnknownPhysicalExit();
+        assertTrue(gate.physicalExitUnproven());
+        // Release the coordination lease to avoid leaking a carrier, but do
+        // not reinterpret it as physical DONE or allow context retirement.
+        entered.run();
+        assertThrows(IllegalStateException.class, gate::begin);
+        assertThrows(RejectedExecutionException.class, gate::reserveGuestTurn);
+        assertThrows(IllegalStateException.class, entered::run);
+        gate.close();
+        assertTrue(gate.physicalExitUnproven());
+    }
+
+
 }
