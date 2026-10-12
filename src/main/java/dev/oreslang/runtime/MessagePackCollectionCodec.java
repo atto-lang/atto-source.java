@@ -39,7 +39,7 @@ public final class MessagePackCollectionCodec {
 
     private MessagePackCollectionCodec() { }
 
-    public sealed interface Shape permits Scalar, Sequence { }
+    public sealed interface Shape permits Scalar, Sequence, NestedEnum { }
 
     /**
      * Immutable trusted actor mailbox codec declaration, constructed by
@@ -90,6 +90,34 @@ public final class MessagePackCollectionCodec {
             }
             if (!fixed && (element == null || !slots.isEmpty())) {
                 throw new IllegalArgumentException("variable sequences require an element descriptor");
+            }
+        }
+    }
+
+    /**
+     * Closed nominal enum as a nested value in a compiler-bound MessagePack
+     * shape. Definitions are a finite DAG; recursive/boxed schemas are NOT
+     * admitted by the compiler. No wire bytes can supply these descriptors.
+     */
+    public record EnumCaseShape(String name, int tag, Shape payload) {
+        public EnumCaseShape {
+            if (name == null || name.isBlank() || tag < 1)
+                throw new IllegalArgumentException("invalid nested enum case");
+        }
+    }
+
+    public record NestedEnum(String name, List<EnumCaseShape> cases) implements Shape {
+        public NestedEnum {
+            if (name == null || name.isBlank() || cases == null
+                    || cases.isEmpty() || cases.size() > 4096)
+                throw new IllegalArgumentException("invalid nested enum shape");
+            cases = List.copyOf(cases);
+            var names = new java.util.HashSet<String>();
+            int lastTag = 0;
+            for (EnumCaseShape c : cases) {
+                if (!names.add(c.name()) || c.tag() <= lastTag)
+                    throw new IllegalArgumentException("unordered/duplicate nested enum case");
+                lastTag = c.tag();
             }
         }
     }
@@ -222,6 +250,22 @@ public final class MessagePackCollectionCodec {
             });
             return;
         }
+        if (shape instanceof NestedEnum nested) {
+            // Length delimiters and stable case tags avoid ambiguity between
+            // different enum constructors with identical payload shapes.
+            out.append("E(").append(nested.name().length()).append(':')
+                    .append(nested.name()).append(")[");
+            for (EnumCaseShape item : nested.cases()) {
+                out.append(item.tag()).append(':')
+                        .append(item.name().length()).append(':')
+                        .append(item.name()).append('=');
+                if (item.payload() == null) out.append('N');
+                else appendShape(out, item.payload(), depth + 1, nodes);
+                out.append(';');
+            }
+            out.append(']');
+            return;
+        }
         Sequence seq = (Sequence) shape;
         out.append(switch (seq.kind()) {
             case TUPLE -> "T[";
@@ -340,6 +384,42 @@ public final class MessagePackCollectionCodec {
                         if (!(value instanceof String s)) throw new IllegalArgumentException("expected string");
                         string(s);
                     }
+                }
+                return;
+            }
+
+            if (shape instanceof NestedEnum nested) {
+                if (!(value instanceof TaggedMessageCodec.TaggedValue tagged)
+                        || !nested.name().equals(tagged.enumName()))
+                    throw new IllegalArgumentException("nested enum nominal owner mismatch");
+                EnumCaseShape selected = null;
+                for (EnumCaseShape member : nested.cases()) {
+                    if (member.tag() == tagged.tag() && member.name().equals(tagged.variant())) {
+                        selected = member;
+                        break;
+                    }
+                }
+                if (selected == null)
+                    throw new IllegalArgumentException("unknown nested enum tag/variant");
+                if (visiting.put(value, Boolean.TRUE) != null)
+                    throw new IllegalArgumentException("cyclic nested enum value");
+                try {
+                    if (selected.payload() == null) {
+                        if (tagged.payload() != null)
+                            throw new IllegalArgumentException("nullary nested enum carries payload");
+                        arrayHeader(2);
+                        string(nested.name());
+                        signedInt(tagged.tag());
+                    } else {
+                        if (tagged.payload() == null)
+                            throw new IllegalArgumentException("nested enum payload is missing");
+                        arrayHeader(3);
+                        string(nested.name());
+                        signedInt(tagged.tag());
+                        value(selected.payload(), tagged.payload(), depth + 1);
+                    }
+                } finally {
+                    visiting.remove(value);
                 }
                 return;
             }
@@ -501,6 +581,28 @@ public final class MessagePackCollectionCodec {
                     }
                     case STRING -> string();
                 };
+            }
+            if (shape instanceof NestedEnum nested) {
+                int n = arrayHeader();
+                if (n != 2 && n != 3)
+                    throw new IllegalArgumentException("nested enum tuple must have two or three slots");
+                String owner = string();
+                if (!nested.name().equals(owner))
+                    throw new IllegalArgumentException("nested enum owner mismatch");
+                long tag = signedInt();
+                EnumCaseShape selected = null;
+                for (EnumCaseShape member : nested.cases()) {
+                    if (member.tag() == tag) {
+                        selected = member;
+                        break;
+                    }
+                }
+                if (selected == null || (selected.payload() == null ? 2 : 3) != n)
+                    throw new IllegalArgumentException("unknown nested enum tag or wrong payload arity");
+                Object payload = selected.payload() == null
+                        ? null : value(selected.payload(), depth + 1);
+                return new TaggedMessageCodec.TaggedValue(
+                        nested.name(), selected.name(), selected.tag(), payload);
             }
             Sequence seq = (Sequence) shape;
             int n = arrayHeader();
