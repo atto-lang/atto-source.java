@@ -51,6 +51,19 @@ final class SerialExecutionTicket {
 
     long taskId() { return taskId; }
 
+    /**
+     * Cheap immutable provenance check before a continuation can consume any
+     * CONTROL mailbox slot. Do not resolve by numeric task ID or handler
+     * generation: both may be reused in another actor/incarnation.
+     *
+     * Runtime actor IDs are value identities; the incarnation is a
+     * deliberately unforgeable, reference-identity execution domain.
+     */
+    boolean issuedFor(Object candidateActorId, Object candidateIncarnation) {
+        return actorId.equals(candidateActorId)
+                && incarnation == candidateIncarnation;
+    }
+
     /** Revoke this task's authority independently of its enclosing actor handler. */
     void retire() { retired.set(true); }
 
