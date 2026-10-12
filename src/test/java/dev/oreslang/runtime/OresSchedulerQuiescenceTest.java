@@ -597,6 +597,54 @@ final class OresSchedulerQuiescenceTest {
         }
     }
 
+
+    @Test
+    void blockingDeadlineSubscribersCannotStarveAnotherActorsDeadline()
+            throws Exception {
+        // Two host completion subscribers intentionally block forever until
+        // released. They must not occupy both independent timer workers and
+        // prevent a third suspended task's deadline from being enforced.
+        OresScheduler scheduler = new OresScheduler(1);
+        OresFuture<Integer> never = new OresFuture<>();
+        CountDownLatch subscribersEntered = new CountDownLatch(2);
+        CountDownLatch unblock = new CountDownLatch(1);
+        CountDownLatch retired = new CountDownLatch(3);
+        java.util.List<OresFuture<Integer>> futures = new java.util.ArrayList<>();
+        try {
+            for (int i = 0; i < 3; i++) {
+                OresFuture<Integer> future = scheduler.startWithWallDeadline(
+                        resume -> OresScheduler.await(never),
+                        retired::countDown,
+                        TimeUnit.MILLISECONDS.toNanos(180),
+                        new IllegalStateException("wall-" + i));
+                futures.add(future);
+                if (i < 2) {
+                    future.whenCompleteRuntime((value, failure) -> {
+                        subscribersEntered.countDown();
+                        try {
+                            unblock.await(3, TimeUnit.SECONDS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    });
+                }
+            }
+            assertTrue(subscribersEntered.await(3, TimeUnit.SECONDS),
+                    "both terminal subscribers must be blocked");
+            java.util.concurrent.ExecutionException expired =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> futures.get(2).get(2, TimeUnit.SECONDS));
+            assertEquals("wall-2", expired.getCause().getMessage());
+            assertTrue(retired.await(2, TimeUnit.SECONDS),
+                    "deadline scanner must retire all three idle tasks independently");
+            assertEquals(0, never.pendingRuntimeWaiterCount());
+        } finally {
+            unblock.countDown();
+            scheduler.close();
+        }
+    }
+
     @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
