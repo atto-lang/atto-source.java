@@ -47,6 +47,30 @@ final class UntrustedLogicalQuotaTest {
 
     private static volatile TimedAdmissionProbe timedAdmissionProbe;
 
+    private record BlockedCarrierProbe(
+            AtomicReference<OresFuture<Integer>> task,
+            java.util.concurrent.CountDownLatch entered,
+            java.util.concurrent.CountDownLatch release) { }
+    private static volatile BlockedCarrierProbe blockedCarrierProbe;
+
+    /** White-box count read under the runtime's lifecycle lock. */
+    private static int actorTimedAdmissions(
+            ActorRuntime runtime, ActorRuntime.ActorRef<?> actor) throws Exception {
+        java.lang.reflect.Field actorsField =
+                ActorRuntime.class.getDeclaredField("actors");
+        actorsField.setAccessible(true);
+        Object cell = ((java.util.Map<?, ?>) actorsField.get(runtime)).get(actor.id());
+        if (cell == null) throw new IllegalStateException("actor cell not registered");
+        java.lang.reflect.Field lockField = cell.getClass().getDeclaredField("lifecycleLock");
+        java.lang.reflect.Field countField = cell.getClass()
+                .getDeclaredField("activeUntrustedTimedAdmissions");
+        lockField.setAccessible(true);
+        countField.setAccessible(true);
+        synchronized (lockField.get(cell)) {
+            return countField.getInt(cell);
+        }
+    }
+
     /** No capture of the enclosing JUnit instance inside an untrusted actor. */
     private static final class TimedAdmissionTask implements OresScheduler.Task<Integer> {
         private final ActorRuntime runtime;
@@ -476,6 +500,64 @@ final class UntrustedLogicalQuotaTest {
         } finally {
             timedAdmissionProbe = null;
         }
+    }
+
+    @Test
+    void timedActorSlotCannotBeReusedBeforeCancelledGuestCarrierExits()
+            throws Exception {
+        AtomicReference<OresFuture<Integer>> sourceTask = new AtomicReference<>();
+        java.util.concurrent.CountDownLatch entered =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release =
+                new java.util.concurrent.CountDownLatch(1);
+        blockedCarrierProbe = new BlockedCarrierProbe(sourceTask, entered, release);
+        int originalGlobal = OresScheduler.availableWallDeadlineAdmissions();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnUntrusted(context -> (message, turn) -> {
+                BlockedCarrierProbe probe = blockedCarrierProbe;
+                probe.task().set(turn.runtime().startActorTask(resume -> {
+                    probe.entered().countDown();
+                    try {
+                        if (!probe.release().await(3, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("test carrier not released");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                    }
+                    return OresScheduler.done(42);
+                }));
+            });
+            try {
+                actor.send("start");
+                assertTrue(entered.await(3, TimeUnit.SECONDS),
+                        "test must enter a physical source actor carrier");
+                OresFuture<Integer> task = sourceTask.get();
+                assertTrue(task != null);
+                assertEquals(1, actorTimedAdmissions(runtime, actor));
+                assertTrue(task.cancel(false),
+                        "host cancellation should settle the public Future");
+                assertTrue(task.isCancelled());
+                assertEquals(1, actorTimedAdmissions(runtime, actor),
+                        "guest carrier is still executing: actor timed slot must stay reserved");
+                assertEquals(originalGlobal - 1,
+                        OresScheduler.availableWallDeadlineAdmissions(),
+                        "global admission must likewise wait for physical quiescence");
+            } finally {
+                release.countDown();
+            }
+            long limit = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (actorTimedAdmissions(runtime, actor) != 0
+                    && System.nanoTime() < limit) Thread.sleep(1);
+            assertEquals(0, actorTimedAdmissions(runtime, actor),
+                    "actor timed slot must retire after the physical carrier exits");
+            actor.stop();
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        } finally {
+            release.countDown();
+            blockedCarrierProbe = null;
+        }
+        assertEquals(originalGlobal, OresScheduler.availableWallDeadlineAdmissions());
     }
 
     @Test
