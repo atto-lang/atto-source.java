@@ -61,14 +61,21 @@ public final class OresContext implements AutoCloseable {
         }
     }
 
-    public ContextEntryCoordinator.HostLease acquireScopedHostEntry() {
+    /** A caller-owned, same-thread physical host entry lease. */
+    public interface HostEntryLease extends AutoCloseable {
+        @Override
+        void close();
+    }
+
+    public HostEntryLease acquireScopedHostEntry() {
         if (isolatePolicy.adversarial()) {
             throw new SecurityException("adversarial context rejects scoped async host entry");
         }
         if (singleHostOwnedContext() != this) {
             throw new SecurityException("host entry scope belongs to a different context");
         }
-        return contextEntryCoordinator.enterHost();
+        ContextEntryCoordinator.HostLease acquired = contextEntryCoordinator.enterHost();
+        return acquired::close;
     }
 
     private final OresLanguage language;
