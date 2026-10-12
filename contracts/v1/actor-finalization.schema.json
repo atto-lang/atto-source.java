@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oreslang.dev/conformance/actor-finalization-v1.schema.json",
+  "title": "Oreslang Actor Finalization Receipt V1",
+  "description": "A host-owned observational receipt; not proof of physical finalization from untrusted guest data.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "actor_id",
+    "incarnation",
+    "receipt_id",
+    "events",
+    "outcome"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "actor_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "incarnation": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "receipt_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "parent_actor_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/event"
+      }
+    },
+    "outcome": {
+      "enum": [
+        "success",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "failure_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "required": [
+          "failure_code"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "success",
+              "cancelled"
+            ]
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "failure_code"
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "kind"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "enum": [
+            "stop_requested",
+            "carrier_exited",
+            "cursor_waiters_drained",
+            "owned_waiters_drained",
+            "child_done",
+            "finalization_claimed",
+            "exit_hook_completed",
+            "ready_notified",
+            "done_notified",
+            "parent_notified"
+          ]
+        },
+        "child_actor_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "child_done"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "child_actor_id"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
