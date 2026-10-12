@@ -1855,6 +1855,9 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        /** Logical shutdown outcome, distinct from physical finalization. */
+        private final OresFuture<Void> shutdownResultFuture =
+                new OresFuture<>(() -> false, () -> { });
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind) {
@@ -1885,6 +1888,19 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public OresFuture<Void> done() {
             return doneFuture;
+        }
+
+        /**
+         * Observe logical shutdown success/failure, including failed cleanup
+         * drain. This does NOT authorize freeing an actor's retained resources.
+         * get_done() remains pending until physical finalization.
+         */
+        public OresFuture<Void> shutdownResult() {
+            return shutdownResultFuture;
+        }
+
+        public OresFuture<Void> get_shutdown_result() {
+            return shutdownResult();
         }
 
         /**
@@ -5823,18 +5839,8 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
-        actorGroups.clear();
-        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
-            stream.closeAndDrainFromRuntime();
-        }
-        actorOutputStreams.clear();
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
-        syncCells.clear();
-        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
-        sharedValues.clear();
-        sharedMemoryBytes.set(0L);
-
+        // Fail closed before releasing shared/group/native backing storage.
+        // A stuck actor can still hold capabilities or outstanding FFM loans.
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
             if (interrupted) {
@@ -5849,6 +5855,19 @@ public final class ActorRuntime implements AutoCloseable {
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
                             + dispatchersTerminated);
         }
+
+        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
+        actorGroups.clear();
+        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
+            stream.closeAndDrainFromRuntime();
+        }
+        actorOutputStreams.clear();
+        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
+        syncCells.clear();
+        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
+        sharedValues.clear();
+        sharedMemoryBytes.set(0L);
+
         actors.clear();
         actorCount.set(0);
     }
@@ -6292,8 +6311,15 @@ public final class ActorRuntime implements AutoCloseable {
                                 ? new ActorTerminatedException(ref.id(), kind, null)
                                 : terminal);
             }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
+            if (terminal == null) {
+                ref.doneFuture.completeFromRuntime(null);
+                ref.shutdownResultFuture.completeFromRuntime(null);
+            } else {
+                // Exceptional physical completion is valid only AFTER full
+                // release; pending resource ownership never settles get_done.
+                ref.doneFuture.failFromRuntime(terminal);
+                ref.shutdownResultFuture.failFromRuntime(terminal);
+            }
             finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
         }
@@ -6849,9 +6875,10 @@ public final class ActorRuntime implements AutoCloseable {
                         failure.addSuppressed(prior);
                     }
                     ref.terminationCause.set(failure);
-                    // This is a FAILED teardown observation. The actor and its
-                    // physical resources remain retained, not falsely finalized.
-                    ref.doneFuture.failFromRuntime(failure);
+                    // A failed drain reports through the separate shutdown
+                    // observer. get_done remains pending because the actor still
+                    // retains physical state, native loans and ownership.
+                    ref.shutdownResultFuture.failFromRuntime(failure);
                 } else {
                     finalizeStopLocked();
                 }
