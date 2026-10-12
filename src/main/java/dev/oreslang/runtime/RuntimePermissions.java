@@ -125,9 +125,22 @@ public final class RuntimePermissions {
             else builder.allow(permission, value);
         }
 
-        return sawPermissionArgument
-                ? builder.build()
-                : fromCapabilities(isolatePolicy.capabilities());
+        if (!sawPermissionArgument)
+            return fromCapabilities(isolatePolicy.capabilities());
+
+        RuntimePermissions explicit = builder.build();
+        // Scoped rules ATTENUATE isolate authority; they must never add a
+        // coarse capability omitted by the host's isolation boundary. The
+        // OresContext.requirePermission path also checks the coarse policy,
+        // but standalone embedders must not receive an over-granting object.
+        for (Permission permission : Permission.values()) {
+            if (explicit.grantsAnything(permission)
+                    && !isolatePolicy.capabilities().contains(permission.capability())) {
+                throw new SecurityException("permission " + permission.cliName()
+                        + " exceeds isolate capability " + permission.capability());
+            }
+        }
+        return explicit;
     }
 
     public String[] applicationArguments() {
