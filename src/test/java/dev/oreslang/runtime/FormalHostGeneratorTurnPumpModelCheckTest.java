@@ -41,7 +41,10 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
                 if (!sealed && queued < 2) queued++;
             }
             case OWNER_DISPATCH -> {
-                if (!sealed && !active && queued > 0) {
+                // Bound total activations as well as queue depth; limiting
+                // just queue size still permits infinitely many sequential
+                // producer starts and defeats exhaustive exploration.
+                if (!sealed && !active && queued > 0 && started < 2) {
                     queued--;
                     started++;
                     active = true;
@@ -95,6 +98,8 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
 
     private static void invariant(State s) {
         assertTrue(s.queued >= 0 && s.queued <= 2, "bounded FIFO capacity violated");
+        assertTrue(s.started >= 0 && s.started <= 2,
+                "model must bound total activations to remain finite");
         assertTrue(s.started >= s.published,
                 "publication precedes ownership");
         assertTrue(s.started - s.published <= 1,
