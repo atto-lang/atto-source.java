@@ -23,3 +23,10 @@ The JSON Schema checks structure only. The companion semantic guard checks rank/
 5. Joint proof with typed pipelines and supervision (Java #643/#641, LLVM #177/#175).
 
 Reference-only checks: node --test contracts/ml/v1/validate.test.mjs. Passing these cannot be reported as successful compiled Oreslang ML source tests.
+
+## Audit hardening (2026-10-12)
+
+- The reference validator requires plain JSON records and dense, own-data arrays: getters, inherited prototypes, hidden fields, symbols and sparse descriptors fail closed. This is a shape check for JSON-parsed input, **not** a sanitizer for arbitrary Proxy objects.
+- Cross-actor mode is now the default. Borrowed local aliases and actor-turn-lifetime descriptors are forbidden across the boundary; local-only mode must be requested explicitly.
+- Backend feature names cannot use Object.prototype meta-keys. A `verified` property is **not a signed capability** or production authorization without a trusted host-side authority check.
+- 26/26 isolated pure JavaScript checks passed against branch contents under a V8 synchronous harness; this is not a Node runner or compiled Oreslang parity result.
