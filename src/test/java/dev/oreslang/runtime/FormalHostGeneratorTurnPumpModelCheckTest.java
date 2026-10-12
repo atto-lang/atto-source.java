@@ -471,4 +471,118 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         FrameState overlapping = new FrameState(2, 2, true, true, false);
         assertThrows(AssertionError.class, () -> invariantFrame(overlapping));
     }
+
+    /** Bounded abstraction of exact request-to-receipt identity at issuance. */
+    private enum BoundEvent {
+        ISSUE_FIRST, ISSUE_SECOND, CLAIM_FIRST, CLAIM_SECOND,
+        REPLAY, PHYSICAL_DONE, SEAL, RETRY_RETIRE
+    }
+
+    private record BoundState(int issuedFor, int claimedFor, int claimCount,
+            boolean physicalDone, boolean poisoned, boolean sealed,
+            boolean retired) {
+        static BoundState initial() {
+            return new BoundState(0, 0, 0, false, false, false, false);
+        }
+    }
+
+    private static BoundState boundStep(BoundState s, BoundEvent event) {
+        if (s.retired) return s;
+        int issued = s.issuedFor, claimed = s.claimedFor, claims = s.claimCount;
+        boolean exited = s.physicalDone, poisoned = s.poisoned;
+        boolean sealed = s.sealed, retired = false;
+        switch (event) {
+            case ISSUE_FIRST, ISSUE_SECOND -> {
+                if (!sealed && issued == 0) issued =
+                        event == BoundEvent.ISSUE_FIRST ? 1 : 2;
+                else if (!sealed && issued != 0) {
+                    // Two certificates for one reservation are forbidden
+                    // before a second producer can begin.
+                    poisoned = true;
+                    sealed = true;
+                }
+            }
+            case CLAIM_FIRST, CLAIM_SECOND -> {
+                if (!sealed && issued != 0) {
+                    int requester = event == BoundEvent.CLAIM_FIRST ? 1 : 2;
+                    if (claimed != 0 || requester != issued) {
+                        poisoned = true;
+                        sealed = true;
+                    } else {
+                        claimed = requester;
+                        claims++;
+                    }
+                }
+            }
+            case REPLAY -> {
+                if (claimed != 0) {
+                    poisoned = true;
+                    sealed = true;
+                }
+            }
+            case PHYSICAL_DONE -> {
+                if (issued != 0) exited = true;
+            }
+            case SEAL -> sealed = true;
+            case RETRY_RETIRE -> {
+                if (sealed && !poisoned &&
+                        (issued == 0 || (claimed == issued && exited))) {
+                    retired = true;
+                }
+            }
+        }
+        return new BoundState(issued, claimed, claims, exited,
+                poisoned, sealed, retired);
+    }
+
+    private static void invariantBound(BoundState s) {
+        assertTrue(s.claimCount >= 0 && s.claimCount <= 1);
+        if (s.claimedFor != 0) {
+            assertEquals(s.issuedFor, s.claimedFor,
+                    "a DONE certificate redeemed against a foreign request");
+            assertEquals(1, s.claimCount);
+        }
+        if (s.poisoned) {
+            assertTrue(s.sealed && !s.retired,
+                    "failed binding escaped permanent quarantine");
+        }
+        if (s.retired) {
+            assertTrue(s.sealed && !s.poisoned &&
+                    (s.issuedFor == 0 ||
+                            (s.claimedFor == s.issuedFor && s.physicalDone)),
+                    "request retired without its exact physical DONE");
+        }
+    }
+
+    @Test
+    void boundedRequestBoundCertificatesRejectCrossRequestClaimAndDoubleIssue() {
+        Set<BoundState> visited = new HashSet<>();
+        ArrayDeque<BoundState> frontier = new ArrayDeque<>();
+        visited.add(BoundState.initial());
+        frontier.add(BoundState.initial());
+        boolean sawWrongRequest = false, sawDoubleIssue = false;
+        boolean sawValidRetirement = false;
+        while (!frontier.isEmpty()) {
+            BoundState state = frontier.removeFirst();
+            invariantBound(state);
+            sawWrongRequest |= state.poisoned && state.claimedFor == 0;
+            sawDoubleIssue |= state.poisoned && state.issuedFor != 0;
+            sawValidRetirement |= state.retired && state.issuedFor != 0;
+            for (BoundEvent event : BoundEvent.values()) {
+                BoundState next = boundStep(state, event);
+                invariantBound(next);
+                if (visited.add(next)) frontier.addLast(next);
+            }
+        }
+        assertTrue(visited.size() >= 12, "request-binding exploration collapsed");
+        assertTrue(sawWrongRequest && sawDoubleIssue && sawValidRetirement,
+                "cross-request, duplicate-issuance or legitimate retirement missing");
+    }
+
+    @Test
+    void unsafeCrossRequestRedemptionFailsBindingInvariant() {
+        BoundState unsafe = new BoundState(1, 2, 1, true, false, true, true);
+        assertThrows(AssertionError.class, () -> invariantBound(unsafe));
+    }
+
 }
