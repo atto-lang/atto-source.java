@@ -84,6 +84,24 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
+    void untrustedActorCallableMustNotRunOnTrustedHostHeap() throws Exception {
+        String program = """
+                pub untrusted actor fnc dangerous(): void {
+                  return;
+                }
+
+                pub routine main(): void {
+                  dangerous();
+                  return;
+                }
+                """;
+        PolyglotException rejected = assertThrows(PolyglotException.class,
+                () -> run(program, "host-untrusted-call-denied.ores"));
+        assertTrue(rejected.getMessage().contains(
+                "shared sandboxed Graal isolate"), rejected::getMessage);
+    }
+
+    @Test
     void sharedActorsReuseCodeWithoutSharingMutableActorState() throws Exception {
         String program = """
                 define actor Counter as
