@@ -9,6 +9,75 @@ import org.junit.jupiter.api.Test;
 
 final class OresVMTest {
     @Test
+    void scopedHostEntryHoldsRootCarrierUntilAllNestedHandoffsExit() throws Exception {
+        var admitted = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        try (OresVM vm = OresVM.create(Runnable::run, admitted::add)) {
+            var outer = vm.beginHostHandoff();
+            var inner = vm.beginHostHandoff();
+            var ran = new java.util.concurrent.atomic.AtomicInteger();
+            try {
+                OresFuture<Integer> task = vm.rootScheduler().start(resume -> {
+                    ran.incrementAndGet();
+                    return OresScheduler.done(73);
+                });
+                assertEquals(1, vm.queuedHostHandoffTurns(),
+                        "root task must remain at executor admission");
+                assertEquals(0, admitted.size(),
+                        "no physical CONTROL turn may run under host Value.execute");
+                assertEquals(0, ran.get());
+                assertTrue(!task.isDone());
+                org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                        vm::requireHostHandoffReleased,
+                        "outstanding host entry must block physical context retirement");
+                inner.close();
+                assertEquals(1, vm.queuedHostHandoffTurns(),
+                        "nested inner exit must not authorize guest entry");
+                assertEquals(0, admitted.size());
+                outer.close();
+                assertEquals(0, vm.queuedHostHandoffTurns());
+                assertEquals(1, admitted.size());
+                Runnable turn = admitted.poll(5, TimeUnit.SECONDS);
+                org.junit.jupiter.api.Assertions.assertNotNull(turn);
+                turn.run();
+                assertEquals(73, task.get(5, TimeUnit.SECONDS));
+                assertEquals(1, ran.get());
+                vm.requireHostHandoffReleased();
+            } finally {
+                outer.close();
+                inner.close();
+            }
+        }
+    }
+
+    @Test
+    void cancelledDeferredRootTurnNeverExecutesGuestBodyAfterHostExit()
+            throws Exception {
+        var admitted = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        try (OresVM vm = OresVM.create(Runnable::run, admitted::add)) {
+            var handoff = vm.beginHostHandoff();
+            var guestStarts = new java.util.concurrent.atomic.AtomicInteger();
+            try {
+                OresFuture<Integer> task = vm.rootScheduler().start(resume -> {
+                    guestStarts.incrementAndGet();
+                    return OresScheduler.done(5);
+                });
+                assertEquals(1, vm.queuedHostHandoffTurns());
+                assertTrue(task.cancel(false));
+                assertEquals(0, guestStarts.get());
+                handoff.close();
+                Runnable turn = admitted.poll(5, TimeUnit.SECONDS);
+                org.junit.jupiter.api.Assertions.assertNotNull(turn);
+                turn.run();
+                assertEquals(0, guestStarts.get(),
+                        "cancelled queued carrier cannot enter guest execution");
+                assertTrue(task.isCancelled());
+            } finally {
+                handoff.close();
+            }
+        }
+    }
+
+    @Test
     void rootGuestAdmissionCanStayOnCallerAcrossPendingAwait() throws Exception {
         var turns = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
         try (OresVM vm = OresVM.create(Runnable::run, turns::add)) {
