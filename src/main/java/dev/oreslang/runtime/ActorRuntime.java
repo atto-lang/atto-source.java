@@ -690,6 +690,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong usedBytes = new AtomicLong();
         /** Native FFM allocations still physically live, even after actor exit. */
         private final AtomicLong retainedNativeBytes = new AtomicLong();
+        /** Failure is published before any asynchronous lifecycle callback. */
+        private final AtomicReference<Throwable> nativePhysicalReleaseFailure =
+                new AtomicReference<>();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
         private final Set<ActorOwnedGraphArena<?>> ownedGraphs = ConcurrentHashMap.newKeySet();
@@ -820,7 +823,15 @@ public final class ActorRuntime implements AutoCloseable {
                     AtomicReference<ExplicitNativeI64Region> registered = new AtomicReference<>();
                     ExplicitNativeI64Region region = new ExplicitNativeI64Region(slots,
                             reservation, this::requireCurrentOwner,
-                            () -> explicitNativeI64Regions.remove(registered.get()),
+                            () -> {
+                                // This callback runs AFTER Arena.close and the
+                                // physical quota refund. Only now can the
+                                // physical termination barrier be reconsidered.
+                                explicitNativeI64Regions.remove(registered.get());
+                                if (sliceClosed.get()) {
+                                    scheduleNativePhysicalRetirementCheck();
+                                }
+                            },
                             this::reportNativePhysicalCloseFailure);
                     registered.set(region);
                     explicitNativeI64Regions.add(region);
@@ -893,10 +904,22 @@ public final class ActorRuntime implements AutoCloseable {
          * actor finalization retires regions while holding lifecycleLock.
          */
         private void reportNativePhysicalCloseFailure(Throwable failure) {
+            // A delayed previous-region wakeup may be racing this failure.
+            // Publish the fence synchronously without taking lifecycleLock.
+            nativePhysicalReleaseFailure.compareAndSet(null, failure);
             ActorCell<?> cell = actors.get(owner);
             if (cell == null) return;
             Thread.ofVirtual().name("ores-native-close-failure-" + owner)
                     .start(() -> cell.onNativePhysicalCloseFailure(failure));
+        }
+
+        private void scheduleNativePhysicalRetirementCheck() {
+            ActorCell<?> cell = actors.get(owner);
+            if (cell != null && cell.stopped.get()) {
+                // Do not acquire lifecycleLock from the FFM region monitor.
+                Thread.ofVirtual().name("ores-native-retired-" + owner)
+                        .start(cell::onNativePhysicalRelease);
+            }
         }
 
         /** Native loan completion may occur on a different carrier after
@@ -914,16 +937,9 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 releasePrivateRuntimeBytes(bytes, owner);
             }
-            // A completing native-loan thread may still hold its region
-            // monitor. Never acquire lifecycleLock here: finalization holds
-            // that lock while retiring all regions, so a synchronous callback
-            // would invert lifecycleLock -> regionLock on concurrent release.
-            ActorCell<?> cell = actors.get(owner);
-            if (cell != null && cell.nativeMemoryRetirementComplete
-                    && cell.stopped.get()) {
-                Thread.ofVirtual().name("ores-native-release-" + owner)
-                        .start(cell::onNativePhysicalRelease);
-            }
+            // Do not wake the actor from a partial quota decrement.
+            // Native region onRetired() runs only AFTER physical arena close,
+            // reservation refund and registry removal, and owns the wakeup.
         }
 
         private synchronized void release(long bytes) {
@@ -974,7 +990,9 @@ public final class ActorRuntime implements AutoCloseable {
                     else if (retirementFailure != failure) retirementFailure.addSuppressed(failure);
                 }
             }
-            explicitNativeI64Regions.clear();
+            // Keep the physical region registry until each Arena.close and
+            // its quota refund succeeds. Clearing here would let a previous
+            // loan-completion callback publish physical done prematurely.
             for (PrivateMemoryBlock block : List.copyOf(blocks)) {
                 try {
                     block.invalidateFromSlice();
@@ -6372,7 +6390,9 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
             }
-            if (memorySlice.retainedNativeBytes.get() != 0L) return;
+            if (memorySlice.retainedNativeBytes.get() != 0L
+                    || !memorySlice.explicitNativeI64Regions.isEmpty()
+                    || memorySlice.nativePhysicalReleaseFailure.get() != null) return;
             // The source scheduler and actor-native FFM are now fully drained.
             finalized = true;
             sourceCleanupMailbox.close();
@@ -6424,7 +6444,9 @@ public final class ActorRuntime implements AutoCloseable {
         private void onNativePhysicalRelease() {
             synchronized (lifecycleLock) {
                 if (stopped.get() && nativeMemoryRetirementComplete
-                        && memorySlice.retainedNativeBytes.get() == 0L) {
+                        && memorySlice.retainedNativeBytes.get() == 0L
+                        && memorySlice.explicitNativeI64Regions.isEmpty()
+                        && memorySlice.nativePhysicalReleaseFailure.get() == null) {
                     finalizeStopLocked();
                 }
                 lifecycleLock.notifyAll();
