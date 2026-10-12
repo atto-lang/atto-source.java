@@ -69,6 +69,43 @@ final class SharedUntrustedIsolatePoolTest {
         assertTrue(untrusted.hostAheadOfTime());
     }
 
+    @Test
+    void adversarialHotLoadValidatesBeforeAllocatingNativeIsolate() {
+        // Deliberately runs on ordinary OpenJDK: validation must happen before
+        // the singleton Engine/guest language-isolate is acquired.
+        try (HotReloadManager loader = HotReloadManager.forUntrustedActors(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    loader.load("oversized.ores", "x".repeat(1_048_577)));
+            assertEquals(0, loader.liveGenerations());
+        }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches = "true")
+    void hotReloadMultipleGenerationsReuseExactlyOneUntrustedEngine() {
+        try (HotReloadManager loader = HotReloadManager.forUntrustedActors(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            HotReloadManager.Generation first = loader.load(
+                    "a.ores", "pub routine main(): void { return; }");
+            HotReloadManager.Generation second = loader.load(
+                    "b.ores", "pub routine main(): void { val x = 2; return; }");
+            assertEquals(2, loader.liveGenerations());
+            assertNotSame(first.context(), second.context());
+            assertSame(first.context().getEngine(), second.context().getEngine(),
+                    "hot-loaded generations may allocate Contexts, never Engines");
+            first.start();
+            second.start();
+            loader.retire(first.id());
+            assertTrue(first.closed());
+            assertEquals(1, loader.liveGenerations());
+            HotReloadManager.Generation replacement = loader.load(
+                    "c.ores", "pub routine main(): void { return; }");
+            assertSame(second.context().getEngine(), replacement.context().getEngine(),
+                    "retirement must reuse the existing physical untrusted isolate");
+        }
+    }
+
     /**
      * Run on a real GraalVM runner with an Oreslang language-isolate image.
      * It must NEVER pass by silently switching to the host JVM interpreter.
