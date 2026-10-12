@@ -1,9 +1,12 @@
 package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -88,6 +91,69 @@ final class ActorRuntimeRestartAdmissionTest {
             assertEquals(0, initialized.get(),
                     "a cancelled hidden actor ran its guest initializer");
             assertFalse(runtime.isAlive(hidden));
+        }
+    }
+
+    @RepeatedTest(20)
+    void concurrentStopAndCommitHaveExactlyOnePublicationOrder() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> failed = runtime.spawnPrivate(
+                    (ActorRuntime.BehaviorFactory<Integer>) context ->
+                            (value, turn) -> { throw new IllegalStateException("planned"); });
+            group.manageWorker(failed);
+            var original = group.supervisedWorkerSnapshot(failed);
+            failed.send(1);
+            assertTrue(failed.awaitTermination(5, TimeUnit.SECONDS));
+            waitForFinalized(group, original.child());
+            var permit = group.reserveFinalizedRestart(original.child(), failed.id(), 1);
+            ActorRuntime.ActorRef<Integer> candidate = group.spawnUnpublishedRestartCandidate(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
+                    context -> (value, turn) -> {});
+            CountDownLatch start = new CountDownLatch(1);
+            CountDownLatch bothReady = new CountDownLatch(2);
+            AtomicReference<SupervisorChildRegistry.Snapshot> committed =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> admissionFailure = new AtomicReference<>();
+            AtomicReference<Throwable> physicalFailure = new AtomicReference<>();
+            Thread publisher = new Thread(() -> {
+                bothReady.countDown();
+                try {
+                    start.await();
+                    committed.set(group.commitUnpublishedRestart(permit, candidate));
+                } catch (Throwable failure) {
+                    admissionFailure.set(failure);
+                }
+            }, "restart-publisher");
+            Thread stopper = new Thread(() -> {
+                bothReady.countDown();
+                try {
+                    start.await();
+                    candidate.stop();
+                } catch (Throwable failure) {
+                    physicalFailure.set(failure);
+                }
+            }, "restart-physical-stopper");
+            publisher.start();
+            stopper.start();
+            assertTrue(bothReady.await(5, TimeUnit.SECONDS));
+            start.countDown();
+            publisher.join(5000);
+            stopper.join(5000);
+            assertFalse(publisher.isAlive(), "RESTART publication deadlocked with STOP");
+            assertFalse(stopper.isAlive(), "physical STOP deadlocked with publication");
+            assertNull(physicalFailure.get());
+            assertTrue(candidate.awaitTermination(5, TimeUnit.SECONDS));
+            if (committed.get() != null) {
+                assertNull(admissionFailure.get());
+                assertEquals(candidate.id(), committed.get().actor());
+                assertEquals(2, committed.get().incarnation());
+            } else {
+                assertInstanceOf(IllegalStateException.class, admissionFailure.get());
+                assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                        group.abortCleanedUnpublishedRestart(permit, candidate).phase());
+            }
+            group.close();
         }
     }
 
