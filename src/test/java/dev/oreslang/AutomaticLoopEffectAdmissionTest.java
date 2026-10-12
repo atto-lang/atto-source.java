@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.types.DeclaredEffectVerifier;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
@@ -27,12 +28,12 @@ final class AutomaticLoopEffectAdmissionTest {
                 done
                 """);
         result.put("for-of", """
-                for const value of items do
+                for const value of arr[1, 2, 3] do
                   val next = value + 1;
                 done
                 """);
         result.put("destructuring for-of", """
-                for const [value] of items do
+                for const [value] of arr[[1], [2], [3]] do
                   val next = value + 1;
                 done
                 """);
@@ -42,7 +43,7 @@ final class AutomaticLoopEffectAdmissionTest {
     @TestFactory Stream<DynamicTest> missingSuspendEffectRejectedForEveryLoopShape() {
         return loops().entrySet().stream().map(entry -> DynamicTest.dynamicTest(
                 entry.getKey(), () -> {
-                    String source = "fnc invalid(Array<int> items): void using io {\n"
+                    String source = "fnc invalid(): void using io, alloc {\n"
                             + entry.getValue() + " return;\n}";
                     var parsed = assertDoesNotThrow(() -> Parser.parse(source), entry.getKey());
                     var error = assertThrows(IllegalArgumentException.class,
@@ -55,11 +56,11 @@ final class AutomaticLoopEffectAdmissionTest {
     @TestFactory Stream<DynamicTest> explicitSuspendEffectAcceptsPureLoopShapes() {
         return loops().entrySet().stream().map(entry -> DynamicTest.dynamicTest(
                 entry.getKey(), () -> {
-                    String source = "fnc good(Array<int> items): void using suspend {\n"
+                    String source = "fnc good(): void using suspend, alloc {\n"
                             + entry.getValue() + " return;\n}";
-                    assertDoesNotThrow(
-                            () -> DeclaredEffectVerifier.verify(Parser.parse(source)),
-                            entry.getKey());
+                    var parsed = assertDoesNotThrow(() -> Parser.parse(source), entry.getKey());
+                    assertDoesNotThrow(() -> DeclaredEffectVerifier.verify(parsed), entry.getKey());
+                    assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source), entry.getKey());
                 }));
     }
 
