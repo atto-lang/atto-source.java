@@ -88,8 +88,13 @@ final class OresContextLifecycleTest {
     void guestFinallyCanResumeAfterFailedHostPreflightAndDisposeOnRetry()
             throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP);
         Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(true).out(output).build();
+                .allowAllAccess(true)
+                .arguments(OresLanguage.ID,
+                        policy.applicationArguments(ExecutionProfile.serverJit()))
+                .out(output).build();
         boolean disposed = false;
         try {
             String sourceText = """
@@ -157,6 +162,27 @@ final class OresContextLifecycleTest {
             if (!disposed) {
                 try { context.close(); } catch (RuntimeException ignored) { }
             }
+        }
+    }
+
+    @Test
+    void publicChannelExportRequiresExplicitJavaInteropCapability() throws Exception {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).build()) {
+            Value source = context.parse(Source.newBuilder(
+                    OresLanguage.ID, """
+                    define module Internal as
+                      pub let Channel<int> gate = Channel.new<int>(1);
+                    end
+                    pub fnc channel(): Channel<int> {
+                      return Internal.gate;
+                    }
+                    """, "channel-export-denied.ores").build());
+            RuntimeException denied = assertThrows(RuntimeException.class,
+                    () -> source.execute(
+                            OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "channel"));
+            assertTrue(denied.toString().contains("JAVA_INTEROP"),
+                    "default policy must reject mutable host channel export: " + denied);
         }
     }
 
