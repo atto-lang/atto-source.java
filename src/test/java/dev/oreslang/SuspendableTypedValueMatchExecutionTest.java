@@ -109,7 +109,7 @@ final class SuspendableTypedValueMatchExecutionTest {
 
     @Test
     void awaitedArmReturnThroughTryFinallyRetainsLexicalOwner() throws Exception {
-        assertEquals("finally-once\\nouter-cleanup\\n42", run("""
+        assertEquals("finally-once\nouter-cleanup\n42", run("""
                 async fnc ready(): int { return 7; }
                 pub async fnc main(): void {
                   const answer: int = match<ret=int> 7 over {
@@ -131,7 +131,7 @@ final class SuspendableTypedValueMatchExecutionTest {
 
     @Test
     void nestedIfAndAwaitedResultDoNotEscapeEnclosingCallable() throws Exception {
-        assertEquals("selected\\n42\\nafter-match", run("""
+        assertEquals("selected\n42\nafter-match", run("""
                 async fnc ready(): int { return 7; }
                 pub async fnc main(): void {
                   const answer: int = match<ret=int> 7 over {
