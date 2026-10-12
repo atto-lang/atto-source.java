@@ -178,6 +178,78 @@ final class SerialExecutionTicketTest {
         otherGate.close();
     }
 
+    @Test void controlReservationLinearizesWithRetirementAndRejectsForeignOwners()
+            throws Exception {
+        Object incarnation = new Object();
+        SerialActorAdmission gate = new SerialActorAdmission(2);
+        var lease = gate.submit(MESSAGE).join();
+        var ticket = new SerialExecutionTicket(
+                "actor", incarnation, 19L, gate, lease, () -> true);
+        java.util.concurrent.atomic.AtomicInteger charged = new java.util.concurrent.atomic.AtomicInteger();
+
+        assertEquals(SerialExecutionTicket.ControlReservation.REVOKED,
+                ticket.reserveControlSlotFor("foreign", incarnation, () -> {
+                    charged.incrementAndGet();
+                    return true;
+                }), "foreign ticket must never invoke the accounting reservation");
+        assertEquals(SerialExecutionTicket.ControlReservation.REVOKED,
+                ticket.reserveControlSlotFor("actor", new Object(), () -> {
+                    charged.incrementAndGet();
+                    return true;
+                }), "old incarnation must never invoke the accounting reservation");
+        assertEquals(0, charged.get());
+        assertEquals(SerialExecutionTicket.ControlReservation.FULL,
+                ticket.reserveControlSlotFor("actor", incarnation, () -> false),
+                "a genuinely live task may report a full CONTROL lane");
+
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var reservation = workers.submit(() -> ticket.reserveControlSlotFor(
+                    "actor", incarnation, () -> {
+                        entered.countDown();
+                        try {
+                            if (!release.await(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                                throw new AssertionError("reservation barrier timed out");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                        charged.incrementAndGet();
+                        return true;
+                    }));
+            try {
+                assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS));
+                var retireStarted = new java.util.concurrent.CountDownLatch(1);
+                var retirement = workers.submit(() -> {
+                    retireStarted.countDown();
+                    ticket.retire();
+                });
+                assertTrue(retireStarted.await(2, java.util.concurrent.TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> retirement.get(100, java.util.concurrent.TimeUnit.MILLISECONDS),
+                        "retirement cannot linearize halfway through an accepted reservation");
+                release.countDown();
+                assertEquals(SerialExecutionTicket.ControlReservation.RESERVED,
+                        reservation.get(2, java.util.concurrent.TimeUnit.SECONDS));
+                retirement.get(2, java.util.concurrent.TimeUnit.SECONDS);
+            } finally {
+                release.countDown();
+            }
+        }
+
+        assertEquals(1, charged.get());
+        assertEquals(SerialExecutionTicket.ControlReservation.REVOKED,
+                ticket.reserveControlSlotFor("actor", incarnation, () -> {
+                    charged.incrementAndGet();
+                    return true;
+                }), "a retired task cannot charge CONTROL or trigger overflow");
+        assertEquals(1, charged.get());
+        lease.close();
+        gate.close();
+    }
+
     @Test void sourceTicketRejectsForeignIncarnationBeforeControlQueueReservation() {
         Object original = new Object();
         Object restarted = new Object();
