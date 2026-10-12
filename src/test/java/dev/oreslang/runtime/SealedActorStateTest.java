@@ -52,6 +52,22 @@ final class SealedActorStateTest {
                             assertEquals(12L, outer.read("count"));
                             return null;
                         });
+                        // Guest READ mode is enforced by the actor-owned runtime too.
+                        assertEquals(12L, ((Number) current.critical(false,
+                                s -> s.read("count"))).longValue());
+                        assertThrows(SecurityException.class, () -> current.critical(false, s -> {
+                            s.write("count", 99L);
+                            return null;
+                        }));
+                        current.critical(false, read -> {
+                            assertThrows(SecurityException.class, () ->
+                                    current.critical(true, write -> {
+                                        write.write("count", 88L);
+                                        return null;
+                                    }));
+                            assertEquals(12L, ((Number) read.read("count")).longValue());
+                            return null;
+                        });
                         assertThrows(IllegalStateException.class, () -> stale.get().read("count"));
                         assertThrows(IllegalArgumentException.class,
                                 () -> current.critical(s -> { s.write("count", "invalid"); return null; }));
