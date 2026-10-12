@@ -180,7 +180,10 @@ public final class DopKernelIR {
         Objects.requireNonNull(kernel);
         Objects.requireNonNull(target);
         var p = kernel.layout();
-        if (!target.float32() || p.byteLength() > target.maximumBufferBytes()
+        // Zero-row layouts are valid host descriptions/no-op CPU kernels,
+        // but must never become a provider-facing zero-size NDRange.
+        if (!target.float32() || p.rows() == 0 || p.byteLength() == 0
+                || p.byteLength() > target.maximumBufferBytes()
                 || p.rows() > target.maximumRows()) {
             throw new IllegalArgumentException("requested device cannot admit kernel layout/effect");
         }
