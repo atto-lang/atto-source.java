@@ -136,6 +136,43 @@ final class ActorTwoPhaseFinalizationTest {
     }
 
     @Test
+    void physicalStopObserverCanSynchronouslyAwaitDoneWithoutDeadlocking()
+            throws Exception {
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 16, 32))) {
+            var actor = runtime.<Integer>spawnShared(() -> (mail, context) -> {});
+            actor.ready().get(3, TimeUnit.SECONDS);
+
+            Field physicalField = actor.getClass().getDeclaredField(
+                    "physicalTerminationFuture");
+            physicalField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            OresFuture<Void> physical = (OresFuture<Void>) physicalField.get(actor);
+            CountDownLatch observerFinished = new CountDownLatch(1);
+            AtomicReference<Throwable> observerFailure = new AtomicReference<>();
+            physical.whenCompleteRuntime((value, failure) -> {
+                try {
+                    assertNull(failure);
+                    // The old publication order invoked this callback before
+                    // done settled; get() deadlocked the finalization thread.
+                    actor.done().get(2, TimeUnit.SECONDS);
+                    assertTrue(actor.done().isDone());
+                    assertTrue(actor.ready().isDone());
+                } catch (Throwable problem) {
+                    observerFailure.set(problem);
+                } finally {
+                    observerFinished.countDown();
+                }
+            });
+
+            actor.stop();
+            assertTrue(observerFinished.await(3, TimeUnit.SECONDS));
+            assertNull(observerFailure.get(), () -> "terminal order: " + observerFailure.get());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void terminalFutureObserverRunsOutsideActorLifecycleMonitor()
             throws Exception {
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
