@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static dev.oreslang.parser.Token.Type.*;
 
@@ -33,6 +34,35 @@ public final class Parser {
         MacroExpander.Result expanded = MacroExpander.expand(tokens, previousMacros);
         this.tokens = expanded.tokens();
         this.macroSnapshot = expanded.snapshot();
+    }
+
+    /**
+     * Validates a macro capture as exactly one expression without re-entering
+     * macro expansion. The expander resolves nested invocations first; the
+     * parser must then consume every captured token (not merely a prefix).
+     * This deliberately does not type-check or execute the expression: the
+     * completed program still goes through full type/ownership/effect checks.
+     */
+    static void validateMacroExpressionFragment(List<Token> fragment) {
+        if (fragment.isEmpty()) {
+            throw new IllegalArgumentException("empty macro expression capture");
+        }
+        Token last = fragment.getLast();
+        List<Token> complete = new ArrayList<>(fragment);
+        complete.add(new Token(EOF, "", last.line(), last.column() + last.lexeme().length()));
+        Parser parser = new Parser(complete, true);
+        parser.parseExpression();
+        parser.consume(EOF, "macro expression capture must be exactly one complete expression");
+    }
+
+    /** Admission-only parser for tokens already expanded by MacroExpander. */
+    private Parser(List<Token> expandedTokens, boolean skipMacroExpansion) {
+        if (!skipMacroExpansion || expandedTokens.isEmpty()
+                || expandedTokens.getLast().type() != EOF) {
+            throw new IllegalArgumentException("macro fragment parser requires expanded tokens ending in EOF");
+        }
+        this.tokens = List.copyOf(expandedTokens);
+        this.macroSnapshot = new MacroExpander.Snapshot(Map.of());
     }
 
     /** Compilation callers may use this snapshot to fence AOT macros during hot reload. */
