@@ -56,6 +56,50 @@ final class OresSchedulerQuiescenceTest {
     }
 
     @Test
+    void runtimeOwnedSchedulerCloseCannotEraseStillRunningTask()
+            throws Exception {
+        java.util.concurrent.ExecutorService carrier =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "test-close-quiescence", 1, carrier);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch retired = new CountDownLatch(1);
+        AtomicInteger callbacks = new AtomicInteger();
+        try {
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                entered.countDown();
+                assertTrue(release.await(3, TimeUnit.SECONDS));
+                return OresScheduler.done(42);
+            }, () -> {
+                callbacks.incrementAndGet();
+                retired.countDown();
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            scheduler.close();
+            assertTrue(result.isCancelled(),
+                    "scheduler shutdown cancels the public Future");
+            assertEquals(0, callbacks.get(),
+                    "shutdown cannot reclaim resources on a live guest carrier");
+            java.lang.reflect.Field tasksField =
+                    OresScheduler.class.getDeclaredField("tasks");
+            tasksField.setAccessible(true);
+            assertEquals(1, ((java.util.Set<?>) tasksField.get(scheduler)).size(),
+                    "close must retain in-flight task until carrier unwinds");
+        } finally {
+            release.countDown();
+            assertTrue(retired.await(3, TimeUnit.SECONDS));
+            assertEquals(1, callbacks.get());
+            java.lang.reflect.Field tasksField =
+                    OresScheduler.class.getDeclaredField("tasks");
+            tasksField.setAccessible(true);
+            assertTrue(((java.util.Set<?>) tasksField.get(scheduler)).isEmpty());
+            carrier.shutdownNow();
+            carrier.awaitTermination(3, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void cancellationBeforeGuestAdmissionSkipsGuestAndRetiresOnlyOnce()
             throws Exception {
         CountDownLatch firstEntered = new CountDownLatch(1);
