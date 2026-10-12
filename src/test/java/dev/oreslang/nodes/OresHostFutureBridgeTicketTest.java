@@ -2,6 +2,7 @@ package dev.oreslang.nodes;
 
 import dev.oreslang.runtime.OresFuture;
 import org.junit.jupiter.api.Test;
+import java.lang.reflect.Field;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -59,6 +60,23 @@ final class OresHostFutureBridgeTicketTest {
         slot.publish("work", slot.nonce(), context, root, original);
         assertSame(original, slot.result());
         slot.close();
+    }
+
+    @Test
+    void rejectedClaimCannotRetainPartiallyValidatedContext() throws Exception {
+        var slot = new OresHostFutureBridge.Slot("work");
+        Object context = new Object();
+        Field contextOwner = OresHostFutureBridge.Slot.class.getDeclaredField("ownerContext");
+        contextOwner.setAccessible(true);
+        assertThrows(NullPointerException.class,
+                () -> slot.claim("work", slot.nonce(), context, null));
+        assertNull(contextOwner.get(slot),
+                "partial claim must not keep an unclaimed context alive");
+        Object root = new Object();
+        slot.claim("work", slot.nonce(), context, root);
+        assertSame(context, contextOwner.get(slot));
+        slot.close();
+        assertNull(contextOwner.get(slot));
     }
 
     @Test

@@ -118,6 +118,32 @@ public final class OresEvalRootNode extends RootNode {
             OresHostFutureBridge.requireActiveScope(functionName, nonce, context, this);
         }
 
+        // A malformed reserved host command must not fall through to guest
+        // main or trigger evaluator initialization as a side effect.
+        if (arguments.length > 0
+                && arguments[0] instanceof String control
+                && control.startsWith("__ores_internal_")) {
+            boolean wellFormed = isControl(arguments, LINK_ONLY_COMMAND)
+                    || isControl(arguments, INIT_ONLY_COMMAND)
+                    || isControl(arguments, MAIN_ONLY_COMMAND)
+                    || isControl(arguments, PREPARE_CONTEXT_DISPOSAL_COMMAND)
+                    || (REGISTER_IMPORT_COMMAND.equals(control)
+                        && arguments.length == 3
+                        && arguments[1] instanceof String
+                        && arguments[2] instanceof String)
+                    || (INVOKE_PUBLIC_COMMAND.equals(control)
+                        && arguments.length >= 2
+                        && arguments[1] instanceof String)
+                    || (futureBridgeCommand
+                        && arguments.length >= 3
+                        && arguments[1] instanceof String
+                        && arguments[2] instanceof String);
+            if (!wellFormed) {
+                throw new SecurityException(
+                        "malformed or unknown internal Oreslang host control command");
+            }
+        }
+
         Evaluator current = evaluator(context);
         if (isControl(arguments, LINK_ONLY_COMMAND)) {
             current.link();
@@ -150,10 +176,20 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "host Future handoff requires an async public function: " + functionName);
                 }
-                if (!OresHostFutureBridge.publish(
-                        functionName, (String) arguments[2], context, this, future)) {
-                    throw new SecurityException(
-                            "host Future handoff requires an active scoped invocation");
+                try {
+                    if (!OresHostFutureBridge.publish(
+                            functionName, (String) arguments[2], context, this, future)) {
+                        throw new SecurityException(
+                                "host Future handoff requires an active scoped invocation");
+                    }
+                } catch (RuntimeException | Error rejected) {
+                    // Producer exists but no host receiver owns it. Request
+                    // cancellation and retain the actual cleanup barrier.
+                    try { future.cancel(false); }
+                    catch (RuntimeException | Error cancelFailure) {
+                        if (cancelFailure != rejected) rejected.addSuppressed(cancelFailure);
+                    }
+                    throw rejected;
                 }
                 // Return a plain scalar acknowledgment. The embedder already
                 // has the real Future in its thread-local host-only scope and
