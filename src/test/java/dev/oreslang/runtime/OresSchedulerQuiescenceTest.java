@@ -822,6 +822,77 @@ final class OresSchedulerQuiescenceTest {
     }
 
     @Test
+    void directCancellationRevokesAwaitBeforeBlockedSubscriberDelivery()
+            throws Exception {
+        OresFuture<Integer> neverSettles = new OresFuture<>();
+        CountDownLatch subscriberEntered = new CountDownLatch(1);
+        CountDownLatch releaseSubscriber = new CountDownLatch(1);
+        CountDownLatch physicallyRetired = new CountDownLatch(1);
+        AtomicInteger retirements = new AtomicInteger();
+        int before = OresScheduler.availableWallDeadlineAdmissions();
+        OresScheduler scheduler = new OresScheduler(1);
+        Thread canceller = null;
+        try {
+            OresFuture<Integer> result = scheduler.startWithWallDeadline(
+                    resume -> OresScheduler.await(neverSettles),
+                    () -> {
+                        retirements.incrementAndGet();
+                        physicallyRetired.countDown();
+                    },
+                    TimeUnit.SECONDS.toNanos(30),
+                    new IllegalStateException("unexpected expiration"));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (neverSettles.pendingRuntimeWaiterCount() != 1
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(1, neverSettles.pendingRuntimeWaiterCount());
+
+            result.whenCompleteRuntime((value, failure) -> {
+                subscriberEntered.countDown();
+                try {
+                    releaseSubscriber.await(3, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            canceller = Thread.ofPlatform().start(() -> result.cancel(false));
+            assertTrue(subscriberEntered.await(3, TimeUnit.SECONDS),
+                    "host subscriber must be inside its blocking callback");
+            assertTrue(result.isCancelled());
+            assertTrue(physicallyRetired.await(2, TimeUnit.SECONDS),
+                    "guest task must retire independently of subscriber release");
+            assertEquals(0, neverSettles.pendingRuntimeWaiterCount(),
+                    "internal cancellation hook must detach an unresolved await");
+            assertEquals(1, retirements.get());
+            assertEquals(before - 1, OresScheduler.availableWallDeadlineAdmissions(),
+                    "blocked subscriber still retains its notification reservation");
+        } finally {
+            releaseSubscriber.countDown();
+            if (canceller != null) {
+                canceller.join(3_000);
+                assertFalse(canceller.isAlive());
+            }
+            scheduler.close();
+        }
+        assertEquals(before, OresScheduler.availableWallDeadlineAdmissions(),
+                "terminal callback drain must eventually release the admission");
+    }
+
+    @Test
+    void cancellingFutureInvokesInternalHookBeforeSynchronousSubscriber()
+            throws Exception {
+        AtomicBoolean revoked = new AtomicBoolean();
+        OresFuture<Integer> result = new OresFuture<>(() -> revoked.set(true));
+        AtomicBoolean sawRevocation = new AtomicBoolean();
+        result.whenCompleteRuntime((value, failure) -> {
+            sawRevocation.set(revoked.get());
+        });
+        assertTrue(result.cancel(false));
+        assertTrue(sawRevocation.get(),
+                "pre-registered Future subscriber must observe internal revocation");
+    }
+
+    @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
         AtomicInteger count = new AtomicInteger();
