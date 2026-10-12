@@ -805,6 +805,16 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export public function '" + name + "'");
             }
+            // External host iteration of an async generator would start
+            // an AsyncRuntime virtual carrier without an authorized, pumped
+            // Truffle guest turn. The generator is lazy, so reject here
+            // BEFORE constructing/publishing its handle or guest side effects.
+            // Guest-to-guest async generator iteration remains available.
+            if (!requireAsync && fn.generator() && fn.async()) {
+                throw new SecurityException(
+                        "host async generator pulls require an authorized isolate turn pump: "
+                        + name);
+            }
             // An async public callable produces a scheduler-owned Future.
             // Legacy Value.execute() plus Value.asHostObject() must not return
             // that Future: the host's second interop entry can race the freshly

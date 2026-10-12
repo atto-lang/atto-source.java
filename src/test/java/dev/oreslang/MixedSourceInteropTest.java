@@ -280,11 +280,20 @@ final class MixedSourceInteropTest {
                         throw new AssertionError("sync generator yielded wrong value");
                       }
                     }
-                    try (dev.oreslang.runtime.GeneratorRuntime.AsyncGenerator<?> values = Ores.stream()) {
-                      var step = values.nextStep().get(5, java.util.concurrent.TimeUnit.SECONDS);
-                      if (step.done() || ((Number) step.value()).intValue() != 8) {
-                        throw new AssertionError("async generator yielded wrong value");
+                    // An external Java-host async generator pull cannot safely
+                    // enter this context without a scheduler-owned isolate pump.
+                    // Reject before starting the producer, not after nextStep().
+                    boolean asyncRejected = false;
+                    try {
+                      Ores.stream();
+                    } catch (RuntimeException expected) {
+                      if (!String.valueOf(expected).contains("host async generator pulls require")) {
+                        throw expected;
                       }
+                      asyncRejected = true;
+                    }
+                    if (!asyncRejected) {
+                      throw new AssertionError("unsafe Java async generator was admitted");
                     }
                     Ores.report();
                   }
