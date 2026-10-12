@@ -134,6 +134,30 @@ public final class MessagePackCollectionCodec {
         return writer.result();
     }
 
+    /**
+     * Strict, bounded first-stage header parsing for closed actor codecs.
+     * It reads only the wire version and caller schema ID, never selects a
+     * schema from the incoming bytes. Callers must look it up in a trusted
+     * compiler-bound table and then invoke decode(...) to verify the full
+     * shape digest, canonical payload and absence of trailing bytes.
+     */
+    public static String envelopeSchemaId(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (bytes.length > MAX_BYTES) {
+            throw new IllegalArgumentException("message exceeds maximum byte size");
+        }
+        Reader reader = new Reader(bytes);
+        if (reader.arrayHeader() != 4) {
+            throw new IllegalArgumentException("invalid message envelope arity");
+        }
+        if (reader.signedInt() != VERSION) {
+            throw new IllegalArgumentException("unsupported message format version");
+        }
+        String schema = reader.string();
+        checkSchemaId(schema);
+        return schema;
+    }
+
     public static Object decode(String schemaId, Shape shape, byte[] bytes) {
         checkSchemaId(schemaId);
         Objects.requireNonNull(shape, "shape");
