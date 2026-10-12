@@ -90,6 +90,15 @@ public final class OresEvalRootNode extends RootNode {
         boolean futureBridgeCommand = arguments.length > 0
                 && INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND.equals(arguments[0]);
         if (futureBridgeCommand) {
+            // Adversarial contexts retain a single owner thread and queue root
+            // turns for owner-side pumping. Returning an unpumped host Future
+            // would strand it forever and risk leaking cancellation cleanup.
+            // Reject this entrypoint until a supervisor-owned isolate turn
+            // pump is available; never spawn an orphaned root task.
+            if (context.isolatePolicy().adversarial()) {
+                throw new SecurityException(
+                        "scoped host Future bridge is unavailable in adversarial contexts");
+            }
             if (arguments.length < 3
                     || !(arguments[1] instanceof String functionName)
                     || !(arguments[2] instanceof String nonce)) {
