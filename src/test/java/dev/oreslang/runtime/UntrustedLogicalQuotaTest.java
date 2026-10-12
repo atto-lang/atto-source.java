@@ -38,6 +38,43 @@ final class UntrustedLogicalQuotaTest {
     private static volatile FuelProbe fuelProbe;
     private static volatile DeadlineProbe deadlineProbe;
 
+    private record TimedAdmissionProbe(
+            AtomicReference<OresFuture<Integer>> root,
+            java.util.List<OresFuture<Integer>> children,
+            AtomicReference<Throwable> rejected,
+            java.util.concurrent.CountDownLatch admitted,
+            OresFuture<Integer> never) { }
+
+    private static volatile TimedAdmissionProbe timedAdmissionProbe;
+
+    /** No capture of the enclosing JUnit instance inside an untrusted actor. */
+    private static final class TimedAdmissionTask implements OresScheduler.Task<Integer> {
+        private final ActorRuntime runtime;
+
+        private TimedAdmissionTask(ActorRuntime runtime) {
+            this.runtime = runtime;
+        }
+
+        @Override
+        public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+            if (!resume.initial()) return OresScheduler.done(1);
+            TimedAdmissionProbe probe = timedAdmissionProbe;
+            for (int i = 0; i < 31; i++) {
+                probe.children().add(runtime.startActorTask(
+                        next -> OresScheduler.await(timedAdmissionProbe.never())));
+            }
+            try {
+                runtime.startActorTask(
+                        next -> OresScheduler.await(timedAdmissionProbe.never()));
+            } catch (java.util.concurrent.RejectedExecutionException expected) {
+                probe.rejected().set(expected);
+            } finally {
+                probe.admitted().countDown();
+            }
+            return OresScheduler.await(probe.never());
+        }
+    }
+
     /** Static nested task avoids capturing the enclosing test instance. */
     private static final class NestedSourceQuotaTask implements OresScheduler.Task<Integer> {
         private final ActorRuntime runtime;
@@ -404,6 +441,40 @@ final class UntrustedLogicalQuotaTest {
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
         } finally {
             deadlineProbe = null;
+        }
+    }
+
+
+    @Test
+    void oneUntrustedActorCannotMonopolizeGlobalTimedAdmissionCapacity()
+            throws Exception {
+        AtomicReference<OresFuture<Integer>> root = new AtomicReference<>();
+        java.util.List<OresFuture<Integer>> children =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
+        AtomicReference<Throwable> rejected = new AtomicReference<>();
+        java.util.concurrent.CountDownLatch admitted =
+                new java.util.concurrent.CountDownLatch(1);
+        OresFuture<Integer> never = new OresFuture<>();
+        timedAdmissionProbe = new TimedAdmissionProbe(
+                root, children, rejected, admitted, never);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnUntrusted(context -> (message, turn) ->
+                    timedAdmissionProbe.root().set(
+                            turn.runtime().startActorTask(
+                                    new TimedAdmissionTask(turn.runtime()))));
+            actor.send("start");
+            assertTrue(admitted.await(3, TimeUnit.SECONDS),
+                    "nested tasks should attempt their bounded admission");
+            assertEquals(31, children.size(),
+                    "root plus 31 nested source tasks exhaust the per-actor cap");
+            assertTrue(rejected.get() instanceof java.util.concurrent.RejectedExecutionException,
+                    "the 33rd task must fail closed before consuming global capacity");
+            assertTrue(rejected.get().getMessage().contains("timed source-task admission"),
+                    rejected.get()::getMessage);
+            actor.stop();
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        } finally {
+            timedAdmissionProbe = null;
         }
     }
 
