@@ -110,8 +110,10 @@ out-of-range registers, post-measurement gates and unmeasured circuits are
 rejected before emitting QASM or running the simulator. The simulator
 executes an ideal real-valued statevector, returns exact marginal
 probabilities, and offers deterministic seeded shot sampling (up to 1M
-shots). Circuit builders reject the 1,025th gate **at append time**, preventing
-unbounded intermediate guest allocations. Shot selection precomputes a CDF
+shots). Circuit builders reject the 1,025th gate **at append time**, and
+Circuit constructors validate the collection size **before** copying
+user-supplied gates, preventing oversized lazy collections from forcing
+unbounded traversal/allocation. Shot selection precomputes a CDF
 and uses strict-upper-bound binary search; sampling complexity is
 O(2^classicalBits + shots * classicalBits), not
 O(shots * 2^classicalBits). The simulator rejects invalid probability mass
