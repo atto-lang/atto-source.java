@@ -336,6 +336,11 @@ public final class Ast {
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            if (pipeTransformSpec != null
+                    && (actorKind == ActorKind.NONE || proxySpec != null)) {
+                throw new IllegalArgumentException(
+                        "directional transform actor role requires a local actor declaration");
+            }
         }
 
         /** Compatibility with existing class/actor AST constructors. */
