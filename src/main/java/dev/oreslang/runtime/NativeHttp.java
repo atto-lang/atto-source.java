@@ -329,7 +329,10 @@ public final class NativeHttp implements AutoCloseable {
             if (drained != null) return drained;
             drained = new OresFuture<>(() -> false, () -> { });
             stopAccepting();
-            io.execute(() -> {
+            // A concurrent NativeHttp.close() may have shut down the I/O
+            // executor. Still stop the listener, settle drain and release all
+            // in-flight exchanges instead of leaving this Future pending.
+            executeAbortCleanup(io, () -> {
                 try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
                 finally {
                     synchronized (this) { transportStopped = true; }
