@@ -6,6 +6,7 @@ import dev.oreslang.runtime.OresScheduler;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import dev.oreslang.runtime.OresFuture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -38,6 +39,41 @@ final class ActorContinuationTeardownTest {
             assertTrue(ref.failure().isEmpty());
             assertEquals(0, taskBodies.get(),
                     "source continuations queued behind a stopped actor must not run");
+        }
+    }
+
+    @Test
+    void sourceAwaitProducerCompletingAfterStopCannotReenterOldActor() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+            AtomicInteger segments = new AtomicInteger();
+            AtomicInteger published = new AtomicInteger();
+            var ref = runtime.<Integer>spawnShared(() -> (mail, context) -> {
+                context.runtime().startActorTask(resume -> {
+                    int segment = segments.getAndIncrement();
+                    if (segment == 0) {
+                        suspended.countDown();
+                        return OresScheduler.await(producer);
+                    }
+                    // A stale Future cannot bring a stopped incarnation back
+                    // into guest code to publish an already-revoked result.
+                    published.incrementAndGet();
+                    return OresScheduler.done(null);
+                });
+            });
+            ref.send(1);
+            assertTrue(suspended.await(5, TimeUnit.SECONDS),
+                    "the source scheduler did not enter the awaited segment");
+            ref.stop();
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(1, segments.get());
+            assertTrue(producer.completeFromRuntime(7));
+            assertEquals(0, published.get(),
+                    "the producer must not execute a guest callback on its own thread");
+            assertEquals(1, segments.get(),
+                    "terminally stopped actor must not execute a stale source continuation");
         }
     }
 }
