@@ -57,6 +57,18 @@ public final class OresScheduler implements AutoCloseable {
     /** Result of one resumable task turn. */
     public sealed interface Step<T> permits Done, Await, Cooperate { }
 
+    /**
+     * Host-issued, unforgeable guest-unwind signal. Unlike an ordinary
+     * cancellation failure, this cannot be handled by lexical catch bodies.
+     * The originating SourceTask still executes its defer/finally frames.
+     */
+    public static final class StructuredCancellationSignal
+            extends java.util.concurrent.CancellationException {
+        private StructuredCancellationSignal() {
+            super("structured source task cancellation");
+        }
+    }
+
     /** The async task has produced its final value. */
     public record Done<T>(T value) implements Step<T> { }
 
@@ -464,9 +476,8 @@ public final class OresScheduler implements AutoCloseable {
         // replace a claimed cancellation resume or execute cleanup twice.
         private final AtomicBoolean structuredCancellationRequested =
                 new AtomicBoolean();
-        private final java.util.concurrent.CancellationException
-                structuredCancellation = new java.util.concurrent.CancellationException(
-                        "structured source task cancellation");
+        private final StructuredCancellationSignal structuredCancellation =
+                new StructuredCancellationSignal();
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
