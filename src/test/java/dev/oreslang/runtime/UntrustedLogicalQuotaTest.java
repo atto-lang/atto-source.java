@@ -353,6 +353,60 @@ final class UntrustedLogicalQuotaTest {
         }
     }
 
+
+    @Test
+    void neverSettlingUntrustedAwaitExpiresAndAllowsNewCohort() throws Exception {
+        AtomicReference<OresFuture<Integer>> resultRef = new AtomicReference<>();
+        AtomicInteger resumes = new AtomicInteger();
+        OresFuture<Integer> unresolved = new OresFuture<>();
+        deadlineProbe = new DeadlineProbe(resultRef, resumes, unresolved);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnUntrusted(context -> (message, turn) -> {
+                if (message.equals("await")) {
+                    deadlineProbe.taskRef().set(turn.runtime().startActorTask(resume -> {
+                        deadlineProbe.resumes().incrementAndGet();
+                        return OresScheduler.await(deadlineProbe.awaited());
+                    }));
+                } else if (message.equals("restart")) {
+                    deadlineProbe.taskRef().set(turn.runtime().startActorTask(
+                            resume -> OresScheduler.done(23)));
+                }
+            });
+            actor.send("await");
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (resultRef.get() == null && System.nanoTime() < until) {
+                Thread.onSpinWait();
+            }
+            OresFuture<Integer> first = resultRef.get();
+            assertTrue(first != null, "untrusted await must be admitted");
+            var failed = assertThrows(ExecutionException.class,
+                    () -> first.get(3, TimeUnit.SECONDS));
+            assertTrue(failed.getCause()
+                            instanceof ActorRuntime.UntrustedActorQuotaExceededException,
+                    () -> "unexpected suspended failure: " + failed.getCause());
+            assertEquals(ActorRuntime.UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                    ((ActorRuntime.UntrustedActorQuotaExceededException)
+                            failed.getCause()).resource());
+            assertEquals(1, resumes.get(),
+                    "timer must not resume the guest continuation to expire it");
+            assertEquals(0, unresolved.pendingRuntimeWaiterCount(),
+                    "deadline must detach the unresolved producer waiter");
+
+            actor.send("restart");
+            until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (resultRef.get() == first && System.nanoTime() < until) {
+                Thread.onSpinWait();
+            }
+            assertTrue(resultRef.get() != first,
+                    "expired logical cohort must release admission for a new message");
+            assertEquals(23, resultRef.get().get(3, TimeUnit.SECONDS));
+            actor.stop();
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        } finally {
+            deadlineProbe = null;
+        }
+    }
+
     @Test
     void actualUntrustedActorTaskCannotResetDeadlineAfterAwait() throws Exception {
         AtomicReference<OresFuture<Integer>> taskRef = new AtomicReference<>();
