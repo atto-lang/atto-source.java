@@ -259,7 +259,7 @@ public final class NativeHttp implements AutoCloseable {
             if (drained != null) return drained;
             drained = new OresFuture<>(() -> false, () -> { });
             stopAccepting();
-            io.execute(() -> {
+            Runnable stopTransport = () -> {
                 try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
                 finally {
                     synchronized (this) { transportStopped = true; }
@@ -267,7 +267,15 @@ public final class NativeHttp implements AutoCloseable {
                     servers.remove(this);
                     completeDrain();
                 }
-            });
+            };
+            try {
+                io.execute(stopTransport);
+            } catch (RejectedExecutionException executorClosed) {
+                // A concurrent outer runtime shutdown can reject the stop
+                // task after drained was published. Preserve drain completion
+                // and keep blocking transport.stop off the actor carrier.
+                Thread.startVirtualThread(stopTransport);
+            }
             return drained;
         }
         private synchronized void completeDrain() {
@@ -586,7 +594,15 @@ public final class NativeHttp implements AutoCloseable {
                         CorePerf.end(CorePerf.HTTP_IO_WORK, workPerf);
                     }
                 });
-            } catch (RuntimeException failure) { state.abort(500); result.failFromRuntime(failure); }
+            } catch (RuntimeException failure) {
+                // The task never entered the I/O executor. Clear its reserved
+                // busy slot before aborting, or abort() mistakes a rejected
+                // submission for an in-progress response and closes without
+                // attempting the appropriate HTTP 500 error status.
+                synchronized (state) { state.busy = false; }
+                state.abort(500);
+                result.failFromRuntime(failure);
+            }
             return result;
         }
     }
