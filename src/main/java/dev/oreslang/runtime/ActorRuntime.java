@@ -1344,10 +1344,10 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 long result = body.apply(loan);
                 values.clear();
-                values.putAll(loan.snapshot);
+                values.putAll(((ReadLoan) loan).snapshot);
                 return result;
             } finally {
-                loan.expire();
+                ((ReadLoan) loan).expire();
                 loanActive = false;
             }
         }
