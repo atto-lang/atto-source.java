@@ -6,6 +6,7 @@
 #include <netdb.h>
 #include <poll.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +18,10 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+
+#ifndef NI_MAXHOST
+#define NI_MAXHOST 1025
+#endif
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
