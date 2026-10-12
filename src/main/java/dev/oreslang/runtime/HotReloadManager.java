@@ -19,9 +19,11 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Versioned source hot loader.
  *
- * Loading is side-effect free with respect to guest execution: source is
- * parsed/type/capability checked, then assigned a fresh context. The trusted
- * supervisor explicitly starts the generation after activation.
+ * Loading is side-effect free with respect to guest execution. For trusted
+ * code the host validates before creating a Context. For UNTRUSTED code the
+ * trusted host checks bounded source metadata only and routes parsing,
+ * linking and capability admission through the single shared guest isolate.
+ * The supervisor explicitly starts the generation after activation.
  *
  * No JNI/FFI or OS dynamic-library loading is required.
  */
@@ -285,7 +287,14 @@ public final class HotReloadManager implements AutoCloseable {
             if (!started.compareAndSet(false, true)) throw new IllegalStateException("generation already started");
             if (group != null) {
                 try {
-                    context.eval(source);
+                    // Untrusted actor hot-loading is not authorization to run
+                    // an arbitrary top-level main with the group's long-lived
+                    // cumulative CPU budget. Link and initialize only; actor
+                    // messages are admitted separately through the isolated
+                    // source actor control plane with per-actor turn quotas.
+                    Value parsed = context.parse(source);
+                    parsed.execute(dev.oreslang.nodes.OresEvalRootNode.LINK_ONLY_COMMAND);
+                    parsed.execute(dev.oreslang.nodes.OresEvalRootNode.INIT_ONLY_COMMAND);
                     return null;
                 } catch (RuntimeException guestFailure) {
                     try { close(); } catch (RuntimeException ignored) {
