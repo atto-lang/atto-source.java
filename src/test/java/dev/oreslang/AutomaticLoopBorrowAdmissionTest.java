@@ -65,6 +65,61 @@ final class AutomaticLoopBorrowAdmissionTest {
                 }));
     }
 
+    @TestFactory Stream<DynamicTest> directBorrowedIterableIsNotAnOwnedLoopCapability() {
+        Map<String, String> cases = new LinkedHashMap<>();
+        cases.put("for-of borrowed input", """
+                for const item of rt borrow values do
+                  val next = item + 1;
+                done
+                """);
+        cases.put("destructuring for-of borrowed input", """
+                for const [item] of rt borrow values do
+                  val next = item + 1;
+                done
+                """);
+        return cases.entrySet().stream().map(entry -> DynamicTest.dynamicTest(
+                entry.getKey(), () -> {
+                    String source = """
+                            fnc bad(): void {
+                              val values = arr[[1], [2], [3]];
+                            """ + entry.getValue() + """
+                              return;
+                            }
+                            """;
+                    var parsed = assertDoesNotThrow(() -> Parser.parse(source), entry.getKey());
+                    var error = assertThrows(IllegalArgumentException.class,
+                            () -> OwnershipChecker.check(parsed), entry.getKey());
+                    assertTrue(error.getMessage().contains("borrowed iterable operand"),
+                            () -> entry.getKey() + ": " + error.getMessage());
+                }));
+    }
+
+    @TestFactory Stream<DynamicTest> ownedIterableRemainsLegal() {
+        Map<String, String> cases = new LinkedHashMap<>();
+        cases.put("for-of owned input", """
+                for const item of values do
+                  val next = item + 1;
+                done
+                """);
+        cases.put("destructuring for-of owned input", """
+                for const [item] of values do
+                  val next = item + 1;
+                done
+                """);
+        return cases.entrySet().stream().map(entry -> DynamicTest.dynamicTest(
+                entry.getKey(), () -> {
+                    String source = """
+                            fnc good(): void {
+                              val values = arr[[1], [2], [3]];
+                            """ + entry.getValue() + """
+                              return;
+                            }
+                            """;
+                    var parsed = assertDoesNotThrow(() -> Parser.parse(source), entry.getKey());
+                    assertDoesNotThrow(() -> OwnershipChecker.check(parsed), entry.getKey());
+                }));
+    }
+
     @TestFactory Stream<DynamicTest> loansRetiredBeforeBackedgeRemainLegal() {
         Map<String, String> cases = new LinkedHashMap<>();
         cases.put("per iteration lexical loan", """
