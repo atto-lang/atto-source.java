@@ -135,22 +135,29 @@ public final class OresContext implements AutoCloseable {
             this.actors = actors;
             this.asyncRuntime = async;
             this.garbageCollector = gc;
+            var generatorPumpRegistration =
+                    new java.util.concurrent.atomic.AtomicReference<HostGeneratorTurnPump>();
             this.hostGeneratorTurns = new HostGeneratorTurnPump(
                     contextId, () -> generatorRootTurnAuthorized(
                             vm.isRootSchedulerCurrent(),
                             Boolean.TRUE.equals(rootGuestEntryScope.get())),
                     () -> {
-                        // Host threads can only enqueue; a physically entered
-                        // root scheduler carrier performs certified dispatch.
+                        HostGeneratorTurnPump registered = generatorPumpRegistration.get();
+                        if (registered == null) {
+                            throw new IllegalStateException("generator pump not initialized");
+                        }
+                        // Host threads only enqueue. The prestarted root
+                        // carrier must enter Truffle before certified dispatch.
                         OresFuture<Void> wake = vm.rootScheduler().startSync(() -> {
-                            hostGeneratorTurns.dispatchOne();
+                            registered.dispatchOne();
                             return null;
                         });
                         wake.whenCompleteRuntime((ignored, failure) -> {
-                            if (failure != null) hostGeneratorTurns.seal();
+                            if (failure != null) registered.seal();
                         });
                     },
                     256, vm.rootScheduler());
+            generatorPumpRegistration.set(this.hostGeneratorTurns);
         } catch (RuntimeException | Error failure) {
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
