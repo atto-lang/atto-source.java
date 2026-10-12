@@ -76,7 +76,8 @@ final class ActorPipelineRootAdmissionCreditTest {
             }
             source.send(valid);
             assertEquals(1, phase.get(), "successful DATA publication commits root ownership");
-            assertEquals(5L, deliveries.poll(5, TimeUnit.SECONDS));
+            assertEquals(valid, deliveries.poll(5, TimeUnit.SECONDS),
+                    "recipient must receive the exact validated nominal message");
             assertThrows(SecurityException.class, () -> source.send(valid),
                     "a committed single-flow root must reject duplicates");
             assertEquals(1, phase.get(), "duplicate DATA cannot corrupt committed phase");
