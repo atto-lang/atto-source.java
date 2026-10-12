@@ -1720,8 +1720,8 @@ public final class OresEvalRootNode extends RootNode {
         private SourceFlow mergeCleanupFailure(SourceFlow currentFlow, Throwable cleanupFailure) {
             Throwable earlier = currentFlow.failure();
             if (earlier == cleanupFailure) return currentFlow; // no self-suppression
-            if (earlier instanceof ProcessExitSignal
-                    || (earlier != null && cleanupFailure instanceof ProcessExitSignal)) {
+            if (earlier != null && (isUnmaskableFailure(earlier)
+                    || cleanupFailure instanceof ProcessExitSignal)) {
                 earlier.addSuppressed(cleanupFailure);
                 return currentFlow;
             }
@@ -1738,7 +1738,7 @@ public final class OresEvalRootNode extends RootNode {
             if (finallyFlow.kind() == SourceFlowKind.NORMAL) return pending;
             if (pending.kind() == SourceFlowKind.THROW) {
                 Throwable earlier = pending.failure();
-                if (earlier instanceof ProcessExitSignal || earlier instanceof OresPanic) {
+                if (isUnmaskableFailure(earlier)) {
                     if (finallyFlow.kind() == SourceFlowKind.THROW
                             && earlier != finallyFlow.failure()) {
                         earlier.addSuppressed(finallyFlow.failure());
@@ -4526,6 +4526,17 @@ public final class OresEvalRootNode extends RootNode {
                     failure, OresPanic.class);
         }
 
+        // Cleanup may add suppressed diagnostics but must not replace a
+        // process exit, panic, cancellation, authority failure, or host error.
+        // Use the same bounded classifier as trap, including wrapped failures.
+        private boolean isUnmaskableFailure(Throwable failure) {
+            if (failure instanceof ProcessExitSignal || failure instanceof Error) {
+                return true;
+            }
+            return failure instanceof RuntimeException runtime
+                    && !isTrappableFailure(runtime);
+        }
+
         private Object callFunctionBodyUnchecked(Ast.FunctionDecl fn, List<?> args) {
             if (fn.async() || functionContainsPotentialSuspension(fn)) {
                 OresFuture<Object> future =
@@ -4667,11 +4678,10 @@ public final class OresEvalRootNode extends RootNode {
                                 ? new Ast.CallExpr(cleanup, List.of())
                                 : cleanup, env);
                     } catch (RuntimeException | Error failure) {
-                        if (pendingFailure instanceof ProcessExitSignal exit) {
-                            // The first explicit exit wins. Later cleanup errors
-                            // remain visible as suppressed diagnostics, not a
-                            // replacement status (including during mutex release).
-                            if (failure != exit) exit.addSuppressed(failure);
+                        if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
+                            // Never let a deferred ordinary failure replace a panic,
+                            // denial, cancellation, host Error, or earlier process exit.
+                            if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
                         } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
                             // A deferred exit(0) must not convert an earlier
                             // unhandled failure into a successful process exit.
@@ -4689,8 +4699,8 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    if (pendingFailure instanceof ProcessExitSignal exit) {
-                        if (failure != exit) exit.addSuppressed(failure);
+                    if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
+                        if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
                     } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
                         // Mutex cleanup cannot downgrade an already failing
                         // root task into successful exit(0).
@@ -4933,10 +4943,9 @@ public final class OresEvalRootNode extends RootNode {
                     try {
                         executeBlock(tried.finallyBody(), env, true);
                     } catch (RuntimeException | Error cleanupFailure) {
-                        if (pendingTryFailure instanceof ProcessExitSignal
-                                || pendingTryFailure instanceof OresPanic
-                                || (pendingTryFailure != null
-                                        && cleanupFailure instanceof ProcessExitSignal)) {
+                        if (pendingTryFailure != null
+                                && (isUnmaskableFailure(pendingTryFailure)
+                                        || cleanupFailure instanceof ProcessExitSignal)) {
                             if (pendingTryFailure != cleanupFailure) {
                                 pendingTryFailure.addSuppressed(cleanupFailure);
                             }
