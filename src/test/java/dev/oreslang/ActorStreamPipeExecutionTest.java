@@ -62,7 +62,7 @@ final class ActorStreamPipeExecutionTest {
     @Test void staticResolutionDelimiterWorksForOrdinaryClassStaticFunctions() throws Exception {
         assertEquals("42", execute("""
                 define class Utility as
-                    static fnc answer(): int { return 42; }
+                    pub static fnc answer(): int { return 42; }
                 end
                 pub async routine main(): void {
                     val Utility = 17;
