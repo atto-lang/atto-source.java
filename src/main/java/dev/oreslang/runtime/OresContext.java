@@ -529,11 +529,12 @@ public final class OresContext implements AutoCloseable {
                 // guest entries: cleanup may still require root/actor/async
                 // carriers and a failed close must be safely retryable.
                 hostFutureAdmission.sealHostClaims();
-                // No new host scope can begin after the seal. Reject teardown
-                // while a previous Value.execute still owns the physical
-                // host-entry boundary; retries can finish after it exits.
-                hostFutureAdmission.requireNoActiveHostClaim();
                 hostGeneratorTurns.seal();
+                // Seal *both* host and generator admissions before any
+                // potentially failing shutdown preflight. A close retry must
+                // not leave fresh generator pulls eligible for admission.
+                // Previously admitted source cleanup still owns its barrier.
+                hostFutureAdmission.requireNoActiveHostClaim();
                 // Actor-owned finalizers may still need the VM CONTROL scheduler,
                 // async workers, imported code, network or native I/O. Never
                 // retire those dependencies before actor quiescence is proven.
