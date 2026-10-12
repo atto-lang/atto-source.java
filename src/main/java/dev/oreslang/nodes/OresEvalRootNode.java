@@ -1151,7 +1151,8 @@ public final class OresEvalRootNode extends RootNode {
                         // is held: the guard is a no-yield critical region.
                         if (!untrusted
                                 && (backedges >= MAX_LOOP_BACKEDGES_PER_TURN
-                                    || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS)
+                                    || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS
+                                    || context.watchdogPreemptionRequested())
                                 && !guardEnv.hasLiveMutexGuards()) {
                             context.recordSourceLoopCooperate();
                             cooperate(next);
@@ -1404,6 +1405,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean functionContainsPotentialSuspension(
                 Ast.FunctionDecl function) {
+            if (function.suspends()) return true;
             return functionContainsPotentialSuspension(
                     function,
                     java.util.Collections.newSetFromMap(
@@ -1581,7 +1583,7 @@ public final class OresEvalRootNode extends RootNode {
                             if (method.name().equals(member.member())
                                     && method.arity() == call.arguments().size()
                                     && seen.add(method)) {
-                                if (method.async()) return true;
+                                if (method.async() || method.suspends()) return true;
                                 for (Ast.Stmt statement : method.body()) {
                                     if (statementContainsPotentialSuspension(statement, seen)) return true;
                                 }
@@ -1599,7 +1601,7 @@ public final class OresEvalRootNode extends RootNode {
                     if (target != null) {
                         // Creating a generator activation does not pull or await it.
                         if (target.generator()) return false;
-                        return target.async()
+                        return target.async() || target.suspends()
                                 || target.actorKind() != Ast.ActorKind.NONE
                                 || (!target.async()
                                         && functionContainsPotentialSuspension(
@@ -1871,7 +1873,9 @@ public final class OresEvalRootNode extends RootNode {
 
             evalSuspendableExpr(
                     task,
-                    defer,
+                    defer instanceof Ast.LambdaExpr
+                            ? new Ast.CallExpr(defer, List.of())
+                            : defer,
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
@@ -3643,6 +3647,9 @@ public final class OresEvalRootNode extends RootNode {
             OresFuture<?> future;
             if (value instanceof OresFuture<?> oresFuture) {
                 future = oresFuture;
+            } else if (value instanceof ActorRuntime.ActorRef<?> actorRef) {
+                // Preserve the reference result; await only actor initialization.
+                future = actorRef.readyRef();
             } else if (value instanceof Awaitable<?> awaitable) {
                 future = awaitable.getAwaited();
             } else if (value instanceof CompletionStage<?> stage) {
@@ -4633,6 +4640,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean methodContainsPotentialSuspension(
                 Ast.MethodDecl method) {
+            if (method.suspends()) return true;
             for (Ast.Stmt stmt : method.body()) {
                 if (statementContainsPotentialSuspension(
                         stmt,
@@ -4716,6 +4724,7 @@ public final class OresEvalRootNode extends RootNode {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
+            Throwable pendingFailure = null;
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
             } catch (TailCallSignal signal) {
@@ -4724,16 +4733,41 @@ public final class OresEvalRootNode extends RootNode {
                 throw signal;
             } catch (RuntimeException | Error failure) {
                 abnormalExit = true;
+                pendingFailure = failure;
                 throw failure;
             } finally {
-                boolean deferredFailure = false;
+                Throwable originalFailure = pendingFailure;
+                // Always run the entire LIFO cleanup stack. In particular,
+                // a failed defer must not prevent remaining resource cleanup.
+                while (!deferred.isEmpty()) {
+                    Ast.Expr cleanup = deferred.pop();
+                    try {
+                        eval(cleanup instanceof Ast.LambdaExpr
+                                ? new Ast.CallExpr(cleanup, List.of())
+                                : cleanup, env);
+                    } catch (RuntimeException | Error failure) {
+                        if (pendingFailure != null && pendingFailure != failure) {
+                            failure.addSuppressed(pendingFailure);
+                        }
+                        pendingFailure = failure;
+                    }
+                }
                 try {
-                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                    env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    deferredFailure = true;
-                    throw failure;
-                } finally {
-                    env.releaseMutexGuards(abnormalExit || deferredFailure);
+                    if (pendingFailure != null && pendingFailure != failure) {
+                        failure.addSuppressed(pendingFailure);
+                    }
+                    pendingFailure = failure;
+                }
+                // If only the body failed, Java will rethrow it naturally.
+                // If cleanup failed, the most recent failure takes precedence
+                // and retains earlier failures as suppressed exceptions.
+                if (pendingFailure != null && pendingFailure != originalFailure) {
+                    if (pendingFailure instanceof RuntimeException runtimeFailure) {
+                        throw runtimeFailure;
+                    }
+                    throw (Error) pendingFailure;
                 }
             }
         }
@@ -6033,6 +6067,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
+                if (value instanceof ActorRuntime.ActorRef<?> actorRef) {
+                    AsyncRuntime.await(actorRef.ready());
+                    return actorRef;
+                }
                 if (value instanceof OresFuture<?> future) {
                     return AsyncRuntime.await(future);
                 }
@@ -6532,8 +6570,14 @@ public final class OresEvalRootNode extends RootNode {
                 ActorRuntime.ActorRef<Object> typedRef =
                         (ActorRuntime.ActorRef<Object>) actorRef;
                 return switch (name) {
-                    case "ready" -> actorRef.ready();
-                    case "done" -> actorRef.done();
+                    case "get_ready" -> (Invokable) args -> {
+                        requireZero(args, "ActorRef.get_ready");
+                        return actorRef.getReady();
+                    };
+                    case "get_done" -> (Invokable) args -> {
+                        requireZero(args, "ActorRef.get_done");
+                        return actorRef.getDone();
+                    };
                     case "outputs" -> actorRef.outputs();
                     case "id" -> actorRef.id();
                     case "kind" -> actorRef.kind();

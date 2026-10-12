@@ -198,6 +198,7 @@ public final class Ast {
             CallableKind kind,
             Visibility visibility,
             boolean async,
+            boolean suspends,
             boolean generator,
             boolean structural,
             boolean nonLexical,
@@ -208,6 +209,16 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body) implements Decl {
+        /** Preserve all existing AST construction sites without an explicit effect. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean generator, boolean structural, boolean nonLexical, boolean trapped,
+                            ActorKind actorKind, List<String> genericParameters,
+                            List<Param> parameters, TypeRef returnType,
+                            List<Annotation> annotations, List<Stmt> body) {
+            this(name, kind, visibility, async, false, generator, structural, nonLexical,
+                    trapped, actorKind, genericParameters, parameters, returnType, annotations, body);
+        }
+
         public FunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
@@ -400,6 +411,7 @@ public final class Ast {
             boolean isStatic,
             boolean isAbstract,
             boolean async,
+            boolean suspends,
             boolean structural,
             TypeRef explicitReceiverType,
             List<String> genericParameters,
@@ -407,6 +419,16 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body) {
+        /** Preserve all existing AST construction sites without an explicit effect. */
+        public MethodDecl(String name, Visibility visibility, boolean isStatic,
+                          boolean isAbstract, boolean async, boolean structural,
+                          TypeRef explicitReceiverType, List<String> genericParameters,
+                          List<Param> parameters, TypeRef returnType,
+                          List<Annotation> annotations, List<Stmt> body) {
+            this(name, visibility, isStatic, isAbstract, async, false, structural,
+                    explicitReceiverType, genericParameters, parameters, returnType, annotations, body);
+        }
+
         public MethodDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
@@ -462,11 +484,34 @@ public final class Ast {
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
-    /** Binding rebinding and mutable access to the referent are independent capabilities. */
+    /**
+     * Binding rebinding and mutable access to the referent are independent capabilities.
+     * inferredTypeName is compiler-only metadata for the local type alias introduced
+     * by `const T value = infer<T> struct {...}` or `infer<T> tuple (...)`.
+     */
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer,
-                              boolean mutableReferent) implements Stmt {
+                              boolean mutableReferent, String inferredTypeName) implements Stmt {
         public BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) {
-            this(kind, declaredType, name, initializer, kind == BindingKind.VAL);
+            this(kind, declaredType, name, initializer, kind == BindingKind.VAL, null);
+        }
+        public BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer,
+                           boolean mutableReferent) {
+            this(kind, declaredType, name, initializer, mutableReferent, null);
+        }
+        public BindingStmt {
+            if (inferredTypeName != null) {
+                if (kind != BindingKind.CONST || mutableReferent) {
+                    throw new IllegalArgumentException("named inferred types require an immutable const binding");
+                }
+                if (declaredType == null || !declaredType.name().equals(inferredTypeName)
+                        || !declaredType.arguments().isEmpty() || declaredType.inferArguments()) {
+                    throw new IllegalArgumentException("named inferred type must match the declared binding type");
+                }
+                if (!(initializer instanceof ObjectExpr object && object.inferredStruct())
+                        && !(initializer instanceof TupleExpr)) {
+                    throw new IllegalArgumentException("named inferred type requires infer struct or tuple literal");
+                }
+            }
         }
     }
     public record DestructureBinding(
