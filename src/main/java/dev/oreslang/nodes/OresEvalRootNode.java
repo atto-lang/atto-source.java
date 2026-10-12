@@ -2042,8 +2042,7 @@ public final class OresEvalRootNode extends RootNode {
                             env,
                             (t, flow) -> {
                                 if (flow.kind() == SourceFlowKind.THROW
-                                        && !(flow.failure() instanceof ProcessExitSignal)
-                                        && !(flow.failure() instanceof OresPanic)) {
+                                        && !isUnmaskableFailure(flow.failure())) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
@@ -4932,6 +4931,9 @@ public final class OresEvalRootNode extends RootNode {
                     catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
                     catch (OresPanic panic) { throw panic; }
                     catch (RuntimeException failure) {
+                        // Guest catch may recover ordinary failures, not runtime
+                        // authority/control signals (including wrapped failures).
+                        if (isUnmaskableFailure(failure)) throw failure;
                         Env catchEnv = new Env(env);
                         catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
                         executeBlock(tried.catchBody(), catchEnv, true);

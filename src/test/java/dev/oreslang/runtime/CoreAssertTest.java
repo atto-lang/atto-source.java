@@ -271,6 +271,75 @@ final class CoreAssertTest {
         }
     }
 
+    @Test void guestCatchCannotInterceptAuthorizationDenialAcrossSuspension() throws Exception {
+        Path blocked = Files.createTempFile("ores-assert-catch-denied-", ".txt");
+        Path entry = Files.createTempFile("ores-assert-catch-policy-", ".ores");
+        try {
+            Files.delete(blocked);
+            for (boolean resumed : new boolean[]{false, true}) {
+                Files.writeString(entry, """
+                    import module Assert from "std/assert";
+                    trap fnc guarded(): bool {
+                        %s
+                        try {
+                            fs.write_text("%s", "forbidden");
+                        } catch (error) {
+                            stdio.stdout.write("caught-terminal");
+                            return false;
+                        } finally {
+                            Assert.fail("ordinary finally must not mask denial");
+                        }
+                        return true;
+                    }
+                    pub %s main(): void { guarded(); return; }
+                    """.formatted(
+                        resumed ? "rt cooperate;" : "",
+                        blocked.toString().replace("\\", "\\\\").replace("\"", "\\\""),
+                        resumed ? "async fnc" : "routine"));
+                var out = new ByteArrayOutputStream();
+                RuntimeException failure = assertThrows(RuntimeException.class,
+                        () -> LinkedProgramRunner.run(
+                                entry,
+                                IsolatePolicy.developer().withCapabilities(
+                                        IsolatePolicy.Capability.FILESYSTEM_WRITE),
+                                RuntimePermissions.denyAll(),
+                                PermissionCheckMode.RUNTIME,
+                                ExecutionProfile.serverJit(),
+                                java.util.Set.of(),
+                                System.getenv(),
+                                out,
+                                new ByteArrayOutputStream()));
+                StringBuilder diagnostic = new StringBuilder();
+                for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
+                    diagnostic.append(cursor.getMessage()).append(' ');
+                }
+                assertTrue(diagnostic.toString().contains("permission denied"),
+                        () -> "denial must bypass catch and trap: " + diagnostic);
+                assertFalse(out.toString(StandardCharsets.UTF_8).contains("caught-terminal"),
+                        "guest catch must not intercept terminal authority denial");
+                assertFalse(Files.exists(blocked));
+            }
+        } finally {
+            Files.deleteIfExists(entry);
+            Files.deleteIfExists(blocked);
+        }
+    }
+
+    @Test void ordinaryAssertionFailureStillCanBeCaughtInSyncAndResumedTry() throws Exception {
+        for (boolean resumed : new boolean[]{false, true}) {
+            assertEquals("caughtfinally", run("""
+                pub %s main(): void {
+                    %s
+                    try { Assert.fail("ordinary"); }
+                    catch (error) { stdio.stdout.write("caught"); }
+                    finally { stdio.stdout.write("finally"); }
+                    return;
+                }
+                """.formatted(resumed ? "async fnc" : "routine",
+                        resumed ? "rt cooperate;" : "")));
+        }
+    }
+
     @Test void failurePrimitiveChecksMessageTypeAndArity() {
         for (String expression : new String[]{"rt fail(1)", "rt fail()", "rt fail(\"a\", \"b\")"}) {
             assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
