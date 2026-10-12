@@ -287,6 +287,24 @@ final class ActorSourceTearDownTest {
     }
 
     @Test
+    void runtimeWideCloseNeverAdmitsGuestTeardownOrOutput() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(image(store), false);
+            executor.teardownEmitsOutput = true;
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            ref.ready().get(2, TimeUnit.SECONDS);
+            runtime.close();
+            ref.done().get(2, TimeUnit.SECONDS);
+            assertEquals(0, executor.teardowns.get(),
+                    "runtime close must use trusted resource cleanup only");
+            assertEquals(0, executor.teardownOutputsAccepted.get(),
+                    "runtime close revokes actor output authority");
+        }
+    }
+
+    @Test
     void cancellationDuringTeardownRevokesTheFinalGuestCallback() throws Exception {
         try (SharedCodeImageStore store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
