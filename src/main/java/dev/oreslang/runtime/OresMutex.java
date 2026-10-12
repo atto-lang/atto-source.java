@@ -333,11 +333,18 @@ public final class OresMutex {
         private static final AtomicInteger GLOBAL_ASYNC_WAITERS = new AtomicInteger();
         private static final ConcurrentHashMap<Object, Shared<?>> WAITING_ON =
                 new ConcurrentHashMap<>();
+        // ScheduledFuture completion may synchronously invoke arbitrary host
+        // CompletableFuture dependents. A single timer carrier lets one slow
+        // callback stall timeout processing for every unrelated mutex. Keep a
+        // small, fixed, daemon timer group; do not create a thread per waiter.
+        // Callbacks must still be nonblocking: a saturated timer group can
+        // delay publication, even though queue/domain revocation is atomic.
         private static final ScheduledExecutorService ASYNC_TIMEOUTS =
-                Executors.newSingleThreadScheduledExecutor(
+                Executors.newScheduledThreadPool(
+                        4,
                         Thread.ofPlatform()
                                 .daemon(true)
-                                .name("ores-shared-mutex-timeouts")
+                                .name("ores-shared-mutex-timeouts-", 0L)
                                 .factory());
 
         private final T value;
