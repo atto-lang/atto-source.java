@@ -56,13 +56,16 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         }
 
         @Override public void close() {
-            if (!released.compareAndSet(false, true)) return;
             synchronized (ExplicitNativeI64Region.this) {
+                if (released.get()) return;
+                // Validate before marking the lease released. An accounting
+                // invariant failure must not poison the handle as "closed".
                 if (slotLoans[slot.index] <= 0 || loanCount <= 0) {
                     throw new IllegalStateException("actor-native loan accounting underflow");
                 }
                 slotLoans[slot.index]--;
                 loanCount--;
+                released.set(true);
                 if (closed.get() && loanCount == 0) finishPhysicalClose();
             }
         }
@@ -232,8 +235,11 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     /** Stop admission immediately; defer FFM arena close until loans drain. */
     void retireFromActor() {
         synchronized (this) {
-            if (!closed.compareAndSet(false, true)) return;
-            if (loanCount == 0) finishPhysicalClose();
+            closed.set(true);
+            // Retry a failed FFM close rather than permanently stranding
+            // physically retained bytes behind an already-retired flag.
+            // An outstanding loan still pins native storage until released.
+            if (loanCount == 0 && !physicalClosed.get()) finishPhysicalClose();
         }
     }
 
