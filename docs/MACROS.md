@@ -145,6 +145,22 @@ actor isolation, or native images. Full exact-head GraalVM validation remains
 a prerequisite to moving the PR out of draft. The source branch and test carrier
 must be compared again after every source change.
 
+
+## Runtime hot-loading restriction (P0 AOT enforcement)
+
+The current `HotReloadManager.load(source)` and `load(CompiledUnit)` APIs
+stage **source**, not independently verified guest-AOT binaries. Accordingly,
+they now reject source containing any `macro_rules!` definition **before**
+macro expansion. Neither `@expand(aot)` nor `@expand(rebuildable)` overrides
+this restriction. Macro-bearing code must be expanded and compiled offline; a
+future signed AOT-artifact loader will be required to admit new native generations.
+This rejects a previously permitted source hot-reload use case intentionally.
+
+The `@expand` name is reserved for a directly following `macro_rules!`
+definition. Misplaced or malformed `@expand` annotations are compile errors,
+not silently ignored metadata. Ungrouped `$x:tt` captures are restricted to
+identifiers and literals until typed AST-fragment validation is implemented.
+
 ## Non-negotiable native AOT admission gate
 
 A source-level annotation or macro cannot require guest JIT compilation, `eval`, runtime
