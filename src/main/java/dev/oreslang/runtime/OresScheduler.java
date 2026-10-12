@@ -437,6 +437,11 @@ public final class OresScheduler implements AutoCloseable {
         });
     }
 
+    /** True after close has fenced all new task admission. */
+    boolean isClosedForAdmission() {
+        return closed.get();
+    }
+
     private void ensureOpen() {
         if (closed.get()) {
             throw new RejectedExecutionException(
