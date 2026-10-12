@@ -332,9 +332,16 @@ public final class SupervisorChildRegistry {
         }
     }
 
-    /** Host-only admission snapshot; never grants a restart capability. */
-    synchronized boolean restartAdmissionOpen() {
-        return !restartClosed;
+    /**
+     * Read-only, exact one-use reservation validation before a physical spawn.
+     * A logical ChildId alone cannot authorize allocating a replacement.
+     * This is consulted only by trusted host code; the actor scheduler must
+     * separately pin physical admission when publishing the candidate.
+     */
+    synchronized void requireOpenRestartReservation(RestartReservation permit) {
+        if (restartClosed)
+            throw new IllegalStateException("supervisor restart admission is closed");
+        checkReservation(permit);
     }
 
     /**
