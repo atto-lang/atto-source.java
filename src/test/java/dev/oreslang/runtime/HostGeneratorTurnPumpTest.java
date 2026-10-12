@@ -521,6 +521,43 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void restrictedSourceEmptyCatchAbsorbsFailedAwaitAndFinalizesOnce()
+            throws Exception {
+        String source = """
+                async fnc pending(): int { return 7; }
+                async generator fnc values(): int {
+                  try { yield await pending(); }
+                  catch (err) { }
+                  finally { val int marker = 17; }
+                  return;
+                }
+                """;
+        OresFuture<Integer> failed =
+                OresFuture.failed(new IllegalArgumentException("await rejected"));
+        GeneratorRuntime.SourceLowering frame =
+                GeneratorRuntime.SourceLowering.compile(
+                        source, "values", java.util.Map.of("pending", failed));
+        try (OresScheduler root = new OresScheduler(1)) {
+            HostGeneratorTurnPump pump =
+                    new HostGeneratorTurnPump(UUID.randomUUID(), () -> true, root);
+            GeneratorRuntime.SchedulerBacked<Object> lowered =
+                    GeneratorRuntime.schedulerBacked(root, pump.token(), frame);
+            var pull = pump.requestCertified(pump.token(), lowered.nextTurn());
+            assertTrue(pump.dispatchOne());
+            assertTrue(pull.get(5, TimeUnit.SECONDS).done(),
+                    "source empty catch must absorb an awaited guest failure");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!pump.isQuiescent() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(pump.isQuiescent());
+            assertEquals(1, frame.cleanupRuns(), "source finally must run once");
+            assertEquals(17, ((Number) frame.cleanupBinding("marker")).intValue());
+            pump.close();
+        }
+    }
+
+    @Test
     void restrictedOresSourceLoweringRejectsUnsupportedYieldBeforeGuestStart() {
         String source = """
                 async generator fnc numbers(): int {
