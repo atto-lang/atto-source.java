@@ -4,14 +4,14 @@ define serial actor Counter as
     }
 
     pub increment(): int using state.read, state.write {
-        return self.handle_state(|s| -> {
+        return self.handle_state(critical write |s| -> {
             s.count = s.count + 1;
             return s.count;
         });
     }
 
     pub get_count(): int using state.read {
-        return self.handle_state(|s| -> s.count);
+        return self.handle_state(critical read |s| -> s.count);
     }
 
     receive(ActorMail<string> mail): void {
