@@ -9,10 +9,11 @@ EXTENDS Naturals, FiniteSets, TLC
  * This is a specification, not a proof of Java/LLVM refinement or fairness
  * of arbitrary producer/scheduler interleavings.
  *)
-CONSTANTS Arms, MaxGenerations
+CONSTANTS Arms, MaxGenerations, HasDefault
 ASSUME /\ Arms = {0, 1, 2}
        /\ MaxGenerations \in Nat
        /\ MaxGenerations > 0
+       /\ HasDefault \in BOOLEAN
 
 NoWinner == 3 \* numeric sentinel outside Arms; TLC membership stays type-homogeneous
 NextArm(a) == IF a = 0 THEN 1 ELSE IF a = 1 THEN 2 ELSE 0
@@ -70,6 +71,7 @@ Commit ==
     /\ UNCHANGED <<generation, startCursor, ready, cancelled>>
 
 DefaultSelect ==
+    /\ HasDefault
     /\ phase = "Waiting"
     /\ ready = {}
     /\ phase' = "Defaulted"
