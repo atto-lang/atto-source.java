@@ -26,7 +26,7 @@ final class ActorStateAndEffectsParserTest {
                     enabled: bool = true;
                 }
                 pub increment(): int using state.read, state.write {
-                    return self.handle_state(critical |s| -> {
+                    return self.handle_state(critical write |s| -> {
                         s.count = s.count + 1;
                         return s.count;
                     });
@@ -46,7 +46,7 @@ final class ActorStateAndEffectsParserTest {
         assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
             define actor A as
               state { count: int = 0; }
-              pub f(): void { self.handle_state(critical |s| -> { s.count = s.count + 1; }); return; }
+              pub f(): void { self.handle_state(critical write |s| -> { s.count = s.count + 1; }); return; }
             end
             """)));
     }
@@ -118,14 +118,14 @@ final class ActorStateAndEffectsParserTest {
             ActorStateContract.verify(Parser.parse("""
                 define actor A as
                   state { count: int = 0; }
-                  pub leak(): int { return self.handle_state(critical |s| -> { return s; }); }
+                  pub leak(): int { return self.handle_state(critical write |s| -> { return s; }); }
                 end
                 """)));
         assertThrows(IllegalArgumentException.class, () ->
             ActorStateContract.verify(Parser.parse("""
                 define actor A as
                   state { count: int = 0; }
-                  pub bogus(): void { self.handle_state(critical |s| -> { s.missing = s.missing + 1; }); return; }
+                  pub bogus(): void { self.handle_state(critical write |s| -> { s.missing = s.missing + 1; }); return; }
                 end
                 """)));
         assertThrows(IllegalArgumentException.class, () ->
@@ -148,8 +148,8 @@ final class ActorStateAndEffectsParserTest {
             define actor Counter as
                 state { count: int = 0; }
                 pub nested(): void {
-                    self.handle_state(critical |s| -> {
-                        self.handle_state(critical |s| -> { s.count = s.count + 1; });
+                    self.handle_state(critical write |s| -> {
+                        self.handle_state(critical write |s| -> { s.count = s.count + 1; });
                         s.count = s.count + 1;
                     });
                     return;
@@ -160,8 +160,8 @@ final class ActorStateAndEffectsParserTest {
             define actor Counter as
                 state { count: int = 0; }
                 pub illegal(): void {
-                    self.handle_state(critical |s| -> {
-                        self.handle_state(critical |inner| -> {
+                    self.handle_state(critical write |s| -> {
+                        self.handle_state(critical write |inner| -> {
                             s.count = s.count + 1;
                         });
                     });
@@ -176,7 +176,7 @@ final class ActorStateAndEffectsParserTest {
             define actor Worker as
                 state { count: int = 0; }
                 pub tick(): void {
-                    self.handle_state(critical |s| -> {
+                    self.handle_state(critical write |s| -> {
                         s.count = s.count + 1;
                         await fetch();
                         s.count = s.count + 1;
@@ -192,7 +192,7 @@ final class ActorStateAndEffectsParserTest {
             define actor Counter as
                 state { count: int = 0; }
                 pub increment(): int using state.read, state.write {
-                    return self.handle_state(critical |s| -> {
+                    return self.handle_state(critical write |s| -> {
                         s.count = s.count + 1;
                         return s.count;
                     });
@@ -209,7 +209,7 @@ final class ActorStateAndEffectsParserTest {
         assertDoesNotThrow(() -> ActorStateContract.verify(p));
         assertDoesNotThrow(() -> dev.oreslang.types.DeclaredEffectVerifier.verify(p));
 
-        String missing = valid.replace("critical |s|", "|s|");
+        String missing = valid.replace("critical write |s|", "|s|");
         assertThrows(IllegalArgumentException.class,
                 () -> ActorStateContract.verify(Parser.parse(missing)));
         assertThrows(IllegalArgumentException.class,
@@ -221,7 +221,7 @@ final class ActorStateAndEffectsParserTest {
                 () -> dev.oreslang.types.DeclaredEffectVerifier.verify(Parser.parse(underDeclared)));
 
         assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(valid.replace("critical |s|", "critical 123")));
+                () -> Parser.parse(valid.replace("critical write |s|", "critical 123")));
     }
 
     @Test void rejectsReifiedCriticalCallbackOutsideSealedIntrinsic() {
@@ -243,7 +243,7 @@ final class ActorStateAndEffectsParserTest {
             define actor Counter as
                 state { count: int = 0; }
                 pub read(): int using state.read {
-                    return self.handle_state(critical |s| -> s.count);
+                    return self.handle_state(critical read |s| -> s.count);
                 }
                 receive(ActorMail<String> mail): void { return; }
             end
@@ -251,7 +251,7 @@ final class ActorStateAndEffectsParserTest {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(valid)));
 
         String mismatched = valid.replace(
-                "critical |s| -> s.count", "critical |s| -> true");
+                "critical read |s| -> s.count", "critical read |s| -> true");
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse(mismatched)));
     }
@@ -261,7 +261,7 @@ final class ActorStateAndEffectsParserTest {
             define actor Counter as
                 state { count: int = 0; }
                 pub initialize(): void using state.write {
-                    self.handle_state(critical |s| -> {
+                    self.handle_state(critical write |s| -> {
                         s.count = 42;
                     });
                     return;
@@ -275,7 +275,7 @@ final class ActorStateAndEffectsParserTest {
             define actor Counter as
                 state { count: int = 0; }
                 pub increment(): void using state.write {
-                    self.handle_state(critical |s| -> {
+                    self.handle_state(critical write |s| -> {
                         s.count = s.count + 1;
                     });
                     return;
