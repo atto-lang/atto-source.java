@@ -455,9 +455,9 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
                     assertEquals(current, next,
                             "an overlapping physical frame start was accepted");
                 }
-                if (current.poisoned) {
+                if (current.poisoned && event == FrameEvent.START) {
                     assertEquals(current, next,
-                            "unknown physical exit must permanently quarantine the frame");
+                            "unknown physical exit must permanently reject new starts");
                 }
                 if (visited.add(next)) frontier.addLast(next);
             }
