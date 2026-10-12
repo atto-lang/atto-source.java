@@ -59,31 +59,33 @@ public final class ActorStateContract {
                     + "ownership is verified; use from/implements interfaces");
         }
         Ast.FieldDecl state = stateField(klass);
-        if (state == null) {
-            // Legacy scalar actor fields are not the one-state aggregate
-            // contract. Serial actors with no storage are valid, but serial
-            // actors with storage must declare precisely one state schema.
-            if (!klass.fields().isEmpty()) {
-                throw new IllegalArgumentException(
-                        "serial actor '" + klass.name()
-                        + "' must use one state { ... } aggregate; legacy fields are forbidden");
-            }
-            return;
-        } // migration: non-serial legacy actor fields retain old behavior
-        if (klass.fields().size() != 1) {
+        // Actors without state are legal, but their methods must still be
+        // checked: an early return here lets a state-less actor reference
+        // self.state or even define a counterfeit handle_state method.
+        if (state == null && !klass.fields().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name()
+                    + "' must use one state { ... } aggregate; legacy fields are forbidden");
+        }
+        if (state != null && klass.fields().size() != 1) {
             throw new IllegalArgumentException(
                     "actor '" + klass.name() + "' may declare only the state schema");
         }
-        Ast.TypeRef schema = keySchema(state);
-        if (!schema.isRecordType()) {
-            throw new IllegalArgumentException("actor state schema must declare typed keys");
-        }
-        Set<String> keys = schema.recordMembers().keySet();
-        // No continuation-bound alias may be smuggled into actor-state defaults.
-        if (state.initializer() instanceof Ast.ObjectExpr defaults) {
-            for (Ast.ObjectField def : defaults.fields()) {
-                if (!keys.contains(def.name())) {
-                    throw new IllegalArgumentException("unknown actor state default key '" + def.name() + "'");
+        // Null here intentionally means no state map, different from a
+        // declared map with zero keys. Both cases are still inspected.
+        Set<String> keys = null;
+        if (state != null) {
+            Ast.TypeRef schema = keySchema(state);
+            if (!schema.isRecordType()) {
+                throw new IllegalArgumentException("actor state schema must declare typed keys");
+            }
+            keys = schema.recordMembers().keySet();
+            // No continuation-bound alias may be smuggled into actor-state defaults.
+            if (state.initializer() instanceof Ast.ObjectExpr defaults) {
+                for (Ast.ObjectField def : defaults.fields()) {
+                    if (!keys.contains(def.name())) {
+                        throw new IllegalArgumentException("unknown actor state default key '" + def.name() + "'");
+                    }
                 }
             }
         }
@@ -103,6 +105,10 @@ public final class ActorStateContract {
         if (node instanceof Ast.CallExpr call
                 && call.callee() instanceof Ast.MemberExpr callee
                 && isSelf(callee.receiver()) && callee.member().equals("handle_state")) {
+            if (keys == null) {
+                throw new IllegalArgumentException(
+                        "actor '" + actor + "' has no state { ... } schema for handle_state");
+            }
             if (!instanceMethod) {
                 throw new IllegalArgumentException(
                         "static actor method cannot acquire an instance handle_state capability");
@@ -145,7 +151,10 @@ public final class ActorStateContract {
         }
         if (activeAccess != null
                 && (node instanceof Ast.AwaitExpr || node instanceof Ast.SelectStmt
-                    || node instanceof Ast.DynamicSelectExpr || node instanceof Ast.ChannelOpExpr)) {
+                    || node instanceof Ast.DynamicSelectExpr || node instanceof Ast.ChannelOpExpr
+                    || node instanceof Ast.YieldStmt
+                    || (node instanceof Ast.RuntimeCallExpr op
+                        && op.operation().equals("cooperate")))) {
             throw new IllegalArgumentException(
                     "actor state loan cannot cross await, select, or suspension");
         }
