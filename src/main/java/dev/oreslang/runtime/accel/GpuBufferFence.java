@@ -70,7 +70,7 @@ public final class GpuBufferFence implements AutoCloseable {
         return new GpuBufferFence(state);
     }
 
-    public synchronized Ticket beginCommand(Identity caller) {
+    synchronized Ticket beginCommand(Identity caller) {
         active();
         if (!state.identity.equals(caller)) throw new SecurityException("foreign device/tenant/generation");
         if (state.status != Status.IDLE) throw new IllegalStateException("device buffer not idle");
@@ -81,8 +81,15 @@ public final class GpuBufferFence implements AutoCloseable {
         return state.activeTicket;
     }
 
+    /*
+     * These five package-private state-transition methods are trusted runtime
+     * implementation details. They MUST NOT be exposed via Oreslang guest
+     * interop or a public Java-facing API: a ticket alone cannot attest that
+     * the GPU command actually finished. A real provider must separately
+     * prove native device-event completion and handle release.
+     */
     /** Called ONLY after the device reports completion for this exact ticket. */
-    public synchronized void complete(Ticket ticket, boolean success) {
+    synchronized void complete(Ticket ticket, boolean success) {
         active();
         if (state.status != Status.IN_FLIGHT || ticket != state.activeTicket) {
             throw new IllegalStateException("stale or mismatched device event");
@@ -93,7 +100,7 @@ public final class GpuBufferFence implements AutoCloseable {
     }
 
     /** Cancel requires device synchronization; do not reuse or free prematurely. */
-    public synchronized void cancelPending(Ticket ticket) {
+    synchronized void cancelPending(Ticket ticket) {
         active();
         if (state.status != Status.IN_FLIGHT || ticket != state.activeTicket) {
             throw new IllegalStateException("stale cancellation");
@@ -102,7 +109,7 @@ public final class GpuBufferFence implements AutoCloseable {
     }
 
     /** A cancelled kernel may still be running until its device fence completes. */
-    public synchronized void acknowledgeCancelledDeviceEvent(Ticket ticket, Identity caller) {
+    synchronized void acknowledgeCancelledDeviceEvent(Ticket ticket, Identity caller) {
         active();
         if (!state.identity.equals(caller) || ticket != state.activeTicket
                 || state.status != Status.POISONED || state.backendQuiescent) {
@@ -113,7 +120,7 @@ public final class GpuBufferFence implements AutoCloseable {
     }
 
     /** After backend confirms device quiescence and releases the opaque handle. */
-    public synchronized void retireAfterBackendRelease(Identity caller) {
+    synchronized void retireAfterBackendRelease(Identity caller) {
         active();
         if (!state.identity.equals(caller)) throw new SecurityException("foreign device/tenant/generation");
         if (state.status == Status.IN_FLIGHT || !state.backendQuiescent)
