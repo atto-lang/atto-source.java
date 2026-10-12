@@ -223,8 +223,11 @@ final class FormalHostReturnDeferredDispatchModelCheckTest {
                     "CONTROL carrier dispatched before all host scopes exited");
         }
         if (s.entered) {
-            assertTrue(s.dispatched && !s.exited && !s.cancelled,
-                    "cancelled or unadmitted root task entered guest");
+            // Cancellation may race an already-entered guest turn; it must
+            // request cleanup, not retroactively erase physical ownership.
+            // ENTER_GUEST itself rejects cancellation before admission.
+            assertTrue(s.dispatched && !s.exited,
+                    "unadmitted root task entered guest");
         }
         if (s.retired) {
             assertTrue(s.closeRequested && s.scopes == 0 && !s.queued
