@@ -206,6 +206,76 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void infiniteCpuActorDoesNotStarvePeerWithOneSharedCarrier()
+            throws Exception {
+        // Both actors deliberately use the SHARED lane. With one physical
+        // worker, a non-cooperating infinite loop deadlocks the peer output.
+        // Keep this scoped to the test to avoid changing other contexts.
+        String setting = "ores.runtime.actor.shared.parallelism";
+        String before = System.getProperty(setting);
+        System.setProperty(setting, "1");
+        try {
+            String output = run("""
+                    define actor Greedy as
+                      let int spins;
+
+                      on_start(): void {
+                        self.spins = 0;
+                        return;
+                      }
+
+                      receive(ActorMail<String> mail): void {
+                        self.send("entered");
+                        loop do
+                          self.spins = self.spins + 1;
+                        done
+                      }
+                    end
+
+                    define actor Peer as
+                      receive(ActorMail<String> mail): void {
+                        self.send("peer");
+                        self.end();
+                        return;
+                      }
+                    end
+
+                    pub async routine main(): void {
+                      val greedy = spawn Greedy();
+                      val peer = spawn Peer();
+                      await greedy.get_ready();
+                      await peer.get_ready();
+
+                      greedy.send("begin");
+                      // Admission barrier: greedy has reached receive before
+                      // the peer is submitted, not merely been enqueued.
+                      val entered = (await greedy.outputs.next()).value.unwrap();
+                      peer.send("begin");
+                      val reply = (await peer.outputs.next()).value.unwrap();
+                      stdio.stdout.write(reply.value);
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(process.descriptor.source_loop_cooperates);
+
+                      // Cancellation must release the actual executing actor;
+                      // no forced thread stop or guest-stack unwinding.
+                      greedy.stop();
+                      await greedy.get_done();
+                      await peer.get_done();
+                      return;
+                    }
+                    """);
+            assertTrue(output.startsWith("peer|"),
+                    "peer starved or failed to execute: " + output);
+            long handoffs = Long.parseLong(output.substring("peer|".length()));
+            assertTrue(handoffs > 0,
+                    "an infinite source loop must release its physical carrier");
+        } finally {
+            if (before == null) System.clearProperty(setting);
+            else System.setProperty(setting, before);
+        }
+    }
+
+    @Test
     void asyncGeneratorYieldIsNotSchedulerCooperate() throws Exception {
         assertEquals("12|0", run("""
                 async generator fnc values(): int {
