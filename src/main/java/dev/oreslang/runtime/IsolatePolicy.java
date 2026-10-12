@@ -37,7 +37,7 @@ public record IsolatePolicy(
         PROCESS_GLOBAL,
         /** Trusted authority to expose/revoke selected canonical Symbols at the untrusted boundary. */
         SYMBOL_EXPORT,
-        /** Access to one singleton state instance in the caller's semantic memory slot. Never adversarial. */
+        /** Trusted read authority for process-wide immutable singleton modules. Never adversarial. */
         SINGLETON_STATE,
         GC_CONTROL,
         ACTOR_SHARE_READONLY,

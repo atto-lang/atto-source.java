@@ -1114,6 +1114,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private static Object frozenCallableResult(Object result) {
+        // A void actor callable has no data result. Do not transport raw null
+        // through an actor data graph, which correctly rejects ambient nulls.
+        return result == null ? OresVoid.INSTANCE : freeze(result);
+    }
+
     /**
      * Compiler-only lowering target for source-level actor/isoactor callables.
      *
@@ -1143,7 +1149,7 @@ public final class ActorRuntime implements AutoCloseable {
                 factoryContext -> (delivered, turnContext) -> {
                     try {
                         @SuppressWarnings("unchecked")
-                        R frozen = (R) freeze(invocation.run(delivered, turnContext));
+                        R frozen = (R) frozenCallableResult(invocation.run(delivered, turnContext));
                         completion.complete(frozen);
                     } catch (VirtualMachineError fatal) {
                         completion.completeExceptionally(fatal);

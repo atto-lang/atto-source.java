@@ -155,6 +155,20 @@ public final class TypeChecker {
         if (module.storage() == Ast.ModuleStorage.ORDINARY) return;
 
         for (Ast.Decl decl : module.declarations()) {
+            if (module.storage() == Ast.ModuleStorage.SINGLETON
+                    && decl instanceof Ast.FieldDecl singletonField) {
+                if (singletonField.bindingKind() == Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException(
+                            "singleton module '" + module.name()
+                                    + "' is write-once/read-only; mutable 'let' fields are forbidden");
+                }
+                if (singletonField.initializer() == null
+                        || !constant(singletonField.initializer())) {
+                    throw new IllegalArgumentException(
+                            "singleton field '" + module.name() + "." + singletonField.name()
+                                    + "' requires a deterministic constant initializer");
+                }
+            }
             if (decl instanceof Ast.FunctionDecl fn && fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
                         module.storage().name().toLowerCase()

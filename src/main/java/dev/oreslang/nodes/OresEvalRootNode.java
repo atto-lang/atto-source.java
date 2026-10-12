@@ -13,9 +13,10 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresSymbol;
+import dev.oreslang.runtime.HostInteropNull;
 import dev.oreslang.runtime.PatternMatchError;
 import dev.oreslang.runtime.ProcessGlobalRegistry;
-import dev.oreslang.runtime.MemorySlotSingletonRegistry;
+import dev.oreslang.runtime.ProcessSingletonRegistry;
 import dev.oreslang.runtime.SandboxForbiddenCapability;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.ExecutionTerminated;
@@ -1265,7 +1266,7 @@ public final class OresEvalRootNode extends RootNode {
                         "raw Oreslang null cannot cross into host code; use None for an optional host argument");
             }
             if (value instanceof OptionValue option) {
-                return option.present() ? unwrapHostArgument(option.value()) : null;
+                return option.present() ? unwrapHostArgument(option.value()) : HostInteropNull.INSTANCE;
             }
             return value instanceof HostObjectFacade host ? host.value() : value;
         }
@@ -1534,13 +1535,17 @@ public final class OresEvalRootNode extends RootNode {
             StringBuilder schema = new StringBuilder(module.name()).append('|');
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.FieldDecl field)
-                        || field.bindingKind() == Ast.BindingKind.CONST) continue;
+                        || (field.bindingKind() == Ast.BindingKind.CONST
+                            && module.storage() != Ast.ModuleStorage.SINGLETON)) continue;
                 schema.append(field.name())
                         .append(':')
                         .append(field.bindingKind())
                         .append(':')
-                        .append(field.type())
-                        .append(';');
+                        .append(field.type());
+                if (module.storage() == Ast.ModuleStorage.SINGLETON) {
+                    schema.append(':').append(field.initializer());
+                }
+                schema.append(';');
             }
             return schema.toString();
         }
@@ -1558,7 +1563,8 @@ public final class OresEvalRootNode extends RootNode {
                 Object value = requireGuestValue(
                         eval(field.initializer(), env),
                         "stateful module field " + module.name() + "." + field.name());
-                if (field.bindingKind() != Ast.BindingKind.CONST) {
+                if (field.bindingKind() != Ast.BindingKind.CONST
+                        || module.storage() == Ast.ModuleStorage.SINGLETON) {
                     fields.put(field.name(), value);
                 }
                 env.define(field.name(), value, field.bindingKind());
@@ -1594,7 +1600,8 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.Decl decl : implementationModule.declarations()) {
                 if (!(decl instanceof Ast.FieldDecl field)) continue;
                 Object value;
-                if (field.bindingKind() == Ast.BindingKind.CONST) {
+                if (field.bindingKind() == Ast.BindingKind.CONST
+                        && implementationModule.storage() != Ast.ModuleStorage.SINGLETON) {
                     value = eval(field.initializer(), env);
                 } else {
                     value = state.fields.get(field.name());
@@ -1661,14 +1668,28 @@ public final class OresEvalRootNode extends RootNode {
                     () -> initializeStatefulModule(module));
         }
 
-        private MemorySlotSingletonRegistry.Handle<ModuleState> singletonHandle(
-                Ast.ModuleDecl module) {
+        private ProcessSingletonRegistry.Handle singletonHandle(Ast.ModuleDecl module) {
             context.requireCapability(
                     IsolatePolicy.Capability.SINGLETON_STATE,
                     "singleton module " + module.name());
-            return context.actors().singletons().getOrCreate(
+            return ProcessSingletonRegistry.getOrCreate(
                     statefulModuleKey(module),
-                    () -> initializeStatefulModule(module));
+                    statefulModuleSchema(module),
+                    context.isolatePolicy(),
+                    () -> initializeStatefulModule(module).fields);
+        }
+
+        private ModuleState singletonState(Ast.ModuleDecl module,
+                ProcessSingletonRegistry.Handle handle) {
+            ProcessSingletonRegistry.Snapshot snapshot = handle.snapshot();
+            return new ModuleState(module.name(), snapshot.schema(), snapshot.fields());
+        }
+
+        private Object callSingletonFunction(Ast.ModuleDecl module,
+                Ast.FunctionDecl function, List<?> arguments,
+                ProcessSingletonRegistry.Handle handle) {
+            return ActorRuntime.freeze(callStatefulModuleFunction(
+                    singletonState(module, handle), module, function, arguments));
         }
 
         private Ast.Annotation annotation(Ast.FieldDecl field, String name) {
@@ -1768,12 +1789,8 @@ public final class OresEvalRootNode extends RootNode {
                                             callStatefulModuleFunction(state, module, fn, delivered));
                         }
                         case SINGLETON -> {
-                            MemorySlotSingletonRegistry.Handle<ModuleState> handle =
-                                    singletonHandle(module);
-                            yield (Invokable) args -> handle.call(
-                                    args,
-                                    (state, delivered) ->
-                                            callStatefulModuleFunction(state, module, fn, delivered));
+                            ProcessSingletonRegistry.Handle handle = singletonHandle(module);
+                            yield (Invokable) args -> callSingletonFunction(module, fn, args, handle);
                         }
                     };
                 }
@@ -1782,7 +1799,8 @@ public final class OresEvalRootNode extends RootNode {
                         && field.visibility() == Ast.Visibility.PUBLIC) {
                     // Mutable public state is rejected statically. Public
                     // const/val reads still execute through the owning authority.
-                    if (field.bindingKind() == Ast.BindingKind.CONST) {
+                    if (field.bindingKind() == Ast.BindingKind.CONST
+                            && module.storage() != Ast.ModuleStorage.SINGLETON) {
                         if (field.initializer() == null) {
                             throw new IllegalArgumentException(
                                     "module const has no initializer: "
@@ -1809,12 +1827,7 @@ public final class OresEvalRootNode extends RootNode {
                                     requireCompatibleStatefulModule(state, module);
                                     return state.fields.get(field.name());
                                 });
-                        case SINGLETON -> singletonHandle(module).call(
-                                List.of(),
-                                (state, ignored) -> {
-                                    requireCompatibleStatefulModule(state, module);
-                                    return state.fields.get(field.name());
-                                });
+                        case SINGLETON -> singletonHandle(module).snapshot().fields().get(field.name());
                     };
                 }
             }
@@ -1843,10 +1856,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (decl instanceof Ast.FunctionDecl fn
                         && fn.visibility() == Ast.Visibility.PUBLIC
                         && fn.name().equals(name)) {
-                    return (Invokable) args -> ref.handle().call(
-                            args,
-                            (state, delivered) ->
-                                callStatefulModuleFunction(state, ref.module(), fn, delivered));
+                    return (Invokable) args -> callSingletonFunction(
+                            ref.module(), fn, args, ref.handle());
                 }
             }
             throw new IllegalArgumentException(
@@ -2323,12 +2334,12 @@ public final class OresEvalRootNode extends RootNode {
     private static final class ModuleState {
         private final String moduleName;
         private final String schema;
-        private final LinkedHashMap<String, Object> fields;
+        private final Map<String, Object> fields;
 
         private ModuleState(
                 String moduleName,
                 String schema,
-                LinkedHashMap<String, Object> fields) {
+                Map<String, Object> fields) {
             if (moduleName == null || schema == null || fields == null) {
                 throw new IllegalArgumentException(
                         "module runtime state cannot contain null metadata or storage");
@@ -2350,7 +2361,7 @@ public final class OresEvalRootNode extends RootNode {
     private record SingletonRefFacade(
             Evaluator owner,
             Ast.ModuleDecl module,
-            MemorySlotSingletonRegistry.Handle<ModuleState> handle)
+            ProcessSingletonRegistry.Handle handle)
             implements SandboxForbiddenCapability { }
 
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
