@@ -430,8 +430,16 @@ public final class OresScheduler implements AutoCloseable {
             admitted = Set.copyOf(tasks);
         }
 
+        // Revoke *all* task state before notifying any Future subscriber.
+        // Future.cancel() synchronously invokes completion waiters, and an
+        // arbitrary waiter may block. A blocked subscriber for task A must
+        // not prevent task B's await registration from being detached, or
+        // prevent B from retaining only live physical execution resources.
         for (TaskRunner<?> task : admitted) {
-            task.cancelFromSchedulerClose();
+            task.revokeFromSchedulerClose();
+        }
+        for (TaskRunner<?> task : admitted) {
+            task.publishCancelledFromSchedulerClose();
         }
         // Do not clear tasks here: cancelled Futures may settle while guest
         // carriers still execute. Each TaskRunner removes itself only after
@@ -785,15 +793,17 @@ public final class OresScheduler implements AutoCloseable {
             retireWhenQuiescent();
         }
 
-        private void cancelFromSchedulerClose() {
-            // A Future may publish its cancelled state before executing its
-            // cancellation hook: runtime waiters are notified synchronously
-            // first, and a waiter can block in that interval. Do not assume
-            // isCancelled() means the TaskRunner has observed cancellation.
-            // close() must sever await registrations and retire idle tasks
-            // independently of the thread running Future.cancel(false).
+        private void revokeFromSchedulerClose() {
+            // Quiesce internal state even when another cancellation thread has
+            // settled the Future but is blocked notifying its waiters.
+            cancelFromFuture();
+        }
+
+        private void publishCancelledFromSchedulerClose() {
+            // Task-local revocation for the entire snapshot has completed.
+            // Subscriber delivery is allowed to block, but cannot now delay
+            // cancellation/await detachment for any other admitted task.
             completion.cancel(false);
-            cancelFromFuture(); // idempotent if the normal hook already ran
         }
     }
 
