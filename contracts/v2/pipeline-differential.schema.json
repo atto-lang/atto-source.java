@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oreslang.dev/contracts/v2/pipeline-differential.schema.json",
+  "title": "Executed three-actor Java/LLVM pipeline differential report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_revisions",
+    "three_actor_flow",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "source_revisions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "java",
+        "llvm"
+      ],
+      "properties": {
+        "java": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "llvm": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        }
+      }
+    },
+    "three_actor_flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "forward",
+        "backward",
+        "result",
+        "java_guest_hops",
+        "llvm_data_admissions",
+        "llvm_finalized_turns"
+      ],
+      "properties": {
+        "input": {
+          "const": 5
+        },
+        "forward": {
+          "const": 2
+        },
+        "backward": {
+          "const": 2
+        },
+        "result": {
+          "const": 19
+        },
+        "java_guest_hops": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "required": [
+              "direction",
+              "actor",
+              "value"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "direction": {
+                "enum": [
+                  "forward",
+                  "backward"
+                ]
+              },
+              "actor": {
+                "enum": [
+                  "Source",
+                  "Transform",
+                  "Sink"
+                ]
+              },
+              "value": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "llvm_data_admissions": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "required": [
+              "target_index",
+              "direction",
+              "variant_index",
+              "value"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "target_index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2
+              },
+              "direction": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2
+              },
+              "variant_index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "value": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "llvm_finalized_turns": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": 1
+            },
+            {
+              "const": 2
+            },
+            {
+              "const": 2
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "status": {
+      "const": "passed"
+    }
+  }
+}
