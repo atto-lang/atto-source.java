@@ -944,35 +944,63 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public synchronized void close() {
             if (!sliceClosed.compareAndSet(false, true)) return;
-            // Graph retirement comes before releasing actor quota. An
-            // outstanding host/native lease defers payload destruction until
-            // the final lease closes. Actor access is fenced immediately.
+            RuntimeException retirementFailure = null;
+            // The first region's failed close must not leave subsequent regions
+            // open and still executable. Fence every owner before reporting a
+            // partial physical-release failure to the actor's shutdown result.
             for (ActorOwnedGraphArena<?> graph : List.copyOf(ownedGraphs)) {
-                graph.retireFromActor();
+                try {
+                    graph.retireFromActor();
+                } catch (RuntimeException failure) {
+                    if (retirementFailure == null) retirementFailure = failure;
+                    else if (retirementFailure != failure) retirementFailure.addSuppressed(failure);
+                }
             }
             ownedGraphs.clear();
             for (ActorOwnedI64Region region : List.copyOf(ownedI64Regions)) {
-                region.retireFromActor();
+                try {
+                    region.retireFromActor();
+                } catch (RuntimeException failure) {
+                    if (retirementFailure == null) retirementFailure = failure;
+                    else if (retirementFailure != failure) retirementFailure.addSuppressed(failure);
+                }
             }
             ownedI64Regions.clear();
-            // Native FFM scopes close while the actor is quiescent; the host
-            // wrapper may remain managed but physical guest bytes are freed.
             for (ExplicitNativeI64Region region : List.copyOf(explicitNativeI64Regions)) {
-                region.retireFromActor();
+                try {
+                    region.retireFromActor();
+                } catch (RuntimeException failure) {
+                    if (retirementFailure == null) retirementFailure = failure;
+                    else if (retirementFailure != failure) retirementFailure.addSuppressed(failure);
+                }
             }
             explicitNativeI64Regions.clear();
-            for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
-            blocks.clear();
-            synchronized (memoryBudgetLock) {
-                long bytes = usedBytes.get();
-                long pinned = retainedNativeBytes.get();
-                if (pinned > bytes) {
-                    throw new IllegalStateException("physically pinned native memory exceeds actor accounting");
+            for (PrivateMemoryBlock block : List.copyOf(blocks)) {
+                try {
+                    block.invalidateFromSlice();
+                } catch (RuntimeException failure) {
+                    if (retirementFailure == null) retirementFailure = failure;
+                    else if (retirementFailure != failure) retirementFailure.addSuppressed(failure);
                 }
-                usedBytes.set(pinned);
-                long released = bytes - pinned;
-                if (released != 0) releasePrivateRuntimeBytes(released, owner);
             }
+            blocks.clear();
+            try {
+                synchronized (memoryBudgetLock) {
+                    long bytes = usedBytes.get();
+                    long pinned = retainedNativeBytes.get();
+                    if (pinned > bytes) {
+                        throw new IllegalStateException(
+                                "physically pinned native memory exceeds actor accounting");
+                    }
+                    usedBytes.set(pinned);
+                    long released = bytes - pinned;
+                    if (released != 0) releasePrivateRuntimeBytes(released, owner);
+                }
+            } catch (RuntimeException failure) {
+                if (retirementFailure == null) retirementFailure = failure;
+                else if (retirementFailure != failure) retirementFailure.addSuppressed(failure);
+            }
+            if (retirementFailure != null) throw retirementFailure;
         }
 
         private void unregister(PrivateMemoryBlock block) {
