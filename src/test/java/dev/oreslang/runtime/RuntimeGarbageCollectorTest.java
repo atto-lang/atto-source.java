@@ -544,4 +544,48 @@ final class RuntimeGarbageCollectorTest {
         }
     }
 
+    @Test
+    void lastExplicitCleanupDiscardsStaleRetryEntriesWithoutJvmGc() throws Exception {
+        AtomicInteger jvmGcRequests = new AtomicInteger();
+        AtomicInteger attempts = new AtomicInteger();
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(
+                jvmGcRequests::incrementAndGet, Duration.ofHours(1))) {
+            var queueField = RuntimeGarbageCollector.class.getDeclaredField("retryQueue");
+            queueField.setAccessible(true);
+            var timerField = RuntimeGarbageCollector.class.getDeclaredField("periodicSweep");
+            timerField.setAccessible(true);
+            // A failed deterministic close queues a retry. A later successful
+            // close must reclaim that stale retry even with housekeeping off.
+            var handle = gc.track(new Object(), () -> {
+                if (attempts.getAndIncrement() == 0) {
+                    throw new IllegalStateException("transient native cleanup");
+                }
+            });
+            assertThrows(IllegalStateException.class, handle::close);
+            assertEquals(1,
+                    ((java.util.Queue<?>) queueField.get(gc)).size(),
+                    "failed close must retain one retry admission");
+            handle.close();
+            assertEquals(2, attempts.get());
+            assertTrue(((java.util.Queue<?>) queueField.get(gc)).isEmpty(),
+                    "last deterministic close must not retain dormant retry tombstones");
+            assertNull(timerField.get(gc));
+            assertEquals(0, jvmGcRequests.get());
+
+            // Repeated host-resource failures and recoveries must not
+            // accumulate dormant entry objects on an ownership-only runtime.
+            for (int i = 0; i < 100; i++) {
+                AtomicInteger each = new AtomicInteger();
+                var next = gc.track(new Object(), () -> {
+                    if (each.getAndIncrement() == 0) throw new IllegalStateException("retry");
+                });
+                assertThrows(IllegalStateException.class, next::close);
+                next.close();
+                assertTrue(((java.util.Queue<?>) queueField.get(gc)).isEmpty());
+                assertNull(timerField.get(gc));
+            }
+            assertEquals(0, jvmGcRequests.get());
+        }
+    }
+
 }
