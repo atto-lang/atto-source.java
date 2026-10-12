@@ -75,6 +75,16 @@ public final class GpuBufferFence implements AutoCloseable {
         }
     }
 
+    /** Read-only descriptor snapshot; it is not an authority to dispatch. */
+    public record Snapshot(Identity identity, long byteLength, Status status) { }
+
+    public Snapshot snapshot() {
+        synchronized (state) {
+            active();
+            return new Snapshot(state.identity, state.bytes, state.status);
+        }
+    }
+
     public synchronized GpuBufferFence take() {
         synchronized (state) {
         active();
