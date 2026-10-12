@@ -50,6 +50,8 @@ final class ExplicitNativeI64LoanTest {
             assertTrue(region.get().closed(), "STOP must retire FFM regions");
             assertFalse(actor.get_done().isDone(),
                     "pinned FFM loans forbid physical actor completion");
+            assertFalse(actor.get_shutdown_result().isDone(),
+                    "shutdown outcome cannot succeed before FFM release");
 
         assertNotNull(region.get());
         assertEquals(16, retainedRuntime.get().privateMemoryBytes(),
@@ -71,6 +73,7 @@ final class ExplicitNativeI64LoanTest {
                 "last native loan completion refunds the aggregate runtime budget");
             stopping.get(5, TimeUnit.SECONDS);
             actor.get_done().get(5, TimeUnit.SECONDS);
+            actor.get_shutdown_result().get(5, TimeUnit.SECONDS);
         } finally {
             runtime.close();
         }
