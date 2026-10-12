@@ -466,6 +466,63 @@ public final class ActorRuntime implements AutoCloseable {
                 : CarrierBackend.JVM_THREAD_POOL;
     }
 
+    /**
+     * A semantic heap domain is not a physical garbage-collection domain.
+     * All three actor kinds currently allocate guest objects on the parent
+     * Truffle context's managed heap. Their actor-specific quotas and optional
+     * direct-memory regions cannot stop JVM-wide GC from pausing the host.
+     *
+     * Once an actual per-actor Native Image isolate or worker process exists,
+     * this supervisor-visible status must be backed by an observed backend
+     * identity and tested with real independent GC, not inferred from kind.
+     */
+    public record ActorHeapStatus(
+            ActorKind kind,
+            boolean actorOwnedMemorySlice,
+            boolean canAllocateOwnerCheckedDirectMemory,
+            boolean independentOfParentContextHeap,
+            boolean independentlyCollectable) {
+        public ActorHeapStatus {
+            Objects.requireNonNull(kind, "kind");
+            if (independentlyCollectable && !independentOfParentContextHeap) {
+                throw new IllegalArgumentException(
+                        "independent actor GC requires a physically independent heap");
+            }
+        }
+    }
+
+    /** Supervisor-only truth about this actor's *current* physical heap. */
+    public ActorHeapStatus heapStatusFor(ActorRef<?> ref) {
+        requireSupervisorContext("inspect actor heap isolation");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to another runtime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) {
+            throw new IllegalStateException("actor was not found or has finalized");
+        }
+        // Do not confuse a heap quota, a ByteBuffer, or an untrusted
+        // dispatcher with a separate GC heap.
+        boolean actorRegion = cell.memorySlice != null;
+        return new ActorHeapStatus(
+                cell.kind, actorRegion, actorRegion, false, false);
+    }
+
+    /**
+     * Fail closed when callers need per-actor GC isolation. This is not
+     * implemented by the shared JVM-backed ActorRuntime; launch the actor in a
+     * proven independent isolate/process instead of silently weakening policy.
+     */
+    public void requireIndependentGcHeap(ActorRef<?> ref) {
+        if (!heapStatusFor(ref).independentlyCollectable()) {
+            throw new IllegalStateException(
+                    "actor requires an independent physical GC heap; "
+                    + "the current JVM ActorRuntime provides only actor-local "
+                    + "ownership/quota boundaries, not an independent collector");
+        }
+    }
+
     /** Placement is not a separate-heap guarantee. CPU -1 means no hard binding. */
     public record ActorPlacement(int lane, int cpu, String affinity) { }
 
