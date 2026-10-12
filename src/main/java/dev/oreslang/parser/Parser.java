@@ -838,6 +838,7 @@ public final class Parser {
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        Ast.ActorStateSpec stateSpec = null;
         int requestConcurrency = policy == null ? 1 : policy.requestConcurrency();
         int messageConcurrency = policy == null ? 1 : policy.messageConcurrency();
         boolean requestDeclared = false;
@@ -884,6 +885,32 @@ public final class Parser {
                 }
                 continue;
             }
+            if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+                if (stateSpec != null)
+                    throw error(peek(), "actor may declare exactly one state map");
+                advance(); // state: compiler-owned state keys, not class members
+                consume(LBRACE, "state map requires '{'");
+                List<Ast.FieldDecl> stateEntries = new ArrayList<>();
+                java.util.Set<String> keys = new java.util.HashSet<>();
+                while (!check(RBRACE) && !check(EOF)) {
+                    if (stateEntries.size() >= 64)
+                        throw error(peek(), "actor state map exceeds 64 fixed keys");
+                    String key = consume(IDENT, "state map requires a fixed key").lexeme();
+                    if (!keys.add(key))
+                        throw error(previous(), "duplicate actor state key '" + key + "'");
+                    consume(COLON, "actor state key requires ': Type'");
+                    Ast.TypeRef type = parseTypeRef();
+                    consume(EQUAL, "actor state key requires an initializer");
+                    Ast.Expr initializer = parseExpression();
+                    consume(SEMICOLON, "actor state entry requires ';'");
+                    stateEntries.add(new Ast.FieldDecl(key, Ast.Visibility.PRIVATE,
+                            Ast.BindingKind.LET, type, List.of(), initializer));
+                }
+                consume(RBRACE, "unterminated actor state map");
+                match(SEMICOLON);
+                stateSpec = new Ast.ActorStateSpec(stateEntries);
+                continue;
+            }
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
             if (isLegacyFnSpelling()) {
@@ -901,9 +928,8 @@ public final class Parser {
             }
 
             if (isBindingKind(peek().type())) {
-                validateActorFieldModifiers(mods);
-                fields.add(parseField(annotations, mods.visibility));
-                continue;
+                throw error(peek(),
+                        "actor class instance data must be declared in its state map");
             }
 
             boolean explicitFnc = match(FNC);
@@ -933,7 +959,7 @@ public final class Parser {
                     "receive_forward/receive_backward require define transform pipe actor");
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces,
-                fields, null, methods, null, configured, builtinBase, pipeRole);
+                fields, null, methods, null, configured, builtinBase, pipeRole, stateSpec);
     }
 
     private void validateTransformPipeHandlerContract(
