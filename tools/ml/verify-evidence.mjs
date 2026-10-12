@@ -6,8 +6,11 @@ const fields=["schema_version","workload","backend","mode","source_sha","compile
 const finiteNonnegative=(n,k)=>{if(typeof n!=="number"||!Number.isFinite(n)||n<0)throw new TypeError(k+" must be nonnegative finite");};
 function closed(value,keys,name){
  if(!value||typeof value!=="object"||Array.isArray(value))throw new TypeError(name+" must be object");
- const actual=Object.keys(value).sort().join(","),expected=[...keys].sort().join(",");
- if(actual!==expected)throw new TypeError(name+" must have exactly: "+keys.join(","));
+ // Comparing comma-joined key lists is unsafe: a single property named
+ // "a,b" can masquerade as two required properties "a" and "b".
+ const actual=Object.keys(value),expected=new Set(keys);
+ if(actual.length!==keys.length||actual.some(k=>!expected.has(k))||
+    keys.some(k=>!Object.hasOwn(value,k)))throw new TypeError(name+" must have exactly: "+keys.join(","));
 }
 export function verifyMlEvidence(receipt){
  closed(receipt,fields,"receipt");
@@ -21,7 +24,10 @@ export function verifyMlEvidence(receipt){
  }
  closed(receipt.hardware,["cpu","arch","ram_bytes","gpu","driver","numa","os"],"hardware");
  for(const k of ["cpu","arch","gpu","driver","numa","os"])if(typeof receipt.hardware[k]!=="string"||receipt.hardware[k].length===0)throw new TypeError("hardware."+k);
- finiteNonnegative(receipt.hardware.ram_bytes,"ram_bytes");
+ if(!Number.isSafeInteger(receipt.hardware.ram_bytes)||receipt.hardware.ram_bytes<1)
+   throw new TypeError("ram_bytes must be positive safe integer");
+ for(const k of ["cpu","arch","gpu","driver","numa","os"])
+   if(receipt.hardware[k].length>256)throw new RangeError("hardware."+k+" too long");
  closed(receipt.execution,["ci_url","exit_code","compiled_source","evidence_kind"],"execution");
  if(typeof receipt.execution.ci_url!=="string"||!/^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/[1-9][0-9]*$/.test(receipt.execution.ci_url))throw new Error("missing canonical CI run proof");
  if(receipt.execution.exit_code!==0||receipt.execution.compiled_source!==true||receipt.execution.evidence_kind!=="source_execution")throw new Error("no executed compiled-source proof");
@@ -31,6 +37,10 @@ export function verifyMlEvidence(receipt){
  if(receipt.correctness.max_abs_error>receipt.correctness.abs_tolerance||receipt.correctness.max_rel_error>receipt.correctness.rel_tolerance)throw new Error("numerical tolerance exceeded");
  closed(receipt.measurements,["throughput_per_sec","p50_ms","p95_ms","p99_ms","copied_bytes","allocations","peak_rss_bytes","recovery_ms"],"measurements");
  for(const k of Object.keys(receipt.measurements))finiteNonnegative(receipt.measurements[k],k);
+ for(const k of ["copied_bytes","allocations","peak_rss_bytes"]){
+   if(!Number.isSafeInteger(receipt.measurements[k]))throw new TypeError(k+" must be a safe integer");
+ }
+ if(receipt.measurements.throughput_per_sec===0)throw new Error("zero measured throughput");
  const m=receipt.measurements;
  if(m.p50_ms>m.p95_ms||m.p95_ms>m.p99_ms)throw new Error("latency quantiles unordered");
  return Object.freeze({kind:"structurally_admissible_source_evidence",workload:receipt.workload,backend:receipt.backend});
