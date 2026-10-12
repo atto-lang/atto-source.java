@@ -63,14 +63,14 @@ final class SerialActorValueMatchIntegrationTest {
     void serialReceiveMaySuspendInsideTypedMatchWithoutReplayingCleanup() throws Exception {
         assertEquals("producer\narm-cleanup\n42", run("""
                 define serial actor Worker as
-                  async fnc produce(): int {
+                  pub static async fnc produce(): int {
                     stdio.println("producer");
                     rt cooperate;
                     return 7;
                   }
 
                   suspends receive(ActorMail<String> mail): void {
-                    val result: int = match<ret=int> await self.produce() over {
+                    val result: int = match<ret=int> await Worker.produce() over {
                       on 7 {
                         defer stdio.println("arm-cleanup");
                         return 42;
