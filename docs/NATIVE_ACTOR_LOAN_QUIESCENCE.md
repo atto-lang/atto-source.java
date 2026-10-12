@@ -20,7 +20,11 @@ logical `closed()` state so callers cannot confuse revocation with release.
 
 ## Quota hardening
 
-A pending loan may retain physical native memory beyond actor shutdown.
+A pending loan may retain physical native memory beyond actor logical STOP.
+The current Java draft now holds the actor's physical `get_done()` barrier
+open until the final loan closes its native FFM arena and refunds the quota.
+A late Arena.close failure reports a failed shutdown instead of publishing
+physical completion. This revision is unverified until fresh CI runs.
 Previously the encompassing `ActorMemorySlice.close()` would reset the
 aggregate runtime memory budget even though the FFM memory was still alive.
 That would allow another actor to consume the same aggregate bytes twice.
