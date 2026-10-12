@@ -57,7 +57,32 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         domain.cases().stream().map(TaggedMessageContracts.Case::qualifiedName)
                 .sorted().forEach(n -> fingerprint.append(n.length()).append(':').append(n).append(';'));
         String domainHash = digestHex(fingerprint.toString());
-        closedDomainIdentity = domainHash;
+        // Route admission must compare the FULL compiler-owned nominal
+        // contract, not only its case names. Otherwise two separately linked
+        // actors could agree on "Signal.Data" while disagreeing on the tag or
+        // payload schema. This fingerprint is deliberately distinct from
+        // domainHash: changing the v2 wire schema IDs would break native
+        // compatibility and the established golden vectors.
+        StringBuilder routeFingerprint = new StringBuilder(
+                "oreslang.actor.pipeline.closed-domain.v1/");
+        routeFingerprint.append(domainHash).append('/');
+        domain.cases().stream()
+                .sorted(java.util.Comparator.comparing(
+                        TaggedMessageContracts.Case::qualifiedName))
+                .forEach(source -> {
+                    String qualified = source.qualifiedName();
+                    routeFingerprint.append(qualified.length()).append(':')
+                            .append(qualified).append('#').append(source.tag())
+                            .append('#');
+                    if (source.payload() == null) {
+                        routeFingerprint.append("no-payload");
+                    } else {
+                        routeFingerprint.append(java.util.HexFormat.of().formatHex(
+                                MessagePackCollectionCodec.shapeDigest(source.payload())));
+                    }
+                    routeFingerprint.append(';');
+                });
+        closedDomainIdentity = digestHex(routeFingerprint.toString());
         for (TaggedMessageContracts.Case source : domain.cases()) {
             var tuple = source.payload() == null
                     ? MessagePackCollectionCodec.tuple(
