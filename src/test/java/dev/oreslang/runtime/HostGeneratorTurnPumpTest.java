@@ -69,6 +69,9 @@ final class HostGeneratorTurnPumpTest {
                     OresFuture.completed(22), OresFuture.completed(null));
         });
 
+        AtomicReference<Boolean> publicationRetainedOwnership = new AtomicReference<>();
+        first.whenCompleteRuntime((value, failure) ->
+                publicationRetainedOwnership.set(!pump.dispatchOne()));
         assertTrue(pump.dispatchOne());
         firstValue.completeFromRuntime(11);
         assertFalse(first.isDone(),
@@ -78,6 +81,8 @@ final class HostGeneratorTurnPumpTest {
         assertThrows(IllegalStateException.class, pump::requireQuiescent);
         firstPhysicalExit.completeFromRuntime(null);
         assertEquals(11, first.get(5, TimeUnit.SECONDS));
+        assertEquals(Boolean.TRUE, publicationRetainedOwnership.get(),
+                "the previous Future must publish before the next turn is eligible");
         assertTrue(wakes.get() >= 2, "owner must be notified of resumed capacity");
         assertTrue(pump.dispatchOne());
         assertEquals(22, second.get(5, TimeUnit.SECONDS));
@@ -137,6 +142,41 @@ final class HostGeneratorTurnPumpTest {
         assertEquals(0, started.get());
         assertFalse(pump.dispatchOne());
         pump.close();
+    }
+
+    @Test
+    void invalidExitBarrierAndFailedWakeDoNotCreateOrphanedProducer()
+            throws Exception {
+        HostGeneratorTurnPump invalid = new HostGeneratorTurnPump(
+                UUID.randomUUID(), () -> true);
+        OresFuture<Integer> pull = invalid.request(invalid.token(), () -> {
+            OresFuture<Integer> shared = new OresFuture<>();
+            return new HostGeneratorTurnPump.Turn<>(shared, shared);
+        });
+        assertTrue(invalid.dispatchOne());
+        var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> pull.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+        invalid.close();
+
+        AtomicInteger producerStarts = new AtomicInteger();
+        HostGeneratorTurnPump brokenNotifier = new HostGeneratorTurnPump(
+                UUID.randomUUID(), () -> true,
+                () -> { throw new RejectedExecutionException("owner has retired"); }, 2);
+        assertThrows(RejectedExecutionException.class, () ->
+                brokenNotifier.request(brokenNotifier.token(), () -> {
+                    producerStarts.incrementAndGet();
+                    return new HostGeneratorTurnPump.Turn<>(
+                            OresFuture.completed(5), OresFuture.completed(null));
+                }));
+        assertTrue(brokenNotifier.isQuiescent());
+        assertEquals(0, producerStarts.get(),
+                "failed owner wake may not leave dispatchable orphan work");
+        assertThrows(RejectedExecutionException.class,
+                () -> brokenNotifier.request(brokenNotifier.token(),
+                        () -> new HostGeneratorTurnPump.Turn<>(
+                                OresFuture.completed(6), OresFuture.completed(null))));
+        brokenNotifier.close();
     }
 
     @Test
