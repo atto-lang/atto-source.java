@@ -60,6 +60,7 @@ public final class Parser {
                 consume(DEFINE, "compatibility class declaration requires both 'class' and 'define'");
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                 validateClassModifiers(modifiers);
                 rootDeclarations.add(parseClass(
                         modifiers.visibility,
@@ -75,6 +76,7 @@ public final class Parser {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 validateOnlyVisibilityModifiers(modifiers, "contracts");
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
                 rootDeclarations.add(parseContract(modifiers.visibility));
                 continue;
             }
@@ -86,6 +88,7 @@ public final class Parser {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 validateOnlyVisibilityModifiers(modifiers, "interfaces");
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
                 rootDeclarations.add(parseInterface(modifiers.visibility));
                 continue;
             }
@@ -112,12 +115,14 @@ public final class Parser {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     validateOnlyVisibilityModifiers(modifiers, "contracts");
                     rejectCallableStructuralAnnotation(annotations, "contract declarations");
+                    rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
                     rootDeclarations.add(parseContract(modifiers.visibility));
                     continue;
                 }
                 if (match(CLASS)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
+                    rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                     validateClassModifiers(modifiers);
                     rootDeclarations.add(parseClass(
                             modifiers.visibility,
@@ -129,6 +134,7 @@ public final class Parser {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
+                    rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
@@ -244,6 +250,7 @@ public final class Parser {
             consume(DEFINE, "compatibility class declaration requires both 'class' and 'define'");
             modifiers = mergeModifiers(modifiers, parseModifiers());
             rejectCallableStructuralAnnotation(annotations, "class declarations");
+            rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
             validateClassModifiers(modifiers);
             return parseClass(modifiers.visibility, modifiers.isAbstract, false);
         }
@@ -255,6 +262,7 @@ public final class Parser {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             validateOnlyVisibilityModifiers(modifiers, "contracts");
             rejectCallableStructuralAnnotation(annotations, "contract declarations");
+            rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
             return parseContract(modifiers.visibility);
         }
 
@@ -265,6 +273,7 @@ public final class Parser {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             validateOnlyVisibilityModifiers(modifiers, "interfaces");
             rejectCallableStructuralAnnotation(annotations, "interface declarations");
+            rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
             return parseInterface(modifiers.visibility);
         }
 
@@ -280,11 +289,13 @@ public final class Parser {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 validateOnlyVisibilityModifiers(modifiers, "contracts");
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
                 return parseContract(modifiers.visibility);
             }
             if (match(CLASS)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                 validateClassModifiers(modifiers);
                 return parseClass(modifiers.visibility,
                         modifiers.isAbstract, false);
@@ -293,6 +304,7 @@ public final class Parser {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
+                rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
                 return parseInterface(modifiers.visibility);
             }
             throw error(previous(), "expected class, interface, or trait after 'define'");
@@ -332,6 +344,7 @@ public final class Parser {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
+            rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
             return parseActorClass(actorKind, modifiers.visibility);
         }
         if (match(FNC)) {
@@ -365,16 +378,19 @@ public final class Parser {
         if (match(CONTRACT)) {
             validateOnlyVisibilityModifiers(modifiers, "contracts");
             rejectCallableStructuralAnnotation(annotations, "contract declarations");
+            rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
             return parseContract(modifiers.visibility);
         }
         if (match(INTERFACE, TRAIT)) {
             validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
             rejectCallableStructuralAnnotation(annotations, "interface/trait declarations");
+            rejectDiscardedDeclarationAnnotations(annotations, "interface/trait declarations");
             return parseInterface(modifiers.visibility);
         }
         if (match(TYPE)) {
             validateNoModifiers(modifiers, "type aliases");
             rejectCallableStructuralAnnotation(annotations, "type aliases");
+            rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
             return parseTypeAlias();
         }
         if (isBindingKind(peek().type())) {
@@ -639,6 +655,7 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
+        rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
         return parseActorClass(kind, modifiers.visibility);
     }
 
@@ -842,6 +859,7 @@ public final class Parser {
 
     private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
+        rejectDiscardedDeclarationAnnotations(annotations, "fields");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
@@ -863,6 +881,7 @@ public final class Parser {
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
+        rejectDiscardedDeclarationAnnotations(annotations, "fields");
         String name = consume(IDENT, "expected field name").lexeme();
         consume(COLON, "expected ':' after field name");
         Ast.TypeRef type = parseTypeRef();
@@ -876,6 +895,7 @@ public final class Parser {
     /** Actor-state 'final name: Type' is a const/immutable field spelling. */
     private Ast.FieldDecl parseFinalActorField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
+        rejectDiscardedDeclarationAnnotations(annotations, "fields");
         consumeContextualIdentifier("final", "expected 'final' actor field");
         String name = consume(IDENT, "expected field name after 'final'").lexeme();
         consume(COLON, "expected ':' after final field name");
@@ -888,6 +908,7 @@ public final class Parser {
 
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "module bindings");
+        rejectDiscardedDeclarationAnnotations(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
@@ -3365,6 +3386,18 @@ public final class Parser {
             throw error(previous(), "duplicate structural callable modifier; use either 'structural' or '@structural', not both");
         }
         return new CallableStructural(modifierStructural || annotationStructural, List.copyOf(remaining));
+    }
+
+    /**
+     * Fail closed until these declaration nodes preserve typed annotation metadata.
+     * Silently dropping metadata can bypass compile-time macro, ABI and safety contracts.
+     * Module, function, method and field annotations have AST storage and are unaffected.
+     */
+    private void rejectDiscardedDeclarationAnnotations(List<Ast.Annotation> annotations, String target) {
+        if (!annotations.isEmpty()) {
+            throw error(previous(), "@" + annotations.getFirst().name() + " on " + target
+                    + " would be silently discarded; declaration annotation storage is not implemented");
+        }
     }
 
     private void rejectCallableStructuralAnnotation(List<Ast.Annotation> annotations, String target) {
