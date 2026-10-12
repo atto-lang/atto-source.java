@@ -1445,7 +1445,10 @@ public final class OwnershipChecker {
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
                 requireDeferredOwnedParameters(signature.parameters(),
                         method.async(), "method " + method.name());
-                checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(),
+                        member.receiver(), method.explicitReceiverType() != null
+                                && method.explicitReceiverType().isBorrow()
+                                && method.explicitReceiverType().mutableBorrow());
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
                     throw error("method '" + target.owner().name() + "." + method.name()
@@ -1598,6 +1601,25 @@ public final class OwnershipChecker {
     }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
+        checkArguments(arguments, params, scope, callable, null, false);
+    }
+
+    private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params,
+                                Scope scope, String callable, Ast.Expr receiver, boolean mutableReceiver) {
+        ArrayList<CallLoan> callLoans = new ArrayList<>();
+        try {
+            // Evaluation of the implicit method receiver precedes the explicit
+            // arguments. Its aggregate must stay live while argument expressions
+            // are evaluated: method(a, rt take a) must not move the receiver.
+            if (receiver != null) {
+                Ast.Expr root = projectedCallLoanRoot(receiver);
+                if (root instanceof Ast.NameExpr name && scope.lookup(name.name()) != null) {
+                    VarState owner = borrowOwner(root, scope);
+                    if (!isActorConfinedBorrow(owner)) {
+                        reserveStateCallLoan(owner, mutableReceiver, callLoans);
+                    }
+                }
+            }
         int parameterIndex = 0;
         for (Ast.Expr argument : arguments) {
             if (argument instanceof Ast.SpreadExpr spread) {
@@ -1624,9 +1646,7 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(aggregate.type)) {
                     throw error(callable + " spread cannot consume a guard-bearing tuple");
                 }
-                // Expanded tuple elements bypass checkArgument. Without this
-                // guard, an incoming tuple containing &T could be forwarded
-                // into owned parameters, erasing the lexical loan lifetime.
+                // Tuple expansion bypasses per-argument admission; reject nested loans.
                 if (containsBorrowType(spreadType) || containsBorrowType(aggregate.type)) {
                     throw error(callable + " spread cannot forward borrowed tuple elements into owned parameters; pass explicit borrowed arguments");
                 }
@@ -1635,9 +1655,90 @@ public final class OwnershipChecker {
             }
 
             if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
-            checkArgument(argument, params.get(parameterIndex), scope, callable, parameterIndex + 1);
+            Ast.Param param = params.get(parameterIndex);
+            checkArgument(argument, param, scope, callable, parameterIndex + 1);
+            reserveCallLoan(argument, param, scope, callLoans);
             parameterIndex++;
         }
+        } finally {
+            for (int i = callLoans.size() - 1; i >= 0; i--) {
+                CallLoan loan = callLoans.get(i);
+                if (loan.mutable()) loan.state().mutableBorrowed = false;
+                else loan.state().immutableBorrows--;
+            }
+        }
+    }
+
+    private record CallLoan(VarState state, boolean mutable) {}
+
+    /** Reserve direct argument borrows through the entire call argument list. */
+    private void reserveCallLoan(Ast.Expr argument, Ast.Param param, Scope scope, List<CallLoan> loans) {
+        boolean structural = param.structural() && !param.type().isBorrow();
+        if (!structural && !param.type().isBorrow()) return;
+        Ast.Expr source = null;
+        if (argument instanceof Ast.NameExpr) {
+            source = argument;
+        } else if (argument instanceof Ast.RuntimeCallExpr runtime
+                && runtime.operation().equals("borrow") && runtime.arguments().size() == 1) {
+            source = runtime.arguments().getFirst();
+        } else if (argument instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+            source = unary.operand();
+        }
+        // A structural argument can project a class field, record member, or
+        // array element without spelling an explicit borrow. The projection
+        // remains backed by its named aggregate until the call returns.
+        // Reserve the aggregate root, not just a direct NameExpr: otherwise
+        // consume(container) could move a value while container.inner is an
+        // outstanding read-only call argument.
+        if (source == null && structural) {
+            Ast.Expr root = projectedCallLoanRoot(argument);
+            // A module/static namespace is not a lexical ownership binding.
+            if (root instanceof Ast.NameExpr name && scope.lookup(name.name()) != null) {
+                source = root;
+            }
+        }
+        if (source == null) return; // Pure temporary or module/static namespace.
+        VarState owner = borrowOwner(source, scope);
+        boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
+        reserveStateCallLoan(owner, mutable, loans);
+    }
+
+    private void reserveStateCallLoan(VarState owner, boolean mutable, List<CallLoan> loans) {
+        if (owner.kind == ValueKind.IMM_BORROW || owner.kind == ValueKind.MUT_BORROW || owner.type.isBorrow()) {
+            // The borrowed view already holds its source's lease; track call
+            // conflicts locally without reacquiring that exclusive source lease.
+            if (mutable && owner.kind != ValueKind.MUT_BORROW
+                    && !(owner.type.isBorrow() && owner.type.mutableBorrow())) {
+                throw error("mutable call loan requires an exclusive borrowed view");
+            }
+            if (owner.mutableBorrowed || (mutable && owner.immutableBorrows > 0)) {
+                throw error("cannot overlap call loans for borrowed value '" + owner.debugName + "'");
+            }
+            if (mutable) owner.mutableBorrowed = true;
+            else owner.immutableBorrows++;
+            loans.add(new CallLoan(owner, mutable));
+        } else {
+            beginPersistentBorrow(owner, mutable);
+            loans.add(new CallLoan(ownershipRoot(owner), mutable));
+        }
+    }
+
+    /**
+     * Locate the owning lexical aggregate for structural field/index views.
+     * An expression with no provable named root is not treated as an alias to
+     * an unrelated local. Side-effecting index expressions are checked by
+     * checkArgument before the call loan is reserved.
+     */
+    private Ast.Expr projectedCallLoanRoot(Ast.Expr expression) {
+        if (expression instanceof Ast.NameExpr) return expression;
+        if (expression instanceof Ast.MemberExpr member) {
+            return projectedCallLoanRoot(member.receiver());
+        }
+        if (expression instanceof Ast.IndexExpr indexed) {
+            return projectedCallLoanRoot(indexed.receiver());
+        }
+        return null;
     }
 
     private void checkArgument(
@@ -1651,6 +1752,14 @@ public final class OwnershipChecker {
             arg = new Ast.UnaryExpr("&", runtime.arguments().getFirst());
         }
         if (param.structural() && !param.type().isBorrow()) {
+            if (arg instanceof Ast.RuntimeCallExpr runtime && runtime.operation().equals("take")) {
+                throw error(callable + " argument " + position
+                        + " is a read-only structural view; rt take would transfer ownership");
+            }
+            if (arg instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")) {
+                throw error(callable + " argument " + position
+                        + " is a read-only structural view; rt borrow mut is not permitted");
+            }
             ValueInfo argument = checkExpr(arg, scope, false);
             if (containsMutexGuardType(argument.type)
                     || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
@@ -1691,7 +1800,7 @@ public final class OwnershipChecker {
         ValueInfo argument = checkExpr(arg, scope, true);
         if (isBorrowValue(argument) || containsBorrowType(argument.type)) {
             throw error(callable + " argument " + position
-                    + " is an owned by-value parameter and cannot retain a borrowed view");
+                    + " is owned by-value; a borrowed view cannot transfer ownership");
         }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
