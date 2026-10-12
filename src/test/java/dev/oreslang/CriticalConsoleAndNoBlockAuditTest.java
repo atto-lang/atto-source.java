@@ -35,7 +35,8 @@ final class CriticalConsoleAndNoBlockAuditTest {
 
     @Test void criticalStateLoanCannotPerformSynchronousConsoleOutput() {
         for (String statement : new String[]{
-                "stdio.println(s.count);", "stdio.print(s.count);"
+                "stdio.println(s.count);", "stdio.print(s.count);",
+                "stdio.stdout.write(s.count);", "stdio.stdout.log(s.count);"
         }) {
             var program = assertDoesNotThrow(() -> Parser.parse("""
                     define actor Counter as
