@@ -442,8 +442,15 @@ public final class OresContext implements AutoCloseable {
             entered = true;
             turn.run();
         } finally {
-            if (entered) truffleContext.leave(null, previous);
-            if (serialize) adversarialActorTurnLock.unlock();
+            try {
+                if (entered) truffleContext.leave(null, previous);
+            } finally {
+                // A failed TruffleContext.leave is negative physical-exit
+                // evidence, not permission to strand the isolate's admission
+                // lock forever. The scheduler will quarantine the failed
+                // carrier receipt; release only this JVM serialization lock.
+                if (serialize) adversarialActorTurnLock.unlock();
+            }
         }
     }
 
