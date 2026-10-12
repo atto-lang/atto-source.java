@@ -146,9 +146,25 @@ public final class DeclaredEffectVerifier {
                 || node instanceof Ast.TupleExpr || node instanceof Ast.ObjectExpr) {
             effects.add(FunctionEffects.Effect.ALLOC);
         }
+        if (node instanceof Ast.DeferStmt defer) {
+            // Unlike an ordinary closure value, a deferred lambda WILL run
+            // during this function's cleanup (including exceptional exits).
+            // Skipping its body unsoundly admits no_block/no_alloc or a narrow
+            // using clause despite a delayed blocking/allocating operation.
+            // The deferred callable itself still counts as allocation until
+            // lowering proves an allocation-free cleanup representation.
+            if (defer.expression() instanceof Ast.LambdaExpr lambda) {
+                effects.add(FunctionEffects.Effect.ALLOC);
+                collect(lambda.expressionBody(), effects, stateAccess, callableName, serial);
+                collect(lambda.blockBody(), effects, stateAccess, callableName, serial);
+            } else {
+                collect(defer.expression(), effects, stateAccess, callableName, serial);
+            }
+            return;
+        }
         if (node instanceof Ast.LambdaExpr) {
-            // Closure construction allocates its environment, but does not
-            // invoke its body. Inline handle_state callbacks are handled above.
+            // Ordinary closure construction does not execute its body.
+            // A deferred lambda is instead handled by the DeferStmt branch.
             effects.add(FunctionEffects.Effect.ALLOC);
             return;
         }
