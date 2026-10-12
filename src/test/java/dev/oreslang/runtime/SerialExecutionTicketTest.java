@@ -122,6 +122,40 @@ final class SerialExecutionTicketTest {
         assertFalse(unbound.mayEnqueue());
     }
 
+    @Test void stoppedActorTicketIsBenignEvenBeforeTaskRetirement() {
+        Object incarnation = new Object();
+        AtomicBoolean alive = new AtomicBoolean(true);
+        SerialActorAdmission gate = new SerialActorAdmission(3);
+        var handler = gate.submit(MESSAGE).join();
+        var ticket = new SerialExecutionTicket(
+                "actor", incarnation, 9L, gate, handler, alive::get);
+
+        handler.suspend();
+        assertTrue(ticket.mayEnqueue(), "queued continuation preceded actor stop");
+        // terminateTree seals the actor while task cancellation/retirement is
+        // still pending outside lifecycleLock.
+        alive.set(false);
+        assertFalse(ticket.isRetired(), "exercise stop-before-ticket-retire gap");
+        assertFalse(ticket.mayEnqueue());
+        assertThrows(SerialExecutionTicket.RetiredTaskException.class,
+                () -> ticket.requireAdmissible("actor", incarnation, handler));
+        assertThrows(SerialExecutionTicket.RetiredTaskException.class,
+                () -> ticket.requireRunnable("actor", incarnation, handler));
+        // Stopping the source is not permission to borrow the ticket for a
+        // restarted incarnation or a different actor.
+        IllegalStateException restart = assertThrows(IllegalStateException.class,
+                () -> ticket.requireAdmissible("actor", new Object(), handler));
+        assertFalse(restart instanceof SerialExecutionTicket.RetiredTaskException);
+        IllegalStateException foreign = assertThrows(IllegalStateException.class,
+                () -> ticket.requireAdmissible("other-actor", incarnation, handler));
+        assertFalse(foreign instanceof SerialExecutionTicket.RetiredTaskException);
+        ticket.retire();
+        assertThrows(IllegalStateException.class,
+                () -> ticket.requireAdmissible("actor", new Object(), handler));
+        handler.close();
+        gate.close();
+    }
+
     @Test void lateQueuedCompletionAfterReceiveCloseIsBenignAcrossNextTurn() {
         Object incarnation = new Object();
         SerialActorAdmission gate = new SerialActorAdmission(3);
