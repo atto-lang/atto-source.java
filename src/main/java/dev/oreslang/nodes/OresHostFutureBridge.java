@@ -266,7 +266,7 @@ public final class OresHostFutureBridge {
                     "scoped host Future requires a context-bound Polyglot Value");
         }
         parsedContext.initialize(dev.oreslang.OresLanguage.ID);
-        OresContext expected = OresContext.singleHostOwnedContext();
+        OresContext expected = OresContext.forExactHostValueContext(parsedContext);
         Slot slot = new Slot(function, expected);
         slots.push(slot);
         try {
