@@ -103,6 +103,23 @@ final class ActorTreePhysicalShutdownBarrierTest {
         }
     }
 
+    /**
+     * Structured parent STOP cancels each child. Its physical DONE observer
+     * must therefore settle exceptionally (not successfully) after resource
+     * retirement, preserving the same cancellation as the shutdown observer.
+     */
+    private static void assertCancelledPhysicalDone(ActorRuntime.ActorRef<?> child)
+            throws Exception {
+        var done = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> child.get_done().get(5, TimeUnit.SECONDS));
+        assertInstanceOf(ActorRuntime.ActorCancelledException.class, done.getCause());
+        assertTrue(child.get_done().isDone(), "child physical barrier must be settled");
+        var shutdown = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> child.get_shutdown_result().get(5, TimeUnit.SECONDS));
+        assertSame(done.getCause(), shutdown.getCause(),
+                "physical DONE and shutdown result must expose identical cancellation");
+    }
+
     @Test
     void parentDoneWaitsForSiblingCleanupAndNativeLoanInEitherReleaseOrder() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
@@ -154,14 +171,14 @@ final class ActorTreePhysicalShutdownBarrierTest {
 
                 if (cleanupFirst) {
                     assertTrue(state.cleanup.completeFromRuntime(7));
-                    state.cleanupChild.get().get_done().get(5, TimeUnit.SECONDS);
+                    assertCancelledPhysicalDone(state.cleanupChild.get());
                     assertFalse(parent.get_done().isDone(),
                             "parent cannot finalize with a pinned native sibling");
                     assertFalse(state.nativeChild.get().get_done().isDone());
                     state.loan.get().close();
                 } else {
                     state.loan.get().close();
-                    state.nativeChild.get().get_done().get(5, TimeUnit.SECONDS);
+                    assertCancelledPhysicalDone(state.nativeChild.get());
                     assertFalse(parent.get_done().isDone(),
                             "parent cannot finalize while sibling cleanup is pending");
                     assertFalse(state.cleanupChild.get().get_done().isDone());
@@ -170,8 +187,8 @@ final class ActorTreePhysicalShutdownBarrierTest {
 
                 stopping.get(5, TimeUnit.SECONDS);
                 parent.get_done().get(5, TimeUnit.SECONDS);
-                state.nativeChild.get().get_done().get(5, TimeUnit.SECONDS);
-                state.cleanupChild.get().get_done().get(5, TimeUnit.SECONDS);
+                assertCancelledPhysicalDone(state.nativeChild.get());
+                assertCancelledPhysicalDone(state.cleanupChild.get());
                 assertEquals(1, state.cleanupRuns.get());
                 assertEquals(0L, runtime.privateMemoryBytes());
             } finally {
