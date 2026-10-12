@@ -320,20 +320,22 @@ public final class OresScheduler implements AutoCloseable {
     <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(onQuiescent, "onQuiescent");
-        // The open-state check, live-set registration and first enqueue are
-        // one admission operation. close() takes its snapshot under this same
-        // lock so no task can escape the cancellation/retirement fence.
+        // Linearize open-check + live-set registration with close(), but do
+        // NOT hold the lock while handing work to an arbitrary executor.
+        // Shutdown must still cancel this task if enqueue blocks or rejects.
+        TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent);
         synchronized (taskAdmissionLock) {
             ensureOpen();
-            TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent);
             tasks.add(runner);
-            try {
-                runner.scheduleInitial();
-            } catch (RuntimeException | Error failure) {
-                runner.failBeforeStart(failure);
-            }
-            return runner.completion;
         }
+        try {
+            runner.scheduleInitial();
+        } catch (RuntimeException | Error failure) {
+            // A concurrent close may already have cancelled and retired the
+            // NEW runner. failBeforeStart is idempotent in that case.
+            runner.failBeforeStart(failure);
+        }
+        return runner.completion;
     }
 
     /**
