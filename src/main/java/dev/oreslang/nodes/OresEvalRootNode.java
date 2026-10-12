@@ -4614,19 +4614,30 @@ public final class OresEvalRootNode extends RootNode {
                                 ? new Ast.CallExpr(cleanup, List.of())
                                 : cleanup, env);
                     } catch (RuntimeException | Error failure) {
-                        if (pendingFailure != null && pendingFailure != failure) {
-                            failure.addSuppressed(pendingFailure);
+                        if (pendingFailure instanceof ProcessExitSignal exit) {
+                            // The first explicit exit wins. Later cleanup errors
+                            // remain visible as suppressed diagnostics, not a
+                            // replacement status (including during mutex release).
+                            if (failure != exit) exit.addSuppressed(failure);
+                        } else {
+                            if (pendingFailure != null && pendingFailure != failure) {
+                                failure.addSuppressed(pendingFailure);
+                            }
+                            pendingFailure = failure;
                         }
-                        pendingFailure = failure;
                     }
                 }
                 try {
                     env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    if (pendingFailure != null && pendingFailure != failure) {
-                        failure.addSuppressed(pendingFailure);
+                    if (pendingFailure instanceof ProcessExitSignal exit) {
+                        if (failure != exit) exit.addSuppressed(failure);
+                    } else {
+                        if (pendingFailure != null && pendingFailure != failure) {
+                            failure.addSuppressed(pendingFailure);
+                        }
+                        pendingFailure = failure;
                     }
-                    pendingFailure = failure;
                 }
                 // If only the body failed, Java will rethrow it naturally.
                 // If cleanup failed, the most recent failure takes precedence
