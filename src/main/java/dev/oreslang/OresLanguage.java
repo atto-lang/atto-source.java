@@ -101,7 +101,11 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
 
     @Override
     protected void disposeContext(OresContext context) {
+        // Never retain the embedding-thread multithreading exception after a
+        // successful physical retirement. A failed close must remain retryable
+        // because pending finally/defer cleanup can still own live carriers.
         context.close();
+        initialContextHostThread = null;
     }
 
     @Override
