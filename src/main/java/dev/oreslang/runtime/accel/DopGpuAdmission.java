@@ -81,7 +81,7 @@ public final class DopGpuAdmission {
     }
     public record ClaimedBinding(Binding binding, GpuBufferFence.PairTickets tickets) { }
 
-    public static ClaimedBinding claim(DopKernelIR.Kernel kernel, DopKernelIR.GpuTarget target,
+    static ClaimedBinding claim(DopKernelIR.Kernel kernel, DopKernelIR.GpuTarget target,
                                        DeviceBuffer input, DeviceBuffer output) {
         var plan = preflight(kernel, target, input, output);
         var tickets = GpuBufferFence.claimPair(input.fence(), output.fence(),
