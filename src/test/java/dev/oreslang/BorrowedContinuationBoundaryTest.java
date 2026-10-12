@@ -281,4 +281,27 @@ final class BorrowedContinuationBoundaryTest {
                 """, "defer cannot capture borrowed or move-only binding 'box'");
     }
 
+    @Test
+    void asynchronousHostDispatchCannotRetainMutableLoan() {
+        reject(BOX + """
+                fnc unsafe(): void {
+                  let mut Box box = new Box();
+                  http.handler("Owner").dispatch(rt borrow mut box);
+                  return;
+                }
+                """, "unknown call cannot retain borrowed arguments");
+    }
+
+    @Test
+    void opaqueHostDispatchOwnedTransferPreventsLaterSourceUse() {
+        reject(BOX + """
+                fnc unsafe(): void {
+                  let Box box = new Box();
+                  http.handler("Owner").dispatch(rt take box);
+                  stdio.println(box.value);
+                  return;
+                }
+                """, "use of moved value");
+    }
+
 }
