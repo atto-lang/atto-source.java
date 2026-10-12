@@ -124,8 +124,13 @@ public final class NativeHttp implements AutoCloseable {
                     created.incrementAndGet();
                 }
                 synchronized (exchange.state) { exchange.checkOwner(); exchange.state.spawnNanos = System.nanoTime(); }
+                if (!fresh) {
+                    exchange.state.completion.whenCompleteRuntime((status, failure) -> {
+                        if (failure == null && status instanceof Long code && code >= 200 && code < 400)
+                            reused.incrementAndGet();
+                    });
+                }
                 actor.send(exchange.moveToPooled(actor));
-                if (!fresh) reused.incrementAndGet();
             } catch (RuntimeException failure) {
                 if (actor != null) actor.cancel();
                 // The slot must never point to a failed actor.
