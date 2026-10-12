@@ -22,12 +22,46 @@ public final class DeclaredEffectVerifier {
                     check(function.name(), function.annotations(), function.body(), false);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.MethodDecl method : klass.methods()) {
+                        // Static actor methods lack an instance actor lane and
+                        // must never acquire a sealed state loan, even when a
+                        // broad 'with' row was declared.
+                        if (klass.actorKind() != Ast.ActorKind.NONE
+                                && method.isStatic() && containsStateLoan(method.body())) {
+                            throw new IllegalArgumentException(
+                                    "static actor method cannot acquire sealed instance state");
+                        }
                         check(klass.name() + "." + method.name(), method.annotations(),
                                 method.body(), klass.serial() && !method.isStatic());
                     }
                 }
             }
         }
+    }
+
+    /** Reject forged or compiler-lowered state scopes in static actors. */
+    private static boolean containsStateLoan(Object node) {
+        if (node == null) return false;
+        if (node instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr owner
+                && owner.name().equals("self") && member.member().equals("handle_state")) {
+            return true;
+        }
+        if (node instanceof Iterable<?> values) {
+            for (Object value : values) if (containsStateLoan(value)) return true;
+            return false;
+        }
+        if (node instanceof java.lang.Record record
+                && node.getClass().getName().startsWith("dev.oreslang.ast.")) {
+            for (RecordComponent component : record.getClass().getRecordComponents()) {
+                try {
+                    if (containsStateLoan(component.getAccessor().invoke(record))) return true;
+                } catch (ReflectiveOperationException failure) {
+                    throw new IllegalStateException("cannot inspect static actor state use", failure);
+                }
+            }
+        }
+        return false;
     }
 
     private static void check(String name, List<Ast.Annotation> annotations, Object body, boolean serial) {
