@@ -97,13 +97,17 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
                 }
             }
             case STARTER_FAILED_NO_EXIT_RECEIPT -> {
-                if (active && !result && !exited) {
-                    // Starter may have launched untracked work before throwing;
-                    // no physical-exit receipt means retirement must remain
-                    // permanently unproven for this context incarnation.
+                if (active && !exited) {
+                    // A consumer may cancel or seal WHILE start() runs.
+                    // That public result is already settled, but a subsequent
+                    // starter failure without a DONE receipt must still poison
+                    // the physical context incarnation permanently.
                     active = false;
                     queued = 0;
                     sealed = true;
+                    result = false;
+                    exited = false;
+                    cancelled = false;
                     unprovenExit = true;
                 }
             }
@@ -216,6 +220,25 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         state = step(state, Event.RETRY_CLOSE);
         assertFalse(state.retired,
                 "no proof of producer termination means no safe retirement");
+        invariant(state);
+    }
+
+    @Test
+    void starterFailureAfterCancellationStillQuarantinesPhysicalExit() {
+        State state = State.initial();
+        state = step(state, Event.ENQUEUE);
+        state = step(state, Event.ENQUEUE);
+        state = step(state, Event.OWNER_DISPATCH);
+        state = step(state, Event.CANCEL_ACTIVE);
+        assertTrue(state.resultReady && state.active);
+        state = step(state, Event.STARTER_FAILED_NO_EXIT_RECEIPT);
+        assertTrue(state.unprovenExit && state.sealed);
+        assertFalse(state.active);
+        assertEquals(0, state.queued,
+                "unknown startup outcome must cancel other queued pulls");
+        state = step(state, Event.RETRY_CLOSE);
+        assertFalse(state.retired,
+                "cancelled public result is not a physical DONE receipt");
         invariant(state);
     }
 
