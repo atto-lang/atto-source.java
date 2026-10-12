@@ -20,7 +20,8 @@ final class ExplicitNativeI64LoanTest {
         CountDownLatch ready = new CountDownLatch(1);
         AtomicReference<ActorRuntime> retainedRuntime = new AtomicReference<>();
 
-        try (ActorRuntime runtime = new ActorRuntime()) {
+        ActorRuntime runtime = new ActorRuntime();
+        try {
             retainedRuntime.set(runtime);
             var actor = runtime.<String>spawnPrivate(() -> (mail, ctx) -> {
                 try {
@@ -41,7 +42,14 @@ final class ExplicitNativeI64LoanTest {
             actor.send("allocate");
             assertTrue(ready.await(20, TimeUnit.SECONDS));
             if (failure.get() != null) fail(failure.get());
-        }
+            var stopping = java.util.concurrent.CompletableFuture.runAsync(actor::stop);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (!region.get().closed() && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertTrue(region.get().closed(), "STOP must retire FFM regions");
+            assertFalse(actor.get_done().isDone(),
+                    "pinned FFM loans forbid physical actor completion");
 
         assertNotNull(region.get());
         assertEquals(16, retainedRuntime.get().privateMemoryBytes(),
@@ -61,6 +69,11 @@ final class ExplicitNativeI64LoanTest {
         assertTrue(region.get().physicallyClosed());
         assertEquals(0, retainedRuntime.get().privateMemoryBytes(),
                 "last native loan completion refunds the aggregate runtime budget");
+            stopping.get(5, TimeUnit.SECONDS);
+            actor.get_done().get(5, TimeUnit.SECONDS);
+        } finally {
+            runtime.close();
+        }
     }
 
     @Test
@@ -129,7 +142,9 @@ final class ExplicitNativeI64LoanTest {
             second.send("inspect");
             assertTrue(checked.await(20, TimeUnit.SECONDS));
             if (failure.get() != null) fail(failure.get());
+            // Physical shutdown must not finish with this actor-owned loan
+            // still retained; release it before runtime close.
+            borrowed.get().close();
         }
-        borrowed.get().close();
     }
 }
