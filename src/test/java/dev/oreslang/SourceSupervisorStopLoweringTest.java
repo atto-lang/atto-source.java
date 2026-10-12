@@ -169,7 +169,7 @@ final class SourceSupervisorStopLoweringTest {
                 observed.set(resolution);
                 delivered.countDown();
             });
-            var failed = group.spawnWorker(
+            ActorRuntime.ActorRef<String> failed = group.spawnWorker(
                     ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(),
                     factory -> (message, ctx) -> {
                         throw new IllegalStateException("typed-failure-stop");
