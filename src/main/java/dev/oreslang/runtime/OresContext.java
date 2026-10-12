@@ -63,6 +63,10 @@ public final class OresContext implements AutoCloseable {
     // unwinding guest continuation may still need that monitor while close()
     // waits for its carrier to finish.
     private final Object closeLock = new Object();
+    // Separate from closeLock: host Future bridge admission must never wait
+    // for a guest finalizer while shutdown is draining its scheduler owners.
+    private final Object hostFutureAdmissionLock = new Object();
+    private boolean hostFutureAdmissionSealed;
     private Thread closeOwner;
     private boolean resourcesRetired;
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
@@ -165,6 +169,27 @@ public final class OresContext implements AutoCloseable {
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
     public OresVM vm() { return vm; }
+
+    /**
+     * The scoped host bridge acquires admission BEFORE scheduling its root
+     * task. A close request and a new host admission serialize on this tiny
+     * monitor; neither may reopen the other's lifecycle state.
+     */
+    public OresVM.HostHandoffLease beginHostFutureHandoff() {
+        synchronized (hostFutureAdmissionLock) {
+            if (hostFutureAdmissionSealed) {
+                throw new RejectedExecutionException(
+                        "context host Future handoff admission is sealed");
+            }
+            return vm.beginHostHandoff();
+        }
+    }
+
+    private void sealHostFutureHandoffAdmission() {
+        synchronized (hostFutureAdmissionLock) {
+            hostFutureAdmissionSealed = true;
+        }
+    }
     public ActorRuntime actors() { return actors; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
@@ -518,6 +543,9 @@ public final class OresContext implements AutoCloseable {
             }
             closeOwner = Thread.currentThread();
             try {
+                // Shutdown seals fresh host producer admission before waiting
+                // for any physical turn or lexical cleanup barrier.
+                sealHostFutureHandoffAdmission();
                 hostGeneratorTurns.seal();
                 vm.sealHostHandoffAdmission();
                 // Actor-owned finalizers may still need the VM CONTROL scheduler,
