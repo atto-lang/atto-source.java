@@ -256,6 +256,16 @@ public final class OresHostFutureBridge {
         // Resolve only an unambiguous context created by this physical host
         // thread. Neither guessing from a Value nor acquiring inside the guest
         // root would protect the Truffle enter that Value.execute performs.
+        // Parsing a Polyglot Value need not initialize its language yet.
+        // Ask the Value's exact owning context to initialize Oreslang BEFORE
+        // resolving the pre-entry host lease; neither thread-local guessing
+        // nor an internal guest root can protect the original Value.execute.
+        org.graalvm.polyglot.Context parsedContext = parsedSource.getContext();
+        if (parsedContext == null) {
+            throw new SecurityException(
+                    "scoped host Future requires a context-bound Polyglot Value");
+        }
+        parsedContext.initialize(dev.oreslang.OresLanguage.ID);
         OresContext expected = OresContext.singleHostOwnedContext();
         Slot slot = new Slot(function, expected);
         slots.push(slot);
