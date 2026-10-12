@@ -340,11 +340,12 @@ final class TrapOptionSemanticsTest {
         // Modulo by zero emits a Java ArithmeticException, not an Ores throw.
         // Future typed guest Throw<E> admission must not reclassify this fault.
         String source = """
-                trap fnc invalid(): int {
-                  return 1 % 0;
+                trap fnc invalid(int divisor): int {
+                  return 1 % divisor;
                 }
                 pub fnc main(): void {
-                  val Option<int> ignored = invalid();
+                  val int zero = 0;
+                  val Option<int> ignored = invalid(zero);
                   stdio.stdout.write("unreachable");
                   return;
                 }
@@ -356,9 +357,13 @@ final class TrapOptionSemanticsTest {
     @Test
     void ordinaryCatchCannotSwallowUnclassifiedHostFault() throws Exception {
         String source = """
+                fnc invalid(int divisor): int {
+                  return 1 % divisor;
+                }
                 pub fnc main(): void {
+                  val int zero = 0;
                   try {
-                    val int unused = 1 % 0;
+                    val int unused = invalid(zero);
                   } catch (err) {
                     stdio.stdout.write("swallowed");
                   } finally {
