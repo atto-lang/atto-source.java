@@ -894,15 +894,19 @@ public final class OresScheduler implements AutoCloseable {
             pendingResume.set(null);
             terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
             if (!executing.get()) {
-                try {
-                    retireWhenQuiescent();
-                } finally {
-                    // Never run a potentially blocking synchronous Future
-                    // subscriber on a shared deadline-enforcement worker.
-                    // Guest code is not executed by this host notifier.
-                    Thread.ofVirtual().name("ores-source-wall-expiry-notify")
-                            .start(this::publishTerminalIfReady);
-                }
+                // Quiescence retirement can acquire an actor lifecycle lock,
+                // which might be held indefinitely by a stuck host callback.
+                // Keep BOTH resource retirement and Future notification off
+                // the shared timer worker. Global timed admission bounds the
+                // number of virtual host finalizers, including blocked ones.
+                Thread.ofVirtual().name("ores-source-wall-expiry-finalize")
+                        .start(() -> {
+                            try {
+                                retireWhenQuiescent();
+                            } finally {
+                                publishTerminalIfReady();
+                            }
+                        });
             }
         }
 
