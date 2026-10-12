@@ -36,6 +36,16 @@ public final class ChannelRuntime {
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
     private static long nextTicket;
 
+    /** Package-private regression probe: no guest access to ACTIVE. */
+    static int activeSelectCountForTest() {
+        COORDINATOR.lock();
+        try {
+            return ACTIVE.size();
+        } finally {
+            COORDINATOR.unlock();
+        }
+    }
+
     public enum SelectPolicy {
         /** Deterministic rotating fairness on a reusable SelectSet. */
         FAIR,
