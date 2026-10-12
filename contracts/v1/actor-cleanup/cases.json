@@ -1,0 +1,76 @@
+{
+  "valid": [
+    {
+      "version": "1",
+      "actor_id": "actor-1",
+      "incarnation": "epoch-1",
+      "source_task_id": 17,
+      "receive_generation": 3,
+      "phase": "cleanup_pending",
+      "ticket_role": "source_task",
+      "outcome": "pending"
+    },
+    {
+      "version": "1",
+      "actor_id": "actor-1",
+      "incarnation": "epoch-1",
+      "source_task_id": 17,
+      "receive_generation": 3,
+      "phase": "terminal",
+      "ticket_role": "source_task",
+      "outcome": "success"
+    },
+    {
+      "version": "1",
+      "actor_id": "actor-1",
+      "incarnation": "epoch-1",
+      "source_task_id": 17,
+      "receive_generation": 3,
+      "phase": "terminal",
+      "ticket_role": "source_task",
+      "outcome": "incomplete"
+    }
+  ],
+  "invalid": [
+    {
+      "version": "1",
+      "actor_id": "actor-1",
+      "incarnation": "epoch-1",
+      "source_task_id": 0,
+      "receive_generation": 3,
+      "phase": "cleanup_pending",
+      "ticket_role": "source_task",
+      "outcome": "pending"
+    },
+    {
+      "version": "1",
+      "actor_id": "actor-1",
+      "incarnation": "epoch-1",
+      "source_task_id": 17,
+      "receive_generation": 3,
+      "phase": "terminal",
+      "ticket_role": "source_task",
+      "outcome": "pending"
+    },
+    {
+      "version": "1",
+      "actor_id": "actor-1",
+      "incarnation": "epoch-1",
+      "source_task_id": 17,
+      "receive_generation": 3,
+      "phase": "cleanup_pending",
+      "ticket_role": "other",
+      "outcome": "pending"
+    },
+    {
+      "version": "1",
+      "actor_id": "actor-1",
+      "incarnation": "epoch-1",
+      "source_task_id": 17,
+      "receive_generation": 3,
+      "phase": "cleanup_pending",
+      "ticket_role": "source_task",
+      "outcome": "success"
+    }
+  ]
+}
