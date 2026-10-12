@@ -175,6 +175,64 @@ final class MainExitStatusTest {
                 """));
     }
 
+    @Test void synchronousTryCatchCannotInterceptExitOrReplaceItFromFinally() throws Exception {
+        assertEquals(7, exit("""
+                pub routine main(): void {
+                    try { std.process.exit(7); }
+                    catch (err) { std.process.exit(3); }
+                    finally { std.process.exit(5); }
+                }
+                """));
+    }
+
+    @Test void synchronousFinallyExitCannotConvertCaughtFailureToSuccess() throws Exception {
+        assertThrows(RuntimeException.class, () -> exit("""
+                fnc fail(): void {
+                    val Array<int> empty = new Array<int>();
+                    empty.get(0);
+                    return;
+                }
+                pub routine main(): void {
+                    try { fail(); }
+                    catch (err) { fail(); }
+                    finally { std.process.exit(0); }
+                }
+                """));
+    }
+
+    @Test void suspendableTryCatchCannotInterceptExitOrReplaceItFromFinally() throws Exception {
+        assertEquals(7, exit("""
+                async fnc step(): void { return; }
+                pub async routine main(): void {
+                    try {
+                        await step();
+                        std.process.exit(7);
+                    }
+                    catch (err) { std.process.exit(3); }
+                    finally { std.process.exit(5); }
+                }
+                """));
+    }
+
+    @Test void suspendableFinallyExitCannotConvertEarlierFailureToSuccess() throws Exception {
+        assertThrows(RuntimeException.class, () -> exit("""
+                async fnc step(): void { return; }
+                fnc fail(): void {
+                    val Array<int> empty = new Array<int>();
+                    empty.get(0);
+                    return;
+                }
+                pub async routine main(): void {
+                    try {
+                        await step();
+                        fail();
+                    }
+                    catch (err) { fail(); }
+                    finally { std.process.exit(0); }
+                }
+                """));
+    }
+
     @Test void tooLargeIntegerExitFailsClosed() throws Exception {
         assertThrows(IllegalArgumentException.class,
             () -> exit("pub routine main(): int { return 256; }"));
