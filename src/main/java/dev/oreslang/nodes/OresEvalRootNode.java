@@ -1560,14 +1560,11 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
-            runStatements(
-                    task,
-                    statements,
-                    env,
-                    defers,
-                    0,
-                    (ignored, flow) ->
-                            finishBlock(task, env, defers, flow, continuation));
+            // runStatements already calls finishBlock on every terminal
+            // SourceFlow (normal, return, break, continue, or failure).
+            // Wrapping its continuation in another finishBlock would finalize
+            // the same Env twice, including duplicate guard/future cleanup.
+            runStatements(task, statements, env, defers, 0, continuation);
         }
 
         /**
