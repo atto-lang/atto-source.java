@@ -947,9 +947,12 @@ public final class OresEvalRootNode extends RootNode {
             private final java.util.concurrent.atomic.AtomicInteger pendingGuestCleanup =
                     new java.util.concurrent.atomic.AtomicInteger();
 
+            private final java.util.concurrent.atomic.AtomicBoolean cleanupAccountingUncertain =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+
             @Override
             public boolean hasPendingGuestCleanup() {
-                return pendingGuestCleanup.get() > 0;
+                return pendingGuestCleanup.get() > 0 || cleanupAccountingUncertain.get();
             }
 
             private void registerGuestCleanup() {
@@ -957,9 +960,18 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private void settleGuestCleanup() {
-                if (pendingGuestCleanup.decrementAndGet() < 0) {
-                    throw new IllegalStateException("source lexical cleanup accounting underflow");
-                }
+                // A failed deferred expression may call through an error
+                // boundary while subsequent LIFO cleanup continues. Never
+                // replace the original guest panic with a tracker exception:
+                // an underflow is recorded as an *uncertain* cleanup receipt,
+                // not falsely treated as settled on actor STOP.
+                pendingGuestCleanup.getAndUpdate(count -> {
+                    if (count == 0) {
+                        cleanupAccountingUncertain.set(true);
+                        return 0;
+                    }
+                    return count - 1;
+                });
             }
 
             private SourceTask(
