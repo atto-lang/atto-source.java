@@ -179,6 +179,9 @@ public final class GeneratorRuntime {
         private final List<YieldOperation> operations;
         private final List<Ast.BindingStmt> finallyBindings;
         private final boolean hasLexicalFinally;
+        // A parsed try always includes catch(err), even if its body is empty.
+        // Its empty catch must absorb awaited guest failure (not cancellation).
+        private final boolean emptyCatchAbsorbsAwaitFailure;
         private final Map<String, Object> arguments;
         // Null means cleanup has not completed. Publish the entire immutable
         // lexical-cleanup snapshot through one atomic release operation: the
@@ -198,10 +201,11 @@ public final class GeneratorRuntime {
 
         private SourceLowering(List<YieldOperation> operations,
                 List<Ast.BindingStmt> finallyBindings, boolean hasLexicalFinally,
-                Map<String, Object> arguments) {
+                boolean emptyCatchAbsorbsAwaitFailure, Map<String, Object> arguments) {
             this.operations = List.copyOf(operations);
             this.finallyBindings = List.copyOf(finallyBindings);
             this.hasLexicalFinally = hasLexicalFinally;
+            this.emptyCatchAbsorbsAwaitFailure = emptyCatchAbsorbsAwaitFailure;
             this.arguments = Map.copyOf(arguments);
         }
 
@@ -326,7 +330,8 @@ public final class GeneratorRuntime {
                             "staged generator lowering refuses unsupported source statement");
                 }
             }
-            return new SourceLowering(operations, cleanup, foundFinally, bindings);
+            return new SourceLowering(operations, cleanup, foundFinally,
+                    foundFinally, bindings);
         }
 
         @Override
@@ -355,6 +360,12 @@ public final class GeneratorRuntime {
                 waitingOnFuture = false;
                 if (input.failure() != null) {
                     finishFinally();
+                    if (emptyCatchAbsorbsAwaitFailure) {
+                        // This restricted lowerer admits one enclosing try
+                        // with an empty source catch. Cancellation never reaches
+                        // here, but ordinary source await failures are caught.
+                        return OresScheduler.done(Step.doneStep());
+                    }
                     if (input.failure() instanceof RuntimeException failure) throw failure;
                     throw new IllegalStateException("generator await failed", input.failure());
                 }
