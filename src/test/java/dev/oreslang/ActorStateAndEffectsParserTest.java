@@ -39,10 +39,10 @@ final class ActorStateAndEffectsParserTest {
         assertEquals("int", state.type().recordMembers().get("count").name());
         assertEquals("bool", state.type().recordMembers().get("enabled").name());
         assertEquals(2, ((Ast.ObjectExpr) state.initializer()).fields().size());
-        var using = actor.methods().getFirst().annotations().stream()
-                .filter(a -> a.name().equals("$using$")).findFirst().orElseThrow();
+        var withEffects = actor.methods().getFirst().annotations().stream()
+                .filter(annotation -> annotation.name().equals("$with$")).findFirst().orElseThrow();
         assertEquals(List.of("state.read", "state.write"),
-                using.arguments().stream().map(Ast.TypeRef::name).toList());
+                withEffects.arguments().stream().map(Ast.TypeRef::name).toList());
         assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
             define actor A as
               state { count: int = 0; }
@@ -72,10 +72,10 @@ final class ActorStateAndEffectsParserTest {
 
     @Test void parsesRequirementsAndPreservesTrapNlex() {
         Ast.Program p = Parser.parse("""
-            pub nlex fnc f(): int using alloc requires bounded, no_block {
+            pub nlex fnc f(): int with alloc requires bounded, no_block {
                 return 1;
             }
-            pub trap fnc g(): int using io { return 2; }
+            pub trap fnc g(): int with io { return 2; }
             """);
         Ast.FunctionDecl f = (Ast.FunctionDecl) p.modules().getFirst().declarations().getFirst();
         assertTrue(f.nonLexical());
@@ -216,7 +216,7 @@ final class ActorStateAndEffectsParserTest {
                 () -> dev.oreslang.types.DeclaredEffectVerifier.verify(Parser.parse(missing)));
 
         String underDeclared = valid.replace(
-                "using state.read, state.write", "using state.read");
+                "with state.read, state.write", "with state.read");
         assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.DeclaredEffectVerifier.verify(Parser.parse(underDeclared)));
 
