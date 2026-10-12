@@ -7378,9 +7378,9 @@ public final class ActorRuntime implements AutoCloseable {
                 // Physical completion cannot precede the cancellation effects
                 // and descendant stop dispatch that this transition owns.
                 stopEffectsPending = true;
-                if (cause == null) mailbox.close();
-                else mailbox.close(cause);
-                continuationMailbox.close(cause);
+                // Closing a channel may settle waiters and invoke arbitrary
+                // host completion callbacks; do not do it under lifecycleLock.
+                // stopped=true already fences new actor work.
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
@@ -7388,6 +7388,21 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             try {
+                // Stop is committed before channel closure, and this effects
+                // barrier remains set until closures, envelope release and
+                // producer cancellation all finish. No callback runs under
+                // the actor lifecycle monitor in this phase.
+                try {
+                    if (cause == null) mailbox.close();
+                    else mailbox.close(cause);
+                } catch (Throwable failure) {
+                    recordFinalizationFailure(failure);
+                }
+                try {
+                    continuationMailbox.close(cause);
+                } catch (Throwable failure) {
+                    recordFinalizationFailure(failure);
+                }
                 // Channel envelopes own potentially reentrant close hooks.
                 // Execute them after dropping the caller lifecycle monitor.
                 try {
