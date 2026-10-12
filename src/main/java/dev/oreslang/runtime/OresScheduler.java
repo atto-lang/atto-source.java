@@ -411,6 +411,57 @@ public final class OresScheduler implements AutoCloseable {
         return startRunner(task).completion;
     }
 
+    /**
+     * One-use deferred source task handoff. A source task registered during a
+     * scoped host Value.execute must not dispatch its physical carrier until
+     * the host's entry has returned. This does not authorize unrelated host
+     * or actor guest entry; the global #677 coordinator remains separate.
+     */
+    public final class DeferredStart<T> {
+        private final TaskRunner<T> runner;
+        private final AtomicBoolean resolved = new AtomicBoolean();
+
+        private DeferredStart(TaskRunner<T> runner) { this.runner = runner; }
+
+        public OresFuture<T> future() { return runner.completion; }
+
+        public void dispatchAfterHostReturn() {
+            if (!resolved.compareAndSet(false, true)) {
+                throw new IllegalStateException("deferred scheduler start already resolved");
+            }
+            if (runner.phase.get() == TaskRunner.TERMINAL) return;
+            if (closed.get()) {
+                runner.failBeforeStart(new RejectedExecutionException(
+                        "OresScheduler " + name + " closed before deferred dispatch"));
+                return;
+            }
+            try {
+                runner.scheduleInitial();
+            } catch (RuntimeException | Error failure) {
+                runner.failBeforeStart(failure);
+            }
+        }
+
+        public void abandonBeforeDispatch() {
+            if (resolved.compareAndSet(false, true)) {
+                // Cancellation of the NEW task settles it without a guest turn;
+                // its pending source frame never enters its lexical cleanup.
+                runner.completion.cancel(false);
+            }
+        }
+    }
+
+    public <T> DeferredStart<T> prepareDeferred(Task<T> task) {
+        Objects.requireNonNull(task, "task");
+        TaskRunner<T> runner;
+        synchronized (tasks) {
+            ensureOpen();
+            runner = new TaskRunner<>(task);
+            tasks.add(runner);
+        }
+        return new DeferredStart<>(runner);
+    }
+
     private <T> TaskRunner<T> startRunner(Task<T> task) {
         Objects.requireNonNull(task, "task");
         // Admission and close share the same monitor. No new task may slip
