@@ -3323,6 +3323,18 @@ public final class Parser {
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
+        // self.handle_state is an actor state capability intrinsic, not
+        // an ordinary callable. The Java backend cannot yet lower scoped
+        // read/write loans, so reject both read-by-default and critical
+        // write forms until it has real authenticated state execution.
+        if (check(SELF) && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == DOT
+                && tokens.get(current + 2).type() == IDENT
+                && tokens.get(current + 2).lexeme().equals("handle_state")) {
+            throw error(peek(),
+                    "self.handle_state requires Java scoped actor-state "
+                    + "read/write lowering (not implemented)");
+        }
         if (match(SELF)) return new Ast.NameExpr("self");
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).
