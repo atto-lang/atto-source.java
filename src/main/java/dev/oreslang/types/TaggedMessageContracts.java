@@ -89,10 +89,25 @@ public final class TaggedMessageContracts {
                     continue;
                 }
                 Ast.EnumDecl enumDecl = (Ast.EnumDecl) declaration;
+                // Revalidate ASTs at the semantic boundary. Parsing source
+                // text is not the only way internal passes can produce an AST.
+                if (enumDecl.cases().isEmpty() || enumDecl.cases().size() > 4096) {
+                    throw new IllegalArgumentException("enum must declare 1..4096 cases");
+                }
                 ArrayList<Case> entries = new ArrayList<>();
+                Set<String> caseNames = new HashSet<>();
+                int previousTag = 0;
                 for (Ast.EnumCase entry : enumDecl.cases()) {
-                    if (entry.tag() < 1) throw new IllegalArgumentException(
-                            "enum tag must be a positive integer");
+                    if (entry.name() == null || entry.name().isBlank()
+                            || !caseNames.add(entry.name())) {
+                        throw new IllegalArgumentException(
+                                "duplicate or invalid enum case " + entry.name());
+                    }
+                    if (entry.tag() < 1 || entry.tag() <= previousTag) {
+                        throw new IllegalArgumentException(
+                                "enum wire tags must be positive and strictly increasing");
+                    }
+                    previousTag = entry.tag();
                     MessagePackCollectionCodec.Shape shape = entry.payload() == null
                             ? null : ActorWireSchema.fromSource(entry.payload());
                     entries.add(new Case(enumDecl.name(), entry.name(), entry.tag(),
@@ -104,8 +119,17 @@ public final class TaggedMessageContracts {
         Registry stage = new Registry(enums, Map.of());
         Map<String, Domain> patterns = new LinkedHashMap<>();
         for (Ast.PatternDecl p : pending.values()) {
+            if (p.alternatives().isEmpty() || p.alternatives().size() > 4096) {
+                throw new IllegalArgumentException(
+                        "pattern must declare 1..4096 alternatives");
+            }
             List<Case> items = new ArrayList<>();
+            Set<String> alternatives = new HashSet<>();
             for (String qualified : p.alternatives()) {
+                if (qualified == null || !alternatives.add(qualified)) {
+                    throw new IllegalArgumentException(
+                            "duplicate or invalid pattern alternative " + qualified);
+                }
                 // Enum-to-pattern dependencies cannot exist: only enum
                 // declarations supply constructible variant members.
                 items.add(stage.requireCase(qualified));
