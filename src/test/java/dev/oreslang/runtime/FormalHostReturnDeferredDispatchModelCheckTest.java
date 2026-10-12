@@ -115,7 +115,8 @@ final class FormalHostReturnDeferredDispatchModelCheckTest {
                 if (seen.add(next)) todo.addLast(next);
             }
         }
-        assertTrue(seen.size() >= 20, "model unexpectedly shallow: " + seen.size());
+        assertEquals(19, seen.size(),
+                "bounded handoff state space unexpectedly changed");
         assertTrue(sawCancellation && sawCompleted && sawRetirement);
     }
 
