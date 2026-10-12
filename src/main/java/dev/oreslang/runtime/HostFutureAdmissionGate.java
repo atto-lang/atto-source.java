@@ -14,12 +14,19 @@ package dev.oreslang.runtime;
 final class HostFutureAdmissionGate {
     private Thread hostOwner;
     private int depth;
+    private int guestTurnReservations;
     private boolean closing;
 
     synchronized void begin() {
         if (closing) throw new IllegalStateException(
                 "host Future handoff rejected during context disposal");
         Thread caller = Thread.currentThread();
+        if (guestTurnReservations != 0) {
+            // A worker already reserved its context entry. Never admit a
+            // host call over that worker's Truffle enter/leave boundary.
+            throw new IllegalStateException(
+                    "host Future handoff requires an idle guest-entry boundary");
+        }
         if (hostOwner != null && hostOwner != caller) {
             throw new IllegalStateException(
                     "concurrent host Future handoff requires serialized context entry");
@@ -39,7 +46,12 @@ final class HostFutureAdmissionGate {
         }
     }
 
-    synchronized void awaitGuestAdmission() {
+    /**
+     * Atomically reserve a guest entry against new host claims. Caller must
+     * release the returned lease AFTER TruffleContext.leave, including
+     * exceptional exits. This closes the wait-then-enter TOCTOU window.
+     */
+    synchronized Runnable reserveGuestTurn() {
         boolean interrupted = false;
         try {
             while (hostOwner != null && hostOwner != Thread.currentThread() && !closing) {
@@ -53,6 +65,23 @@ final class HostFutureAdmissionGate {
             }
             if (closing) throw new java.util.concurrent.RejectedExecutionException(
                     "guest turn rejected after context disposal admission");
+            guestTurnReservations++;
+            Thread owner = Thread.currentThread();
+            final boolean[] released = {false};
+            return () -> {
+                if (Thread.currentThread() != owner) {
+                    throw new IllegalStateException(
+                            "guest entry reservation released by a foreign carrier");
+                }
+                synchronized (HostFutureAdmissionGate.this) {
+                    if (released[0] || guestTurnReservations <= 0) {
+                        throw new IllegalStateException("guest entry reservation already released");
+                    }
+                    released[0] = true;
+                    guestTurnReservations--;
+                    HostFutureAdmissionGate.this.notifyAll();
+                }
+            };
         } finally {
             if (interrupted) Thread.currentThread().interrupt();
         }
