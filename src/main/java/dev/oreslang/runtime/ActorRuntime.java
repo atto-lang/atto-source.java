@@ -6104,6 +6104,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
+        /** Per-dispatch identity, guarded by lifecycleLock. A stale queued
+         * runnable can never consume a newer scheduled=false->true claim. */
+        private Object scheduledDispatchToken;
         private final AtomicBoolean stopped = new AtomicBoolean();
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
@@ -6455,6 +6458,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void cancelQueuedScheduleOnShutdown() {
             synchronized (lifecycleLock) {
                 if (scheduled.get() && !carrierActive) {
+                    scheduledDispatchToken = null;
                     scheduled.set(false);
                     if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                     lifecycleLock.notifyAll();
@@ -6562,23 +6566,35 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void schedule() {
-            if (stopped.get() || forceKillFenced || closed.get()) return;
-            if (!scheduled.compareAndSet(false, true)) return;
+            final Object dispatchTicket;
+            synchronized (lifecycleLock) {
+                if (stopped.get() || forceKillFenced || closed.get() || scheduled.get()) return;
+                // Atomically claim the actor lane and publish a fresh identity.
+                dispatchTicket = new Object();
+                scheduledDispatchToken = dispatchTicket;
+                scheduled.set(true);
+            }
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);
+                Runnable dispatch = () -> runBatch(dispatchTicket);
                 if (dispatcher instanceof ActorAffinityDispatcher lanes) {
-                    lanes.executeOnLane(dispatchLane, this::runBatch);
+                    lanes.executeOnLane(dispatchLane, dispatch);
                 } else {
-                    dispatcher.execute(this::runBatch);
+                    dispatcher.execute(dispatch);
                 }
             } catch (RejectedExecutionException rejected) {
-                scheduled.set(false);
+                synchronized (lifecycleLock) {
+                    if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
+                        scheduledDispatchToken = null;
+                        scheduled.set(false);
+                    }
+                }
                 stop();
                 if (!closed.get()) throw rejected;
             }
         }
 
-        private void runBatch() {
+        private void runBatch(Object dispatchTicket) {
             ACTOR_CARRIER.set(Boolean.TRUE);
             boolean carrierEntered = false;
             boolean reschedule = false;
@@ -6588,18 +6604,10 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cpu >= 0) NativeCarrierExecutor.bindCurrentThreadToCpu(cpu);
                 }
                 synchronized (lifecycleLock) {
-                    // shutdownNow() may leave a queued executor task that races
-                    // with explicit queued-schedule cancellation. If shutdown
-                    // won that race, this task is an inert no-op.
-                    if (!scheduled.get()) return;
-
-                    if (stopped.get() || closed.get() || forceKillFenced) {
-                        scheduled.set(false);
-                        if (activeTurns == 0 && stopped.get()) finalizeStopLocked();
-                        lifecycleLock.notifyAll();
-                        return;
-                    }
-
+                    // Prevent obsolete queued runnables impersonating the
+                    // next actor turn after scheduled was cleared and re-claimed.
+                    if (scheduledDispatchToken != dispatchTicket || !scheduled.get()) return;
+                    if (stopped.get() || closed.get() || forceKillFenced) return;
                     if (carrierActive || carrierOwnerThread != null || activeTurns != 0) {
                         throw new IllegalStateException(
                                 "actor physical carrier already occupied for " + ref.id());
@@ -6617,24 +6625,24 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
                 try {
-                    // The actor remains logically scheduled until TurnExecutor
-                    // returns. Truffle context exit belongs to that boundary.
                     synchronized (lifecycleLock) {
                         if (carrierEntered) {
                             if (carrierOwnerThread != Thread.currentThread()
                                     || activeTurns != 0) {
-                                // Never release another thread's actor execution
-                                // authority, even on a faulty scheduler path.
+                                // Never release an owner that has not completely
+                                // left guest execution and its Truffle boundary.
                                 throw new IllegalStateException(
                                         "actor carrier release before execution quiesced for " + ref.id());
                             }
                             carrierOwnerThread = null;
                             carrierActive = false;
                         }
-                        // A duplicate unexpected runBatch must NOT drop the
-                        // existing owner's scheduled lease.
-                        if (carrierEntered || !carrierActive) {
-                            if (scheduled.get()) scheduled.set(false);
+                        // A stale replay cannot release a later scheduling
+                        // identity, even when no carrier is currently active.
+                        if (scheduledDispatchToken == dispatchTicket
+                                && (carrierEntered || !carrierActive)) {
+                            scheduledDispatchToken = null;
+                            scheduled.set(false);
                             if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                             reschedule = !stopped.get()
                                     && !forceKillFenced
@@ -6645,8 +6653,6 @@ public final class ActorRuntime implements AutoCloseable {
                         lifecycleLock.notifyAll();
                     }
                 } finally {
-                    // Finalization hooks and reservation checks are allowed to
-                    // fail closed; neither may strand carrier-local VM identity.
                     ACTOR_CARRIER.remove();
                 }
                 if (reschedule) schedule();
