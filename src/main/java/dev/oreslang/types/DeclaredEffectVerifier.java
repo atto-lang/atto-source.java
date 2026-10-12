@@ -157,8 +157,29 @@ public final class DeclaredEffectVerifier {
             else throw new IllegalArgumentException(
                     "runtime intrinsic in " + callableName + " lacks a trusted effect summary");
         }
-        if (node instanceof Ast.SelectStmt || node instanceof Ast.DynamicSelectExpr
-                || node instanceof Ast.ChannelOpExpr) effects.add(FunctionEffects.Effect.SUSPEND);
+        // SUSPEND means a logical continuation boundary, not necessarily a
+        // thread-blocking operation. no_block must separately reject every
+        // potentially waiting channel operation. A default arm proves that a
+        // static select cannot wait; nonblocking registrations do not block
+        // the caller. Dynamic plans remain conservative if blocking.
+        if (node instanceof Ast.SelectStmt selected) {
+            effects.add(FunctionEffects.Effect.SUSPEND);
+            if (selected.mode() == Ast.WaitMode.BLOCKING
+                    && selected.arms().stream().noneMatch(arm ->
+                            arm.operation() == Ast.ChannelOperation.DEFAULT)) {
+                effects.add(FunctionEffects.Effect.BLOCK);
+            }
+        } else if (node instanceof Ast.DynamicSelectExpr selected) {
+            effects.add(FunctionEffects.Effect.SUSPEND);
+            if (selected.mode() == Ast.WaitMode.BLOCKING) {
+                effects.add(FunctionEffects.Effect.BLOCK);
+            }
+        } else if (node instanceof Ast.ChannelOpExpr channel) {
+            effects.add(FunctionEffects.Effect.SUSPEND);
+            if (channel.mode() == Ast.WaitMode.BLOCKING) {
+                effects.add(FunctionEffects.Effect.BLOCK);
+            }
+        }
         if (node instanceof Iterable<?> children) {
             for (Object child : children) collect(child, effects, stateAccess, callableName, serial);
             return;
