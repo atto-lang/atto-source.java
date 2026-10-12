@@ -1,0 +1,73 @@
+name: Native Actor Shutdown Release Gate
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/**'
+      - 'src/main/java/dev/oreslang/launcher/OresMain.java'
+      - 'examples/native-await-finally.ores'
+      - '.github/workflows/native-actor-shutdown.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-shutdown-execution:
+    name: Native ${{ matrix.mode }} actor cancellation
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        mode: [aot, hybrid]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record exact source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          git status --porcelain
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Build native executable
+        run: mvn -B -ntp -Pnative-${{ matrix.mode }} -DskipTests package
+      - name: Verify actual Native Image build mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="./target/ores-${{ matrix.mode }}"
+          test -x "$binary"
+          "$binary" --build-info | tee /tmp/native-build-info.json
+          grep -F '"build_mode":"${{ matrix.mode }}"' /tmp/native-build-info.json
+      - name: Run cancellation and actor physical-done probe in native executable
+        env:
+          ORES_ENABLE_INTERNAL_SELFTEST: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 45s "./target/ores-${{ matrix.mode }}" \
+            --internal-native-shutdown-selftest | tee /tmp/native-actor-shutdown.log
+          grep -x 'ORES_NATIVE_SHUTDOWN|PASS|cleanup=1|physical_done=1' /tmp/native-actor-shutdown.log
+      - name: Execute guest await, lexical defer and finally in Native Image
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 90s "./target/ores-${{ matrix.mode }}" \
+            --mode=${{ matrix.mode }} --platform=linux \
+            examples/native-await-finally.ores | tee /tmp/native-source-cleanup.log
+          grep -x '42' /tmp/native-source-cleanup.log
+          grep -x 'ORES_NATIVE|defer' /tmp/native-source-cleanup.log
+          grep -x 'ORES_NATIVE|finally' /tmp/native-source-cleanup.log
+          awk '/^42$|^ORES_NATIVE\\|/ {print}' /tmp/native-source-cleanup.log \
+            > /tmp/native-source-observed.txt
+          printf '42\nORES_NATIVE|defer\nORES_NATIVE|finally\n' \
+            > /tmp/native-source-expected.txt
+          diff -u /tmp/native-source-expected.txt /tmp/native-source-observed.txt
