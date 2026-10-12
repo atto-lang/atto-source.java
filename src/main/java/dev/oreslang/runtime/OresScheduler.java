@@ -599,9 +599,16 @@ public final class OresScheduler implements AutoCloseable {
             watchdogLease = null;
             if (lease != null) lease.close();
             executing.set(false);
-            publishTerminalIfReady();
-            retireWhenQuiescent();
-            scheduleReadyResume();
+            // After the guest turn has unwound, release its lifecycle
+            // resources before notifying arbitrary Future subscribers.
+            // Completion callbacks are synchronous and can block indefinitely;
+            // they must not hold a retired actor quota or scheduler task live.
+            try {
+                retireWhenQuiescent();
+            } finally {
+                publishTerminalIfReady();
+                scheduleReadyResume();
+            }
         }
 
         private void armCooperate() {
@@ -732,8 +739,11 @@ public final class OresScheduler implements AutoCloseable {
 
             terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
             if (!executing.get()) {
-                publishTerminalIfReady();
-                retireWhenQuiescent();
+                try {
+                    retireWhenQuiescent();
+                } finally {
+                    publishTerminalIfReady();
+                }
             }
         }
 
