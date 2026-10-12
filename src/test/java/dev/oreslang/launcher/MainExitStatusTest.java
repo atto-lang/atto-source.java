@@ -23,6 +23,23 @@ final class MainExitStatusTest {
 
     @Test void voidMainImpliesSuccess() throws Exception {
         assertEquals(0, exit("pub routine main(): void { return; }"));
+        assertEquals(0, exit("pub routine main(): void { }"));
+    }
+
+    @Test void cliReturnsGuestStatusToShellBoundary() throws Exception {
+        Path path = temp.resolve("cli-main.ores");
+        Files.writeString(path, "pub routine main(): int { return 42; }");
+        assertEquals(42, OresMain.exitStatusForArgs(new String[] {path.toString()}));
+        Files.writeString(path, "pub routine main(): void { }");
+        assertEquals(0, OresMain.exitStatusForArgs(new String[] {path.toString()}));
+    }
+
+    @Test void cliSeparatesUsageErrorsFromCompilationErrors() throws Exception {
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--invalid-option"}));
+        Path path = temp.resolve("bad.ores");
+        Files.writeString(path, "pub routine main(): int { return missing_variable; }");
+        assertEquals(1, OresMain.exitStatusForArgs(new String[] {path.toString()}));
+        assertEquals(1, OresMain.exitStatusForArgs(new String[] {"--check", path.toString()}));
     }
 
     @Test void integerMainReturnsZero() throws Exception {
