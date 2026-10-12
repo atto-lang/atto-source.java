@@ -8,6 +8,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Host-only public async invocation handoff.
@@ -33,6 +34,9 @@ public final class OresHostFutureBridge {
      */
     static final class Slot {
         private enum State { OPEN, CLAIMED, PUBLISHED, DELIVERED, CLOSED }
+        // Per host invocation, not per scheduler or process: rejected before
+        // another TaskRunner enters the live registry.
+        static final int MAX_DEFERRED_SOURCE_STARTS = 256;
 
         private final String function;
         // A capture is usable only on the physical host thread that opened it.
@@ -94,12 +98,20 @@ public final class OresHostFutureBridge {
             state = State.PUBLISHED;
         }
 
-        void stageSourceStart(OresScheduler.DeferredStart<?> deferred) {
+        void requireCapacityForStaging() {
             requireOwnerThread();
             if (state != State.CLAIMED) {
                 throw new SecurityException(
                         "source start requires a claimed host Future invocation");
             }
+            if (deferredStarts.size() >= MAX_DEFERRED_SOURCE_STARTS) {
+                throw new RejectedExecutionException(
+                        "host Future invocation exceeded deferred source task capacity");
+            }
+        }
+
+        void stageSourceStart(OresScheduler.DeferredStart<?> deferred) {
+            requireCapacityForStaging();
             deferredStarts.add(Objects.requireNonNull(deferred, "deferred"));
         }
 
@@ -170,16 +182,28 @@ public final class OresHostFutureBridge {
 
         void close() {
             requireOwnerThread();
-            // Also protect scope corruption and callers abandoning a claimed
-            // scope without taking a published Future.
-            for (OresScheduler.DeferredStart<?> deferred : deferredStarts) {
-                deferred.abandonBeforeDispatch();
-            }
+            // Revoke capabilities and release strong context references BEFORE
+            // calling cancellation hooks. A throwing hook cannot leave a
+            // claimed ticket open or retain the rest of the staged tasks.
+            ArrayList<OresScheduler.DeferredStart<?>> abandoned =
+                    new ArrayList<>(deferredStarts);
             deferredStarts.clear();
             state = State.CLOSED;
             ownerContext = null;
             ownerRoot = null;
             future = null;
+
+            Throwable failure = null;
+            for (OresScheduler.DeferredStart<?> deferred : abandoned) {
+                try {
+                    deferred.abandonBeforeDispatch();
+                } catch (RuntimeException | Error cleanup) {
+                    if (failure == null) failure = cleanup;
+                    else if (failure != cleanup) failure.addSuppressed(cleanup);
+                }
+            }
+            if (failure instanceof Error fatal) throw fatal;
+            if (failure instanceof RuntimeException runtime) throw runtime;
         }
     }
 
@@ -280,6 +304,9 @@ public final class OresHostFutureBridge {
             throw new SecurityException(
                     "host Future source start requires the owning context and claimed scope");
         }
+        // Check BEFORE touching the scheduler registry. Rejecting overflow
+        // after prepareDeferred would leave an unowned NEW task behind.
+        slot.requireCapacityForStaging();
         OresScheduler.DeferredStart<T> deferred = scheduler.prepareDeferred(task);
         try {
             slot.stageSourceStart(deferred);
