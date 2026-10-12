@@ -65,8 +65,58 @@ public final class TaggedMessageContracts {
         }
     }
 
+    private static boolean hasExplicitBox(Ast.TypeRef ref) {
+        if (ref == null) return false;
+        if (ref.name().equals("Box")) return true;
+        return ref.arguments().stream().anyMatch(TaggedMessageContracts::hasExplicitBox);
+    }
+
+    private static void appendPatternCase(List<Case> items, Set<String> seen, Case entry) {
+        if (!seen.add(entry.qualifiedName())) {
+            throw new IllegalArgumentException(
+                    "duplicate pattern alternative " + entry.qualifiedName());
+        }
+        if (items.size() >= 4096) {
+            throw new IllegalArgumentException(
+                    "expanded match pattern exceeds 4096 alternatives");
+        }
+        items.add(entry);
+    }
+
+    /**
+     * Compiler symbol/type registry. A nested enum payload can be a local
+     * nominal value even though it has NO compiled wire shape yet.
+     * A null payload shape with non-null sourcePayload means "not wire-safe",
+     * never "payloadless". Wire admission must check both fields.
+     */
+    public static Registry forTypes(Ast.Program program) {
+        return build(program, true);
+    }
+
+    /** Requires every enum payload to have a finite portable wire shape. */
     public static Registry verify(Ast.Program program) {
+        return build(program, false);
+    }
+
+    private static Registry build(Ast.Program program, boolean localOnly) {
         Objects.requireNonNull(program);
+        List<EnumPayloadDependencies.Reference> nested =
+                EnumPayloadDependencies.check(program);
+        // Direct/mutual unboxed cycles were already rejected by the graph
+        // pass. Acyclic nested enum *values* now have a finite wire codec.
+        // Indirect recursive schemas and Box<T> remain local-only.
+        Map<String, Ast.EnumDecl> sourceEnums = new LinkedHashMap<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.EnumDecl enumeration) {
+                    sourceEnums.put(enumeration.name(), enumeration);
+                }
+            }
+        }
+        Set<String> localOnlyCases = new HashSet<>();
+        for (var dependency : nested) {
+            localOnlyCases.add(dependency.from() + "." + dependency.caseName());
+        }
         Map<String, EnumType> enums = new LinkedHashMap<>();
         Map<String, Ast.PatternDecl> pending = new LinkedHashMap<>();
         Set<String> taken = new HashSet<>();
@@ -108,8 +158,37 @@ public final class TaggedMessageContracts {
                                 "enum wire tags must be positive and strictly increasing");
                     }
                     previousTag = entry.tag();
-                    MessagePackCollectionCodec.Shape shape = entry.payload() == null
-                            ? null : ActorWireSchema.fromSource(entry.payload());
+                    MessagePackCollectionCodec.Shape shape = null;
+                    if (entry.payload() != null) {
+                        try {
+                            shape = NestedEnumWireShapes.forPayload(entry.payload(), sourceEnums);
+                        } catch (IllegalArgumentException unsupported) {
+                            // Only known nominal dependency cycles may stay
+                            // local-only. Other malformed types must fail even
+                            // in local registration rather than being erased.
+                            boolean indirect = localOnlyCases.contains(
+                                    enumDecl.name() + "." + entry.name());
+                            boolean recursiveWire = unsupported.getMessage().contains(
+                                    "recursive enum wire schema");
+                            boolean boxedWire = unsupported.getMessage().contains(
+                                    "no portable Serializable wire codec: Box")
+                                    && hasExplicitBox(entry.payload());
+                            if (!localOnly
+                                    || (!boxedWire && !(indirect && recursiveWire))) {
+                                throw unsupported;
+                            }
+                        }
+                    }
+                    if (shape != null) {
+                        // Every compiler-bound actor enum case must have a
+                        // finite, bounded descriptor before it can be sent.
+                        // Otherwise the first send could perform expensive
+                        // descriptor expansion in the actor's hot path.
+                        MessagePackCollectionCodec.shapeDigest(
+                                MessagePackCollectionCodec.tuple(
+                                        MessagePackCollectionCodec.string(),
+                                        MessagePackCollectionCodec.int64(), shape));
+                    }
                     entries.add(new Case(enumDecl.name(), entry.name(), entry.tag(),
                             entry.payload(), shape));
                 }
@@ -125,14 +204,27 @@ public final class TaggedMessageContracts {
             }
             List<Case> items = new ArrayList<>();
             Set<String> alternatives = new HashSet<>();
-            for (String qualified : p.alternatives()) {
-                if (qualified == null || !alternatives.add(qualified)) {
-                    throw new IllegalArgumentException(
-                            "duplicate or invalid pattern alternative " + qualified);
+            for (String source : p.alternatives()) {
+                if (source == null || source.isBlank()) {
+                    throw new IllegalArgumentException("invalid pattern alternative");
                 }
-                // Enum-to-pattern dependencies cannot exist: only enum
-                // declarations supply constructible variant members.
-                items.add(stage.requireCase(qualified));
+                if (source.startsWith("...")) {
+                    String enumName = source.substring(3);
+                    EnumType expanded = enums.get(enumName);
+                    if (expanded == null) {
+                        throw new IllegalArgumentException(
+                                "unknown enum in match pattern spread " + source);
+                    }
+                    // Expands the enum at every compilation, not at runtime;
+                    // full-case coverage automatically follows new variants.
+                    for (Case variant : expanded.cases()) {
+                        appendPatternCase(items, alternatives, variant);
+                    }
+                } else {
+                    // Enum-to-pattern dependencies cannot exist: only enums
+                    // are eligible, avoiding recursion and cyclic spreads.
+                    appendPatternCase(items, alternatives, stage.requireCase(source));
+                }
             }
             patterns.put(p.name(), new Domain(p.name(), items));
         }
