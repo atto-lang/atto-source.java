@@ -1094,20 +1094,23 @@ public final class OwnershipChecker {
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
     }
 
+    private boolean isBuiltinStdioCall(Ast.CallExpr call, Scope scope) {
+        if (scope.lookup("stdio") != null) return false;
+        Ast.Expr callee = call.callee();
+        if (!(callee instanceof Ast.MemberExpr)) return false;
+        while (callee instanceof Ast.MemberExpr member) callee = member.receiver();
+        return callee instanceof Ast.NameExpr namespace && namespace.name().equals("stdio");
+    }
+
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
         // A critical handle_state callback must not retain its state loan
         // while synchronous console output may wait for a host pipe/terminal.
         // Check this explicit builtin before dispatch; arbitrary unknown
         // callees need trusted effect summaries in a later interprocedural
         // verifier, not an optimistic no_block assumption.
-        if (actorStateLoanDepth > 0
-                && call.callee() instanceof Ast.MemberExpr member
-                && (member.member().equals("print") || member.member().equals("println"))
-                && member.receiver() instanceof Ast.NameExpr namespace
-                && namespace.name().equals("stdio")
-                && scope.lookup("stdio") == null) {
-            throw error("cannot perform potentially blocking stdio output while "
-                    + "a critical actor state loan is live");
+        if (actorStateLoanDepth > 0 && isBuiltinStdioCall(call, scope)) {
+            throw error("cannot invoke stdio while a critical actor state loan is live; "
+                    + "potential blocking/escaping I/O needs a trusted effect summary");
         }
         // The sealed handle_state intrinsic is the only lexical boundary
         // allowed to create a mutable actor-state loan. A plain |s| lambda
