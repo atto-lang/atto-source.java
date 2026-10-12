@@ -68,8 +68,8 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         var source = request.getSource();
         String text = source.getCharacters().toString();
         // This is guest runtime parsing, not the trusted offline AOT build.
-        // Never expand user-provided macros inside a running GraalVM context.
-        MacroExpander.rejectRuntimeMacroDefinitions(new Lexer(text).scan());
+        // Never expand user-provided macros or annotation code generators inside a running GraalVM context.
+        MacroExpander.rejectRuntimeCodeGeneration(new Lexer(text).scan());
         Ast.Program program = OresCompiler.parseAndTypeCheck(text);
         String codeUnitId = source.getPath();
         if (codeUnitId == null || codeUnitId.isBlank()) {
