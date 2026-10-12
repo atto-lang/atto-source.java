@@ -1,0 +1,16 @@
+// Native-image guest-source conformance fixture. It checks ordinary awaited
+// return and lexical defer/finally ordering, not cancellation by itself.
+pub async fnc answer(): int {
+  return 42;
+}
+
+pub routine main(): void {
+  try {
+    defer stdio.println("ORES_NATIVE|defer");
+    val int value = await answer();
+    stdio.println(value);
+  } finally {
+    stdio.println("ORES_NATIVE|finally");
+  }
+  return;
+}
