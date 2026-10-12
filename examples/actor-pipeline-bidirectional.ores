@@ -1,0 +1,80 @@
+// Java/GraalVM compiler-native three-actor nominal MessagePack v2 pipeline.
+// Type contract: Data(int) downstream, Result(int) upstream; no host callbacks.
+define enum Signal as
+    Data: int = 1
+    Result: int = 2
+end
+
+define pattern PipeMessages as
+    Signal.Data
+    Signal.Result
+end
+
+define actor Source as
+    let count: int = 0;
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.count = self.count + n;
+                self.forward(Signal.Data(self.count));
+            }
+            on Signal.Result n -> {
+                self.count = self.count + n;
+                if self.count == 19 then
+                    stdio.stdout.write("JAVA_PIPELINE_RESULT_19");
+                else
+                    stdio.stdout.write("JAVA_PIPELINE_WRONG_RESULT");
+                fi
+                self.end();
+            }
+        end
+        return;
+    }
+end
+
+define actor Transform as
+    let value: int = 0;
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.value = n * 2;
+                self.forward(Signal.Data(self.value));
+            }
+            on Signal.Result n -> {
+                self.value = n + 1;
+                self.backward(Signal.Result(self.value));
+                self.end();
+            }
+        end
+        return;
+    }
+end
+
+define actor Sink as
+    let value: int = 0;
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.value = n + 3;
+                self.backward(Signal.Result(self.value));
+                self.end();
+            }
+            on Signal.Result n -> {
+                self.value = n;
+            }
+        end
+        return;
+    }
+end
+
+pub async routine main(): void {
+    val source = spawn Source();
+    val transform = spawn Transform();
+    val sink = spawn Sink();
+    pipeline(source, transform, sink);
+    source.send(Signal.Data(5));
+    await source.get_done();
+    await transform.get_done();
+    await sink.get_done();
+    return;
+}
