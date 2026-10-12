@@ -307,6 +307,13 @@ public final class MacroExpander {
                                 TRUE, FALSE, NULL).contains(arg.getFirst().type())) {
                             throw fail(token, "unsafe bare token tree: expected an identifier, literal, or grouped expression");
                         }
+                        for (Token captured : arg) {
+                            if (FORBIDDEN_TEMPLATE_TOKENS.contains(captured.type())
+                                    || captured.type() == AT || captured.type() == DOLLAR) {
+                                throw fail(captured,
+                                        "token-tree expression capture cannot introduce declarations, control flow, or annotations");
+                            }
+                        }
                     }
                     captures.put(parameter.name, arg);
                 }
