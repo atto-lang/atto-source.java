@@ -39,6 +39,7 @@ import java.util.function.BiConsumer;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
@@ -62,11 +63,16 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
+    private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
     private static final long UNTRUSTED_MIN_FUEL = 256L;
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
+    /** Current actor-owned source task's logical quota, never a carrier's quota. */
+    private static final ThreadLocal<UntrustedLogicalQuota> CURRENT_UNTRUSTED_QUOTA =
+            new ThreadLocal<>();
     private static final ThreadLocal<ActorGroupMailmanExecution> CURRENT_ACTOR_GROUP_MAILMAN =
             new ThreadLocal<>();
     /**
@@ -88,6 +94,12 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             Object executionDomain) { }
 
+    /**
+     * Executes the actor turn synchronously on the calling scheduler worker.
+     * The callback must return before execute returns; off-thread submission
+     * or post-return execution is forbidden. ActorRuntime checks the physical
+     * execution owner at turn entry/exit and rejects violations.
+     */
     @FunctionalInterface
     public interface TurnExecutor {
         void execute(Runnable turn);
@@ -1315,6 +1327,21 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Package-private runtime proof hook, not exposed to Oreslang source:
+     * actor methods, continuation callbacks and lifecycle cleanup must all
+     * execute with the same temporary physical owner and active turn lease.
+     */
+    boolean currentThreadOwnsActorExecutionLease() {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) return false;
+        synchronized (cell.lifecycleLock) {
+            return cell.carrierActive && cell.scheduled.get()
+                    && cell.carrierOwnerThread == Thread.currentThread()
+                    && cell.activeTurns == 1;
+        }
+    }
+
     public ContinuationTarget captureCurrentContinuationTarget() {
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
@@ -1474,7 +1501,149 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        // Do not mint multiple independent root budgets from one physical
+        // mailbox turn. While one source-task cohort is live, its nested
+        // tasks share the same quota; a second top-level task fails closed.
+        // Separate actor messages cannot defeat this rule while a source task
+        // is still suspended.
+        UntrustedLogicalQuota inheritedQuota = CURRENT_UNTRUSTED_QUOTA.get();
+        synchronized (cell.lifecycleLock) {
+            // Unlike the physical-cohort count, this remains charged while a
+            // terminal Future subscriber is blocked AFTER guest quiescence.
+            if (cell.activeUntrustedTimedAdmissions >=
+                    UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS) {
+                throw new RejectedExecutionException(
+                        "untrusted actor timed source-task admission is full");
+            }
+            if (inheritedQuota == null) {
+                if (cell.activeUntrustedSourceQuota != null) {
+                    throw new SecurityException(
+                            "untrusted actor already has an active logical source-task quota");
+                }
+                long nowCpu = currentThreadCpuNanos();
+                long alreadyCpu = nowCpu >= 0 && cell.turnStartedCpuNanos >= 0
+                        ? Math.max(0L, nowCpu - cell.turnStartedCpuNanos) : 0L;
+                inheritedQuota = new UntrustedLogicalQuota(
+                        ActorRuntime.this,
+                        cell.ref.id(),
+                        cell.policy.maxWallTime().toNanos(),
+                        cell.untrustedFuelRemaining,
+                        cell.turnStartedWallNanos,
+                        alreadyCpu,
+                        System::nanoTime,
+                        ActorRuntime::currentThreadCpuNanos);
+                cell.activeUntrustedSourceQuota = inheritedQuota;
+            } else if (inheritedQuota != cell.activeUntrustedSourceQuota
+                    || !inheritedQuota.ownedBy(ActorRuntime.this, cell.ref.id())) {
+                throw new SecurityException(
+                        "untrusted source-task quota belongs to a different actor or runtime");
+            }
+            // Task creation is not itself a source loop backedge. Without a
+            // count cap, nested spawn can retain arbitrarily many queued
+            // tasks (and eventually overflow the signed reference counter)
+            // before hitting a fuel safepoint.
+            if (cell.activeUntrustedSourceTaskCount >= INTERNAL_CONTINUATION_SLOTS) {
+                throw new RejectedExecutionException(
+                        "untrusted actor logical source-task cohort is full");
+            }
+            cell.activeUntrustedSourceTaskCount++;
+            cell.activeUntrustedTimedAdmissions++;
+        }
+
+        UntrustedLogicalQuota quota = inheritedQuota;
+        AtomicBoolean physicalQuiescenceConfirmed = new AtomicBoolean();
+        AtomicBoolean terminalSubscribersDrained = new AtomicBoolean();
+        AtomicBoolean releasedTimedAdmission = new AtomicBoolean();
+        Runnable releaseTimedAdmissionOnce = () -> {
+            if (releasedTimedAdmission.compareAndSet(false, true)) {
+                synchronized (cell.lifecycleLock) {
+                    if (cell.activeUntrustedTimedAdmissions <= 0) {
+                        throw new IllegalStateException(
+                                "untrusted timed source-task admission underflow");
+                    }
+                    cell.activeUntrustedTimedAdmissions--;
+                }
+            }
+        };
+        Runnable releaseTimedWhenSafe = () -> {
+            if (physicalQuiescenceConfirmed.get()
+                    && terminalSubscribersDrained.get()) {
+                releaseTimedAdmissionOnce.run();
+            }
+        };
+        AtomicBoolean released = new AtomicBoolean();
+        Runnable retireOnce = () -> {
+            if (released.compareAndSet(false, true)) {
+                try {
+                    releaseUntrustedSourceTask(cell, quota);
+                } finally {
+                    // A completed Future is not proof that an untrusted
+                    // physical carrier has exited the actor boundary.
+                    physicalQuiescenceConfirmed.set(true);
+                    releaseTimedWhenSafe.run();
+                }
+            }
+        };
+        Runnable notificationsDrained = () -> {
+            terminalSubscribersDrained.set(true);
+            releaseTimedWhenSafe.run();
+        };
+        OresFuture<T> future;
+        try {
+            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
+                UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
+                CURRENT_UNTRUSTED_QUOTA.set(quota);
+                boolean entered = false;
+                try {
+                    quota.enter();
+                    entered = true;
+                    quota.check();
+                    OresScheduler.Step<T> result = task.resume(resume);
+                    quota.check();
+                    return result;
+                } finally {
+                    try {
+                        if (entered) quota.leave();
+                    } finally {
+                        if (previous == null) CURRENT_UNTRUSTED_QUOTA.remove();
+                        else CURRENT_UNTRUSTED_QUOTA.set(previous);
+                    }
+                }
+            }, retireOnce, quota.remainingWallNanos(),
+                    new UntrustedActorQuotaExceededException(
+                            UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                            "untrusted logical task exceeded wall-time budget while suspended"),
+                    notificationsDrained);
+        } catch (RuntimeException | Error failure) {
+            // No task was admitted. Release the pre-reserved quota slot.
+            // The scheduler's own retirement callback also claims this
+            // once, including a failure published before start() returns.
+            try {
+                retireOnce.run();
+            } finally {
+                releaseTimedAdmissionOnce.run();
+            }
+            throw failure;
+        }
+        // A caller may cancel the Future while the source turn is still
+        // executing. The scheduler invokes retireOnce ONLY after guest
+        // carrier quiescence, not merely when the Future settles.
+        return future;
+    }
+
+    private void releaseUntrustedSourceTask(
+            ActorCell<?> cell, UntrustedLogicalQuota quota) {
+        synchronized (cell.lifecycleLock) {
+            if (cell.activeUntrustedSourceQuota != quota) return;
+            if (cell.activeUntrustedSourceTaskCount <= 0) {
+                throw new IllegalStateException(
+                        "untrusted logical source-task quota retirement underflow");
+            }
+            if (--cell.activeUntrustedSourceTaskCount == 0) {
+                cell.activeUntrustedSourceQuota = null;
+            }
+        }
     }
 
     private boolean ownFuture(
@@ -4706,6 +4875,23 @@ public final class ActorRuntime implements AutoCloseable {
             throw new ActorCancellationSignal("actor execution stopped");
         }
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
+            UntrustedLogicalQuota logicalQuota = CURRENT_UNTRUSTED_QUOTA.get();
+            if (logicalQuota != null) {
+                if (!logicalQuota.ownedBy(this, cell.ref.id())) {
+                    throw new SecurityException(
+                            "untrusted source-task quota escaped its actor");
+                }
+                logicalQuota.chargeSafepoint();
+                return;
+            }
+            // Once a logical cohort exists, an unrelated synchronous mailbox
+            // turn cannot consume a fresh physical quota in parallel. The
+            // compiler must run its continuation within the owning task or
+            // wait until that cohort is fully retired.
+            if (cell.activeUntrustedSourceQuota != null) {
+                throw new SecurityException(
+                        "untrusted actor safepoint outside active logical source-task quota");
+            }
             cell.untrustedSafepoints++;
             if (--cell.untrustedFuelRemaining < 0) {
                 throw new UntrustedActorQuotaExceededException(
@@ -4740,6 +4926,155 @@ public final class ActorRuntime implements AutoCloseable {
             return -1L;
         }
         return THREAD_MX_BEAN.getCurrentThreadCpuTime();
+    }
+
+    /**
+     * Resource debt belongs to one logical UNTRUSTED source task tree.
+     * No physical carrier identity, await, or cooperate may reinitialize it.
+     *
+     * <p>All segments run under the owning actor's single-writer mailbox lease.
+     * A second simultaneous segment is rejected rather than racing accounting.
+     * CPU use is accumulated per carrier segment; comparing CPU readings from
+     * two different carrier threads directly is invalid.</p>
+     */
+    static final class UntrustedLogicalQuota {
+        private final ActorRuntime ownerRuntime;
+        private final ActorId ownerActor;
+        private final long wallBudgetNanos;
+        private final long startedNanos;
+        private final LongSupplier wallClock;
+        private final LongSupplier cpuClock;
+        private long fuelRemaining;
+        private long cpuUsedNanos;
+        private long segmentCpuStarted = -1L;
+        private boolean segmentActive;
+
+        // Test-only deterministic constructor; production always binds owner.
+        UntrustedLogicalQuota(
+                long wallBudgetNanos,
+                long fuelRemaining,
+                long startedNanos,
+                long initialCpuNanos,
+                LongSupplier wallClock,
+                LongSupplier cpuClock) {
+            this(null, null, wallBudgetNanos, fuelRemaining, startedNanos,
+                    initialCpuNanos, wallClock, cpuClock);
+        }
+
+        UntrustedLogicalQuota(
+                ActorRuntime ownerRuntime,
+                ActorId ownerActor,
+                long wallBudgetNanos,
+                long fuelRemaining,
+                long startedNanos,
+                long initialCpuNanos,
+                LongSupplier wallClock,
+                LongSupplier cpuClock) {
+            if (wallBudgetNanos <= 0 || fuelRemaining < 0 || initialCpuNanos < 0) {
+                throw new IllegalArgumentException("invalid untrusted logical quota");
+            }
+            this.ownerRuntime = ownerRuntime;
+            this.ownerActor = ownerActor;
+            this.wallBudgetNanos = wallBudgetNanos;
+            this.fuelRemaining = fuelRemaining;
+            this.startedNanos = startedNanos;
+            this.cpuUsedNanos = initialCpuNanos;
+            this.wallClock = Objects.requireNonNull(wallClock, "wallClock");
+            this.cpuClock = Objects.requireNonNull(cpuClock, "cpuClock");
+        }
+
+        boolean ownedBy(ActorRuntime runtime, ActorId actor) {
+            return ownerRuntime == runtime && Objects.equals(ownerActor, actor);
+        }
+
+        /** Remaining cohort wall time, including elapsed suspended time. */
+        synchronized long remainingWallNanos() {
+            long elapsed = wallClock.getAsLong() - startedNanos;
+            // Overflow, an already-expired quota or a late child all expire
+            // immediately. Never create another full budget for a child.
+            if (elapsed < 0 || elapsed >= wallBudgetNanos) return 0L;
+            return wallBudgetNanos - elapsed;
+        }
+
+        synchronized void enter() {
+            if (ownerRuntime != null) {
+                ActorExecutionContext context = CURRENT_ACTOR_EXECUTION.get();
+                if (context == null || context.runtime() != ownerRuntime
+                        || !context.actorId().equals(ownerActor)) {
+                    throw new SecurityException(
+                            "untrusted source-task quota entered outside its actor");
+                }
+            }
+            if (segmentActive) {
+                throw new IllegalStateException(
+                        "untrusted task tried overlapping carrier segments");
+            }
+            segmentCpuStarted = cpuClock.getAsLong();
+            segmentActive = true;
+        }
+
+        synchronized void chargeSafepoint() {
+            requireActive();
+            if (fuelRemaining == 0L) {
+                throw new UntrustedActorQuotaExceededException(
+                        UntrustedActorQuotaExceededException.Resource.FUEL,
+                        "untrusted logical task exhausted execution fuel");
+            }
+            fuelRemaining--;
+            check();
+        }
+
+        synchronized void check() {
+            requireActive();
+            long elapsed = wallClock.getAsLong() - startedNanos;
+            // Fail closed on a monotonic clock overflow instead of treating
+            // overflow as a new unspent deadline.
+            if (elapsed < 0 || elapsed > wallBudgetNanos) {
+                throw new UntrustedActorQuotaExceededException(
+                        UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                        "untrusted logical task exceeded wall-time budget");
+            }
+            long cpu = accruedCpu();
+            if (cpu > wallBudgetNanos) {
+                throw new UntrustedActorQuotaExceededException(
+                        UntrustedActorQuotaExceededException.Resource.CPU_TIME,
+                        "untrusted logical task exceeded CPU-time budget");
+            }
+        }
+
+        synchronized void leave() {
+            requireActive();
+            try {
+                long now = cpuClock.getAsLong();
+                if (segmentCpuStarted >= 0 && now >= segmentCpuStarted) {
+                    cpuUsedNanos = saturatingSum(cpuUsedNanos, now - segmentCpuStarted);
+                }
+            } finally {
+                // Even an unexpected JVM CPU-counter failure must not strand
+                // the quota's execution lease on the old carrier.
+                segmentCpuStarted = -1L;
+                segmentActive = false;
+            }
+        }
+
+        private long accruedCpu() {
+            long current = cpuClock.getAsLong();
+            if (segmentCpuStarted < 0 || current < segmentCpuStarted) {
+                return cpuUsedNanos; // CPU clock unavailable: fuel/wall still enforced.
+            }
+            return saturatingSum(cpuUsedNanos, current - segmentCpuStarted);
+        }
+
+        private void requireActive() {
+            if (!segmentActive) {
+                throw new IllegalStateException(
+                        "untrusted logical quota used outside carrier segment");
+            }
+        }
+
+        private static long saturatingSum(long a, long b) {
+            return a > Long.MAX_VALUE - b ? Long.MAX_VALUE : a + b;
+        }
     }
 
     private static long untrustedFuelBudget(IsolatePolicy policy) {
@@ -6083,6 +6418,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
+        /** Per-dispatch identity, guarded by lifecycleLock. A stale queued
+         * runnable can never consume a newer scheduled=false->true claim. */
+        private Object scheduledDispatchToken;
         private final AtomicBoolean stopped = new AtomicBoolean();
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
@@ -6107,6 +6445,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object executionDomain = new Object();
         private int activeTurns;
         private boolean carrierActive;
+        /** Physical worker currently owning this actor lane, guarded by lifecycleLock.
+         * Not an affinity requirement: a later turn may use a different worker. */
+        private Thread carrierOwnerThread;
         /**
          * Set when the currently executing actor envelope enqueues a source
          * continuation. The batch must then unwind through TurnExecutor before
@@ -6126,6 +6467,11 @@ public final class ActorRuntime implements AutoCloseable {
         private long turnStartedCpuNanos = -1L;
         private long untrustedFuelRemaining;
         private long untrustedSafepoints;
+        /** One live logical quota cohort per untrusted actor. Guarded by lifecycleLock. */
+        private volatile UntrustedLogicalQuota activeUntrustedSourceQuota;
+        private int activeUntrustedSourceTaskCount;
+        /** Timed admission persists until both guest quiescence and terminal drain. */
+        private int activeUntrustedTimedAdmissions;
         private Behavior<M> behavior;
 
         private ActorCell(
@@ -6277,6 +6623,13 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
                 if (stopped.get() || forceKillFenced || finalized) return false;
+                // The full actor execution domain (including lifecycle and resumed
+                // continuations) must be entered on the single admitted carrier.
+                if (!carrierActive || carrierOwnerThread != Thread.currentThread()
+                        || !scheduled.get()) {
+                    throw new IllegalStateException(
+                            "actor turn entered without owning its physical carrier for " + ref.id());
+                }
                 if (activeTurns != 0) {
                     throw new IllegalStateException(
                             "actor single-writer execution lease violation for " + ref.id()
@@ -6328,6 +6681,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void endTurn() {
             synchronized (lifecycleLock) {
+                if (!carrierActive || carrierOwnerThread != Thread.currentThread()) {
+                    throw new IllegalStateException(
+                            "actor turn left from a non-owning physical carrier for " + ref.id());
+                }
                 if (activeTurns != 1) {
                     throw new IllegalStateException(
                             "actor execution lease accounting violation for " + ref.id()
@@ -6420,6 +6777,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void cancelQueuedScheduleOnShutdown() {
             synchronized (lifecycleLock) {
                 if (scheduled.get() && !carrierActive) {
+                    scheduledDispatchToken = null;
                     scheduled.set(false);
                     if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                     lifecycleLock.notifyAll();
@@ -6527,49 +6885,108 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void schedule() {
-            if (stopped.get() || forceKillFenced || closed.get()) return;
-            if (!scheduled.compareAndSet(false, true)) return;
+            final Object dispatchTicket;
+            synchronized (lifecycleLock) {
+                if (stopped.get() || forceKillFenced || closed.get() || scheduled.get()) return;
+                // Atomically claim the actor lane and publish a fresh identity.
+                dispatchTicket = new Object();
+                scheduledDispatchToken = dispatchTicket;
+                scheduled.set(true);
+            }
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);
+                Runnable dispatch = () -> runBatch(dispatchTicket);
                 if (dispatcher instanceof ActorAffinityDispatcher lanes) {
-                    lanes.executeOnLane(dispatchLane, this::runBatch);
+                    lanes.executeOnLane(dispatchLane, dispatch);
                 } else {
-                    dispatcher.execute(this::runBatch);
+                    dispatcher.execute(dispatch);
                 }
             } catch (RejectedExecutionException rejected) {
-                scheduled.set(false);
+                synchronized (lifecycleLock) {
+                    if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
+                        scheduledDispatchToken = null;
+                        scheduled.set(false);
+                    }
+                }
                 stop();
                 if (!closed.get()) throw rejected;
             }
         }
 
-        private void runBatch() {
-            ACTOR_CARRIER.set(Boolean.TRUE);
+        private void runBatch(Object dispatchTicket) {
+            // Nested or obsolete dispatch attempts must not mutate the
+            // thread-local authority of an already executing actor.
+            boolean previousCarrier = Boolean.TRUE.equals(ACTOR_CARRIER.get());
             boolean carrierEntered = false;
             boolean reschedule = false;
             try {
-                if (dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes) {
-                    int cpu = lanes.cpuForLane(dispatchLane);
-                    if (cpu >= 0) NativeCarrierExecutor.bindCurrentThreadToCpu(cpu);
-                }
                 synchronized (lifecycleLock) {
-                    // shutdownNow() may leave a queued executor task that races
-                    // with explicit queued-schedule cancellation. If shutdown
-                    // won that race, this task is an inert no-op.
-                    if (!scheduled.get()) return;
-
-                    if (stopped.get() || closed.get() || forceKillFenced) {
-                        scheduled.set(false);
-                        if (activeTurns == 0 && stopped.get()) finalizeStopLocked();
-                        lifecycleLock.notifyAll();
-                        return;
+                    // Prevent obsolete queued runnables impersonating the
+                    // next actor turn after scheduled was cleared and re-claimed.
+                    if (scheduledDispatchToken != dispatchTicket || !scheduled.get()) return;
+                    if (stopped.get() || closed.get() || forceKillFenced) return;
+                    if (carrierActive || carrierOwnerThread != null || activeTurns != 0) {
+                        throw new IllegalStateException(
+                                "actor physical carrier already occupied for " + ref.id());
                     }
-
+                    carrierOwnerThread = Thread.currentThread();
                     carrierActive = true;
                     carrierEntered = true;
                 }
 
-                turnExecutor.execute(this::runBatchEntered);
+                // Only a successfully admitted physical actor turn can assert
+                // carrier identity. Stale replay is inert even if invoked from
+                // inside another legitimate actor turn on the same worker.
+                ACTOR_CARRIER.set(Boolean.TRUE);
+
+                // Only the admitted owner may have its native CPU affinity
+                // changed. An obsolete queued runnable is inert, even if the
+                // dispatcher supports physical CPU pinning.
+                if (dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes) {
+                    int cpu = lanes.cpuForLane(dispatchLane);
+                    if (cpu >= 0) NativeCarrierExecutor.bindCurrentThreadToCpu(cpu);
+                }
+                // TurnExecutor is a synchronous host context boundary, not
+                // an independent scheduler. A broken host must not suppress a
+                // turn, call it twice, or re-enter actor code on another worker.
+                // These flags remain valid even if a foreign callback races
+                // after the executor has returned.
+                AtomicBoolean invoked = new AtomicBoolean();
+                AtomicBoolean completed = new AtomicBoolean();
+                AtomicBoolean violationObserved = new AtomicBoolean();
+                Thread admittedWorker = Thread.currentThread();
+                turnExecutor.execute(() -> {
+                    if (!invoked.compareAndSet(false, true)) {
+                        // Record the violation independently of the thrown
+                        // exception: an embeddable host may catch/suppress it.
+                        violationObserved.set(true);
+                        throw new IllegalStateException(
+                                "actor turn callback invoked more than once for " + ref.id());
+                    }
+                    if (Thread.currentThread() != admittedWorker) {
+                        violationObserved.set(true);
+                        throw new IllegalStateException(
+                                "actor turn callback invoked on a foreign worker for " + ref.id());
+                    }
+                    synchronized (lifecycleLock) {
+                        if (scheduledDispatchToken != dispatchTicket || !scheduled.get()
+                                || !carrierActive || carrierOwnerThread != admittedWorker) {
+                            violationObserved.set(true);
+                            throw new IllegalStateException(
+                                    "actor turn callback lost physical carrier lease for " + ref.id());
+                        }
+                    }
+                    try {
+                        runBatchEntered();
+                    } finally {
+                        completed.set(true);
+                    }
+                });
+                if (violationObserved.get() || !completed.get()) {
+                    throw new IllegalStateException(
+                            "actor TurnExecutor returned after an invalid or unfinished callback for "
+                                    + ref.id());
+                }
             } catch (Throwable failure) {
                 fail(failure);
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
@@ -6577,23 +6994,38 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
                 try {
-                    // The actor remains logically scheduled until TurnExecutor
-                    // returns. Truffle context exit belongs to that boundary.
                     synchronized (lifecycleLock) {
-                        if (carrierEntered) carrierActive = false;
-                        if (scheduled.get()) scheduled.set(false);
-                        if (stopped.get() && activeTurns == 0) finalizeStopLocked();
-                        reschedule = !stopped.get()
-                                && !forceKillFenced
-                                && !closed.get()
-                                && !finalized
-                                && hasQueuedWorkLocked();
+                        if (carrierEntered) {
+                            if (carrierOwnerThread != Thread.currentThread()
+                                    || activeTurns != 0) {
+                                // Never release an owner that has not completely
+                                // left guest execution and its Truffle boundary.
+                                throw new IllegalStateException(
+                                        "actor carrier release before execution quiesced for " + ref.id());
+                            }
+                            carrierOwnerThread = null;
+                            carrierActive = false;
+                        }
+                        // A stale replay cannot release a later scheduling
+                        // identity, even when no carrier is currently active.
+                        if (scheduledDispatchToken == dispatchTicket
+                                && (carrierEntered || !carrierActive)) {
+                            scheduledDispatchToken = null;
+                            scheduled.set(false);
+                            if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                            reschedule = !stopped.get()
+                                    && !forceKillFenced
+                                    && !closed.get()
+                                    && !finalized
+                                    && hasQueuedWorkLocked();
+                        }
                         lifecycleLock.notifyAll();
                     }
                 } finally {
-                    // Finalization hooks and reservation checks are allowed to
-                    // fail closed; neither may strand carrier-local VM identity.
-                    ACTOR_CARRIER.remove();
+                    if (carrierEntered) {
+                        if (previousCarrier) ACTOR_CARRIER.set(Boolean.TRUE);
+                        else ACTOR_CARRIER.remove();
+                    }
                 }
                 if (reschedule) schedule();
             }
@@ -6601,6 +7033,15 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void runBatchEntered() {
+            // A nested physical dispatch on this thread (including into a
+            // different ActorRuntime) must not replace an executing actor's
+            // ThreadLocal identity, context, watchdog or authority.
+            // Synchronous actor-to-actor calls are mailbox sends, not a
+            // second nested actor scheduler turn.
+            if (CURRENT_ACTOR_EXECUTION.get() != null || currentActor.get() != null) {
+                throw new IllegalStateException(
+                        "nested actor carrier admission would overwrite the current actor context");
+            }
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain));
