@@ -6745,15 +6745,6 @@ public final class ActorRuntime implements AutoCloseable {
                 } catch (Throwable failure) {
                     recordFinalizationFailure(failure);
                 }
-                // Parent completion is a separate callback which may itself
-                // initiate parent finalization. Never run it under our monitor.
-                if (parent != null) {
-                    try {
-                        parent.childFinalized(this);
-                    } catch (Throwable failure) {
-                        recordFinalizationFailure(failure);
-                    }
-                }
             } finally {
                 // Finalization remains in-progress until every cleanup action
                 // above has run. This is the physical stop observation barrier.
@@ -6765,6 +6756,16 @@ public final class ActorRuntime implements AutoCloseable {
                 // observer may synchronously call awaitTermination(), and must
                 // not deadlock on the same finalization thread.
                 ref.physicalTerminationFuture.completeFromRuntime(null);
+                // Parent may begin physical finalization only after this
+                // child's own physical barrier has settled. Otherwise parent
+                // done() could precede a descendant's final cleanup.
+                if (parent != null) {
+                    try {
+                        parent.childFinalized(this);
+                    } catch (Throwable failure) {
+                        recordFinalizationFailure(failure);
+                    }
+                }
                 Throwable terminal = ref.terminationCause.get();
                 if (!ref.readyFuture.isDone()) {
                     ref.readyFuture.failFromRuntime(
