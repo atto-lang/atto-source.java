@@ -109,8 +109,25 @@ final class ActorStructuredCleanupStopTest {
             assertTrue(enteredReceive.await(5, TimeUnit.SECONDS));
             // The actor's single carrier is still executing receive, so
             // scheduler task has been queued but has never entered guest code.
-            ref.stop();
+            java.util.concurrent.atomic.AtomicReference<Throwable> stopFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Thread stopper = Thread.ofPlatform().start(() -> {
+                try {
+                    ref.stop();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            });
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (ref.failure().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertTrue(ref.failure().isPresent(),
+                    "unstarted queued source task must be classified incomplete");
             releaseReceive.countDown();
+            stopper.join(5_000);
+            assertFalse(stopper.isAlive());
+            assertNull(stopFailure.get());
             assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
             assertTrue(ref.failure().isPresent(),
                     "failure to claim a suspended frame must be explicit");
