@@ -62,6 +62,42 @@ final class HostGeneratorTurnPump implements AutoCloseable {
 
     private static final int DEFAULT_CAPACITY = 256;
 
+    /**
+     * Scoped to dispatchOne's physical owner thread, never a public host thread.
+     * A scheduler DONE receipt must be issued for the exact queued request.
+     * An unscoped/internal receipt may still be created for staging tests, but
+     * it cannot redeem a certified host pull.
+     */
+    private static final ThreadLocal<CertifiedStartScope> CURRENT_CERTIFIED_START =
+            new ThreadLocal<>();
+
+    private static final class CertifiedStartScope {
+        final HostGeneratorTurnPump pump;
+        final Request<?> request;
+        boolean issued;
+
+        CertifiedStartScope(HostGeneratorTurnPump pump, Request<?> request) {
+            this.pump = pump;
+            this.request = request;
+        }
+    }
+
+    /** Called synchronously by the owning scheduler before launching a task. */
+    static Object bindNewPhysicalReceipt(OwnerToken token, OresScheduler issuer) {
+        CertifiedStartScope scope = CURRENT_CERTIFIED_START.get();
+        if (scope == null) return null; // staging-only, never a certified pull proof
+        if (!scope.pump.owner.equals(token) || scope.pump.owningScheduler != issuer) {
+            throw new SecurityException(
+                    "generator receipt issuer does not own this request reservation");
+        }
+        if (scope.issued) {
+            throw new SecurityException(
+                    "one generator request cannot issue multiple physical DONE proofs");
+        }
+        scope.issued = true;
+        return scope.request;
+    }
+
     private static final class Request<T> {
         final Start<T> start;
         final OresFuture<T> future;
@@ -218,7 +254,18 @@ final class HostGeneratorTurnPump implements AutoCloseable {
             // NEVER execute user-supplied starter code while holding gate.
             // A stalled or reentrant callback must not prevent close() from
             // sealing admission or cancelling pending/active host Futures.
-            started = selected.start.start();
+            CertifiedStartScope priorScope = CURRENT_CERTIFIED_START.get();
+            if (selected.certified) {
+                CURRENT_CERTIFIED_START.set(new CertifiedStartScope(this, selected));
+            }
+            try {
+                started = selected.start.start();
+            } finally {
+                if (selected.certified) {
+                    if (priorScope == null) CURRENT_CERTIFIED_START.remove();
+                    else CURRENT_CERTIFIED_START.set(priorScope);
+                }
+            }
             if (started == null) {
                 throw new IllegalStateException(
                         "generator turn starter returned no physical-exit barrier");
@@ -226,7 +273,7 @@ final class HostGeneratorTurnPump implements AutoCloseable {
             if (selected.certified) {
                 OresScheduler.PhysicalDoneReceipt proof = started.certificate();
                 if (proof == null || !proof.claimFor(owner, owningScheduler,
-                        started.result(), started.physicalExit())) {
+                        selected, started.result(), started.physicalExit())) {
                     throw new SecurityException(
                             "generator physical DONE was not issued by owning root scheduler");
                 }
