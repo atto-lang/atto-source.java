@@ -174,7 +174,7 @@ final class SourceLoopSoftPreemptionTest {
 
                       receive(ActorMail<String> mail): void {
                         self.send("entered");
-                        loop do
+                        while (true) do
                           self.spins = self.spins + 1;
                         done
                       }
@@ -221,6 +221,29 @@ final class SourceLoopSoftPreemptionTest {
             if (before == null) System.clearProperty(setting);
             else System.setProperty(setting, before);
         }
+    }
+
+    @Test
+    void whileSourceSyntaxRetainsReductionCooperationAcrossAotCompatibleBackedges()
+            throws Exception {
+        String output = run("""
+                async fnc count(): int {
+                  let value = 0;
+                  while value < 4000 do
+                    value = value + 1;
+                  done
+                  return value;
+                }
+                pub async routine main(): void {
+                  stdio.stdout.write(await count());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("4000|"), output);
+        assertTrue(Long.parseLong(output.substring("4000|".length())) > 0,
+                "while must lower to the same resumable budgeted backedge");
     }
 
     private static String run(String sourceText) throws Exception {
