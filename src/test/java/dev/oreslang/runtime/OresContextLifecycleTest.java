@@ -75,7 +75,7 @@ final class OresContextLifecycleTest {
             assertDoesNotThrow(() -> context.parse(Source.newBuilder(
                     OresLanguage.ID, "pub routine main(): void { return; }",
                     "after-failed-preflight.ores").build()));
-            assertEquals("work-pending\\ncleanup-pending\\n",
+            assertEquals("work-pending\ncleanup-pending\n",
                     output.toString(StandardCharsets.UTF_8));
         } finally {
             try { context.close(); } catch (RuntimeException expected) { }
