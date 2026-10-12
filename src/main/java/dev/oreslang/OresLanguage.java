@@ -29,9 +29,28 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     public static final String ID = "ores";
     public static final String MIME_TYPE = "application/x-oreslang";
 
+    /**
+     * ContextPolicy.EXCLUSIVE gives each language instance one context.
+     * Remember the host entry thread which created that context: when a guest
+     * async scheduler starts during a public host invocation, Truffle checks
+     * access on BOTH threads with singleThreaded=false. Denying the original
+     * host thread sporadically fails safe async invocation at that boundary.
+     *
+     * Do not grant blanket multithreading: a different/foreign host thread
+     * still needs exclusive single-threaded entry, and guest-created carrier
+     * threads do not gain runtime scheduling authority by this check.
+     */
+    private volatile Thread initialContextHostThread;
+
     @Override
     protected OresContext createContext(Env env) {
-        return new OresContext(this, env);
+        OresContext context = new OresContext(this, env);
+        // Publish the embedding-thread privilege only after we know this
+        // context's isolation policy. An adversarial guest must never retain
+        // this trusted-host concurrent admission exception.
+        initialContextHostThread = context.isolatePolicy().adversarial()
+                ? null : Thread.currentThread();
+        return context;
     }
 
     /**
@@ -44,10 +63,34 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
      */
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
-        return singleThreaded
-                || ActorRuntime.isActorCarrierThread()
-                || AsyncRuntime.isAsyncCarrierThread()
-                || OresScheduler.isSchedulerCarrierThread();
+        return threadAccessDecision(
+                thread,
+                Thread.currentThread(),
+                initialContextHostThread,
+                singleThreaded,
+                ActorRuntime.isActorCarrierThread(),
+                AsyncRuntime.isAsyncCarrierThread(),
+                OresScheduler.isSchedulerCarrierThread());
+    }
+
+    /**
+     * Pure admission predicate, independently exhaustively checked in tests.
+     * A carrier-local flag must never authenticate a different requested
+     * Thread; only the explicitly published trusted host identity can do so.
+     */
+    static boolean threadAccessDecision(
+            Thread requested,
+            Thread caller,
+            Thread trustedHost,
+            boolean singleThreaded,
+            boolean actorCarrier,
+            boolean asyncCarrier,
+            boolean schedulerCarrier) {
+        return requested != null
+                && (singleThreaded
+                    || requested == trustedHost
+                    || (requested == caller
+                        && (actorCarrier || asyncCarrier || schedulerCarrier)));
     }
 
     @Override
@@ -58,7 +101,11 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
 
     @Override
     protected void disposeContext(OresContext context) {
+        // Never retain the embedding-thread multithreading exception after a
+        // successful physical retirement. A failed close must remain retryable
+        // because pending finally/defer cleanup can still own live carriers.
         context.close();
+        initialContextHostThread = null;
     }
 
     @Override
