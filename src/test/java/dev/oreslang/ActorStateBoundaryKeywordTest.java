@@ -167,12 +167,44 @@ final class ActorStateBoundaryKeywordTest {
     }
 
     @Test
-    void unsupportedActorStateAndReadWriteCallablesFailClosed() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define actor Foo as
-                    state { v: int = 0; }
+    void sealedStateHasItsOwnAstNamespaceAndStillFailsClosedAtTypeCheck() {
+        Ast.Program program = Parser.parse("""
+                define actor Counter as
+                    state {
+                        value: int = 0
+                        other: int = 2
+                    }
                 end
-                """));
+                """);
+        Ast.ClassDecl actor = (Ast.ClassDecl)
+                program.modules().getFirst().declarations().getFirst();
+        assertNotNull(actor.actorState());
+        assertEquals(List.of("value", "other"),
+                actor.actorState().fields().stream().map(Ast.FieldDecl::name).toList());
+        assertTrue(actor.fields().isEmpty(), "sealed slots must not be ordinary actor fields");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(program));
+        assertTrue(failure.getMessage().contains("lowering is disabled"), failure.getMessage());
+    }
+
+    @Test
+    void invalidSealedStateDeclsCannotReachCodegen() {
+        for (String source : List.of(
+                "state { value: int; }",
+                "state { value: int = 0; value: int = 1; }",
+                "state { state: int = 0; }",
+                "pub state { value: int = 0; }",
+                "state { value: int = 0; } state { other: int = 0; }",
+                "let int value = 0; state { value: int = 1; }",
+                "value(): int { return 0; } state { value: int = 1; }")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("define actor Counter as " + source + " end"),
+                    source);
+        }
+    }
+
+    @Test
+    void unsupportedReadWriteCallablesStillFailClosed() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 pub fnc critical-write update(): void { return; }
                 """));
