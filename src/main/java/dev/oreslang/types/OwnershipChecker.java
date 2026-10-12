@@ -366,20 +366,21 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
-            // The interpreter currently queues an AST expression and evaluates
-            // it at scope exit. It does NOT capture callee/argument values now.
-            // Therefore an ordinary borrow, rebindable local, or move-only
-            // object could be invalidated before deferred execution.
+            // The interpreter queues an expression and evaluates it at scope
+            // unwind, before the scope's bindings are destroyed. Reading a
+            // mutable/rebindable COPY local is safe while that frame is live:
+            // the deferred expression intentionally observes its latest value.
+            // Borrowed or move-only captures remain unsafe without a precise
+            // scope-end loan/drop plan.
             CaptureSet delayed = new CaptureSet();
             scanExpr(defer.expression(), Set.of(), scope, null, delayed, false);
             for (Capture capture : delayed.values.values()) {
                 VarState state = capture.source;
                 requireUsable(state, capture.name, capture.write);
                 if (state.kind != ValueKind.COPY || containsBorrowType(state.type)
-                        || state.mutable || state.rebindable
                         || isActorConfinedBorrow(state)
                         || containsMutexGuardType(state.type)) {
-                    throw error("defer cannot capture mutable, borrowed, or move-only binding '"
+                    throw error("defer cannot capture borrowed or move-only binding '"
                             + capture.name
                             + "' until registration-time capture/lifetime lowering is implemented");
                 }
