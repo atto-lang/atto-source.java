@@ -364,6 +364,13 @@ public final class OwnershipChecker {
             Ast.TypeRef exposed = yielded.delegated()
                     ? iterableElementType(value.type, currentAsyncGenerator)
                     : value.type;
+            // yield* must validate the *element*, not only the owned
+            // iterator handle: Iterator<borrow T> is not an owned result.
+            // Nested borrowed elements also need a lifetime proof, which
+            // generator result protocols do not presently carry.
+            if (containsBorrowedType(exposed)) {
+                throw error("cannot yield borrowed elements; generator results must own/copy/share their data");
+            }
             if (containsMutexGuardType(exposed)) {
                 throw error(yielded.delegated()
                         ? "MutexGuard values cannot cross a yield* delegation boundary"
@@ -2088,6 +2095,16 @@ public final class OwnershipChecker {
         VarState root = ownershipRoot(owner);
         if (mutable) root.mutableBorrowed = true;
         else root.immutableBorrows++;
+    }
+
+    /** Reject borrowed components nested in yielded aggregate element types. */
+    private boolean containsBorrowedType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsBorrowedType(argument)) return true;
+        }
+        return false;
     }
 
     private boolean isBorrowValue(ValueInfo value) {
