@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayDeque;
@@ -187,6 +188,25 @@ final class OresSchedulerStateModelTest {
             assertTrue(!task.released || task.phase == TERMINAL,
                     () -> "nonterminal timed permit released: " + state);
         }
+    }
+
+    @Test
+    void checkerRejectsOverlappingCarriersAndPrematurePermitReuse() {
+        Task active = new Task(RUNNING, 1, true, false,
+                false, false, false, false);
+        Task premature = new Task(TERMINAL, 1, false, false,
+                false, true, true, true);
+        assertThrows(AssertionError.class,
+                () -> check(new State(false, active, active)),
+                "two guest carriers on one actor must be rejected");
+        assertThrows(AssertionError.class,
+                () -> check(new State(false, premature, Task.empty())),
+                "no permit may be reused before physical quiescence");
+        Task reclaimedLive = new Task(TERMINAL, 1, true, false,
+                true, true, true, true);
+        assertThrows(AssertionError.class,
+                () -> check(new State(true, reclaimedLive, Task.empty())),
+                "terminal actor memory cannot retire while its carrier executes");
     }
 
     @Test
