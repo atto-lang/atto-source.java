@@ -5826,24 +5826,32 @@ public final class ActorRuntime implements AutoCloseable {
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
 
-        // Preserve the established interruption semantics for ordinary actors:
-        // their guest turns may be blocked in host calls that require the
-        // dispatcher shutdown interrupt. Only source-task cleanup actors need
-        // their carrier dispatcher retained until the lexical drain finishes.
-        boolean sourceCleanupRequiresCarriers = false;
+        // Preserve interrupt-driven close of unrelated actors. One actor's
+        // cleanup-only CONTROL work must not keep every dispatcher alive:
+        // only its own kind's physical carrier pool remains available.
+        boolean privateNeedsCleanup = false;
+        boolean sharedNeedsCleanup = false;
+        boolean untrustedNeedsCleanup = false;
         for (ActorCell<?> cell : snapshot) {
             synchronized (cell.lifecycleLock) {
                 if (cell.sourceCleanupRoutable()) {
-                    sourceCleanupRequiresCarriers = true;
-                    break;
+                    switch (cell.kind) {
+                        case PRIVATE -> privateNeedsCleanup = true;
+                        case SHARED -> sharedNeedsCleanup = true;
+                        case UNTRUSTED -> untrustedNeedsCleanup = true;
+                    }
                 }
             }
         }
-        if (firstClose && !sourceCleanupRequiresCarriers) {
-            privateDispatcher.shutdownNow();
-            sharedDispatcher.shutdownNow();
-            untrustedDispatcher.shutdownNow();
-            for (ActorCell<?> cell : snapshot) cell.cancelQueuedScheduleOnShutdown();
+        if (firstClose) {
+            if (!privateNeedsCleanup) privateDispatcher.shutdownNow();
+            if (!sharedNeedsCleanup) sharedDispatcher.shutdownNow();
+            if (!untrustedNeedsCleanup) untrustedDispatcher.shutdownNow();
+            for (ActorCell<?> cell : snapshot) {
+                if (dispatcherFor(cell.kind).isShutdown()) {
+                    cell.cancelQueuedScheduleOnShutdown();
+                }
+            }
         }
 
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
@@ -5862,13 +5870,13 @@ public final class ActorRuntime implements AutoCloseable {
             if (!cell.finalized()) stillRunning.add(cell.ref.id());
         }
 
-        if (firstClose && sourceCleanupRequiresCarriers) {
-            // An actor-owned source finalizer needs the physical carrier during
-            // shutdown; never interrupt that dispatcher before the drain gate.
-            // If it fails to drain, runtime close must report failure.
-            privateDispatcher.shutdownNow();
-            sharedDispatcher.shutdownNow();
-            untrustedDispatcher.shutdownNow();
+        if (firstClose) {
+            // The source-cleanup pools stayed running until the drain gate.
+            // Once it completed or expired, retire them and reconcile queued
+            // schedules; already-shutdown pools need no second interruption.
+            if (privateNeedsCleanup) privateDispatcher.shutdownNow();
+            if (sharedNeedsCleanup) sharedDispatcher.shutdownNow();
+            if (untrustedNeedsCleanup) untrustedDispatcher.shutdownNow();
             for (ActorCell<?> cell : snapshot) cell.cancelQueuedScheduleOnShutdown();
         }
 
