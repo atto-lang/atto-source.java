@@ -14,6 +14,7 @@ ASSUME /\ Arms = {0, 1, 2}
        /\ MaxGenerations \in Nat
        /\ MaxGenerations > 0
 
+NoWinner == 3 \* numeric sentinel outside Arms; TLC membership stays type-homogeneous
 NextArm(a) == IF a = 0 THEN 1 ELSE IF a = 1 THEN 2 ELSE 0
 Preferred(rs, c) ==
     IF c \in rs THEN c
@@ -32,7 +33,7 @@ Init ==
     /\ startCursor = 0
     /\ ready = {}
     /\ registered = {}
-    /\ winner = "None"
+    /\ winner = NoWinner
     /\ consumed = {}
     /\ cancelled = FALSE
 
@@ -44,7 +45,7 @@ Start ==
     /\ startCursor' = cursor
     /\ ready' = {}
     /\ registered' = Arms
-    /\ winner' = "None"
+    /\ winner' = NoWinner
     /\ consumed' = {}
     /\ cancelled' = FALSE
     /\ UNCHANGED <<cursor>>
@@ -106,7 +107,7 @@ TypeOK ==
     /\ startCursor \in Arms
     /\ ready \subseteq Arms
     /\ registered \subseteq Arms
-    /\ (winner \in Arms \/ winner = "None")
+    /\ (winner \in Arms \/ winner = NoWinner)
     /\ consumed \subseteq Arms
     /\ cancelled \in BOOLEAN
 
@@ -115,9 +116,9 @@ DetachedAfterSettlement == phase # "Waiting" => registered = {}
 ExactlyOneWinner ==
     phase = "Committed" => consumed = {winner}
 CancelledCannotConsume ==
-    cancelled => /\ consumed = {} /\ winner = "None"
+    cancelled => /\ consumed = {} /\ winner = NoWinner
 NoEarlyWinner ==
-    phase = "Waiting" => /\ winner = "None" /\ consumed = {}
+    phase = "Waiting" => /\ winner = NoWinner /\ consumed = {}
 FairCursorRotatesOnWin ==
     phase = "Committed" => cursor = NextArm(winner)
 CancellationPreservesCursor ==
