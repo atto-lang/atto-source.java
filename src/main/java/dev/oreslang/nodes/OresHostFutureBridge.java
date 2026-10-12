@@ -56,8 +56,12 @@ public final class OresHostFutureBridge {
             if (state != State.OPEN) {
                 throw new SecurityException("host Future handoff ticket already consumed");
             }
-            ownerContext = Objects.requireNonNull(context, "context");
-            ownerRoot = Objects.requireNonNull(root, "root");
+            // Validate both owners before publishing either strong reference:
+            // a rejected claim must not retain a partially staged context.
+            Object validatedContext = Objects.requireNonNull(context, "context");
+            Object validatedRoot = Objects.requireNonNull(root, "root");
+            ownerContext = validatedContext;
+            ownerRoot = validatedRoot;
             state = State.CLAIMED;
         }
 
