@@ -703,7 +703,6 @@ public final class OresScheduler implements AutoCloseable {
                 return;
             }
             terminalOutcome.set(new TerminalSuccess<>(value));
-            tasks.remove(this);
             // afterCarrierTurn() publishes only after the carrier has fully
             // unwound runBound(...).
         }
@@ -718,7 +717,6 @@ public final class OresScheduler implements AutoCloseable {
             } while (!phase.compareAndSet(observed, TERMINAL));
 
             terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
-            tasks.remove(this);
             if (!executing.get()) {
                 publishTerminalIfReady();
                 retireWhenQuiescent();
@@ -728,6 +726,10 @@ public final class OresScheduler implements AutoCloseable {
         private void retireWhenQuiescent() {
             if (phase.get() == TERMINAL && !executing.get()
                     && quiescenceNotified.compareAndSet(false, true)) {
+                // Keep the task observable in the scheduler's live set while a
+                // cancelled/failed guest turn is still physically executing.
+                // A terminal Future is not a carrier-exit witness.
+                tasks.remove(this);
                 onQuiescent.run();
             }
         }
@@ -755,7 +757,6 @@ public final class OresScheduler implements AutoCloseable {
                 observed = phase.get();
                 if (observed == TERMINAL) return;
             } while (!phase.compareAndSet(observed, TERMINAL));
-            tasks.remove(this);
             pendingResume.set(null);
             retireWhenQuiescent();
         }
