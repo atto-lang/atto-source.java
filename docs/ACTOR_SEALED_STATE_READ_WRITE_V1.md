@@ -197,3 +197,19 @@ Exact-source private Java 21 compiler/parser/semantic regression CI passed:
 https://github.com/agent-pontifex/agent-pontifex-daemon/actions/runs/38321947352.
 The run is a focused core compilation and smoke suite, NOT full Maven,
 GraalVM execution, source actor codegen, or Java/LLVM behavioral parity.
+
+
+## Actual Java JUnit sealed-state boundary verification (2026-10-12)
+
+The `ActorStateBoundaryKeywordTest` JUnit 5 class now explicitly covers
+state declarations separated by newlines, semicolons, and forbidden
+same-line adjacency. Compiler analysis continues to reject recognized
+sealed state prior to AST expansion or execution until effect-checked
+`handle_state` lowering is complete.
+
+[Private Java 21 exact-source CI #38323331038](https://github.com/agent-pontifex/agent-pontifex-daemon/actions/runs/38323331038)
+compiled the tested parser/type-checker sources and ran the actual JUnit
+Platform/Jupiter suite: **15 tests passed, 0 failed, 0 skipped**.
+The same private CI run passed the native gate/continuation GCC and
+Clang sanitizer checks. This still does not cover the entire Java Maven
+suite or GraalVM runtime actor codegen.
