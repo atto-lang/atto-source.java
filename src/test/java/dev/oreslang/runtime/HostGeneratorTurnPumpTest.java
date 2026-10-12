@@ -527,6 +527,71 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void restrictedLoweringRejectsCleanupCrossingLexicalYieldBoundary() {
+        String after = """
+                async generator fnc values(): int {
+                  try { yield 1; } catch (err) { }
+                  finally { val int marker = 1; }
+                  yield 2;
+                  return;
+                }
+                """;
+        String before = """
+                async generator fnc values(): int {
+                  yield 1;
+                  try { yield 2; } catch (err) { }
+                  finally { val int marker = 1; }
+                  return;
+                }
+                """;
+        for (String source : new String[]{after, before}) {
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> GeneratorRuntime.SourceLowering.compile(
+                            source, "values", java.util.Map.of()));
+            assertTrue(denied.getMessage().contains("whole-body try"),
+                    "unsupported cleanup scope must fail before guest execution");
+        }
+    }
+
+    @Test
+    void emptySourceCatchConsumesAwaitFailureAndRunsFinallyOnce() throws Exception {
+        String source = """
+                async fnc pending(): int { return 44; }
+                async generator fnc values(): int {
+                  try { yield await pending(); }
+                  catch (err) { }
+                  finally { val int marker = 1; }
+                  return;
+                }
+                """;
+        OresFuture<Integer> rejected = new OresFuture<>();
+        GeneratorRuntime.SourceLowering frame =
+                GeneratorRuntime.SourceLowering.compile(
+                        source, "values", java.util.Map.of("pending", rejected));
+        try (OresScheduler root = new OresScheduler(1)) {
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> true, root);
+            GeneratorRuntime.SchedulerBacked<Object> lowered =
+                    GeneratorRuntime.schedulerBacked(root, pump.token(), frame);
+            OresFuture<GeneratorRuntime.Step<Object>> pull =
+                    pump.requestCertified(pump.token(), lowered.nextTurn());
+            assertTrue(pump.dispatchOne());
+            rejected.failFromRuntime(new IllegalStateException("await rejection"));
+            assertTrue(pull.get(5, TimeUnit.SECONDS).done(),
+                    "empty catch must consume the rejected awaited future");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!pump.isQuiescent() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(pump.isQuiescent());
+            assertEquals(1, frame.cleanupRuns());
+            assertEquals(1, frame.cleanupBinding("marker"));
+            assertTrue(lowered.isTerminal());
+            pump.close();
+        }
+    }
+
+    @Test
     void certifiedSchedulerFrameYieldsThreeTypedValuesAndFinishes() throws Exception {
         try (OresScheduler root = new OresScheduler(1)) {
             HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
