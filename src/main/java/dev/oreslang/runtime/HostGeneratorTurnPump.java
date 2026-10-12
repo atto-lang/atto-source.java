@@ -32,14 +32,24 @@ final class HostGeneratorTurnPump implements AutoCloseable {
         }
     }
 
-    record Turn<T>(OresFuture<T> result, OresFuture<?> physicalExit) {
+    record Turn<T>(OresFuture<T> result, OresFuture<?> physicalExit,
+                   OresScheduler.PhysicalDoneReceipt certificate) {
+        // Synthetic barriers remain available ONLY to pre-integration
+        // regressions through request(); requestCertified() rejects them.
+        Turn(OresFuture<T> result, OresFuture<?> physicalExit) {
+            this(result, physicalExit, null);
+        }
+
+        Turn(OresFuture<T> result, OresScheduler.PhysicalDoneReceipt receipt) {
+            this(result, Objects.requireNonNull(receipt, "receipt").physicalDone(), receipt);
+        }
+
         Turn {
             Objects.requireNonNull(result, "result");
             Objects.requireNonNull(physicalExit, "physicalExit");
             if (result == physicalExit) {
                 throw new IllegalArgumentException(
-                        "physical exit must be a distinct source-owned barrier, "
-                        + "not the public Future's early completion/cancellation");
+                        "physical exit must be distinct from the public result");
             }
         }
     }
@@ -55,6 +65,7 @@ final class HostGeneratorTurnPump implements AutoCloseable {
     private static final class Request<T> {
         final Start<T> start;
         final OresFuture<T> future;
+        final boolean certified;
         Turn<T> turn;
         boolean valueSettled;
         boolean exited;
@@ -63,8 +74,9 @@ final class HostGeneratorTurnPump implements AutoCloseable {
         Throwable failure;
         Throwable exitFailure;
 
-        Request(HostGeneratorTurnPump owner, Start<T> start) {
+        Request(HostGeneratorTurnPump owner, Start<T> start, boolean certified) {
             this.start = start;
+            this.certified = certified;
             this.future = new OresFuture<>(() -> owner.cancel(this));
         }
     }
@@ -72,6 +84,7 @@ final class HostGeneratorTurnPump implements AutoCloseable {
     private final Object gate = new Object();
     private final OwnerToken owner;
     private final BooleanSupplier ownerTurnAuthorized;
+    private final OresScheduler owningScheduler;
     private final Runnable signalOwner;
     private final int capacity;
     private final ArrayDeque<Request<?>> pending = new ArrayDeque<>();
@@ -89,6 +102,19 @@ final class HostGeneratorTurnPump implements AutoCloseable {
 
     HostGeneratorTurnPump(UUID contextId, BooleanSupplier ownerTurnAuthorized,
                           Runnable signalOwner, int capacity) {
+        this(contextId, ownerTurnAuthorized, signalOwner, capacity, null);
+    }
+
+    HostGeneratorTurnPump(UUID contextId, BooleanSupplier ownerTurnAuthorized,
+                          OresScheduler owningScheduler) {
+        this(contextId, ownerTurnAuthorized, () -> { }, DEFAULT_CAPACITY,
+                Objects.requireNonNull(owningScheduler, "owningScheduler"));
+    }
+
+    HostGeneratorTurnPump(UUID contextId, BooleanSupplier ownerTurnAuthorized,
+                          Runnable signalOwner, int capacity,
+                          OresScheduler owningScheduler) {
+        this.owningScheduler = owningScheduler;
         this.owner = new OwnerToken(
                 Objects.requireNonNull(contextId, "contextId"), UUID.randomUUID());
         this.ownerTurnAuthorized = Objects.requireNonNull(
@@ -103,8 +129,21 @@ final class HostGeneratorTurnPump implements AutoCloseable {
     }
 
     <T> OresFuture<T> request(OwnerToken token, Start<T> start) {
+        return requestInternal(token, start, false);
+    }
+
+    /** Only a root-scheduler-issued physical DONE receipt may retire this pull. */
+    <T> OresFuture<T> requestCertified(OwnerToken token, Start<T> start) {
+        if (owningScheduler == null) {
+            throw new SecurityException("no owning root scheduler for certified generator pulls");
+        }
+        return requestInternal(token, start, true);
+    }
+
+    private <T> OresFuture<T> requestInternal(
+            OwnerToken token, Start<T> start, boolean certified) {
         Objects.requireNonNull(start, "start");
-        Request<T> request = new Request<>(this, start);
+        Request<T> request = new Request<>(this, start, certified);
         boolean wake;
         synchronized (gate) {
             if (!owner.equals(token)) {
@@ -183,6 +222,14 @@ final class HostGeneratorTurnPump implements AutoCloseable {
             if (started == null) {
                 throw new IllegalStateException(
                         "generator turn starter returned no physical-exit barrier");
+            }
+            if (selected.certified) {
+                OresScheduler.PhysicalDoneReceipt proof = started.certificate();
+                if (proof == null || !proof.verifies(owner, owningScheduler,
+                        started.result(), started.physicalExit())) {
+                    throw new SecurityException(
+                            "generator physical DONE was not issued by owning root scheduler");
+                }
             }
         } catch (RuntimeException | Error failure) {
             synchronized (gate) {

@@ -136,7 +136,8 @@ public final class OresContext implements AutoCloseable {
             this.hostGeneratorTurns = new HostGeneratorTurnPump(
                     contextId, () -> generatorRootTurnAuthorized(
                             vm.isRootSchedulerCurrent(),
-                            Boolean.TRUE.equals(rootGuestEntryScope.get())));
+                            Boolean.TRUE.equals(rootGuestEntryScope.get())),
+                    vm.rootScheduler());
         } catch (RuntimeException | Error failure) {
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }

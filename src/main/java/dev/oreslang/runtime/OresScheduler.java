@@ -37,6 +37,7 @@ import java.util.function.BiConsumer;
 public final class OresScheduler implements AutoCloseable {
     private static final AtomicLong NEXT_ID = new AtomicLong();
     private static final AtomicLong NEXT_DISPATCH_ID = new AtomicLong();
+    private static final AtomicLong NEXT_PHYSICAL_RECEIPT_GENERATION = new AtomicLong();
     private static final ThreadLocal<OresScheduler> CURRENT = new ThreadLocal<>();
     private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
     private static final ThreadLocal<Object> CURRENT_TASK_DOMAIN = new ThreadLocal<>();
@@ -56,6 +57,69 @@ public final class OresScheduler implements AutoCloseable {
     @FunctionalInterface
     public interface Task<T> {
         Step<T> resume(Resume resume) throws Exception;
+    }
+
+    /**
+     * An unforgeable-in-guest physical completion claim for exactly one
+     * scheduler-owned pull. Only the scheduler may issue a receipt. This
+     * private constructor deliberately cannot be reached by guest code or
+     * by a caller-supplied Future passed to the host turn pump.
+     *
+     * The DONE signal is published only from the scheduler task's terminal
+     * completion. TaskRunner publishes that terminal state after every
+     * reserved carrier has exited TurnExecutor (and thus TruffleContext.leave).
+     */
+    static final class PhysicalDoneReceipt {
+        private final OresScheduler issuer;
+        private final HostGeneratorTurnPump.OwnerToken owner;
+        private final long generation;
+        private final OresFuture<?> sourceTask;
+        private final OresFuture<Void> physicalDone;
+
+        private PhysicalDoneReceipt(OresScheduler issuer,
+                HostGeneratorTurnPump.OwnerToken owner, long generation,
+                OresFuture<?> sourceTask, OresFuture<Void> physicalDone) {
+            this.issuer = Objects.requireNonNull(issuer, "issuer");
+            this.owner = Objects.requireNonNull(owner, "owner");
+            this.generation = generation;
+            this.sourceTask = Objects.requireNonNull(sourceTask, "sourceTask");
+            this.physicalDone = Objects.requireNonNull(physicalDone, "physicalDone");
+        }
+
+        OresFuture<Void> physicalDone() { return physicalDone; }
+
+        boolean verifies(HostGeneratorTurnPump.OwnerToken expectedOwner,
+                OresScheduler expectedScheduler, OresFuture<?> expectedResult,
+                OresFuture<?> expectedPhysicalDone) {
+            return generation > 0 && owner.equals(expectedOwner)
+                    && issuer == expectedScheduler && sourceTask == expectedResult
+                    && physicalDone == expectedPhysicalDone;
+        }
+    }
+
+    /**
+     * Issue a scheduler-owned physical DONE lease for a compiler-lowered
+     * generator pull. No independent producer is created. A failed or
+     * cancelled public result is still physically DONE after TaskRunner's
+     * final carrier-exit barrier has published terminal completion.
+     *
+     * This is an internal primitive, not authorization to enable the
+     * legacy host async-generator API.
+     */
+    <T> HostGeneratorTurnPump.Turn<T> startCertifiedGeneratorTurn(
+            HostGeneratorTurnPump.OwnerToken owner, Task<T> task) {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(task, "task");
+        long generation = NEXT_PHYSICAL_RECEIPT_GENERATION.incrementAndGet();
+        OresFuture<T> result = start(task);
+        OresFuture<Void> physicalDone = new OresFuture<>();
+        result.whenCompleteRuntime((ignored, failure) -> {
+            // Terminal completion, including cancellation, is published only
+            // after the last physical turn has left its guest executor.
+            physicalDone.completeFromRuntime(null);
+        });
+        return new HostGeneratorTurnPump.Turn<>(result,
+                new PhysicalDoneReceipt(this, owner, generation, result, physicalDone));
     }
 
     /** Cancellation-aware compiler frames can suspend during lexical cleanup. */
