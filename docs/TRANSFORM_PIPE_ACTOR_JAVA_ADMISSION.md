@@ -53,7 +53,7 @@ JUnit regression source is included, but not claimed executed in this gate.
 
 The restricted LLVM compiler in PR #244 now **does** execute synchronous
 fixed-key state callbacks in all three real 15-actor pipeline spellings:
-https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/38311796992
-passed 24/24 focused native CTests. General async state, multiple concurrent
+https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/38312289067
+passed 26/26 focused native CTests. General async state, multiple concurrent
 flows, Java runtime parity and full legacy regression migrations are
 outstanding. See `docs/ACTOR_STATE_INVARIANT.md`.
