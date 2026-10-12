@@ -826,6 +826,143 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * @Implementation identifies a runtime-owned actor hook, not a public method.
+     * @Override identifies an inherited source method slot. Both are opt-in
+     * readability checks and never grant dispatch, visibility or capabilities.
+     * Resolution happens after linking, so imported parent classes are checked.
+     */
+    private void validateMethodIntentAnnotations(Ast.ClassDecl klass) {
+        for (Ast.MethodDecl method : klass.methods()) {
+            boolean implementation = false;
+            boolean override = false;
+            for (Ast.Annotation annotation : method.annotations()) {
+                if (!annotation.name().equals("Implementation")
+                        && !annotation.name().equals("Override")) continue;
+                if (!annotation.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("@" + annotation.name()
+                            + " on " + klass.name() + "." + method.name()
+                            + " does not accept arguments");
+                }
+                if (annotation.name().equals("Implementation")) {
+                    if (implementation) {
+                        throw new IllegalArgumentException("duplicate @Implementation on "
+                                + klass.name() + "." + method.name());
+                    }
+                    implementation = true;
+                } else {
+                    if (override) {
+                        throw new IllegalArgumentException("duplicate @Override on "
+                                + klass.name() + "." + method.name());
+                    }
+                    override = true;
+                }
+            }
+            if (implementation && (klass.actorKind() == Ast.ActorKind.NONE
+                    || !(method.name().equals("run")
+                            || method.name().equals("receive")
+                            || method.name().equals("on_start")))) {
+                throw new IllegalArgumentException(
+                        "@Implementation on " + klass.name() + "." + method.name()
+                                + " requires a reserved actor run/receive/on_start hook");
+            }
+            boolean actorHandler = klass.actorKind() != Ast.ActorKind.NONE
+                    && (method.name().equals("run") || method.name().equals("receive"));
+            if (override || actorHandler) {
+                if (override && method.isStatic()) {
+                    throw new IllegalArgumentException(
+                            "@Override requires an inherited instance method: "
+                                    + klass.name() + "." + method.name());
+                }
+                boolean found = false;
+                Named concreteChild = (Named) nominalClassType(klass);
+                for (Ast.TypeRef parentRef : klass.parents()) {
+                    Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                    if (parent == null) continue;
+                    Named concreteParent = concreteParentType(parentRef, klass, concreteChild);
+                    ResolvedMethod inherited = findMethodTarget(
+                            parent, concreteParent, method.name(), method.arity(),
+                            new LinkedHashSet<>());
+                    if (inherited == null) continue;
+                    // Ordinary private class methods are not inherited virtual
+                    // API slots. Do not let @Override silently claim otherwise.
+                    // Actor hooks are deliberately private but VM-dispatched,
+                    // so only source actor methods have this exception.
+                    if (override && klass.actorKind() == Ast.ActorKind.NONE
+                            && inherited.method().visibility() == Ast.Visibility.PRIVATE) {
+                        throw new IllegalArgumentException(
+                                "@Override on " + klass.name() + "." + method.name()
+                                        + " cannot override private inherited method from "
+                                        + inherited.owner().name());
+                    }
+                    found = true;
+                    // Actor handlers are the public mailbox ABI, despite being
+                    // private methods. Require invariant payload/reply types so
+                    // parent-typed ActorRefs cannot dispatch mismatched messages.
+                    if (actorHandler) {
+                        validateInheritedActorHandlerSignature(
+                                klass, concreteChild, method, inherited);
+                    }
+                }
+                if (override && !found) {
+                    throw new IllegalArgumentException(
+                            "@Override on " + klass.name() + "." + method.name()
+                                    + " has no inherited instance method with arity "
+                                    + method.arity());
+                }
+            }
+        }
+    }
+
+    private Type actorHandlerSignatureType(
+            Ast.ClassDecl owner, Named ownerType,
+            Ast.MethodDecl method, Ast.TypeRef declared) {
+        Set<String> generics = new HashSet<>(owner.genericParameters());
+        generics.addAll(method.genericParameters());
+        Type resolved = resolve(declared, generics, ownerType);
+        return substituteGenerics(
+                resolved, classGenericBindings(owner, ownerType));
+    }
+
+    private void validateInheritedActorHandlerSignature(
+            Ast.ClassDecl child, Named childType,
+            Ast.MethodDecl method, ResolvedMethod inherited) {
+        Ast.MethodDecl parentMethod = inherited.method();
+        if (method.genericParameters().size() != parentMethod.genericParameters().size()
+                || method.async() != parentMethod.async()
+                || method.isStatic() != parentMethod.isStatic()
+                || method.parameters().size() != parentMethod.parameters().size()) {
+            throw new IllegalArgumentException(
+                    "actor '" + child.name() + "." + method.name()
+                            + "' changes inherited mailbox handler ABI");
+        }
+        for (int i = 0; i < method.parameters().size(); i++) {
+            Ast.Param actualParam = method.parameters().get(i);
+            Ast.Param inheritedParam = parentMethod.parameters().get(i);
+            Type actual = actorHandlerSignatureType(child, childType, method, actualParam.type());
+            Type expected = actorHandlerSignatureType(
+                    inherited.owner(), inherited.ownerType(),
+                    parentMethod, inheritedParam.type());
+            if (!actual.equals(expected)
+                    || actualParam.mutable() != inheritedParam.mutable()
+                    || actualParam.structural() != inheritedParam.structural()) {
+                throw new IllegalArgumentException(
+                        "actor '" + child.name() + "." + method.name()
+                                + "' changes inherited mailbox payload type or ownership");
+            }
+        }
+        Type actualReturn = actorHandlerSignatureType(
+                child, childType, method, method.returnType());
+        Type expectedReturn = actorHandlerSignatureType(
+                inherited.owner(), inherited.ownerType(),
+                parentMethod, parentMethod.returnType());
+        if (!actualReturn.equals(expectedReturn)) {
+            throw new IllegalArgumentException(
+                    "actor '" + child.name() + "." + method.name()
+                            + "' changes inherited mailbox reply type");
+        }
+    }
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
@@ -877,6 +1014,8 @@ public final class TypeChecker {
                                 + "member-value and direct-call syntax must remain unambiguous");
             }
         }
+        validateMethodIntentAnnotations(klass);
+
         // Every effective (kind, name, arity) slot must have one statically
         // determined implementation. This is the vtable/static-table contract
         // shared by AOT and JIT. Multiple-inheritance collisions require the
@@ -984,6 +1123,8 @@ public final class TypeChecker {
             boolean actorStartupHook = method.name().equals("on_start");
             boolean actorReceiveHook = klass.actorKind() != Ast.ActorKind.NONE
                     && method.name().equals("receive");
+            boolean actorRequestHook = klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("run");
             if (actorStartupHook) {
                 if (klass.actorKind() == Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
@@ -1120,6 +1261,13 @@ public final class TypeChecker {
                             false,
                             "parameter '" + param.name() + "' of async static function '" + klass.name() + "." + method.name() + "'");
                 }
+                if (actorRequestHook) {
+                    // The ABI must be valid when the actor is defined, not only
+                    // when a source caller later invokes ActorRef.request(...).
+                    validateActorCallableBoundaryType(
+                            parameterType, klass.actorKind(), false,
+                            "request payload of actor '" + klass.name() + ".run'");
+                }
                 if (actorReceiveHook) {
                     if (!(parameterType instanceof Named mail)
                             || !mail.name().equals("ActorMail")
@@ -1145,6 +1293,11 @@ public final class TypeChecker {
             if (actorReceiveHook && returns != Primitive.VOID) {
                 throw new IllegalArgumentException(
                         "actor mailbox handler '" + klass.name() + ".receive' must return void");
+            }
+            if (actorRequestHook) {
+                validateActorCallableBoundaryType(
+                        returns, klass.actorKind(), true,
+                        "request reply of actor '" + klass.name() + ".run'");
             }
             if (method.async()) {
                 validateAsyncBoundaryType(

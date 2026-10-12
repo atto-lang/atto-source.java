@@ -28,6 +28,11 @@ final class ActorRequestReplyRuntimeTest {
 
         @Override public SharedCodeImageStore.CodeImage codeImage() { return image; }
 
+        @Override public ActorRuntime.ActorProtocol actorProtocol(String actorTypeName) {
+            assertEquals("Worker", actorTypeName);
+            return ActorRuntime.ActorProtocol.UNARY;
+        }
+
         @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
                 String name, ActorRuntime.ActorContext<Object> context) {
             return context.self()::id;
@@ -77,6 +82,87 @@ final class ActorRequestReplyRuntimeTest {
                 assertEquals("ok:again", actor.request("again").get(2, TimeUnit.SECONDS));
                 actor.stop();
                 assertNull(actor.done().get(2, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    void unaryActorsRejectOneWaySendWithoutDispatchingGuestCode() throws Exception {
+        try (var store = new SharedCodeImageStore();
+             var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = store.publish("unary-abi-guard.ores",
+                    Parser.parse("pub routine main(): void { return; }"));
+            var executor = new Executor(image, null, null);
+            var actor = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED,
+                    executor, "Worker");
+            actor.ready().get(2, TimeUnit.SECONDS);
+
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> actor.send("wrong-protocol"));
+            assertTrue(error.getMessage().contains("stream actor"), error.getMessage());
+            assertEquals(0, executor.executed.get());
+            assertEquals("ok:valid", actor.request("valid").get(2, TimeUnit.SECONDS));
+            assertEquals(1, executor.executed.get());
+            actor.stop();
+            actor.done().get(2, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void lifecycleOnlyActorRejectsBothProtocolsBeforeMessageValidation() throws Exception {
+        try (var store = new SharedCodeImageStore();
+             var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = store.publish("lifecycle-only-abi-guard.ores",
+                    Parser.parse("pub routine main(): void { return; }"));
+            var invoked = new AtomicInteger();
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() {
+                    return image;
+                }
+
+                @Override public ActorRuntime.ActorProtocol actorProtocol(String actorTypeName) {
+                    return ActorRuntime.ActorProtocol.LIFECYCLE_ONLY;
+                }
+
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String name, ActorRuntime.ActorContext<Object> context) {
+                    return context.self()::id;
+                }
+
+                @Override public void receiveActor(
+                        String name, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    invoked.incrementAndGet();
+                    fail("lifecycle-only actors have no receive entrypoint");
+                }
+
+                @Override public Object requestActor(
+                        String name, ActorRuntime.ActorOwnedGuestState state,
+                        Object request, ActorRuntime.ActorContext<Object> context) {
+                    invoked.incrementAndGet();
+                    fail("lifecycle-only actors have no run entrypoint");
+                    return null;
+                }
+            };
+
+            for (var kind : ActorRuntime.ActorKind.values()) {
+                var actor = runtime.spawnCodeActor(kind, executor, "Worker");
+                actor.ready().get(2, TimeUnit.SECONDS);
+                // Invalid transport graphs are rejected at the protocol gate,
+                // before graph validation, serialization or mailbox reservation.
+                var sendError = assertThrows(IllegalArgumentException.class,
+                        () -> actor.send(new Object()));
+                assertTrue(sendError.getMessage().contains("stream actor"),
+                        sendError.getMessage());
+                var requestError = assertThrows(IllegalArgumentException.class,
+                        () -> actor.request(new Object()));
+                assertTrue(requestError.getMessage().contains("unary actor"),
+                        requestError.getMessage());
+                assertEquals(0, invoked.get());
+                assertTrue(actor.isAlive());
+                actor.stop();
+                actor.done().get(2, TimeUnit.SECONDS);
             }
         }
     }

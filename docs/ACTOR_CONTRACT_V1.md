@@ -109,6 +109,68 @@ therefore requires a separate stop/end path in actual runnable code.
     and cannot use `super` to invoke the old handler. The runtime sealed base
     is not present in source-level class linearization or diamond resolution.
 
+## Unary and stream actor protocols
+
+Protocol and isolation are independent: `define actor`, `define shared actor`,
+and `define isoactor` determine the actor's isolation; its **effective**
+inherited private handler determines its mailbox protocol.
+
+- **Unary actor:** `fnc run(T): R` permits `ActorRef.request(T): Future<R>`.
+  Each request has one runtime-owned reply slot. The actor keeps its state
+  between requests, and `run` cannot be invoked or captured directly.
+- **Stream actor:** `fnc receive(ActorMail<T>): void` permits
+  `ActorRef.send(T)`; outbound events use `self.send(value)` and the
+  bounded, parent-observable `ActorRef.outputs` stream.
+- **Lifecycle-only actor:** no request or event handler. `ready`, `done`
+  and supervisor-controlled stop remain available, but neither `send`
+  nor `request` is an accepted inbound operation.
+
+The compiler rejects mixed, overloaded, incompatible inherited, or incorrectly
+typed protocols. The runtime also caches the resolved source protocol at spawn
+and rejects host/dynamic calls to the wrong `ActorRef` operation **before**
+mailbox slot reservation, payload freezing/copying or guest dispatch. Legacy
+host-side event-only `ActorCodeExecutor` bridges default to STREAM; a
+request/reply bridge must explicitly declare UNARY. The legacy bridge default
+is a compatibility choice, not a source-level implicit protocol.
+
+The spelling `define unary actor` / `define stream actor` is a potential
+future explicit annotation; it is **not** accepted grammar in this change.
+Existing `define actor` source declarations infer the mode without breaking
+compatibility.
+
+## Contract-intent annotations
+
+`@Implementation` is an optional compile-time assertion that the annotated
+actor method implements an OresVM runtime hook. Supported hooks are the
+private, non-public actor `run(T): R`, `receive(ActorMail<T>): void`
+and `on_start(): void`. The compiler rejects the annotation on ordinary
+helpers, ordinary class methods, and unsupported source declaration sites;
+the annotation never grants runtime dispatch authority.
+
+`@Override` is an optional compile-time assertion that a class or actor
+instance method intentionally replaces a name/arity slot inherited from a
+source parent. It rejects non-inherited or static methods, and accepts an
+inherited actor handler. For an inherited runtime hook, both
+`@Implementation` and `@Override` can be present:
+
+```ores
+define actor BaseCounter as
+  @Implementation
+  fnc run(int delta): int { return delta; }
+end
+
+define actor Counter extends BaseCounter as
+  @Implementation
+  @Override
+  fnc run(int delta): int { return delta + 1; }
+end
+```
+
+Existing source without annotations remains valid. Both markers are
+zero-argument, non-repeatable and enforced during compilation and linking.
+They do not replace the actor's sealed entrypoint, supply a constructor,
+allow `super` calls, or allow direct invocation of `run` / `receive`.
+
 ## Event-only compatibility and migration
 
 Current `receive(ActorMail<T> mail): void` is a **private event handler**
