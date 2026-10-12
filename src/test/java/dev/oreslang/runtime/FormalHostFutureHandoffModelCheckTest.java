@@ -15,8 +15,9 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class FormalHostFutureHandoffModelCheckTest {
     private enum Event {
-        LEGACY_REJECT, CLAIM_TICKET, REPLAY_CLAIM, START_PRODUCER,
-        FORGED_PUBLISH, PUBLISH, DUPLICATE_PUBLISH, HOST_SCOPE_EXIT,
+        LEGACY_REJECT, CLAIM_TICKET, REPLAY_CLAIM, ABORT_BEFORE_DISPATCH,
+        START_PRODUCER, FORGED_PUBLISH, PUBLISH, DUPLICATE_PUBLISH,
+        REJECT_PUBLICATION, HOST_SCOPE_EXIT,
         CANCEL, CLEANUP_FINISH, REQUEST_CLOSE, RETRY_CLOSE
     }
 
@@ -55,6 +56,17 @@ final class FormalHostFutureHandoffModelCheckTest {
                     pubs++;
                 }
             }
+            case ABORT_BEFORE_DISPATCH -> {
+                if (claim && !started) hostExited = true;
+            }
+            case REJECT_PUBLICATION -> {
+                if (claim && started && !published && !hostExited) {
+                    // The producer exists, but the host cannot receive it:
+                    // cancellation must be requested before capture retires.
+                    cancelled = true;
+                    hostExited = true;
+                }
+            }
             case HOST_SCOPE_EXIT -> {
                 if (published) hostExited = true;
             }
@@ -66,10 +78,10 @@ final class FormalHostFutureHandoffModelCheckTest {
             }
             case REQUEST_CLOSE -> {
                 close = true;
-                if (!running && (!started || (published && hostExited))) retired = true;
+                if (!running && (!claim || hostExited)) retired = true;
             }
             case RETRY_CLOSE -> {
-                if (close && !running && (!started || (published && hostExited))) {
+                if (close && !running && (!claim || hostExited)) {
                     retired = true;
                 }
             }
@@ -89,12 +101,18 @@ final class FormalHostFutureHandoffModelCheckTest {
                 "producer needs a claimed host receiver ticket");
         if (s.published) assertTrue(s.claimed && s.producerStarted,
                 "publication needs both claim and producer");
-        if (s.hostExited) assertTrue(s.published,
-                "successful handoff must publish before scope exit");
+        if (s.hostExited && s.producerStarted && !s.published) {
+            assertTrue(s.cancelled,
+                    "failed publication cannot abandon a running producer");
+        }
         if (s.cleaned) assertTrue(s.cancelled && !s.producerRunning,
                 "physical cleanup cannot be fabricated");
-        if (s.contextRetired) assertTrue(s.closeRequested && !s.producerRunning,
-                "retirement cannot overlap live guest cleanup");
+        if (s.contextRetired) {
+            assertTrue(s.closeRequested && !s.producerRunning,
+                    "retirement cannot overlap live guest cleanup");
+            assertTrue(!s.claimed || s.hostExited,
+                    "retirement cannot revoke an active host capture");
+        }
     }
 
     @Test
@@ -131,6 +149,35 @@ final class FormalHostFutureHandoffModelCheckTest {
         }
         assertTrue(seen.size() >= 20, "unexpectedly small model: " + seen.size());
         assertTrue(sawLegacy && sawPublication && sawPendingClose && sawFinalRetirement);
+    }
+
+    @Test
+    void inFlightHostClaimMustExitBeforeContextCanPhysicallyRetire() {
+        State claim = step(State.initial(), Event.CLAIM_TICKET);
+        State pendingClose = step(claim, Event.REQUEST_CLOSE);
+        assertFalse(pendingClose.contextRetired,
+                "an unreturned host bridge ticket still owns context admission");
+        State aborted = step(pendingClose, Event.ABORT_BEFORE_DISPATCH);
+        assertFalse(aborted.contextRetired);
+        State retired = step(aborted, Event.RETRY_CLOSE);
+        assertTrue(retired.contextRetired);
+        invariant(retired);
+    }
+
+    @Test
+    void rejectedPublicationCancelsProducerBeforeClosingCapture() {
+        State s = State.initial();
+        s = step(s, Event.CLAIM_TICKET);
+        s = step(s, Event.START_PRODUCER);
+        s = step(s, Event.REJECT_PUBLICATION);
+        assertTrue(s.cancelled && s.hostExited);
+        assertFalse(s.published);
+        s = step(s, Event.REQUEST_CLOSE);
+        assertFalse(s.contextRetired);
+        s = step(s, Event.CLEANUP_FINISH);
+        s = step(s, Event.RETRY_CLOSE);
+        assertTrue(s.contextRetired);
+        invariant(s);
     }
 
     @Test
