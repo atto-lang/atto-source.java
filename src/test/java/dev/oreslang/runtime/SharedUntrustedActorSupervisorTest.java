@@ -70,6 +70,8 @@ final class SharedUntrustedActorSupervisorTest {
             assertTrue(first.closed());
             assertFalse(first.forceCancel(), "revocation is single-use");
             assertEquals(1, host.activeActors());
+            assertEquals(1, host.reservedActorSlots(),
+                    "a fully confirmed Context close releases only its own reservation");
             assertFalse(sibling.closed(), "shared Engine must survive this actor's revocation");
             assertThrows(IllegalStateException.class, () -> first.send("stop"));
             try (var replacement = host.spawn(WORKER, "replacement", "IsolatedWorker")) {
@@ -87,6 +89,7 @@ final class SharedUntrustedActorSupervisorTest {
              var first = host.spawn(WORKER, "actor-one", "IsolatedWorker");
              var second = host.spawn(WORKER, "actor-two", "IsolatedWorker")) {
             assertEquals(2, host.activeActors());
+            assertEquals(2, host.reservedActorSlots());
             assertNotEquals(first.identity(), second.identity());
             assertTrue(first.sandboxedInUntrustedIsolate());
             assertTrue(second.sandboxedInUntrustedIsolate());
