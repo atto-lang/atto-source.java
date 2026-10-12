@@ -59,15 +59,24 @@ final class SharedUntrustedActorSupervisorTest {
     }
 
     @Test
-    @org.junit.jupiter.api.condition.DisabledIfEnvironmentVariable(
-            named="ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches="true")
-    void missingIsolateImageDoesNotFallBackToTrustedJvm() {
-        // CI's host-only job deliberately has no Oreslang language isolate.
-        // A failed native Engine build must not run this actor in the host JVM.
-        try (var host = new SharedUntrustedActorSupervisor(256L << 20, 1)) {
-            assertThrows(RuntimeException.class,
-                    () -> host.spawn(WORKER, "no-image", "IsolatedWorker"));
-            assertEquals(0, host.activeActors());
+    @EnabledIfEnvironmentVariable(named="ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches="true")
+    void priorityForceCancelRevokesOneContextWithoutKillingSibling() {
+        try (var pool = new SharedUntrustedIsolatePool(256L << 20, 3);
+             var host = new SharedUntrustedActorSupervisor(pool, 2);
+             var first = host.spawn(WORKER, "first", "IsolatedWorker");
+             var sibling = host.spawn(WORKER, "sibling", "IsolatedWorker")) {
+            assertTrue(first.sharesPhysicalCollectorWith(sibling));
+            assertTrue(first.forceCancel(), "must retire hostile guest Context");
+            assertTrue(first.closed());
+            assertFalse(first.forceCancel(), "revocation is single-use");
+            assertEquals(1, host.activeActors());
+            assertFalse(sibling.closed(), "shared Engine must survive this actor's revocation");
+            assertThrows(IllegalStateException.class, () -> first.send("stop"));
+            try (var replacement = host.spawn(WORKER, "replacement", "IsolatedWorker")) {
+                assertTrue(sibling.sharesPhysicalCollectorWith(replacement),
+                        "replacement MUST reuse same Engine, not spawn another isolate");
+                assertEquals(2, host.activeActors());
+            }
         }
     }
 
