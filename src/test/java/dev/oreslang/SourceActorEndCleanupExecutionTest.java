@@ -53,7 +53,7 @@ final class SourceActorEndCleanupExecutionTest {
 
 
     @Test
-    void untrustedActorAlsoFinishesCurrentTurnBeforeFinalCleanup() throws Exception {
+    void sourceUntrustedCleanupCannotExecuteInTrustedHostContext() throws Exception {
         String program = """
                 define untrusted actor Worker as
                   receive(ActorMail<String> mail): void {
@@ -80,9 +80,14 @@ final class SourceActorEndCleanupExecutionTest {
                 }
                 """;
 
-        assertEquals(
-                "turn|after|cleanup",
-                run(program, "source-untrusted-actor-end-cleanup.ores"));
+        // The trusted bootstrap must never execute UNTRUSTED actor guest
+        // state, including teardown callbacks. The matching positive actor
+        // lifecycle scenario belongs in the real guest-isolate E2E suite.
+        org.graalvm.polyglot.PolyglotException rejected = assertThrows(
+                org.graalvm.polyglot.PolyglotException.class,
+                () -> run(program, "source-untrusted-actor-end-cleanup.ores"));
+        assertTrue(rejected.getMessage().contains("shared sandboxed Graal isolate"),
+                rejected::getMessage);
     }
 
     @Test
