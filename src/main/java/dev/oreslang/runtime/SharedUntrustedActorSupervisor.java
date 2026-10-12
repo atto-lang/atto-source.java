@@ -33,6 +33,9 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
     private SharedUntrustedIsolatePool pool;
     private final Set<Actor> active = new HashSet<>();
     private int pendingSpawns;
+    // Failed Context close cannot release its admission quota: a malicious
+    // actor must not exceed maxActors by provoking guest teardown failures.
+    private int failedRetirements;
     private boolean closed;
 
     /**
@@ -77,6 +80,12 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
         synchronized (lifecycle) { return active.size(); }
     }
 
+    public int reservedActorSlots() {
+        synchronized (lifecycle) {
+            return active.size() + pendingSpawns + failedRetirements;
+        }
+    }
+
     /**
      * Host-only admission. Only bounded source text/identifiers are inspected
      * before native Engine admission; guest syntax is parsed INSIDE the
@@ -100,7 +109,7 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
 
         synchronized (lifecycle) {
             if (closed) throw new IllegalStateException("untrusted supervisor is closed");
-            if (active.size() + pendingSpawns >= maxActors) {
+            if (active.size() + pendingSpawns + failedRetirements >= maxActors) {
                 throw new IllegalStateException("shared untrusted actor capacity exceeded");
             }
             pendingSpawns++;
@@ -125,7 +134,13 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
         } catch (RuntimeException | Error failure) {
             if (group != null) {
                 try { group.close(); }
-                catch (RuntimeException | Error cleanup) { failure.addSuppressed(cleanup); }
+                catch (RuntimeException | Error cleanup) {
+                    // The pool retains the failed Group; supervisor capacity
+                    // must also remain reserved even though spawn failed.
+                    synchronized (lifecycle) { failedRetirements++; }
+                    failure.addSuppressed(new IllegalStateException(
+                            "untrusted spawn teardown incomplete; reservation retained"));
+                }
             }
             if (code != null) code.fenceAfterContextClose();
             throw failure;
