@@ -1,0 +1,108 @@
+// Experimental Java/GraalVM dialect counterpart for V2 i64 boundary semantics.
+// This is NOT byte-identical to the LLVM V2 guest source and does NOT certify same-source parity.
+// Differential conformance fixture. Each guest actor emits its causal hop;
+// the observed stdout is checked against the LLVM runtime's source flow.
+// Java/GraalVM compiler-native three-actor nominal MessagePack v2 pipeline.
+// Type contract: Data(int) downstream, Result(int) upstream; no host callbacks.
+define enum Signal as
+    Data: int = 1
+    Result: int = 2
+end
+
+define pattern PipeMessages as
+    Signal.Data
+    Signal.Result
+end
+
+define actor Source as
+    let int count;
+    on_start(): void {
+        self.count = 0;
+        return;
+    }
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.count = n;
+                stdio.stdout.write("V2_PIPE_FORWARD_SOURCE_");
+                stdio.stdout.write(self.count);
+                stdio.stdout.write("|");
+                self.forward(Signal.Data(self.count));
+            }
+            on Signal.Result n -> {
+                self.count = n;
+                if self.count == 9223372036854775807 then
+                    stdio.stdout.write("JAVA_V2_PIPELINE_RESULT_MAX");
+                else
+                    stdio.stdout.write("JAVA_V2_PIPELINE_WRONG_RESULT");
+                fi
+                self.end();
+            }
+        end
+        return;
+    }
+end
+
+define actor Transform as
+    let int value;
+    on_start(): void {
+        self.value = 0;
+        return;
+    }
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.value = n;
+                stdio.stdout.write("V2_PIPE_FORWARD_TRANSFORM_");
+                stdio.stdout.write(self.value);
+                stdio.stdout.write("|");
+                self.forward(Signal.Data(self.value));
+            }
+            on Signal.Result n -> {
+                self.value = n;
+                stdio.stdout.write("V2_PIPE_BACKWARD_TRANSFORM_");
+                stdio.stdout.write(self.value);
+                stdio.stdout.write("|");
+                self.backward(Signal.Result(self.value));
+                self.end();
+            }
+        end
+        return;
+    }
+end
+
+define actor Sink as
+    let int value;
+    on_start(): void {
+        self.value = 0;
+        return;
+    }
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.value = 9223372036854775807;
+                stdio.stdout.write("V2_PIPE_BACKWARD_SINK_");
+                stdio.stdout.write(self.value);
+                stdio.stdout.write("|");
+                self.backward(Signal.Result(self.value));
+                self.end();
+            }
+            on Signal.Result n -> {
+                self.value = n;
+            }
+        end
+        return;
+    }
+end
+
+pub async routine main(): void {
+    val source = spawn Source();
+    val transform = spawn Transform();
+    val sink = spawn Sink();
+    pipeline(source, transform, sink);
+    source.send(Signal.Data(-9223372036854775808));
+    await source.get_done();
+    await transform.get_done();
+    await sink.get_done();
+    return;
+}
