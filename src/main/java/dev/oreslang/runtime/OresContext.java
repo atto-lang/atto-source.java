@@ -528,6 +528,10 @@ public final class OresContext implements AutoCloseable {
                 // cleanup still owns this context, retries must leave its
                 // resources available rather than retiring actors too early.
                 hostGeneratorTurns.requireQuiescent();
+                // Do not retire a root carrier whose scoped host Value.execute
+                // still owns the outer Polyglot entry. A failed close leaves
+                // the scheduler and its cleanup continuations intact.
+                vm.requireHostHandoffReleased();
                 actors.close();
                 vm.close();
                 // An async carrier may still own an entered Truffle context
