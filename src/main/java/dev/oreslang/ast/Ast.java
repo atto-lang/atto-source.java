@@ -303,6 +303,15 @@ public final class Ast {
         }
     }
 
+    /** Closed nominal message domains for native-directional pipeline roles. */
+    public record ActorPipeTransformSpec(String forwardMessages, String backwardMessages) {
+        public ActorPipeTransformSpec {
+            if (forwardMessages == null || forwardMessages.isBlank()
+                    || backwardMessages == null || backwardMessages.isBlank())
+                throw new IllegalArgumentException("transform pipe role requires two nominal domains");
+        }
+    }
+
     /** Built-in actor superclass is a scheduling/ownership type, never an ordinary class. */
     public enum BuiltinActorBase { SERIAL }
 
@@ -319,13 +328,27 @@ public final class Ast {
             List<MethodDecl> methods,
             ProxyActorSpec proxySpec,
             ActorConcurrencySpec concurrencySpec,
-            BuiltinActorBase builtinActorBase) implements Decl {
+            BuiltinActorBase builtinActorBase,
+            ActorPipeTransformSpec pipeTransformSpec) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Compatibility with existing class/actor AST constructors. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ProxyActorSpec proxySpec,
+                         ActorConcurrencySpec concurrencySpec,
+                         BuiltinActorBase builtinActorBase) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    proxySpec, concurrencySpec, builtinActorBase, null);
         }
 
         /** Existing compiler constructors do not declare a builtin superclass. */
