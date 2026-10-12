@@ -79,6 +79,9 @@ final class HostSchedulerEntryGate {
     private int hostWaiters;
     private int activeGuests;
     private boolean sealed;
+    // Prevent a direct/inline guest carrier from trying to obtain a host
+    // lease while its own physical guest reservation is still outstanding.
+    private final ThreadLocal<Boolean> executingGuest = new ThreadLocal<>();
 
     HostSchedulerEntryGate(int queueCapacity) {
         if (queueCapacity <= 0) {
@@ -88,6 +91,10 @@ final class HostSchedulerEntryGate {
     }
 
     HostLease enterHost() throws InterruptedException {
+        if (Boolean.TRUE.equals(executingGuest.get())) {
+            throw new SecurityException(
+                    "guest turn cannot re-enter host admission before physical exit");
+        }
         Thread caller = Thread.currentThread();
         List<GuestTicket> newlyAdmissible = List.of();
         boolean acquired = false;
@@ -213,9 +220,13 @@ final class HostSchedulerEntryGate {
                 // started, cancellation/rejection wins and late work is inert.
                 if (!guest.state.compareAndSet(
                         GuestTicket.PENDING, GuestTicket.RUNNING)) return;
+                boolean nestedGuest = Boolean.TRUE.equals(executingGuest.get());
+                executingGuest.set(Boolean.TRUE);
                 try {
                     guest.body.run();
                 } finally {
+                    if (nestedGuest) executingGuest.set(Boolean.TRUE);
+                    else executingGuest.remove();
                     guest.state.set(GuestTicket.SETTLED);
                     physicallyExitedGuest();
                 }
