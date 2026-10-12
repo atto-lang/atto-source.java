@@ -98,6 +98,52 @@ public final class GpuBufferFence implements AutoCloseable {
         }
     }
 
+    /** Trusted-runtime paired tickets. Only identity-matching tickets complete. */
+    public record PairTickets(Identity input, Ticket inputTicket,
+                              Identity output, Ticket outputTicket) { }
+
+    static PairTickets claimPair(GpuBufferFence input, GpuBufferFence output,
+                                 long expectedBytes) {
+        Objects.requireNonNull(input, "input device buffer");
+        Objects.requireNonNull(output, "output device buffer");
+        if (input == output || input.state == output.state || expectedBytes <= 0)
+            throw new IllegalArgumentException("two distinct nonempty GPU allocations required");
+        State a = input.state;
+        State b = output.state;
+        State first = a.rank < b.rank ? a : b;
+        State second = a.rank < b.rank ? b : a;
+        synchronized (first) {
+            synchronized (second) {
+                input.active();
+                output.active();
+                if (a.status != Status.IDLE || b.status != Status.IDLE
+                        || !a.backendQuiescent || !b.backendQuiescent)
+                    throw new IllegalStateException("GPU allocation is already claimed");
+                if (a.bytes != expectedBytes || b.bytes != expectedBytes)
+                    throw new IllegalArgumentException("DOP layout size differs from allocation");
+                if (a.identity.allocationGeneration() <= 0
+                        || b.identity.allocationGeneration() <= 0
+                        || a.identity.allocationGeneration() == b.identity.allocationGeneration()
+                        || !a.identity.tenant().equals(b.identity.tenant())
+                        || !a.identity.device().equals(b.identity.device()))
+                    throw new IllegalArgumentException("foreign or duplicate GPU allocation");
+                if (a.sequence == Long.MAX_VALUE || b.sequence == Long.MAX_VALUE)
+                    throw new IllegalStateException("GPU ticket sequence exhausted");
+                // Allocate both UNFORGEABLE tickets and the response first.
+                Ticket at = new Ticket(a.identity.allocationGeneration(), a.sequence + 1);
+                Ticket bt = new Ticket(b.identity.allocationGeneration(), b.sequence + 1);
+                var pair = new PairTickets(a.identity, at, b.identity, bt);
+                ++a.sequence;
+                ++b.sequence;
+                a.activeTicket = at;
+                b.activeTicket = bt;
+                a.backendQuiescent = b.backendQuiescent = false;
+                a.status = b.status = Status.IN_FLIGHT;
+                return pair;
+            }
+        }
+    }
+
     synchronized Ticket beginCommand(Identity caller) {
         synchronized (state) {
         active();
