@@ -6620,9 +6620,21 @@ public final class ActorRuntime implements AutoCloseable {
             if (scheduler != null) {
                 try {
                     scheduler.close();
-                } catch (RuntimeException ignored) {
-                    // Actor teardown remains authoritative; source scheduler
-                    // cancellation is best-effort after the actor has finalized.
+                } catch (RuntimeException shutdownFailure) {
+                    // Physical teardown still proceeds, but an incomplete
+                    // source scheduler shutdown must not be reported as a
+                    // clean get_done() result. Preserve the earlier actor
+                    // failure, if any, and attach this teardown failure.
+                    Throwable earlier = ref.terminationCause.get();
+                    if (earlier == null
+                            && ref.terminationCause.compareAndSet(null, shutdownFailure)) {
+                        earlier = null;
+                    } else {
+                        earlier = ref.terminationCause.get();
+                        if (earlier != null && earlier != shutdownFailure) {
+                            earlier.addSuppressed(shutdownFailure);
+                        }
+                    }
                 }
             }
             drainMailboxReservations();
