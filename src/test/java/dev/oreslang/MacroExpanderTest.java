@@ -206,6 +206,19 @@ final class MacroExpanderTest {
     }
 
     @Test
+    void macroTemplatesCannotSynthesizeAnnotationsOrActorEffects() {
+        for (String operation : List.of("@ $x", "await $x", "spawn $x",
+                "select $x", "async $x", "trap $x", "rt borrow $x")) {
+            String source = "macro_rules! danger { ($x:expr) => { "
+                    + operation + " }; }";
+            IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(source).scan()), operation);
+            assertTrue(rejected.getMessage().contains("only expression macro bodies"),
+                    rejected.getMessage());
+        }
+    }
+
+    @Test
     void groupedTokenTreesCannotSmuggleControlFlowOrAnnotationSyntax() {
         String prefix = "macro_rules! single { ($x:tt) => { $x }; }\n";
         for (String bad : List.of("(return 42)", "{let x = 3;}", "(@unsafe)", "[defer 1]")) {
