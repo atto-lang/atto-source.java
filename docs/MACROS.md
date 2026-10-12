@@ -31,10 +31,11 @@ end
   the same fingerprint across compilation generations. The caller passes the
   preceding macro snapshot to the next compile; removal or mutation fails closed.
   Changing an AOT macro requires starting a fresh compilation lineage / deployment.
-- **Rebuildable** (`@expand(rebuildable)`): a new, explicitly compiled code generation may reexpand a changed macro,
-  using the freshly parsed, type-checked, ownership-checked output. **This is not
-  a runtime token expander or permission to rewrite running actor frames.** The
-  host must publish a new immutable generation and fence continuations/wakeups.
+- **Rebuildable** (`@expand(rebuildable)`): a separately compiled offline build
+  may reexpand changed macro definitions and must re-run type, ownership and actor
+  effect checks. This does not authorize source-based hot loading. Publishing a
+  new native generation will require a future verified AOT-artifact admission API
+  with generation and continuation fencing.
 - Both policies expand **only at compilation time**, before the guest AOT build.
   `@expand(jit)` is a compile error. `rebuildable` is not a runtime compilation
   capability: its new generation must complete a separate full AOT build and
@@ -86,24 +87,25 @@ work.
 returning an immutable token list plus a snapshot of each definition's mode and
 SHA-256 fingerprint. The overload without a snapshot is a new compilation lineage.
 
-`Parser.parseWithMacroSnapshot(source, previousSnapshot)` expands and parses,
-returning a program and a new macro snapshot. `IncrementalCompiler` now persists
-per-code-unit snapshots transactionally, and `HotReloadManager` fences AOT
-definitions before staging a replacement generation. Retiring a generation does
-not discard its AOT lineage; `IncrementalCompiler.clear()` or closing the hot
-reload manager starts a new lineage. The macro update policy itself cannot switch within
-one lineage. Other clients calling raw `Parser.parse()` initiate fresh,
-independent compilation lineages; they must use the snapshot-aware API to
-enforce a reload boundary.
+`Parser.parseWithMacroSnapshot(source, previousSnapshot)` expands and parses
+for **trusted build-time callers**, returning a program and a snapshot.
+`IncrementalCompiler` persists per-code-unit snapshots transactionally. The
+source-based `HotReloadManager` and runtime `OresLanguage.parse()` reject macro
+definitions instead of expanding them inside a running guest. The future AOT
+artifact loader must independently validate immutable code-unit identities and
+generation boundaries. `IncrementalCompiler.clear()` begins a new build lineage;
+direct `Parser.parse()` has no persistent lineage, so it must not by itself be
+used as proof of safe runtime deployment.
 
 The fingerprint includes mode, ordered captures and template token types/lexemes,
 length-framed and hashed as exact UTF-16 code units (including malformed Unicode),
 so different token streams cannot be collapsed by UTF-8 replacement encoding.
-The compiled-unit hot loader separately verifies that its supplied source digest
-matches its actual source text before staging. Adversarial hot loaders cap retained
-macro code-unit lineages at 256 to prevent unbounded accumulation across retirements.
-Macros are not runtime values: no actor may mutate a definition shared by another
-actor. This also avoids mixing tokens from two compiler generations.
+The source hot loader checks supplied source digests but explicitly refuses
+macro definitions; it is **not** a compiled-macro artifact-admission mechanism.
+Macros are not runtime values, and actors cannot modify macro definitions in
+another compilation lineage. A future artifact loader must establish immutable
+manifest identity and generation-fenced publication before reloading generated
+code.
 
 ## Actor-safety invariants
 
@@ -137,21 +139,20 @@ currently implemented versus pending physical actor protections.
 
 ## Validation scope (audit hardening)
 
-The isolated GitHub CI carrier mirrors exact Git blobs for the parser/AST/macro
-subset and runs the actual `MacroExpanderTest` JUnit suite with Java 21. This
-proves only the isolated parser/macro behavior; it does not cover
-`IncrementalCompiler`, `HotReloadManager`, JVM/GraalVM Truffle execution,
-actor isolation, or native images. Full exact-head GraalVM validation remains
-a prerequisite to moving the PR out of draft. The source branch and test carrier
-must be compared again after every source change.
+Earlier work reported isolated, selected-file macro testing in an external
+CI carrier. **Those results do not validate the current PR head.** The present
+source-org workflows fail before test steps execute. No complete exact-head
+parser/runtime test, host native-image test or guest-level AOT compilation test
+has been demonstrated for this revision. Keep the PR draft until all required
+gates complete, and never mirror private source to a public repository.
 
 
 ## Runtime hot-loading restriction (P0 AOT enforcement)
 
 The current `HotReloadManager.load(source)` and `load(CompiledUnit)` APIs
 stage **source**, not independently verified guest-AOT binaries. Accordingly,
-they now reject source containing any `macro_rules!` definition **before**
-macro expansion. Neither `@expand(aot)` nor `@expand(rebuildable)` overrides
+both they and the ordinary GraalVM `OresLanguage.parse()` path reject
+source containing any `macro_rules!` definition **before** macro expansion. Neither `@expand(aot)` nor `@expand(rebuildable)` overrides
 this restriction. Macro-bearing code must be expanded and compiled offline; a
 future signed AOT-artifact loader will be required to admit new native generations.
 This rejects a previously permitted source hot-reload use case intentionally.
@@ -159,7 +160,8 @@ This rejects a previously permitted source hot-reload use case intentionally.
 The `@expand` name is reserved for a directly following `macro_rules!`
 definition. Misplaced or malformed `@expand` annotations are compile errors,
 not silently ignored metadata. Ungrouped `$x:tt` captures are restricted to
-identifiers and literals until typed AST-fragment validation is implemented.
+identifiers and literals; grouped captures reject statement/control-flow and
+annotation tokens until typed AST-fragment validation is implemented.
 
 ## Non-negotiable native AOT admission gate
 
