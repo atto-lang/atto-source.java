@@ -528,4 +528,26 @@ final class SupervisorChildRegistryTest {
         registry.abortRestart(ticketB);
     }
 
+
+    @Test
+    void physicallySpawnedButAbortedActorIdIsPermanentlyRetired() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var old = ActorRuntime.ActorId.create();
+        var child = registry.register(old);
+        registry.finalized(child.child(), old, 1);
+        var claim = registry.beginRestart(child.child(), old, 1);
+        var spawned = ActorRuntime.ActorId.create();
+        registry.stageReplacement(claim, spawned);
+        registry.acknowledgeReplacementCleanup(claim, spawned, () -> true);
+        registry.abortRestart(claim);
+        assertThrows(IllegalStateException.class, () -> registry.register(spawned),
+                "an aborted physical candidate must not become a new child");
+        var retry = registry.beginRestart(child.child(), old, 1);
+        assertThrows(IllegalStateException.class, () ->
+                registry.stageReplacement(retry, spawned),
+                "a stale physical identity must not be staged again");
+        registry.abortRestart(retry);
+    }
+
 }
