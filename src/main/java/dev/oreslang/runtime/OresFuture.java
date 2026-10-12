@@ -446,19 +446,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
-        if (!settle(new Cancelled(cancelled))) return false;
-
-        Runnable hook = cancelHook.getAndSet(null);
-        if (hook != null && cancelHookRun.compareAndSet(false, true)) {
-            try {
-                hook.run();
-            } catch (RuntimeException | Error ignored) {
-                // Cancellation state is already authoritative. A host
-                // cancellation hook cannot roll it back or poison waiter
-                // delivery.
-            }
-        }
-        return true;
+        // Revoke the owning operation BEFORE any synchronous subscriber can
+        // block terminal notification. isCancelled() becomes visible at the
+        // successful state CAS; guest/producer authority must then be removed
+        // before ordinary host completion callbacks are entered.
+        return settle(new Cancelled(cancelled), this::invokeCancelHook);
     }
 
     @Override
@@ -571,10 +563,30 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return bridge;
     }
 
+    private void invokeCancelHook() {
+        Runnable hook = cancelHook.getAndSet(null);
+        if (hook != null && cancelHookRun.compareAndSet(false, true)) {
+            try {
+                hook.run();
+            } catch (RuntimeException | Error ignored) {
+                // Cancellation is already authoritative. Neither a
+                // misbehaving host hook nor arbitrary Future subscribers
+                // may restore the operation or prevent waiter delivery.
+            }
+        }
+    }
+
     private boolean settle(Object terminal) {
+        return settle(terminal, () -> { });
+    }
+
+    private boolean settle(Object terminal, Runnable afterStateClaimed) {
         if (!state.compareAndSet(PENDING, terminal)) return false;
 
         try {
+            // The winning cancellation claim runs its internal revoker before
+            // notifying potentially blocking synchronous host subscribers.
+            afterStateClaimed.run();
             RuntimeWaiterRegistration<T> waiter;
             while ((waiter = waiters.poll()) != null) {
                 notifyWaiter(waiter, terminal);
