@@ -605,9 +605,10 @@ final class HostGeneratorTurnPumpTest {
                     UUID.randomUUID(), () -> OresScheduler.current() == root,
                     () -> root.startSync(() -> {
                         ownerWakeups.incrementAndGet();
-                        if (!owner.get().dispatchOne()) {
-                            throw new IllegalStateException("owner woke without queued work");
-                        }
+                        // Owner wakeups are advisory. Multiple host submits
+                        // can queue wake tasks before the first reservation;
+                        // a later wake may legitimately find an active turn.
+                        owner.get().dispatchOne();
                         return null;
                     }), 8, root);
             owner.set(pump);
