@@ -156,6 +156,26 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void pendingFutureBlockingBridgeCannotParkOrdinarySchedulerCarrier() {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Boolean> checked = scheduler.startSync(() -> {
+                var pending = new OresFuture<Void>();
+                assertThrows(IllegalStateException.class, pending::join);
+                assertThrows(IllegalStateException.class, pending::get);
+                assertThrows(IllegalStateException.class,
+                        () -> pending.get(1, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> pending.get(0, TimeUnit.SECONDS),
+                        "zero-timeout polling should remain allowed");
+                assertEquals(42, OresFuture.completed(42).join(),
+                        "settled Future must still be readable synchronously");
+                return true;
+            });
+            assertTrue(checked.join());
+        }
+    }
+
+    @Test
     void cancellingSchedulerTaskRevokesContendedRwAdmission() throws Exception {
         CriticalRwGate gate = new CriticalRwGate();
         var writer = gate.newTicket(CriticalRwGate.Mode.WRITE);
