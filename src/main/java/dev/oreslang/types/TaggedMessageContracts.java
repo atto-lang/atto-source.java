@@ -65,6 +65,18 @@ public final class TaggedMessageContracts {
         }
     }
 
+    private static void appendPatternCase(List<Case> items, Set<String> seen, Case entry) {
+        if (!seen.add(entry.qualifiedName())) {
+            throw new IllegalArgumentException(
+                    "duplicate pattern alternative " + entry.qualifiedName());
+        }
+        if (items.size() >= 4096) {
+            throw new IllegalArgumentException(
+                    "expanded match pattern exceeds 4096 alternatives");
+        }
+        items.add(entry);
+    }
+
     public static Registry verify(Ast.Program program) {
         Objects.requireNonNull(program);
         Map<String, EnumType> enums = new LinkedHashMap<>();
@@ -125,14 +137,27 @@ public final class TaggedMessageContracts {
             }
             List<Case> items = new ArrayList<>();
             Set<String> alternatives = new HashSet<>();
-            for (String qualified : p.alternatives()) {
-                if (qualified == null || !alternatives.add(qualified)) {
-                    throw new IllegalArgumentException(
-                            "duplicate or invalid pattern alternative " + qualified);
+            for (String source : p.alternatives()) {
+                if (source == null || source.isBlank()) {
+                    throw new IllegalArgumentException("invalid pattern alternative");
                 }
-                // Enum-to-pattern dependencies cannot exist: only enum
-                // declarations supply constructible variant members.
-                items.add(stage.requireCase(qualified));
+                if (source.startsWith("...")) {
+                    String enumName = source.substring(3);
+                    EnumType expanded = enums.get(enumName);
+                    if (expanded == null) {
+                        throw new IllegalArgumentException(
+                                "unknown enum in match pattern spread " + source);
+                    }
+                    // Expands the enum at every compilation, not at runtime;
+                    // full-case coverage automatically follows new variants.
+                    for (Case variant : expanded.cases()) {
+                        appendPatternCase(items, alternatives, variant);
+                    }
+                } else {
+                    // Enum-to-pattern dependencies cannot exist: only enums
+                    // are eligible, avoiding recursion and cyclic spreads.
+                    appendPatternCase(items, alternatives, stage.requireCase(source));
+                }
             }
             patterns.put(p.name(), new Domain(p.name(), items));
         }
