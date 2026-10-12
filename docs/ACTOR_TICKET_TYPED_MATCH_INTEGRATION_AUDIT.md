@@ -65,3 +65,56 @@ source differential tests on that **combined** tree.
 The bounded Java state explorers and TLA+/TLC invariants are useful safety
 checks with deliberate unsafe mutants. They do not by themselves establish
 implementation refinement or fairness/liveness; both remain separate gates.
+
+## CONTROL reservation and producer-Future ownership hardening (October 11)
+
+This pass found two remaining transition-ordering defects in PR #656:
+
+1. **Revocation vs saturated CONTROL lane.** The former fast-path
+   `taskTicket.mayEnqueue()` check ran before `reserveContinuationSlot()`.
+   Retirement could win while the enqueuer was waiting for mailbox accounting;
+   a full CONTROL lane would then fail-stop the actor even though the callback
+   had already become stale. `SerialExecutionTicket.reserveControlSlotFor`
+   now returns an explicit `REVOKED/FULL/RESERVED` result and serializes
+   retirement with the host-only reservation callback. Rejected actor IDs,
+   old incarnations, and retired tickets never invoke slot accounting.
+   A genuinely live, full-lane request may still cause the documented
+   fail-stop overload action. The caller must still recheck before publication,
+   and the carrier still enforces execution provenance.
+2. **Cancellation vs producer-Future adoption.** `enqueueOnCompletion`
+   formerly called `ownFuture` before checking the target's origin and
+   even after the actor had stopped. A stale target could cancel a
+   producer Future it had never legitimately adopted. Its target validation
+   and insertion into `pendingOperations` are now both under the **same
+   actor lifecycle lock** as stop, making ownership/cancellation ordering
+   explicit. A Future legally adopted first is canceled on stop; one
+   arriving after stop is untouched.
+
+New JUnit regressions:
+- `SerialExecutionTicketTest.controlReservationLinearizesWithRetirementAndRejectsForeignOwners`
+- `ActorContinuationFutureOwnershipTest.stoppedActorTargetDoesNotCancelIndependentFutureBeforeControlAdmission`
+
+### Verification status
+
+Production and regression commits were pushed to PR #656. A private,
+exact-source mirror was created at
+`akrion-sim/akrion-sim-e2e` on branch
+`ci/serial-ticket-control-hardening-20261011`, pinning the source
+`SerialActorAdmission`, `SerialExecutionTicket`, and `ActorRuntime`
+blobs for targeted Java compiler/host-race checks. Its initial Actions
+run [38198767279](https://github.com/akrion-sim/akrion-sim-e2e/actions/runs/38198767279)
+failed **before runner allocation** (`runner_id=0`, `steps=[]`).
+Therefore, these latest changes have **not passed executed CI**.
+Previous green runs verify earlier source revisions, not this head.
+
+### Remaining formal and release obligations
+
+A bounded TLC model of ticket origin cannot prove the real atomic reservation:
+attach a linearization point or a concrete transition-system refinement to
+the source reservation/retire monitor; schedule adversarial stale-Future,
+lease-finished, restarted-incarnation, and saturation races. Prove that
+`SourceTask` cancellation guarantees each required guest defer/finally
+or explicitly fail closed in modes where guest cleanup is not guaranteed.
+Reconcile the actual #656/#661 merge tree, run an async typed-match serial
+actor through stop/cleanup/restart, and execute JVM, native-image, and LLVM
+differential gates before merging either PR.
