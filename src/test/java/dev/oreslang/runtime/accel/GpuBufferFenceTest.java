@@ -60,7 +60,8 @@ final class GpuBufferFenceTest {
     }
     @Test void backendCompletionCannotBeCalledThroughPublicApi() {
         for (String method : new String[]{"beginCommand", "complete", "cancelPending",
-                "acknowledgeCancelledDeviceEvent", "retireAfterBackendRelease", "claimPair"}) {
+                "acknowledgeCancelledDeviceEvent", "retireAfterBackendRelease",
+                "claimPair", "completePair", "cancelPair", "acknowledgeCancelledPair"}) {
             assertFalse(java.util.Arrays.stream(GpuBufferFence.class.getMethods())
                     .anyMatch(m -> m.getName().equals(method)),
                     "untrusted Java caller could invoke trusted GPU transition: " + method);
