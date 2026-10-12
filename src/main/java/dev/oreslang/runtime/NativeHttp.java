@@ -79,6 +79,10 @@ public final class NativeHttp implements AutoCloseable {
         }
 
         V get(String token) { return entries.get(token); }
+        /** Claim and seal are mutually exclusive, including stale claimers. */
+        synchronized boolean claimIfOpen(String token, V value) {
+            return !sealed && entries.remove(token, value);
+        }
         V remove(String token) { return entries.remove(token); }
         boolean remove(String token, V value) { return entries.remove(token, value); }
         int size() { return entries.size(); }
@@ -288,7 +292,8 @@ public final class NativeHttp implements AutoCloseable {
         if (exchange == null) throw new IllegalStateException("unknown or already claimed HTTP transfer");
         synchronized (exchange.state) {
             exchange.checkOwner();
-            if (!transfers.remove(token, exchange)) throw new IllegalStateException("HTTP transfer already claimed");
+            if (!transfers.claimIfOpen(token, exchange))
+                throw new IllegalStateException("HTTP transfer already claimed or runtime closed");
             exchange.state.releaseTransferReservationLocked();
             exchange.state.claimedNanos = System.nanoTime();
             CorePerf.elapsed(CorePerf.HTTP_CLAIM, exchange.state.spawnNanos, exchange.state.claimedNanos);
@@ -918,15 +923,17 @@ public final class NativeHttp implements AutoCloseable {
         // listener/registration methods on the way out.
         final List<Server> snapshot;
         final List<Handler> handlerSnapshot;
+        final List<Exchange> outstanding;
         synchronized (this) {
             if (closed) return;
+            // This seal is the shutdown/claim/publication linearization
+            // point. Publish or claim must finish before it, or fail afterward.
+            // Never take a State monitor while holding the gate.
+            outstanding = transfers.sealAndSnapshot();
             closed = true;
             snapshot = List.copyOf(servers);
             handlerSnapshot = List.copyOf(handlers);
         }
-        // Freeze publication before stopping potentially blocking listeners:
-        // no in-flight transfer may appear after this snapshot.
-        final List<Exchange> outstanding = transfers.sealAndSnapshot();
         for (Server server : snapshot) server.close();
         for (Handler handler : handlerSnapshot) {
             synchronized (handler) {
