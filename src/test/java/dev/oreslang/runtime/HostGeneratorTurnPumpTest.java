@@ -592,6 +592,73 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void hostNextStepStagesRealTypedSourceWithoutEnteringGuestOnHostThread()
+            throws Exception {
+        String source = """
+                async generator fnc values(): int {
+                  yield 11;
+                  yield 22;
+                  yield 33;
+                  return;
+                }
+                """;
+        GeneratorRuntime.SourceLowering frame =
+                GeneratorRuntime.SourceLowering.compile(
+                        source, "values", java.util.Map.of());
+        try (OresScheduler root = new OresScheduler(1)) {
+            Thread authorizedOwner = Thread.currentThread();
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(),
+                    () -> Thread.currentThread() == authorizedOwner,
+                    () -> { }, 4, root);
+            var host = GeneratorRuntime.certifiedHostIterator(pump, root, frame);
+
+            AtomicReference<OresFuture<GeneratorRuntime.Step<Object>>> submitted =
+                    new AtomicReference<>();
+            Thread foreign = Thread.ofPlatform().start(
+                    () -> submitted.set(host.nextStep()));
+            foreign.join();
+            assertNotNull(submitted.get());
+            assertFalse(submitted.get().isDone(),
+                    "host admission must not manufacture physical guest entry");
+            assertEquals(0, frame.cleanupRuns());
+            assertThrows(SecurityException.class, () -> {
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                Thread foreignDispatch = Thread.ofPlatform().start(() -> {
+                    try { pump.dispatchOne(); }
+                    catch (Throwable denied) { failure.set(denied); }
+                });
+                foreignDispatch.join();
+                if (failure.get() instanceof SecurityException denied) throw denied;
+            });
+            for (int value : new int[]{11, 22, 33}) {
+                OresFuture<GeneratorRuntime.Step<Object>> pull;
+                if (value == 11) pull = submitted.get();
+                else pull = host.nextStep();
+                assertFalse(pull.isDone(), "pull must wait for authorized dispatch");
+                assertTrue(pump.dispatchOne());
+                assertEquals(value, ((Number) pull.get(5, TimeUnit.SECONDS).value()).intValue());
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!pump.isQuiescent() && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+                assertTrue(pump.isQuiescent());
+            }
+            OresFuture<GeneratorRuntime.Step<Object>> last = host.nextStep();
+            assertFalse(last.isDone());
+            assertTrue(pump.dispatchOne());
+            assertTrue(last.get(5, TimeUnit.SECONDS).done());
+            assertTrue(host.isTerminal());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!pump.isQuiescent() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(pump.isQuiescent());
+            pump.close();
+        }
+    }
+
+    @Test
     void certifiedSchedulerFrameYieldsThreeTypedValuesAndFinishes() throws Exception {
         try (OresScheduler root = new OresScheduler(1)) {
             HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
