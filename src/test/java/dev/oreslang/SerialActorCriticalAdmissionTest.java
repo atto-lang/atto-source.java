@@ -14,14 +14,14 @@ final class SerialActorCriticalAdmissionTest {
         define serial actor Counter as
             state { count: int = 0; }
 
-            pub increment(): int using state.read, state.write {
+            pub increment(): int with state.read, state.write {
                 return self.handle_state(critical write |s| -> {
                     s.count = s.count + 1;
                     return s.count;
                 });
             }
 
-            pub get_count(): int using state.read {
+            pub get_count(): int with state.read {
                 return self.handle_state(critical read |s| -> s.count);
             }
 
@@ -115,7 +115,7 @@ final class SerialActorCriticalAdmissionTest {
         String staticallyBound = """
             define serial actor Counter as
                 state { count: int = 0; }
-                static fnc bad(): int using state.read {
+                static fnc bad(): int with state.read {
                     return self.handle_state(critical read |s| -> s.count);
                 }
             end
@@ -134,7 +134,7 @@ final class SerialActorCriticalAdmissionTest {
                 () -> Parser.parse("define serial serial actor Counter as end"));
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("define actor Counter as serial pub get(): int { return 1; } end"));
-        String underdeclared = SERIAL.replace("using state.read, state.write", "using state.write");
+        String underdeclared = SERIAL.replace("with state.read, state.write", "with state.write");
         assertThrows(IllegalArgumentException.class,
                 () -> DeclaredEffectVerifier.verify(Parser.parse(underdeclared)));
         String wrongType = SERIAL.replace(
