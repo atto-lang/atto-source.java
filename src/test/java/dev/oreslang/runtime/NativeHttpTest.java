@@ -167,6 +167,41 @@ class NativeHttpTest {
         }
     }
 
+    @Test void persistentHandlerReusesActorsAndReleasesEachExchange() throws Exception {
+        String output = run("""
+            define actor Pooled as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                await request.respond(200, "text/plain", "pooled");
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val handler = http.pooled_handler("Pooled", 2);
+              val server = http.listen("127.0.0.1", 0, 100, 1024, 6000);
+              stdio.println(server.port);
+              for (let int i = 0; i < 20; i = i + 1) {
+                val request = await server.accept();
+                handler.dispatch(rt borrow mut request);
+              }
+              await server.shutdown(1000);
+              stdio.println("POOLED_METRICS");
+              stdio.println(handler.actors_created);
+              stdio.println(handler.dispatches);
+              stdio.println(server.active);
+              handler.close();
+              return;
+            }
+            """, port -> {
+                for (int i = 0; i < 20; i++) {
+                    var response = request(port, "GET", "/", "");
+                    assertEquals(200, response.statusCode());
+                    assertEquals("pooled", response.body());
+                }
+            });
+        assertTrue(output.contains("POOLED_METRICS\\n2\\n20\\n0"), output);
+    }
+
     @FunctionalInterface interface Client { void run(int port) throws Exception; }
     private static HttpResponse<String> request(int port, String method, String path, String body) throws Exception {
         try (HttpClient client = HttpClient.newHttpClient()) {
