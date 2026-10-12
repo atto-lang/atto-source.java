@@ -1280,7 +1280,7 @@ public final class ActorRuntime implements AutoCloseable {
         public static class ReadLoan {
             private final ActorStateMap state;
             private final Thread carrier;
-            private final Map<String, Long> snapshot;
+            protected final Map<String, Long> snapshot;
             private volatile boolean active = true;
 
             private ReadLoan(ActorStateMap state, Map<String, Long> snapshot) {
