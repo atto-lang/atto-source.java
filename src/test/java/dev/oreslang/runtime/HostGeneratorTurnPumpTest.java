@@ -698,6 +698,68 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void javaHostPullSessionUsesRootControlDispatchAndCancelsPendingYield()
+            throws Exception {
+        String source = """
+                async fnc pending(): int { return 44; }
+                async generator fnc sequence(): int {
+                  try {
+                    yield 11;
+                    yield 22;
+                    yield 33;
+                    yield await pending();
+                  } catch (err) {
+                  } finally {
+                    val int cleanup_marker = 1;
+                  }
+                  return;
+                }
+                """;
+        OresFuture<Integer> unresolved = new OresFuture<>();
+        var frame = GeneratorRuntime.SourceLowering.compile(
+                source, "sequence", java.util.Map.of("pending", unresolved));
+        try (OresScheduler root = new OresScheduler(1)) {
+            var pumpRef = new AtomicReference<HostGeneratorTurnPump>();
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(),
+                    () -> OresScheduler.current() == root,
+                    () -> root.startSync(() -> {
+                        pumpRef.get().dispatchOne();
+                        return null;
+                    }),
+                    16, root);
+            pumpRef.set(pump);
+            var lowered = GeneratorRuntime.schedulerBacked(root, pump.token(), frame);
+            try (var session = new GeneratorRuntime.HostPullSession(pump, lowered)) {
+                for (int expected : new int[]{11, 22, 33}) {
+                    var yielded = session.nextStep().get(5, TimeUnit.SECONDS);
+                    assertFalse(yielded.done());
+                    assertEquals(expected, ((Number) yielded.value()).intValue());
+                }
+                var fourth = session.nextStep();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!frame.awaitingSourceFuture() && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+                assertTrue(frame.awaitingSourceFuture());
+                assertTrue(fourth.cancel(false));
+                session.close();
+                root.close();
+                deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!pump.isQuiescent() && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+                assertTrue(pump.isQuiescent());
+                assertEquals(1, frame.cleanupRuns());
+                assertFalse(unresolved.isDone());
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        session::nextStep);
+            }
+            pump.close();
+        }
+    }
+
+    @Test
     void contextOwnedPumpCannotDowngradeToSyntheticPhysicalExit() throws Exception {
         try (OresScheduler root = new OresScheduler(1)) {
             HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
