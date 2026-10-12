@@ -205,4 +205,39 @@ final class ActorSendContractTest {
         }
     }
 
+    @Test
+    void exhaustedActorGenerationDoesNotLeakReservedCapacity() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var generationField = ActorRuntime.class.getDeclaredField("nextActorGeneration");
+            var actorCountField = ActorRuntime.class.getDeclaredField("actorCount");
+            generationField.setAccessible(true);
+            actorCountField.setAccessible(true);
+            var generations = (java.util.concurrent.atomic.AtomicLong)
+                    generationField.get(runtime);
+            var liveCount = (java.util.concurrent.atomic.AtomicInteger)
+                    actorCountField.get(runtime);
+            int baseline = liveCount.get();
+            long originalGeneration = generations.get();
+            try {
+                // Force the fail-closed incarnation exhaustion branch without
+                // waiting for a naturally impossible 2^63 actor allocations.
+                generations.set(0L);
+                IllegalStateException exhausted = assertThrows(
+                        IllegalStateException.class,
+                        () -> runtime.<Integer>spawnShared(
+                                () -> (message, context) -> { }));
+                assertTrue(exhausted.getMessage().contains("generation sequence exhausted"));
+                assertEquals(baseline, liveCount.get(),
+                        "failed actor construction must release its reserved slot");
+            } finally {
+                generations.set(originalGeneration);
+            }
+            var recovered = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> { });
+            recovered.getReady().get(5, TimeUnit.SECONDS);
+            recovered.stop();
+            recovered.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
 }
