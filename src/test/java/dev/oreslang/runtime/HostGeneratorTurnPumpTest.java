@@ -509,16 +509,72 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void preissuedSameContextReceiptCannotBeBorrowedByCertifiedPull()
+            throws Exception {
+        try (OresScheduler root = new OresScheduler(1)) {
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> true, root);
+            // Authentic context/scheduler/task identity is insufficient:
+            // issuance did not occur inside this particular request START.
+            HostGeneratorTurnPump.Turn<Integer> unbound =
+                    root.startCertifiedGeneratorTurn(pump.token(),
+                            input -> OresScheduler.done(41));
+            OresFuture<Integer> host =
+                    pump.requestCertified(pump.token(), () -> unbound);
+            assertTrue(pump.dispatchOne());
+            assertInstanceOf(SecurityException.class,
+                    assertThrows(java.util.concurrent.ExecutionException.class,
+                            () -> host.get(5, TimeUnit.SECONDS)).getCause());
+            unbound.physicalExit().get(5, TimeUnit.SECONDS);
+            assertThrows(IllegalStateException.class, pump::close,
+                    "an unbound DONE claim must never authorize retirement");
+        }
+    }
+
+    @Test
+    void oneCertifiedRequestCannotIssueTwoPhysicalDoneReceipts()
+            throws Exception {
+        try (OresScheduler root = new OresScheduler(1)) {
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> true, root);
+            AtomicReference<HostGeneratorTurnPump.Turn<Integer>> firstIssued =
+                    new AtomicReference<>();
+            OresFuture<Integer> host = pump.requestCertified(pump.token(), () -> {
+                firstIssued.set(root.startCertifiedGeneratorTurn(
+                        pump.token(), input -> OresScheduler.done(10)));
+                // A second physical task for the same reservation must be
+                // denied *before* the scheduler starts a second producer.
+                return root.startCertifiedGeneratorTurn(
+                        pump.token(), input -> OresScheduler.done(11));
+            });
+            assertTrue(pump.dispatchOne());
+            assertInstanceOf(SecurityException.class,
+                    assertThrows(java.util.concurrent.ExecutionException.class,
+                            () -> host.get(5, TimeUnit.SECONDS)).getCause());
+            assertNotNull(firstIssued.get());
+            assertEquals(10, firstIssued.get().result().get(5, TimeUnit.SECONDS));
+            firstIssued.get().physicalExit().get(5, TimeUnit.SECONDS);
+            assertThrows(IllegalStateException.class, pump::close,
+                    "failed multi-issuance cannot release an indeterminate start");
+        }
+    }
+
+    @Test
     void certifiedPhysicalDoneReceiptCannotBeReplayedForAnotherPull()
             throws Exception {
         try (OresScheduler root = new OresScheduler(1)) {
             HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
                     UUID.randomUUID(), () -> true, root);
-            HostGeneratorTurnPump.Turn<Integer> valid =
-                    root.startCertifiedGeneratorTurn(pump.token(),
-                            input -> OresScheduler.done(19));
+            AtomicReference<HostGeneratorTurnPump.Turn<Integer>> valid =
+                    new AtomicReference<>();
             OresFuture<Integer> first =
-                    pump.requestCertified(pump.token(), () -> valid);
+                    pump.requestCertified(pump.token(), () -> {
+                        HostGeneratorTurnPump.Turn<Integer> started =
+                                root.startCertifiedGeneratorTurn(pump.token(),
+                                        input -> OresScheduler.done(19));
+                        valid.set(started);
+                        return started;
+                    });
             assertTrue(pump.dispatchOne());
             assertEquals(19, first.get(5, TimeUnit.SECONDS));
             // Wait for the pump's post-publication ownership release; Future
@@ -529,7 +585,7 @@ final class HostGeneratorTurnPumpTest {
             }
             assertTrue(pump.isQuiescent());
             OresFuture<Integer> replay =
-                    pump.requestCertified(pump.token(), () -> valid);
+                    pump.requestCertified(pump.token(), valid::get);
             assertTrue(pump.dispatchOne());
             assertInstanceOf(SecurityException.class,
                     assertThrows(java.util.concurrent.ExecutionException.class,
