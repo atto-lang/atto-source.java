@@ -630,6 +630,38 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Physical placement requirements are not satisfied by an actor-local
+     * Java quota/direct ByteBuffer merely because its ActorId is distinct.
+     * A future native/Graal/process router must make placement decisions
+     * before dispatch and provide independently verified backend evidence.
+     */
+    public enum ActorHeapBacking {
+        OWNER_CHECKED_REGION,
+        DETERMINISTIC_NATIVE_ARENA,
+        INDEPENDENT_GRAAL_ISOLATE,
+        ISOLATED_PROCESS
+    }
+
+    /** Supervisor-side placement admission for the current JVM bootstrap. */
+    public void requireActorHeapBacking(ActorRef<?> ref, ActorHeapBacking backing) {
+        Objects.requireNonNull(backing, "backing");
+        ActorHeapStatus status = heapStatusFor(ref);
+        if (backing == ActorHeapBacking.OWNER_CHECKED_REGION) {
+            if (!status.actorOwnedMemorySlice()) {
+                throw new IllegalStateException("actor has no owner-checked region");
+            }
+            return;
+        }
+        // Neither an actor's Java object graph nor ByteBuffer cleaner is a
+        // deterministic native allocator. The pooled UNTRUSTED Engine is
+        // not itself proof that this actor was actually dispatched to it.
+        throw new IllegalStateException("actor heap backing " + backing
+                + " is not implemented by the bootstrap ActorRuntime: "
+                + "native reclamation and physical isolate placement require "
+                + "verified backend routing");
+    }
+
+    /**
      * Fail closed when callers need per-actor GC isolation. This is not
      * implemented by the shared JVM-backed ActorRuntime; launch the actor in a
      * proven independent isolate/process instead of silently weakening policy.
@@ -778,6 +810,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
+        private final Set<ActorOwnedGraphArena<?>> ownedGraphs = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -817,6 +850,38 @@ public final class ActorRuntime implements AutoCloseable {
                     PrivateMemoryBlock block = new PrivateMemoryBlock(this, reservation, bytes);
                     blocks.add(block);
                     return block;
+                } catch (RuntimeException | Error failure) {
+                    reservation.close();
+                    throw failure;
+                }
+            }
+        }
+
+        /**
+         * Create one actor-owned graph lifetime domain. Self-links and cycles
+         * are allowed because edges never own payloads. Unlike a JVM heap
+         * collector, node close is explicit and actor finalization retires
+         * the graph. The Java payload/wrapper objects remain host-managed.
+         *
+         * Source lowering must prove values and borrows do not escape.
+         */
+        public <T extends AutoCloseable> ActorOwnedGraphArena<T> newGraphArena(
+                int maxNodes, int maxEdgesPerNode) {
+            ActorCell<?> cell = requireCurrentOwner();
+            synchronized (cell.lifecycleLock) {
+                if (sliceClosed.get()) throw new IllegalStateException("actor heap is retired");
+                long metadataBytes = ActorOwnedGraphArena.estimatedMetadataBytes(
+                        maxNodes, maxEdgesPerNode);
+                MemoryReservation reservation = reserve(metadataBytes, "actor-owned graph metadata");
+                try {
+                    ActorOwnedGraphArena<T> graph = new ActorOwnedGraphArena<>(
+                            maxNodes, maxEdgesPerNode, this::requireCurrentOwner,
+                            retired -> {
+                                ownedGraphs.remove(retired);
+                                reservation.close();
+                            });
+                    ownedGraphs.add(graph);
+                    return graph;
                 } catch (RuntimeException | Error failure) {
                     reservation.close();
                     throw failure;
@@ -887,6 +952,13 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public synchronized void close() {
             if (!sliceClosed.compareAndSet(false, true)) return;
+            // Graph retirement comes before releasing actor quota. An
+            // outstanding host/native lease defers payload destruction until
+            // the final lease closes. Actor access is fenced immediately.
+            for (ActorOwnedGraphArena<?> graph : List.copyOf(ownedGraphs)) {
+                graph.retireFromActor();
+            }
+            ownedGraphs.clear();
             for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
             blocks.clear();
             long bytes = usedBytes.getAndSet(0);
