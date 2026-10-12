@@ -65,6 +65,40 @@ final class ChannelSharedFairCursorTest {
     }
 
     @Test
+    void retirementCancelsPendingReadsAndWritesAndDetachesAllArms() {
+        ChannelRuntime.FairCursor cursor = new ChannelRuntime.FairCursor();
+        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(0);
+        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(0);
+        ChannelRuntime.Channel<Integer> outgoing = new ChannelRuntime.Channel<>(0);
+
+        OresFuture<ChannelRuntime.SelectResult> pendingRead =
+                select(first, second, cursor)
+                        .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+        OresFuture<ChannelRuntime.SelectResult> pendingWrite =
+                new ChannelRuntime.SelectSet(
+                        List.of(ChannelRuntime.write(outgoing, 43)), cursor)
+                        .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+        assertFalse(pendingRead.isDone());
+        assertFalse(pendingWrite.isDone());
+
+        cursor.retire();
+        assertTrue(pendingRead.isCancelled());
+        assertTrue(pendingWrite.isCancelled());
+        assertThrows(java.util.concurrent.CancellationException.class, pendingRead::join);
+        assertThrows(java.util.concurrent.CancellationException.class, pendingWrite::join);
+        assertFalse(first.tryWrite(11));
+        assertFalse(second.tryWrite(12));
+        assertTrue(outgoing.tryRead().isEmpty());
+        cursor.retire(); // idempotent
+
+        OresFuture<ChannelRuntime.SelectResult> later =
+                select(first, second, cursor)
+                        .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertTrue(later.isCancelled(),
+                "even non-FAIR registrations may not reuse an actor-retired cursor");
+    }
+
+    @Test
     void retiredCursorCannotBeResurrectedByLaterCommit() throws Exception {
         ChannelRuntime.FairCursor cursor = new ChannelRuntime.FairCursor();
         ChannelRuntime.Channel<Integer> a = new ChannelRuntime.Channel<>(1);
@@ -72,8 +106,14 @@ final class ChannelSharedFairCursorTest {
 
         cursor.retire();
         assertTrue(a.tryWrite(7));
-        assertEquals(0, select(a, b, cursor)
-                .selectAsync(ChannelRuntime.SelectPolicy.FAIR).join().index());
+        OresFuture<ChannelRuntime.SelectResult> afterRetirement =
+                select(a, b, cursor).selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+        assertTrue(afterRetirement.isCancelled(),
+                "retired source actor must not rearm a channel operation");
+        assertThrows(java.util.concurrent.CancellationException.class,
+                afterRetirement::join);
+        assertEquals(7, a.tryRead().orElseThrow(),
+                "late channel message must survive the retired selection");
 
         Field indexField = ChannelRuntime.FairCursor.class.getDeclaredField("index");
         indexField.setAccessible(true);

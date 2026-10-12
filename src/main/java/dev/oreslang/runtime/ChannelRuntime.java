@@ -273,16 +273,41 @@ public final class ChannelRuntime {
         }
 
         public void retire() {
-            // Retirement and commitment contend on one atomic word: a
-            // coordinator commit cannot resurrect a retired actor cursor.
-            index.set(RETIRED);
+            // Retirement is an admission AND commit barrier, not merely a
+            // fairness-accounting sentinel. Without the coordinator gate a
+            // stopped actor's already-registered selection could still
+            // consume a later write, and fresh selections could be admitted.
+            ArrayList<Runnable> cancellations = new ArrayList<>();
+            COORDINATOR.lock();
+            try {
+                if (index.get() == RETIRED) return;
+                index.set(RETIRED);
+                for (SelectRegistration selection : List.copyOf(ACTIVE)) {
+                    if (selection.set.fairCursor != this || selection.decided) continue;
+                    selection.decided = true;
+                    unregisterLocked(selection);
+                    cancellations.add(() -> selection.future.cancelFromRuntime(
+                            new java.util.concurrent.CancellationException(
+                                    "source select cursor retired")));
+                }
+            } finally {
+                COORDINATOR.unlock();
+            }
+            // Never invoke scheduler callbacks while holding COORDINATOR.
+            runCompletions(cancellations);
+        }
+
+        private boolean isRetired() {
+            return index.get() == RETIRED;
         }
 
         private long current() {
             long snapshot = index.get();
-            // A previously registered cancellation continuation may be
-            // observed after retirement, but must not revive this cursor.
-            return snapshot == RETIRED ? 0L : snapshot;
+            if (snapshot == RETIRED) {
+                throw new IllegalStateException(
+                        "retired source select cursor cannot be admitted");
+            }
+            return snapshot;
         }
 
         private void committed(int selectedIndex, int caseCount) {
@@ -554,23 +579,30 @@ public final class ChannelRuntime {
                 // Snapshot reusable FAIR state at the same linearization point
                 // as admission and commitment. Otherwise concurrent callers
                 // can both observe a cursor before either reaches the lock.
-                order = set.initialOrder(policy);
-                registerLocked(this);
-                pumpLocked(completions);
-
-                if (!decided && defaultIndex >= 0) {
-                    commitSingleLocked(
-                            caseOrDefault(defaultIndex),
-                            new SelectResult(
-                                    defaultIndex,
-                                    SelectOperation.DEFAULT,
-                                    null),
-                            completions);
-                }
-
-                if (!decided && immediateOnly) {
+                if (set.fairCursor.isRetired()) {
                     decided = true;
-                    unregisterLocked(this);
+                    completions.add(() -> future.cancelFromRuntime(
+                            new java.util.concurrent.CancellationException(
+                                    "source select cursor retired")));
+                } else {
+                    order = set.initialOrder(policy);
+                    registerLocked(this);
+                    pumpLocked(completions);
+
+                    if (!decided && defaultIndex >= 0) {
+                        commitSingleLocked(
+                                caseOrDefault(defaultIndex),
+                                new SelectResult(
+                                        defaultIndex,
+                                        SelectOperation.DEFAULT,
+                                        null),
+                                completions);
+                    }
+
+                    if (!decided && immediateOnly) {
+                        decided = true;
+                        unregisterLocked(this);
+                    }
                 }
             } finally {
                 COORDINATOR.unlock();
