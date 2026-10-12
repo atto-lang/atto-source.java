@@ -366,4 +366,109 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         assertTrue(state.retired);
         invariant(state);
     }
+
+    /**
+     * Frame-local lease abstraction independent of the host queue. A compiler
+     * bug or internal caller bypassing the pump still cannot resume the same
+     * heap-resident source continuation in two live physical turns.
+     *
+     * This is bounded model checking, not a Truffle refinement proof.
+     */
+    private enum FrameEvent {
+        START, RESULT_SETTLED, CANCEL_PUBLIC, PHYSICAL_DONE,
+        PHYSICAL_FAILED, STARTER_FAILED_NO_RECEIPT
+    }
+
+    private record FrameState(
+            int totalStarts, int physicalOwners, boolean leased,
+            boolean publicSettled, boolean poisoned) {
+        static FrameState initial() {
+            return new FrameState(0, 0, false, false, false);
+        }
+    }
+
+    private static FrameState frameStep(FrameState s, FrameEvent event) {
+        int starts = s.totalStarts, physical = s.physicalOwners;
+        boolean leased = s.leased, settled = s.publicSettled;
+        boolean poisoned = s.poisoned;
+        switch (event) {
+            case START -> {
+                if (!poisoned && !leased && starts < 2) {
+                    starts++;
+                    physical++;
+                    leased = true;
+                    settled = false;
+                }
+            }
+            case RESULT_SETTLED, CANCEL_PUBLIC -> {
+                if (leased) settled = true;
+            }
+            case PHYSICAL_DONE -> {
+                if (leased && settled && !poisoned) {
+                    physical--;
+                    leased = false;
+                    settled = false;
+                }
+            }
+            case PHYSICAL_FAILED, STARTER_FAILED_NO_RECEIPT -> {
+                if (leased) {
+                    // Unknown carrier outcome keeps the physical owner
+                    // conservatively reserved for the lifetime of incarnation.
+                    poisoned = true;
+                }
+            }
+        }
+        return new FrameState(starts, physical, leased, settled, poisoned);
+    }
+
+    private static void invariantFrame(FrameState state) {
+        assertTrue(state.physicalOwners >= 0 && state.physicalOwners <= 1,
+                "two generator source frames concurrently own physical execution");
+        assertTrue(state.totalStarts >= 0 && state.totalStarts <= 2);
+        assertEquals(state.physicalOwners == 1, state.leased,
+                "frame lease lost physical turn ownership");
+        if (state.poisoned) {
+            assertTrue(state.leased,
+                    "unproven guest exit improperly released a heap continuation");
+        }
+    }
+
+    @Test
+    void allBoundedFrameInterleavingsRequirePhysicalExitBeforeReuse() {
+        Set<FrameState> visited = new HashSet<>();
+        ArrayDeque<FrameState> frontier = new ArrayDeque<>();
+        FrameState initial = FrameState.initial();
+        visited.add(initial);
+        frontier.add(initial);
+        boolean sawCancelledOwner = false, sawQuarantine = false;
+        boolean sawTwoSequentialStarts = false;
+        while (!frontier.isEmpty()) {
+            FrameState current = frontier.removeFirst();
+            invariantFrame(current);
+            sawCancelledOwner |= current.leased && current.publicSettled;
+            sawQuarantine |= current.poisoned;
+            sawTwoSequentialStarts |= current.totalStarts == 2;
+            for (FrameEvent event : FrameEvent.values()) {
+                FrameState next = frameStep(current, event);
+                invariantFrame(next);
+                if (event == FrameEvent.START && current.leased) {
+                    assertEquals(current, next,
+                            "an overlapping physical frame start was accepted");
+                }
+                if (current.poisoned) {
+                    assertEquals(current, next,
+                            "unknown physical exit must permanently quarantine the frame");
+                }
+                if (visited.add(next)) frontier.addLast(next);
+            }
+        }
+        assertTrue(sawCancelledOwner && sawQuarantine && sawTwoSequentialStarts,
+                "frame model did not cover cancellation, unknown exit and reuse");
+    }
+
+    @Test
+    void deliberatelyUnsafeFrameReentryViolatesPhysicalOwnerInvariant() {
+        FrameState overlapping = new FrameState(2, 2, true, true, false);
+        assertThrows(AssertionError.class, () -> invariantFrame(overlapping));
+    }
 }
