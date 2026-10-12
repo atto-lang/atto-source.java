@@ -134,6 +134,11 @@ public final class TypeChecker {
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked public class: " + name);
             }
+            if (declaration.actorState() != null) {
+                throw new IllegalArgumentException(
+                        "linked actor sealed state is private runtime-owned storage; "
+                        + "import only an actor's checked public method signature");
+            }
             boolean imported = program.imports().stream().anyMatch(use ->
                     use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
                             && use.names().contains(name));
