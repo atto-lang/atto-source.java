@@ -110,7 +110,7 @@ public final class SupervisorFailureControl {
         if (draining || handler == null || pending.isEmpty() || handlerFailure != null) return;
         draining = true;
         try {
-            dispatcher.execute(this::drain);
+            SupervisorDispatchGuard.enqueue(dispatcher, this::drain);
         } catch (Throwable dispatchFailure) {
             handlerFailure = dispatchFailure;
             draining = false;

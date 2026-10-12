@@ -1985,6 +1985,35 @@ public final class ActorRuntime implements AutoCloseable {
             supervisorControl.install(handler);
         }
 
+        /**
+         * Start a runtime-owned supervisor PROCESS, not a callback on a
+         * failing child carrier. The supervisor logical turn remains
+         * exclusive across an unfinished CompletionStage/await, while the
+         * shared CONTROL carrier can run other supervisors.
+         *
+         * Directive callbacks request lifecycle decisions; they do not
+         * automatically restart an already-finalized actor or forge a
+         * parent/grandparent supervisor.
+         */
+        public SupervisorProcess installSupervisorProcess(
+                int mailboxCapacity,
+                java.util.function.Function<SupervisorFailureControl.Notice,
+                        java.util.concurrent.CompletionStage<SupervisorProcess.Directive>> onFailure,
+                Consumer<SupervisorProcess.Resolution> onDecision) {
+            requireSupervisorContext("install supervisor process");
+            requireOpen();
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisorId, id, privateDispatcher, mailboxCapacity,
+                    onFailure, onDecision);
+            try {
+                supervisorControl.install(process::accept);
+            } catch (RuntimeException | Error admissionFailure) {
+                process.close();
+                throw admissionFailure;
+            }
+            return process;
+        }
+
         /** Nonzero means this host CONTROL lane has failed closed. */
         public long undeliveredSupervisorFailures() {
             requireObserver("inspect undelivered supervisor notices");
@@ -2033,10 +2062,17 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
             }
             requireActorLifecycleAuthority(worker, "manage an ActorGroup worker");
+            ActorCell<?> admissionCell = actors.get(worker.id());
+            if (admissionCell == null) {
+                throw new IllegalStateException("unknown worker");
+            }
+            // Child spawn and teardown use the same lifecycleLock first.
+            synchronized (admissionCell.lifecycleLock) {
             synchronized (authorityLock) {
                 requireOpen();
                 ActorCell<?> cell = actors.get(worker.id());
-                if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker.id())) {
+                if (cell != admissionCell || cell.stopped.get() || cell.finalized
+                        || stoppingWorkers.contains(worker.id())) {
                     throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
                 }
                 if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
@@ -2048,6 +2084,10 @@ public final class ActorRuntime implements AutoCloseable {
                 // but no second manager may acquire independent stop rights.
                 ActorGroupId owningGroup = cell.managedByGroup.get();
                 if (owningGroup == null) {
+                    if (!cell.children.isEmpty()) {
+                        throw new IllegalStateException(
+                                "cannot adopt unmanaged worker with live descendants");
+                    }
                     if (cell.managedByGroup.compareAndSet(null, id)) {
                         owningGroup = id;
                     } else {
@@ -2060,10 +2100,7 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 managedWorkers.putIfAbsent(worker.id(), worker);
                 cell.supervision.set(supervisorControl);
-                if (cell.stopped.get()) {
-                    managedWorkers.remove(worker.id(), worker);
-                    throw new IllegalStateException("worker stopped during group admission");
-                }
+            }
             }
             return worker;
         }
@@ -2111,6 +2148,13 @@ public final class ActorRuntime implements AutoCloseable {
             if (!worker.ownedBy(ActorRuntime.this)) {
                 throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
             }
+            ActorCell<?> transferCell = actors.get(worker.id());
+            if (transferCell == null) {
+                throw new IllegalStateException("cannot transfer an unknown worker");
+            }
+            // Serialize with child spawns and finalization. Lock ordering is
+            // lifecycleLock -> authorityLock throughout the runtime.
+            synchronized (transferCell.lifecycleLock) {
             synchronized (authorityLock) {
                 requireOpen();
                 if (stoppingWorkers.contains(worker.id())) {
@@ -2132,6 +2176,7 @@ public final class ActorRuntime implements AutoCloseable {
                 cell.supervision.compareAndSet(supervisorControl, null);
                 managedWorkers.remove(worker.id(), worker);
                 return true;
+            }
             }
         }
 
