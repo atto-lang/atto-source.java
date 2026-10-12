@@ -6675,8 +6675,26 @@ public final class ActorRuntime implements AutoCloseable {
             }
             sourceCleanupProbes.clear();
             if (sourceCleanupAbandoned) {
-                ref.terminationCause.compareAndSet(
-                        null, new IncompleteSourceCleanupException(ref.id()));
+                // Preserve any original failure (notably structured
+                // ActorCancelledException) while recording the separate,
+                // security-relevant fact that registered guest cleanup never
+                // ran. compareAndSet(null, ...) alone silently loses that
+                // receipt whenever cancellation has already set the cause.
+                IncompleteSourceCleanupException incomplete =
+                        new IncompleteSourceCleanupException(ref.id());
+                if (!ref.terminationCause.compareAndSet(null, incomplete)) {
+                    Throwable primary = ref.terminationCause.get();
+                    if (primary != null) {
+                        boolean alreadyReported = false;
+                        for (Throwable suppressed : primary.getSuppressed()) {
+                            if (suppressed instanceof IncompleteSourceCleanupException) {
+                                alreadyReported = true;
+                                break;
+                            }
+                        }
+                        if (!alreadyReported) primary.addSuppressed(incomplete);
+                    }
+                }
             }
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
