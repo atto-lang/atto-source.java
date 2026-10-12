@@ -955,11 +955,16 @@ public final class Parser {
                     || method.visibility() == Ast.Visibility.PUBLIC
                     || !method.genericParameters().isEmpty()
                     || method.explicitReceiverType() != null
+                    || method.structural()
                     || method.parameters().size() != 1
+                    || method.parameters().get(0).structural()
+                    || method.parameters().get(0).mutable()
                     || !method.parameters().get(0).type().name().equals(expected)
                     || !method.parameters().get(0).type().arguments().isEmpty()
+                    || method.parameters().get(0).type().inferArguments()
                     || !method.returnType().name().equals("void")
-                    || !method.returnType().arguments().isEmpty())
+                    || !method.returnType().arguments().isEmpty()
+                    || method.returnType().inferArguments())
                 throw error(previous(), "transform pipe actor '" + actorName
                         + "' method '" + method.name()
                         + "' must be an instance void handler taking exactly one "
