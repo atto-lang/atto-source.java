@@ -25,7 +25,7 @@ final class ActorStateAndEffectsParserTest {
                     count: int = 0;
                     enabled: bool = true;
                 }
-                pub increment(): int using state.read, state.write {
+                pub increment(): int with state.read, state.write {
                     return self.handle_state(critical write |s| -> {
                         s.count = s.count + 1;
                         return s.count;
@@ -39,10 +39,10 @@ final class ActorStateAndEffectsParserTest {
         assertEquals("int", state.type().recordMembers().get("count").name());
         assertEquals("bool", state.type().recordMembers().get("enabled").name());
         assertEquals(2, ((Ast.ObjectExpr) state.initializer()).fields().size());
-        var using = actor.methods().getFirst().annotations().stream()
-                .filter(a -> a.name().equals("$using$")).findFirst().orElseThrow();
+        var effects = actor.methods().getFirst().annotations().stream()
+                .filter(a -> a.name().equals("$with$")).findFirst().orElseThrow();
         assertEquals(List.of("state.read", "state.write"),
-                using.arguments().stream().map(Ast.TypeRef::name).toList());
+                effects.arguments().stream().map(Ast.TypeRef::name).toList());
         assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse("""
             define actor A as
               state { count: int = 0; }
@@ -72,10 +72,10 @@ final class ActorStateAndEffectsParserTest {
 
     @Test void parsesRequirementsAndPreservesTrapNlex() {
         Ast.Program p = Parser.parse("""
-            pub nlex fnc f(): int using alloc requires bounded, no_block {
+            pub nlex fnc f(): int with alloc requires bounded, no_block {
                 return 1;
             }
-            pub trap fnc g(): int using io { return 2; }
+            pub trap fnc g(): int with io { return 2; }
             """);
         Ast.FunctionDecl f = (Ast.FunctionDecl) p.modules().getFirst().declarations().getFirst();
         assertTrue(f.nonLexical());
@@ -96,7 +96,7 @@ final class ActorStateAndEffectsParserTest {
             end
             """));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-            fnc foo(): int using state.read, state.read { return 1; }
+            fnc foo(): int with state.read, state.read { return 1; }
             """));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
             fnc foo(): int using magic { return 1; }
@@ -191,7 +191,7 @@ final class ActorStateAndEffectsParserTest {
         String valid = """
             define actor Counter as
                 state { count: int = 0; }
-                pub increment(): int using state.read, state.write {
+                pub increment(): int with state.read, state.write {
                     return self.handle_state(critical write |s| -> {
                         s.count = s.count + 1;
                         return s.count;
@@ -216,7 +216,7 @@ final class ActorStateAndEffectsParserTest {
                 () -> dev.oreslang.types.DeclaredEffectVerifier.verify(Parser.parse(missing)));
 
         String underDeclared = valid.replace(
-                "using state.read, state.write", "using state.read");
+                "with state.read, state.write", "with state.read");
         assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.DeclaredEffectVerifier.verify(Parser.parse(underDeclared)));
 
@@ -242,7 +242,7 @@ final class ActorStateAndEffectsParserTest {
         String valid = """
             define actor Counter as
                 state { count: int = 0; }
-                pub read(): int using state.read {
+                pub read(): int with state.read {
                     return self.handle_state(critical read |s| -> s.count);
                 }
                 receive(ActorMail<String> mail): void { return; }
@@ -260,7 +260,7 @@ final class ActorStateAndEffectsParserTest {
         Ast.Program writeOnly = Parser.parse("""
             define actor Counter as
                 state { count: int = 0; }
-                pub initialize(): void using state.write {
+                pub initialize(): void with state.write {
                     self.handle_state(critical write |s| -> {
                         s.count = 42;
                     });
@@ -274,7 +274,7 @@ final class ActorStateAndEffectsParserTest {
         Ast.Program readModifyWrite = Parser.parse("""
             define actor Counter as
                 state { count: int = 0; }
-                pub increment(): void using state.write {
+                pub increment(): void with state.write {
                     self.handle_state(critical write |s| -> {
                         s.count = s.count + 1;
                     });
