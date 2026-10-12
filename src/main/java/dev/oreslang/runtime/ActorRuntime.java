@@ -6634,19 +6634,25 @@ public final class ActorRuntime implements AutoCloseable {
                 // after the executor has returned.
                 AtomicBoolean invoked = new AtomicBoolean();
                 AtomicBoolean completed = new AtomicBoolean();
+                AtomicBoolean violationObserved = new AtomicBoolean();
                 Thread admittedWorker = Thread.currentThread();
                 turnExecutor.execute(() -> {
                     if (!invoked.compareAndSet(false, true)) {
+                        // Record the violation independently of the thrown
+                        // exception: an embeddable host may catch/suppress it.
+                        violationObserved.set(true);
                         throw new IllegalStateException(
                                 "actor turn callback invoked more than once for " + ref.id());
                     }
                     if (Thread.currentThread() != admittedWorker) {
+                        violationObserved.set(true);
                         throw new IllegalStateException(
                                 "actor turn callback invoked on a foreign worker for " + ref.id());
                     }
                     synchronized (lifecycleLock) {
                         if (scheduledDispatchToken != dispatchTicket || !scheduled.get()
                                 || !carrierActive || carrierOwnerThread != admittedWorker) {
+                            violationObserved.set(true);
                             throw new IllegalStateException(
                                     "actor turn callback lost physical carrier lease for " + ref.id());
                         }
@@ -6657,9 +6663,10 @@ public final class ActorRuntime implements AutoCloseable {
                         completed.set(true);
                     }
                 });
-                if (!completed.get()) {
+                if (violationObserved.get() || !completed.get()) {
                     throw new IllegalStateException(
-                            "actor TurnExecutor returned without completing its callback for " + ref.id());
+                            "actor TurnExecutor returned after an invalid or unfinished callback for "
+                                    + ref.id());
                 }
             } catch (Throwable failure) {
                 fail(failure);
