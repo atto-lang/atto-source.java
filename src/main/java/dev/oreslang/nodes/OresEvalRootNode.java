@@ -3873,9 +3873,19 @@ public final class OresEvalRootNode extends RootNode {
                     && selfName.name().equals("self")
                     && env.lookup("self") instanceof OresObject actor
                     && actor.actorState != null) {
-                continuation.accept(task, null, new UnsupportedOperationException(
-                        "critical handle_state on a suspendable task requires "
-                        + "generation-fenced continuation lowering"));
+                // The *surrounding* source task may suspend on a later loop
+                // backedge, but a sealed handle_state invocation is atomic.
+                // Reuse the synchronous critical-state admission path rather
+                // than mistakenly rejecting an otherwise safe actor receive.
+                // This path validates lexical callback shape, rejects any
+                // nested potential suspension, and releases the state loan
+                // before resuming the outer source continuation.
+                try {
+                    Invocation invocation = criticalStateInvocation(call, member, env);
+                    continuation.accept(task, invoke(invocation), null);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                }
                 return;
             }
             if (call.callee() instanceof Ast.NameExpr name
