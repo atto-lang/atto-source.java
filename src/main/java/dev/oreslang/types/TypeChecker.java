@@ -100,6 +100,7 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        rejectUnloweredSealedActorStates(program);
         program = AnnotationExpander.expand(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
@@ -121,6 +122,7 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        rejectUnloweredSealedActorStates(program);
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
@@ -157,6 +159,25 @@ public final class TypeChecker {
         }
         checker.validate(program);
         return program;
+    }
+
+    /**
+     * Run BEFORE any AST rewrite. A backend must never be handed a program
+     * from which a sealed actor state declaration was silently dropped by a
+     * compatibility constructor in an annotation or desugaring pass.
+     */
+    private static void rejectUnloweredSealedActorStates(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass
+                        && klass.actorState() != null) {
+                    throw new IllegalArgumentException(
+                            "sealed actor state AST is recognized but execution requires "
+                            + "compiler-enforced handle_state effects, ownership "
+                            + "and scheduler-owned scope cleanup; lowering is disabled");
+                }
+            }
+        }
     }
 
     private void validateImports(Ast.Program program) {
