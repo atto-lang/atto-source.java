@@ -6627,13 +6627,11 @@ public final class ActorRuntime implements AutoCloseable {
                     // failure, if any, and attach this teardown failure.
                     Throwable earlier = ref.terminationCause.get();
                     if (earlier == null
-                            && ref.terminationCause.compareAndSet(null, shutdownFailure)) {
-                        earlier = null;
-                    } else {
+                            && !ref.terminationCause.compareAndSet(null, shutdownFailure)) {
                         earlier = ref.terminationCause.get();
-                        if (earlier != null && earlier != shutdownFailure) {
-                            earlier.addSuppressed(shutdownFailure);
-                        }
+                    }
+                    if (earlier != null && earlier != shutdownFailure) {
+                        earlier.addSuppressed(shutdownFailure);
                     }
                 }
             }
