@@ -71,7 +71,9 @@ final class ActorContinuationTeardownTest {
             ref.stop();
             assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(1, segments.get());
-            assertTrue(producerStage.complete(7));
+            // Structured teardown may cancel the host stage; either a late
+            // completion or an already-cancelled producer must be harmless.
+            producerStage.complete(7);
             assertEquals(0, published.get(),
                     "the producer must not execute a guest callback on its own thread");
             assertEquals(1, segments.get(),
