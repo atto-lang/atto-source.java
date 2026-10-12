@@ -44,6 +44,7 @@ public final class CriticalRwGate implements AutoCloseable {
         private final Mode mode;
         private final OresFuture<Void> admitted = new OresFuture<>(this::close);
         private State state = State.NEW; // guarded by COORDINATOR
+        private boolean completionAttached; // guarded by COORDINATOR
         private Object domain;
 
         private Ticket(Mode mode) {
@@ -96,14 +97,38 @@ public final class CriticalRwGate implements AutoCloseable {
             return admitted;
         }
 
+        /**
+         * Observe admission only after requesting it. An unrequested ticket
+         * cannot be used as an await point: that would suspend forever.
+         */
         public OresFuture<Void> admission() {
-            return admitted;
+            synchronized (COORDINATOR) {
+                if (state == State.NEW) {
+                    throw new IllegalStateException("RW admission was not requested");
+                }
+                return admitted;
+            }
         }
 
-        /** Attach task completion to guarantee release on all settled outcomes. */
+        /**
+         * Bind exactly one owning task completion to the ticket. The callback
+         * revokes either a pending admission or an active grant on cancellation,
+         * return or failure. Do not bind unrelated task lifetimes.
+         */
         public void releaseOnCompletion(OresFuture<?> completion) {
-            Objects.requireNonNull(completion, "completion")
-                    .whenCompleteRuntime((value, error) -> close());
+            Objects.requireNonNull(completion, "completion");
+            synchronized (COORDINATOR) {
+                if (state == State.CLOSED) {
+                    throw new IllegalStateException("cannot bind a released RW ticket");
+                }
+                if (completionAttached) {
+                    throw new IllegalStateException("RW ticket completion already bound");
+                }
+                completionAttached = true;
+            }
+            // Completion may already be settled; never execute callbacks under
+            // the metadata coordinator or the guest's critical region.
+            completion.whenCompleteRuntime((value, error) -> close());
         }
 
         public boolean isHeld() {
