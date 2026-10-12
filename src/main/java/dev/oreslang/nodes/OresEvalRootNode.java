@@ -6416,15 +6416,18 @@ public final class OresEvalRootNode extends RootNode {
                         return context.http().handler(this, type, kind);
                     };
                     case "pool_handler" -> (Invokable) args -> {
-                        if (args.size() != 2 || !(args.get(0) instanceof String type) || !(args.get(1) instanceof Number count))
-                            throw new IllegalArgumentException("http.pool_handler(actor_name, worker_count)");
+                        if (args.size() != 2 || !(args.get(0) instanceof String type) ||
+                                !(args.get(1) instanceof Number count) ||
+                                !(count instanceof Long || count instanceof Integer) ||
+                                count.longValue() < 1 || count.longValue() > 10000)
+                            throw new IllegalArgumentException("http.pool_handler(actor_name, worker_count: 1..10000)");
                         Ast.ClassDecl declaration = requireLocalActorClass(type);
                         ActorRuntime.ActorKind kind = switch (declaration.actorKind()) {
                             case SHARED -> ActorRuntime.ActorKind.SHARED;
                             case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
                             default -> throw new IllegalArgumentException("HTTP pool handler must be shared or isolated actor");
                         };
-                        return context.http().poolHandler(this, type, kind, count.intValue());
+                        return context.http().poolHandler(this, type, kind, Math.toIntExact(count.longValue()));
                     };
                     case "listen" -> (Invokable) args -> {
                         if (args.size() != 5) throw new IllegalArgumentException("http.listen(host, port, capacity, body_limit, deadline_ms)");
