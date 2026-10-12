@@ -510,11 +510,13 @@ resumable SourceTask select path.
 WRITE arms are intentionally **not hoisted**: their evaluated payloads
 must not accidentally persist and replay across loop iterations, and
 move-only/Copy ownership semantics are not yet fully proven for cached
-writes. Currently they use the older per-entry SelectPlan construction.
-A stronger per-site fairness guarantee covering mixed READ/WRITE and
-dynamic-plan mutations remains future work, as do allocation-free static
-case expression lowering, arbitrary suspension of guest expressions, and
-LLVM compiler parity.
+writes. They use **fresh per-entry SelectPlan descriptors**, but share their
+actor/root-site FAIR cursor so that *only a committed winning arm* advances
+rotation, even for mixed READ/WRITE. The site never retains the old write
+payload; pending registrations still own their original evaluated payload
+until completion or cancellation. Dynamic-plan mutations, allocation-free
+static case expression lowering, arbitrary suspension of guest expressions,
+and LLVM compiler parity remain future work.
 
 Fairness has a precise scope: if all N READ arms remain ready at every
 atomic winner decision, a reused FAIR site selects each within N committed
