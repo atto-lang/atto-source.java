@@ -45,15 +45,21 @@ final class HostGeneratorSessionTest {
             }
             var fourth = session.nextStep();
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-            while (session.isQuiescent() && System.nanoTime() < deadline) {
+            while (!session.awaitingSourceFuture() && System.nanoTime() < deadline) {
                 Thread.onSpinWait();
             }
+            assertTrue(session.awaitingSourceFuture(),
+                    "fourth source pull must actually reach its suspended await");
+            assertEquals(0, session.cleanupRuns());
             assertFalse(fourth.isDone(), "fourth source await must remain pending");
             assertTrue(fourth.cancel(false));
             session.seal();
             root.close();
             assertTrue(session.isQuiescent(), "physical DONE must precede retirement");
             session.close();
+            assertEquals(1, session.cleanupRuns(),
+                    "source finally must run once during cancelled fourth pull");
+            assertEquals(1, ((Number) session.cleanupBinding("cleanup_marker")).intValue());
             assertFalse(pendingSourceCall.isDone(),
                     "cancel cannot steal an externally-owned Future");
         }
