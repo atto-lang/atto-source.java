@@ -243,23 +243,26 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         }
     }
 
+    private boolean nativeScopeClosed;
+
     private void finishPhysicalClose() {
         if (!closed.get() || loanCount != 0 || physicalClosed.get()) return;
-        try {
-            closeArena.invoke(nativeArena);
-        } catch (IllegalAccessException | InvocationTargetException error) {
-            // Do not report successful physical release or reimburse the
-            // actor's quota when the native FFM scope failed to close.
-            throw new IllegalStateException("failed physically releasing actor-native region", error);
+        if (!nativeScopeClosed) {
+            try {
+                closeArena.invoke(nativeArena);
+            } catch (IllegalAccessException | InvocationTargetException error) {
+                // Keep the reservation pinned if native memory was not closed.
+                throw new IllegalStateException("failed physically releasing actor-native region", error);
+            }
+            nativeScopeClosed = true;
+            Arrays.fill(live, false);
+            occupied = 0;
         }
+        // If bookkeeping fails after Arena.close(), retries must NOT close the
+        // native Arena twice. The reservation itself is retryable/idempotent.
+        reservation.close();
+        onRetired.run();
         physicalClosed.set(true);
-        Arrays.fill(live, false);
-        occupied = 0;
-        try {
-            reservation.close();
-        } finally {
-            onRetired.run();
-        }
     }
 
     private void requireOpen() {
