@@ -285,6 +285,36 @@ domain. Supervisors may poll notices and apply an explicit structured or
 isolate-backed cancellation policy; only a proven isolated revoker may force
 termination.
 
+## Bounded scheduler state-space and adversarial admission gates
+
+The Java regression `OresSchedulerStateModelTest` exhaustively enumerates
+reachable states for **two source tasks sharing one actor**, with up to
+**two carrier turns per task**, including producer completion, await/cooperate,
+timeouts, cancellation, scheduler close, notification drain and retirement.
+The model rejects overlapping actor carriers, terminal-state resource reuse
+before quiescence and notification completion, and executing already-retired
+guest state. Negative-model mutations verify that its assertions actually
+detect illegal states.
+
+The model is an **independent, bounded reference specification**. Passing
+its exploration does not prove that production CAS operations linearize
+according to those transitions, and does not establish a hard interrupt
+guarantee for a running FFI call. A production actor-instrumented refinement
+proof and JVM/LLVM cross-backend evidence remain separate release gates.
+
+`OresSchedulerQuiescenceTest` additionally exhausts the **256 process-wide
+host deadline admissions across four distinct scheduler instances**. It
+verifies fail-closed overload for each scheduler, shutdown retirement of
+queued and waiting tasks, and detachment of producer Future waiters. This
+is separate from the **32-per-UNTRUSTED-actor** cap and existing blocked
+host callback/cancellation regressions.
+
+Run the bounded checker and runtime-focused regressions together:
+
+```sh
+mvn -Dtest=OresSchedulerStateModelTest,OresSchedulerQuiescenceTest,UntrustedLogicalQuotaTest test
+```
+
 ## Required invariants
 
 1. **No source-line semantics.** Preemption occurs only at VM-defined resumable
