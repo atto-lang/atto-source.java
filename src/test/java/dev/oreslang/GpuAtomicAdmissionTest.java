@@ -125,6 +125,57 @@ final class GpuAtomicAdmissionTest {
     }
 
     @Test
+    void claimRacingWithTakeCannotPartiallyClaimTheInput() throws InterruptedException {
+        for (int iteration = 0; iteration < 150; iteration++) {
+            var input = owner(1, "t", "d", 16);
+            var output = owner(2, "t", "d", 16);
+            var start = new CountDownLatch(1);
+            var claimed = new AtomicReference<GpuBufferFence.PairTickets>();
+            var moved = new AtomicReference<GpuBufferFence>();
+            var errors = new AtomicInteger();
+            var claimer = new Thread(() -> {
+                try {
+                    start.await();
+                    claimed.set(GpuBufferFence.claimPair(input, output, 16));
+                } catch (IllegalStateException expected) {
+                    // Ownership transfer won, so the old output is invalid.
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    errors.incrementAndGet();
+                }
+            });
+            var mover = new Thread(() -> {
+                try {
+                    start.await();
+                    moved.set(output.take());
+                } catch (IllegalStateException expected) {
+                    // Paired admission won, so moving a busy buffer is forbidden.
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    errors.incrementAndGet();
+                }
+            });
+            claimer.start();
+            mover.start();
+            start.countDown();
+            claimer.join();
+            mover.join();
+            assertEquals(0, errors.get());
+            assertNotEquals(claimed.get() == null, moved.get() == null);
+            if (claimed.get() != null) {
+                assertEquals(GpuBufferFence.Status.IN_FLIGHT, input.status());
+                assertEquals(GpuBufferFence.Status.IN_FLIGHT, output.status());
+                input.complete(claimed.get().inputTicket(), true);
+                output.complete(claimed.get().outputTicket(), true);
+            } else {
+                assertEquals(GpuBufferFence.Status.IDLE, input.status());
+                assertEquals(GpuBufferFence.Status.IDLE, moved.get().status());
+                assertThrows(IllegalStateException.class, output::status);
+            }
+        }
+    }
+
+    @Test
     void typedDopClaimReturnsTheKernelAndTheActualFenceTickets() {
         var plan = new DataOrientedLayout.Plan(DataOrientedLayout.Kind.AOSOA, 7, 3, 4, 16, 4);
         var kernel = new DopKernelIR.Kernel(plan, DopKernelIR.Element.F32,
