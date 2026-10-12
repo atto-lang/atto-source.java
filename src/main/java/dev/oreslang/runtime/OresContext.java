@@ -402,20 +402,28 @@ public final class OresContext implements AutoCloseable {
     }
 
     private void executeGuestTurn(Runnable turn, boolean serialize) {
-        // Wait BEFORE TruffleContext.enter; never hold its guest entry while
-        // blocked by a host Value.execute() that launched a Future.
-        hostFutureAdmission.awaitGuestAdmission();
         if (serialize) adversarialActorTurnLock.lock();
-        TruffleContext truffleContext = env.getContext();
-        Object previous = null;
-        boolean entered = false;
+        Runnable guestLease = null;
         try {
-            previous = truffleContext.enter(null);
-            entered = true;
-            turn.run();
+            // Reserve atomically BEFORE TruffleContext.enter. Host bridge
+            // claims cannot overtake a carrier between admission and enter.
+            guestLease = hostFutureAdmission.reserveGuestTurn();
+            TruffleContext truffleContext = env.getContext();
+            Object previous = null;
+            boolean entered = false;
+            try {
+                previous = truffleContext.enter(null);
+                entered = true;
+                turn.run();
+            } finally {
+                if (entered) truffleContext.leave(null, previous);
+            }
         } finally {
-            if (entered) truffleContext.leave(null, previous);
-            if (serialize) adversarialActorTurnLock.unlock();
+            try {
+                if (guestLease != null) guestLease.run();
+            } finally {
+                if (serialize) adversarialActorTurnLock.unlock();
+            }
         }
     }
 
