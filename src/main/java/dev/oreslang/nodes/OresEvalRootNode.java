@@ -802,6 +802,18 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export public function '" + name + "'");
             }
+            // An async public callable produces a scheduler-owned Future.
+            // Legacy Value.execute() plus Value.asHostObject() must not return
+            // that Future: the host's second interop entry can race the freshly
+            // dispatched guest task. Reject BEFORE calling any guest body.
+            // Pull-driven async generators are not Futures and keep their
+            // separate iterator protocol.
+            if (!requireAsync && !fn.generator()
+                    && (fn.async() || "Future".equals(fn.returnType().name()))) {
+                throw new IllegalArgumentException(
+                        "legacy public Future return is unsafe; use "
+                        + "OresHostFutureBridge.invokePublicFuture: " + name);
+            }
             // Reject unsupported synchronous functions BEFORE any guest body
             // executes. Otherwise the host Future bridge may throw after
             // running user side effects and misreporting a rejected request.
