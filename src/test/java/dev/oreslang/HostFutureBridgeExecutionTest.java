@@ -167,6 +167,29 @@ final class HostFutureBridgeExecutionTest {
     }
 
     @Test
+    void adversarialPolicyRefusesUnpumpedHostFutureBeforeScheduling()
+            throws Exception {
+        String source = "pub async fnc work(): int { return 17; }";
+        // This verifies Oreslang's effective adversarial admission policy;
+        // it does not substitute for a full Graal isolate sandbox test.
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true)
+                .arguments(OresLanguage.ID,
+                        new String[]{"--ores-capabilities=", "--ores-adversarial=true"})
+                .build()) {
+            Value parsed = context.parse(Source.newBuilder(OresLanguage.ID,
+                    source, "adversarial-bridge-rejection.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+            parsed.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+            PolyglotException rejection = assertThrows(PolyglotException.class,
+                    () -> OresHostFutureBridge.invokePublicFuture(parsed, "work"));
+            assertTrue(rejection.getMessage().contains(
+                    "scoped host Future bridge is unavailable in adversarial contexts"),
+                    "host Future launch cannot orphan queued guest turns");
+        }
+    }
+
+    @Test
     void synchronousGuestSideEffectsMustNotRunBeforeAsyncRejection()
             throws Exception {
         ConcurrentOutput output = new ConcurrentOutput();
