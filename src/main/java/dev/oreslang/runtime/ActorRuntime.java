@@ -3190,6 +3190,12 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException("current actor is no longer registered");
         }
 
+        // Never invoke group shutdown while holding groupMembershipLock. Group
+        // close acquires authorityLock before taking that membership lock; a
+        // synchronous rollback from inside this critical section would invert
+        // the ordering and deadlock against concurrent close/rotation.
+        ActorGroup newlyCreated = null;
+        boolean creatorStoppedDuringPublication = false;
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             if (actorGroups.size() >= dispatcherConfig.maxActors()) {
@@ -3229,7 +3235,7 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "actor ActorGroup membership limit exceeded: maximum " + limit);
                 }
-                while (true) {
+                while (newlyCreated == null) {
                     ActorGroupId id = ActorGroupId.create();
                     ActorGroup group = new ActorGroup(id, creator, creatorPolicy);
                     if (actorGroups.putIfAbsent(id, group) == null) {
@@ -3242,20 +3248,22 @@ public final class ActorRuntime implements AutoCloseable {
                             createdGroupsByActor.computeIfAbsent(
                                     creator, ignored -> new java.util.HashSet<>()).add(id);
                         }
-                        // Finalization calls unregisterActor() while holding
-                        // ActorCell.lifecycleLock. Never acquire that lock here:
-                        // instead recheck the stop flag after publication. If
-                        // retirement beat group creation's registration, the
-                        // group is closed before it can escape to the caller.
-                        if (creatorCell != null && creatorCell.stopped.get()) {
-                            group.closeFromRuntime();
-                            throw new IllegalStateException("group creator stopped during creation");
-                        }
-                        return group;
+                        // Finalization snapshots both reverse indexes under
+                        // groupMembershipLock. If termination has already
+                        // started, roll back only AFTER releasing both locks.
+                        // A later stop is handled by unregisterActor().
+                        newlyCreated = group;
+                        creatorStoppedDuringPublication =
+                                creatorCell != null && creatorCell.stopped.get();
                     }
                 }
             }
         }
+        if (creatorStoppedDuringPublication) {
+            newlyCreated.closeFromRuntime();
+            throw new IllegalStateException("group creator stopped during creation");
+        }
+        return newlyCreated;
     }
 
     private <M> void sendFromActorGroupMailman(
