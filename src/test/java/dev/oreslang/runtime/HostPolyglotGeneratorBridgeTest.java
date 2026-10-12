@@ -7,6 +7,7 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.Map;
@@ -32,7 +33,7 @@ final class HostPolyglotGeneratorBridgeTest {
             }
             """;
 
-    @Test
+    @RepeatedTest(20)
     void realPolyglotJavaHostReceivesThreeYieldsAndCancelsFourth()
             throws Exception {
         Context context = Context.newBuilder(OresLanguage.ID)
