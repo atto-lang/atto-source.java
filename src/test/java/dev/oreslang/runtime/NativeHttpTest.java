@@ -16,6 +16,24 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void rejectedAbortExecutorRunsTerminalCleanupExactlyOnce() {
+        var releases = new java.util.concurrent.atomic.AtomicInteger();
+        var closes = new java.util.concurrent.atomic.AtomicInteger();
+        Runnable cleanup = () -> {
+            closes.incrementAndGet();
+            releases.incrementAndGet();
+        };
+        NativeHttp.executeAbortCleanup(task -> {
+            throw new RejectedExecutionException("HTTP runtime already closed");
+        }, cleanup);
+        assertEquals(1, closes.get(), "rejected HTTP cleanup must still close transport");
+        assertEquals(1, releases.get(), "rejected HTTP cleanup must still release admission");
+
+        NativeHttp.executeAbortCleanup(Runnable::run, cleanup);
+        assertEquals(2, closes.get(), "accepted cleanup runs once");
+        assertEquals(2, releases.get(), "accepted cleanup runs once");
+    }
+
     @Test void pathDecodingPreservesSegmentBoundariesAndRejectsAmbiguousBytes() {
         assertEquals(List.of(), NativeHttp.segments("/"));
         assertEquals(List.of("😀"), NativeHttp.segments("/😀"));
