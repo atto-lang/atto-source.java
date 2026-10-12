@@ -504,4 +504,55 @@ final class ActorGroupMultiMembershipTest {
             assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void creatorShutdownDuringGroupCreationAlwaysReclaimsOwnedGroup()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            for (int round = 0; round < 24; round++) {
+                CountDownLatch actorEntered = new CountDownLatch(1);
+                CountDownLatch releaseCreation = new CountDownLatch(1);
+                AtomicReference<Throwable> unexpected = new AtomicReference<>();
+                ActorRuntime.ActorRef<Integer> creator = runtime.spawnSharedTrusted(
+                        factory -> (message, actor) -> {
+                            actorEntered.countDown();
+                            try {
+                                if (!releaseCreation.await(5, TimeUnit.SECONDS)) {
+                                    throw new AssertionError("creator creation barrier timed out");
+                                }
+                                // stop() can race any point between creator
+                                // registration and group publication.
+                                try {
+                                    runtime.createActorGroup();
+                                } catch (IllegalStateException alreadyStopping) {
+                                    // Valid outcome when termination wins.
+                                }
+                            } catch (Throwable failure) {
+                                unexpected.compareAndSet(null, failure);
+                            }
+                        });
+                creator.send(1);
+                assertTrue(actorEntered.await(5, TimeUnit.SECONDS),
+                        "creator did not enter its actor turn");
+                AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+                Thread terminator = new Thread(() -> {
+                    try {
+                        creator.stop();
+                    } catch (Throwable failure) {
+                        stopFailure.set(failure);
+                    }
+                });
+                terminator.start();
+                releaseCreation.countDown();
+                terminator.join(5_000);
+                assertFalse(terminator.isAlive(), "creator stop deadlocked group publication");
+                assertNull(stopFailure.get());
+                assertTrue(creator.awaitTermination(5, TimeUnit.SECONDS),
+                        "creator retirement blocked by ActorGroup close");
+                assertNull(unexpected.get());
+                assertEquals(0, runtime.actorGroupCount(),
+                        "creator's structural ActorGroups escaped termination cleanup");
+            }
+        }
+    }
 }
