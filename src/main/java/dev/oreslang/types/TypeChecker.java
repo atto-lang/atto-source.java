@@ -1754,7 +1754,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "typed value match currently supports scalar int/bool/string/float/decimal results only");
         }
-        if (!safeValueMatchContextScalarExpr(matched.subject())) {
+        if (!safeValueMatchContextScalarExpr(matched.subject(), env)) {
             throw new IllegalArgumentException(
                     "typed value match subject requires a pure scalar expression or explicit await of a local callable");
         }
@@ -1877,7 +1877,7 @@ public final class TypeChecker {
                 // own lexical ARM_RESULT boundary and proven scalar type.
                 // It is not equivalent to an unverified arbitrary call.
                 boolean nestedValueMatch = binding.initializer() instanceof Ast.ValueMatchExpr;
-                if (!nestedValueMatch && !safeValueMatchContextScalarExpr(binding.initializer()))
+                if (!nestedValueMatch && !safeValueMatchContextScalarExpr(binding.initializer(), local))
                     throw new IllegalArgumentException(
                             "typed value match binding initializer requires a pure scalar expression or admitted await");
                 if (!nestedValueMatch)
@@ -1888,7 +1888,7 @@ public final class TypeChecker {
                             "typed value match binding must be an owned scalar value");
                 checkStatement(binding, local, generics, result, self);
             } else if (stmt instanceof Ast.ArmReturnStmt returned) {
-                if (!safeValueMatchContextScalarExpr(returned.value()))
+                if (!safeValueMatchContextScalarExpr(returned.value(), local))
                     throw new IllegalArgumentException(
                             "typed value match arm result requires a pure scalar expression or admitted await");
                 requireValueMatchOwnedScalarNames(returned.value(), local);
@@ -1965,23 +1965,33 @@ public final class TypeChecker {
      * checker verifies its declaration, awaitability, and scalar result.
      * Generic calls, implicit effects and borrowed payloads stay fail-closed.
      */
-    private boolean safeValueMatchContextScalarExpr(Ast.Expr expr) {
+    private boolean safeValueMatchContextScalarExpr(Ast.Expr expr, Env env) {
         if (safeValueMatchScalarExpr(expr)) return true;
         if (!currentMaySuspend) return false;
         if (expr instanceof Ast.AwaitExpr awaited
                 && awaited.expression() instanceof Ast.CallExpr call
-                && call.callee() instanceof Ast.NameExpr
+                && call.callee() instanceof Ast.NameExpr name
                 && call.arguments().isEmpty()
-                && !call.typeArgumentsPresent()) return true;
+                && !call.typeArgumentsPresent()) {
+            // Awaiting an arbitrary zero-arg name was previously admitted by
+            // AST shape alone. Require a real, unshadowed local async
+            // declaration, not a closure binding, imported alias, actor
+            // callable or user-provided object with a call operator.
+            if (env.lookup(name.name()) != null) return false;
+            Ast.FunctionDecl declared = findFunction(name.name(), 0);
+            return declared != null && declared.async() && !declared.generator()
+                    && declared.actorKind() == Ast.ActorKind.NONE
+                    && declared.genericParameters().isEmpty();
+        }
         if (expr instanceof Ast.UnaryExpr unary)
             return switch (unary.operator()) {
-                case "!", "~", "+", "-" -> safeValueMatchContextScalarExpr(unary.operand());
+                case "!", "~", "+", "-" -> safeValueMatchContextScalarExpr(unary.operand(), env);
                 default -> false;
             };
         if (expr instanceof Ast.BinaryExpr binary)
             return safeValueMatchScalarOperator(binary.operator())
-                    && safeValueMatchContextScalarExpr(binary.left())
-                    && safeValueMatchContextScalarExpr(binary.right());
+                    && safeValueMatchContextScalarExpr(binary.left(), env)
+                    && safeValueMatchContextScalarExpr(binary.right(), env);
         return false;
     }
 
