@@ -165,14 +165,20 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         }
     }
 
+    private final VerifiedCloseFence engineCloseFence =
+            new VerifiedCloseFence(this::retirePhysicalIsolate);
+
     @Override
     public void close() {
+        // An independent contender cannot report successful pool retirement
+        // while the first caller is still closing guest Contexts/Engine.
+        synchronized (this) { closed = true; }
+        engineCloseFence.awaitConfirmedClose("shared untrusted Engine");
+    }
+
+    private void retirePhysicalIsolate() {
         Set<Group> snapshot;
-        synchronized (this) {
-            if (closed) return;
-            closed = true;
-            snapshot = Set.copyOf(groups);
-        }
+        synchronized (this) { snapshot = Set.copyOf(groups); }
         RuntimeException failure = null;
         for (Group group : snapshot) {
             try {
@@ -184,8 +190,8 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         }
         try {
             engine.close(true);
-            // A failed close may leave a live native isolate behind; keep the
-            // slot fenced in that case rather than admitting a second one.
+            // No second Engine may be admitted until this native isolate
+            // has actually retired; failed close keeps the singleton fenced.
             ISOLATE_SLOT.set(false);
         } catch (RuntimeException error) {
             if (failure == null) failure = error;
