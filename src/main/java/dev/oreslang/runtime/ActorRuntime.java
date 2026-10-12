@@ -2082,6 +2082,36 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * An unpublished replacement is owned until physical DONE, even when
+         * a precommit rejection or supervisor close prevents publication.
+         * This does not force-stop it: the trusted host must first stop or
+         * cancel the exact ActorRef and observe its terminal done barrier.
+         */
+        SupervisorChildRegistry.Snapshot abortCleanedUnpublishedRestart(
+                SupervisorChildRegistry.RestartReservation permit,
+                ActorRef<?> candidate) {
+            requireSupervisorContext("abort physically cleaned supervisor RESTART");
+            Objects.requireNonNull(permit);
+            Objects.requireNonNull(candidate);
+            if (!candidate.ownedBy(ActorRuntime.this)
+                    || !supervisorId.equals(permit.child().supervisorId())
+                    || !id.equals(permit.child().groupId()))
+                throw new SecurityException("foreign RESTART abort authority");
+            synchronized (authorityLock) {
+                if (!groupClosed.get()
+                        && pendingRestartCandidates.get(candidate.id()) != candidate)
+                    throw new IllegalStateException("candidate is not owned as pending");
+                childRegistry.acknowledgeCleanupIfStaged(
+                        permit, candidate.id(),
+                        () -> candidate.done().isDone()
+                                && !actors.containsKey(candidate.id()));
+                var restored = childRegistry.abortRestart(permit);
+                pendingRestartCandidates.remove(candidate.id(), candidate);
+                return restored;
+            }
+        }
+
+        /**
          * Publication is linearized while holding physical actor lifecycle,
          * group ownership and registry admission locks, in that order.
          * No host callback or user behavior is invoked under these locks.
