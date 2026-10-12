@@ -132,7 +132,7 @@ final class OresContextLifecycleTest {
             assertThrows(java.util.concurrent.CancellationException.class,
                     () -> task.get(5, TimeUnit.SECONDS));
             awaitOutput(output, "cleanup-result");
-            assertEquals("work-entered\\nfinally-entered\\ncleanup-result\\n",
+            assertEquals("work-entered\nfinally-entered\ncleanup-result\n",
                     output.toString(StandardCharsets.UTF_8));
 
             OresContextLifecycle.closeWhenQuiescent(context);
