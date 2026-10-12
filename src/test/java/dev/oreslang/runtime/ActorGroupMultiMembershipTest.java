@@ -584,6 +584,98 @@ final class ActorGroupMultiMembershipTest {
     }
 
     @Test
+    void concurrentHostProducersPreserveMultiRoomActorTurnSerialityAndExactlyOnceDelivery()
+            throws Exception {
+        final int producers = 4;
+        final int messagesPerProducer = 16;
+        final int total = producers * messagesPerProducer;
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup roomA = runtime.createActorGroup();
+            ActorRuntime.ActorGroup roomB = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability joinA = roomA.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability joinB = roomB.joinCapability();
+
+            CountDownLatch joined = new CountDownLatch(1);
+            CountDownLatch startProducers = new CountDownLatch(1);
+            CountDownLatch delivered = new CountDownLatch(total);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicInteger activeTurns =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger peakTurns =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            java.util.Set<Integer> received =
+                    java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+            ActorRuntime.ActorRef<Integer> connection = runtime.spawnSharedTrusted(
+                    factory -> (message, actor) -> {
+                        int active = activeTurns.incrementAndGet();
+                        peakTurns.accumulateAndGet(active, Math::max);
+                        try {
+                            if (message == 0) {
+                                joinA.join();
+                                joinB.join();
+                                joined.countDown();
+                            } else {
+                                assertTrue(roomA.contains(actor.self()));
+                                assertTrue(roomB.contains(actor.self()));
+                                assertTrue(received.add(message),
+                                        "actor must consume each producer ticket once");
+                                Thread.yield();
+                            }
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            activeTurns.decrementAndGet();
+                            if (message != 0) delivered.countDown();
+                        }
+                    });
+
+            connection.send(0);
+            assertTrue(joined.await(5, TimeUnit.SECONDS));
+            java.util.List<Thread> senders = new java.util.ArrayList<>();
+            for (int producer = 0; producer < producers; producer++) {
+                final int number = producer;
+                Thread sender = new Thread(() -> {
+                    try {
+                        if (!startProducers.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("producer start timed out");
+                        }
+                        for (int ticket = 1; ticket <= messagesPerProducer; ticket++) {
+                            connection.send(number * messagesPerProducer + ticket);
+                        }
+                    } catch (Throwable problem) {
+                        failure.compareAndSet(null, problem);
+                    }
+                }, "actor-group-producer-" + producer);
+                senders.add(sender);
+                sender.start();
+            }
+            try {
+                startProducers.countDown();
+                for (Thread sender : senders) {
+                    sender.join(5_000);
+                    assertFalse(sender.isAlive(), "a concurrent message producer deadlocked");
+                }
+                assertTrue(delivered.await(5, TimeUnit.SECONDS),
+                        "actor did not consume every concurrently enqueued message");
+                assertNull(failure.get());
+                assertEquals(total, received.size(),
+                        "multi-room actor lost or duplicated a producer ticket");
+                assertEquals(1, peakTurns.get(),
+                        "two carriers simultaneously ran the same multi-room actor");
+                assertEquals(0, activeTurns.get());
+                assertEquals(1, roomA.memberCount());
+                assertEquals(1, roomB.memberCount());
+            } finally {
+                connection.stop();
+                assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
+            }
+            assertEquals(0, roomA.memberCount());
+            assertEquals(0, roomB.memberCount());
+        }
+    }
+
+    @Test
     void creatorShutdownDuringGroupCreationAlwaysReclaimsOwnedGroup()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
