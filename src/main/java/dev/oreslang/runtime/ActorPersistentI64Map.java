@@ -2,24 +2,29 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
 /**
  * One actor-owned, bounded native i64-to-i64 state field. The only public
  * read/write operations live on a temporary Access object passed to critical().
- * Nested synchronous critical calls on one actor turn are allowed.\n * The map's slots are allocated in ActorArena's persistent FFM region and
+ * Nested synchronous critical calls on one actor turn are allowed.
+ * The map's slots are allocated in ActorArena's persistent FFM region and
  * survive mailbox messages; the Access object does not survive its callback.
  *
  * This is a synchronous host prototype, NOT a general Oreslang Map<K,V>,
  * the scheduler's logical CriticalGate, or suspendable handle_state lowering.
- * A JVM monitor is held only for this non-suspending callback; never extend
- * it across await, reentrancy boundaries, or a carrier migration.
+ * Host-only non-suspending callbacks use a fail-fast reentrant admission lock,
+ * never a carrier-parking monitor. The compiler must separately enforce that
+ * no callback can suspend or let its state access capability escape.
  */
 public final class ActorPersistentI64Map implements AutoCloseable {
     private static final long EMPTY = 0L;
     private static final long LIVE = 1L;
     private static final long DELETED = 2L;
     private final ActorArena arena;
+    // Nonblocking host admission only. This is NOT a continuation-owned gate.
+    private final ReentrantLock admission = new ReentrantLock();
     private final int capacity;
     private final int maxEntries;
     private final ExplicitNativeI64Region.Slot[] keys;
@@ -28,7 +33,7 @@ public final class ActorPersistentI64Map implements AutoCloseable {
     private final ArrayList<ExplicitNativeI64Region.Slot> allocated;
     private Access active;
     private int size;
-    private boolean closed;
+    private volatile boolean closed;
 
     ActorPersistentI64Map(ActorArena arena, int capacity) {
         this.arena = Objects.requireNonNull(arena, "arena");
@@ -64,23 +69,35 @@ public final class ActorPersistentI64Map implements AutoCloseable {
     }
 
     /**
-     * Exclusive, non-suspending access to native persistent actor state.
-     * The actor mailbox is expected to be single-flight. Nested callbacks
-     * temporarily fence the outer Access view; finally restores it. This
-     * host monitor is NOT a scheduler-owned continuation lock.
-     * Never block a carrier or retain an Access across await/FFI.
+     * Exclusive, non-suspending host access. The current actor must be admitted
+     * BEFORE checking the gate, so unrelated callers never wait for a monitor.
+     * Contention fails immediately; only a future scheduler-owned suspendable
+     * CriticalGate can enqueue a logical continuation without parking a carrier.
+     *
+     * Nested synchronous calls by the same carrier are reentrant; the outer
+     * Access is temporarily fenced and always restored on exceptional exit.
+     * Do not suspend, invoke untrusted callbacks, or retain Access past return.
      */
-    public synchronized <R> R critical(Function<? super Access, ? extends R> body) {
+    public <R> R critical(Function<? super Access, ? extends R> body) {
         Objects.requireNonNull(body, "critical body");
         requireActiveOwner();
-        Access previous = active;
-        Access access = new Access();
-        active = access;
+        if (!admission.tryLock()) {
+            throw new IllegalStateException(
+                    "actor critical state busy; synchronous acquisition must not park a carrier");
+        }
         try {
-            return body.apply(access);
+            requireActiveOwner();
+            Access previous = active;
+            Access access = new Access();
+            active = access;
+            try {
+                return body.apply(access);
+            } finally {
+                access.live = false;
+                active = previous;
+            }
         } finally {
-            access.live = false;
-            active = previous;
+            admission.unlock();
         }
     }
 
@@ -212,23 +229,35 @@ public final class ActorPersistentI64Map implements AutoCloseable {
         }
     }
 
-    public synchronized boolean closed() { return closed || arena.closed(); }
+    public boolean closed() { return closed || arena.closed(); }
 
-    @Override public synchronized void close() {
+    @Override public void close() {
+        // A foreign actor (or host thread) must be rejected before attempting
+        // admission, not made to wait on the current owner's critical callback.
         if (closed) return;
         requireActiveOwner();
-        if (active != null) {
-            throw new IllegalStateException("cannot close actor state during critical section");
+        if (!admission.tryLock()) {
+            throw new IllegalStateException(
+                    "actor critical state busy; close must not park a carrier");
         }
-        // Retire all map-owned slots in reverse order. Remove only after a
-        // successful drop so a failed close can be retried safely.
-        for (int index = allocated.size() - 1; index >= 0; index--) {
-            var slot = allocated.get(index);
-            if (slot != null) {
-                arena.dropPersistent(slot);
-                allocated.set(index, null);
+        try {
+            if (closed) return;
+            requireActiveOwner();
+            if (active != null) {
+                throw new IllegalStateException("cannot close actor state during critical section");
             }
+            // Retire all map-owned slots in reverse order. Remove only after a
+            // successful drop so a failed close can be retried safely.
+            for (int index = allocated.size() - 1; index >= 0; index--) {
+                var slot = allocated.get(index);
+                if (slot != null) {
+                    arena.dropPersistent(slot);
+                    allocated.set(index, null);
+                }
+            }
+            closed = true;
+        } finally {
+            admission.unlock();
         }
-        closed = true;
     }
 }
