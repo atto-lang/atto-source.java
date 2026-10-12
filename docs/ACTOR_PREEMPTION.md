@@ -232,6 +232,26 @@ scheduler's own physical carrier also must not wait for that same executor
 thread to terminate (even though the logical task binding is already cleared).
 These guarantees are checked by deterministic callback/cancel/close races.
 
+### Independent logical wall deadlines
+
+Each UNTRUSTED source-task descendant inherits the **remaining** cohort wall
+budget. A host-owned daemon timer runs independently of scheduler carriers
+and revokes the task when the deadline expires, even when its awaited Future
+never settles. Expiration detaches the source-task waiter and, if no guest
+carrier is executing, retires its quota slot without another actor turn.
+An active guest turn may have its completion suppressed immediately but
+**must exit its physical carrier before its memory/quota can be released**.
+
+Deadline notifications are dispatched from a separate host virtual thread,
+not from the shared timer worker: a blocking synchronous Future subscriber
+must not stall timeouts of other actors. Timer registrations are cancelled
+on task retirement and cancelled/finalized tasks cannot receive a second
+deadline result. A late nested child cannot mint a fresh wall budget.
+
+This is cooperative/structured cancellation, **not** forcible termination of
+unsafepointed FFI, native host calls or hung Java guest threads. An external
+isolate-level revoker is still required for hard wall-time enforcement.
+
 **Not an authorization to enable UNTRUSTED automatic loop cooperation.**
 Other continuation/cancellation/cleanup paths, nested source scopes, early
 termination and isolate-level hard revocation still need full cross-backend
@@ -302,10 +322,10 @@ single-writer lease is retired.
 
 ## UNTRUSTED continuation quota dependency
 
-The runtime currently meters UNTRUSTED execution per physical actor batch;
-this is not yet a sufficient quota contract for arbitrary `await` and
-resumable source-task handoffs. In particular, fuel, elapsed wall time and
-cross-carrier CPU time must belong to the logical task before automatic
-preemption can be enabled for UNTRUSTED code (issue #402). The language
-currently rejects `rt cooperate` for UNTRUSTED actors, but that guard is
-**not** proof that all resumable `await` paths are quota-continuous.
+UNTRUSTED source tasks now retain logical fuel, wall-time and CPU debt
+across `await` and carrier migration, including an independent deadline
+for never-settling Futures. Physical actor batches remain separately metered.
+This does not imply that force-killing an uncooperative native/Java carrier
+is safe. `rt cooperate` remains rejected for UNTRUSTED actors until all
+source-lowering paths, cancellation races, bounded host-resource admission,
+isolate revocation and cross-backend conformance are verified (issue #402).
