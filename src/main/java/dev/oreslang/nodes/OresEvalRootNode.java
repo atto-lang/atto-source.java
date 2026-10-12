@@ -175,6 +175,10 @@ public final class OresEvalRootNode extends RootNode {
         // code never implies shared mutable scheduler state.
         private final IdentityHashMap<Ast.SelectStmt, AtomicLong> rootStaticSelectCursors =
                 new IdentityHashMap<>();
+        // Root-only cache. Actors retain independent plans in ActorCell,
+        // never in the shared evaluator / immutable code image.
+        private final IdentityHashMap<Ast.SelectStmt, ChannelRuntime.SelectPlan>
+                rootReadSelectPlans = new IdentityHashMap<>();
         private StartupPhase startupPhase = StartupPhase.CREATED;
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
@@ -2504,8 +2508,8 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt select,
                 Env env,
                 SourceFlowCont continuation) {
-            ChannelRuntime.SelectSet set =
-                    buildStaticSelectSet(select, env);
+            ChannelRuntime.SelectPlan set =
+                    buildStaticSelectPlan(select, env);
             ChannelRuntime.SelectPolicy policy =
                     runtimeSelectPolicy(select.policy());
 
@@ -5286,7 +5290,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt selected,
                 Env env,
                 boolean tailBarrier) {
-            ChannelRuntime.SelectSet set = buildStaticSelectSet(selected, env);
+            ChannelRuntime.SelectPlan set = buildStaticSelectPlan(selected, env);
             ChannelRuntime.SelectPolicy policy = runtimeSelectPolicy(selected.policy());
 
             if (selected.mode() == Ast.WaitMode.IMMEDIATE) {
@@ -5338,24 +5342,54 @@ public final class OresEvalRootNode extends RootNode {
             executeSelectedArm(selected, result, env, tailBarrier, false);
         }
 
-        private ChannelRuntime.SelectSet buildStaticSelectSet(
+        private ChannelRuntime.SelectPlan buildStaticSelectPlan(
                 Ast.SelectStmt selected,
                 Env env) {
+            // Do not skip/reorder source operand evaluation. Expressions may
+            // have side effects or rebind channels between iterations; only
+            // *after* evaluating each arm can we safely reuse a read-only
+            // descriptor. WRITE payloads remain unhoisted to preserve their
+            // Copy/ownership and per-execution evaluation contract.
             ArrayList<ChannelRuntime.SelectCase> cases =
                     new ArrayList<>(selected.arms().size());
+            boolean readOnly = true;
             for (Ast.SelectArm arm : selected.arms()) {
                 switch (arm.operation()) {
                     case DEFAULT -> cases.add(ChannelRuntime.defaultCase());
                     case READ -> cases.add(ChannelRuntime.read(
                             requireChannel(eval(arm.channel(), env), "readch select case")));
-                    case WRITE -> cases.add(ChannelRuntime.write(
-                            requireChannel(eval(arm.channel(), env), "writech select case"),
-                            eval(arm.value(), env)));
+                    case WRITE -> {
+                        readOnly = false;
+                        cases.add(ChannelRuntime.write(
+                                requireChannel(eval(arm.channel(), env), "writech select case"),
+                                eval(arm.value(), env)));
+                    }
                 }
             }
-            return new ChannelRuntime.SelectSet(
-                    cases,
-                    staticSelectTicket(selected));
+
+            if (!readOnly) {
+                // Conservative fallback: a WRITE descriptor captures a payload
+                // that must not be silently replayed on a later iteration.
+                return new ChannelRuntime.SelectPlan(
+                        cases, staticSelectTicket(selected));
+            }
+
+            ActorRuntime actorRuntime = ActorRuntime.currentActorRuntime();
+            if (actorRuntime != null) {
+                if (actorRuntime != context.actors()) {
+                    throw new SecurityException(
+                            "static SelectPlan attempted to cross ActorRuntime ownership");
+                }
+                return actorRuntime.actorLocalReadSelectPlan(selected, cases);
+            }
+            synchronized (rootStaticSelectCursors) {
+                ChannelRuntime.SelectPlan existing = rootReadSelectPlans.get(selected);
+                ChannelRuntime.SelectPlan plan = existing == null
+                        ? new ChannelRuntime.SelectPlan(cases)
+                        : existing.rebindReadOnly(cases);
+                if (plan != existing) rootReadSelectPlans.put(selected, plan);
+                return plan;
+            }
         }
 
         private long staticSelectTicket(Ast.SelectStmt selected) {
