@@ -457,7 +457,16 @@ public final class OresContext implements AutoCloseable {
             Object previous = null;
             boolean entered = false;
             try {
-                previous = truffleContext.enter(null);
+                try {
+                    previous = truffleContext.enter(null);
+                } catch (RuntimeException | Error entryFailure) {
+                    // A failed enter may have mutated guest-entry state before
+                    // throwing. The JVM lease can be released, but its state
+                    // is not evidence that the Truffle incarnation is safe
+                    // for further host admission or context retirement.
+                    hostFutureAdmission.quarantineUnknownPhysicalEntry();
+                    throw entryFailure;
+                }
                 entered = true;
                 turn.run();
             } finally {
@@ -552,9 +561,10 @@ public final class OresContext implements AutoCloseable {
                 asyncRuntime.close();
                 // Scheduler terminal Futures cannot replace a failed physical
                 // Truffle leave. A poisoned incarnation must never retire.
-                if (hostFutureAdmission.physicalExitUnproven()) {
+                if (hostFutureAdmission.physicalEntryUnproven()
+                        || hostFutureAdmission.physicalExitUnproven()) {
                     throw new IllegalStateException(
-                            "context retirement refused: guest physical leave unproven");
+                            "context retirement refused: guest physical enter/leave unproven");
                 }
                 // Verify actual host and Truffle entry leases have drained,
                 // not merely logical scheduler Futures.
