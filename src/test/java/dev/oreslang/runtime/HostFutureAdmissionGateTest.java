@@ -313,4 +313,24 @@ final class HostFutureAdmissionGateTest {
     }
 
 
+    @Test
+    void retirementPreflightRejectsAlreadyPoisonedEntryBeforeDependencyTeardown() {
+        HostFutureAdmissionGate clean = new HostFutureAdmissionGate();
+        Runnable cleanLease = clean.reserveGuestTurn();
+        clean.requireProvenEntryAndExit();
+        cleanLease.run();
+        clean.requirePhysicalQuiescence();
+
+        HostFutureAdmissionGate poisoned = new HostFutureAdmissionGate();
+        Runnable lease = poisoned.reserveGuestTurn();
+        poisoned.quarantineUnknownPhysicalEntry();
+        assertThrows(IllegalStateException.class, poisoned::requireProvenEntryAndExit,
+                "must reject known-unsafe state before actor/CONTROL resources retire");
+        lease.run();
+        assertThrows(IllegalStateException.class, poisoned::requireProvenEntryAndExit,
+                "releasing a JVM reservation is not physical guest DONE");
+        assertThrows(IllegalStateException.class, poisoned::requirePhysicalQuiescence);
+    }
+
+
 }
