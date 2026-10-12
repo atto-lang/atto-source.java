@@ -65,3 +65,39 @@ source differential tests on that **combined** tree.
 The bounded Java state explorers and TLA+/TLC invariants are useful safety
 checks with deliberate unsafe mutants. They do not by themselves establish
 implementation refinement or fairness/liveness; both remain separate gates.
+
+## Integrated native and cancellation audit (2026-10-11)
+
+The stacked Java integration now has executable evidence, distinct from the
+original independent branch evidence above:
+
+- [470-blob combined JVM run](https://github.com/zed-pkg-test/java-app/actions/runs/38197030075):
+  1,597 Maven tests, zero failures/errors, one skip, actual source serial
+  actor with awaited typed match, ordered receive leases and LIFO defer.
+- [470-blob GraalVM native run](https://github.com/zed-pkg-test/java-app/actions/runs/38197029979):
+  native AOT and hybrid built with **GraalVM 25.3**, verified the source Git
+  blobs and executed `tests/fixtures/serial-typed-match-await.ores` with
+  exact expected output. Merely building a native-image was not counted.
+- A prior run revealed a stop-before-task-retirement race:
+  `SerialExecutionTicket.requireAdmissible` classified a matching actor
+  ticket as foreign when the actor was already stopped. The fix classifies
+  matching revoked liveness as benign retirement, but still treats a
+  different actor/incarnation as an authority violation. The corresponding
+  real runtime stop/Future race and exact-source JVM run passed.
+- GraalVM native guest startup initially failed because
+  `Ast$ExprStmt.getRecordComponents()` lacked native reflection metadata.
+  The 74 AST record types are now explicitly registered. A new JVM guard
+  compares that metadata with the compiled `Ast` records so future AST
+  extensions cannot silently break native startup.
+- Actor finalization now preserves a source scheduler shutdown exception in
+  its terminal result (and suppresses it onto a prior actor failure) rather
+  than silently reporting successful `get_done()`.
+
+These tests establish *execution and safety for the covered scenario* only.
+They do not establish that the Java interpreter has an actor-authorized
+cleanup-only lane for a task cancelled while suspended, nor that every
+outstanding `defer` and `finally` executes once before actor termination.
+The earlier bounded formal protocol models assume a cleanup transition and
+are **not** evidence that actual Java STOP/CANCEL realizes that transition.
+Those issues, plus native/JVM/LLVM differential execution for cancellation
+and model-to-implementation refinement, remain blockers to merging #691.
