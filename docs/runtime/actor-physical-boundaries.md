@@ -13,9 +13,13 @@ not evidence of memory isolation.
    A suspended callback may resume only by mailbox admission and lease acquisition.
 2. Actors have stable scheduling placement. Hard CPU affinity is explicit and
    fail-closed when requested; a scheduling lane is not a physical CPU guarantee.
-3. Every actor has its own default allocation heap. Isolated actors additionally
-   have a protected address-space boundary. Shared actors also have private heaps;
-   only explicit shared regions cross those private boundaries.
+3. Every actor has independently owned mutable state and an actor-local
+   allocation/cleanup domain, but these are **not** per-actor VM heaps or OS
+   address spaces. PRIVATE/isoactors run within the trusted application
+   execution domain. Ordinary UNTRUSTED actors share exactly one sandboxed
+   Graal polyglot Engine/isolate (separate from the trusted host). Only a
+   separately requested stronger process-isolation tier can promise
+   independent per-actor or per-tenant OS address spaces.
 4. Shared children and grandchildren inherit the shared domain. A supervisor can
    participate explicitly. Domain ownership and lifetime are independent of one
    parent's lifetime; shared region reclamation waits for all leases to end.
@@ -89,34 +93,43 @@ signal ordering must be respected. Runtime signal handling does not imply every
 exit notification overtakes application messages. See the official
 [process and signal semantics](https://www.erlang.org/doc/system/ref_man_processes.html).
 
-## Physical heap backend decision
+## Physical heap backend decision — two execution domains
 
-Start with exec'd workers as the reference protected backend. Each live isolated
-actor needs its own address space; putting several isolated actors in one worker
-would weaken this contract. Warm workers can amortize startup, but reassignment
-must recreate the address space, or demonstrate complete VM teardown and absence
-of retained authority. Never fork a running multithreaded JVM and continue guest
-execution in the child; use a controlled spawn/exec launcher.
+The default application has one trusted GraalVM/Native Image execution domain
+for MAIN, SHARED and PRIVATE/isoactors. The host may use an ordinary JVM or
+a Native Image; it is not required to allocate a special native-image isolate.
+Trusted actors retain separate logical ownership/arenas, not per-actor JVM
+tracing collectors or independent OS processes.
 
-For shared actors, use private worker heaps plus explicit mapped shared regions
-as the initial reference design. Shared domain handles carry stable region IDs,
-generations, bounds, and permissions. Shared references use validated offsets or
-opaque IDs, never Java references or raw cross-process pointers. A child's spawn
-message grants its inherited domain membership; a grandchild receives the same
-domain ID. Isolation boundaries strip that membership. Domain records must not
-contain actor-local objects that can escape through a shared graph.
+Exactly one application-managed `SharedUntrustedIsolatePool` owns the other
+domain: an `UNTRUSTED` Graal Engine configured with `spawnIsolate(true)`,
+a bounded aggregate heap, and distinct group Contexts. ALL ordinary untrusted
+actors share this physical isolate GC/JIT and its fault domain. No per-actor
+Graal isolate is created by `spawn` or ActorGroup. Source host-side untrusted
+`spawn` and actor callables must fail closed until the source router can
+return generation-fenced remote handles with complete mail, readiness, done,
+cancel, and supervisor semantics. Hot-loaded adversarial source is staged
+and initialized only inside the guest isolate, without invoking main.
 
-Shared mutation needs process-safe synchronization with crash recovery. Heap GC
-must treat region handles as explicit leases. Do not reclaim a mapping while
-another actor or in-flight mailbox envelope holds a lease. Cross-domain cycles,
-owner death, outstanding I/O, and cleanup ordering require dedicated tests.
+Shared actors each own private mutable state and may participate in separately
+leased, explicit shared regions. Mapped shared data, when implemented, must use
+region/generation IDs, bounded offsets and permissions rather than raw pointers.
+No live actor-local object may escape into a shared region. Shared mutation
+requires safe synchronization and crash/owner-death recovery. Reclamation must
+wait for all actor, mailbox, future, I/O and cleanup leases, with ABA fencing.
 
-A Native Image isolate backend may later provide separate managed heaps with less
-process overhead. It needs a C ABI and explicit serialized/capability boundaries;
-ordinary Truffle Contexts and the current Java ActorMemorySlice are insufficient.
-A same-process native isolate is not automatically an OS security boundary against
-arbitrary native code. No claim is made that the current custom Oreslang language
-already supports Graal's UNTRUSTED sandbox policy.
+An optional **stronger** process-isolation tier can use exec'd workers for
+tenants requiring independent failure and address-space boundaries. That is
+NOT the default two-domain application and must be explicitly selected.
+Never fork a running multithreaded JVM and continue guest execution in the
+child; use a controlled spawn/exec launcher. Process isolation does not
+automatically restrict syscalls, networking or filesystem authority.
+
+The existing native OresVM UNTRUSTED *scheduler* lane and Java ActorMemorySlice
+are not a native isolate or security boundary. A same-process Graal native
+isolate is also not an OS address-space boundary. Physical host/guest collector
+separation and untrusted source routing remain gated on building a real
+language-isolate artifact and executing unskipped integration tests.
 
 ## HTTP endpoint ownership
 
