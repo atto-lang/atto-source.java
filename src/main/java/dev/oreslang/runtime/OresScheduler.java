@@ -10,6 +10,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -49,6 +50,18 @@ public final class OresScheduler implements AutoCloseable {
     private static final ThreadLocal<ActorTurnWatchdog.Lease> CURRENT_WATCHDOG_LEASE =
             new ThreadLocal<>();
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
+    // A timed source task owns one global reservation until its Future's
+    // terminal subscriber drain completes, even if its guest resources retired.
+    // At capacity we reject new timed task admission, never defer an existing
+    // deadline or enqueue an unbounded number of blocked notifier threads.
+    static final int MAX_ACTIVE_WALL_DEADLINE_TASKS = 256;
+    private static final Semaphore WALL_DEADLINE_ADMISSIONS =
+            new Semaphore(MAX_ACTIVE_WALL_DEADLINE_TASKS);
+
+    static int availableWallDeadlineAdmissions() {
+        return WALL_DEADLINE_ADMISSIONS.availablePermits();
+    }
+
     /**
      * Host-owned wall-clock expiration. Separate from actor/scheduler carriers:
      * an unresolved await cannot consume a new 250 ms budget on resumption.
@@ -363,9 +376,17 @@ public final class OresScheduler implements AutoCloseable {
         // Linearize open-check + live-set registration with close(), but do
         // NOT hold the lock while handing work to an arbitrary executor.
         // Shutdown must still cancel this task if enqueue blocks or rejects.
-        TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent);
+        TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent,
+                deadlineFailure != null);
         synchronized (taskAdmissionLock) {
             ensureOpen();
+            if (deadlineFailure != null) {
+                if (!WALL_DEADLINE_ADMISSIONS.tryAcquire()) {
+                    throw new RejectedExecutionException(
+                            "global source wall-deadline admission is full");
+                }
+                runner.reserveDeadlineSlot();
+            }
             tasks.add(runner);
         }
         try {
@@ -539,14 +560,36 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
         private final OresFuture<T> completion;
+        private final boolean timedAdmission;
+        private final AtomicBoolean deadlineSlotReserved = new AtomicBoolean();
+        private final AtomicBoolean deadlineSlotReleased = new AtomicBoolean();
         private final AtomicReference<ScheduledFuture<?>> wallDeadline =
                 new AtomicReference<>();
         private volatile ActorTurnWatchdog.Lease watchdogLease;
 
-        private TaskRunner(Task<T> task, Runnable onQuiescent) {
+        private TaskRunner(Task<T> task, Runnable onQuiescent,
+                boolean timedAdmission) {
             this.task = task;
             this.onQuiescent = onQuiescent;
-            this.completion = new OresFuture<>(this::cancelFromFuture);
+            this.timedAdmission = timedAdmission;
+            this.completion = new OresFuture<>(
+                    this::cancelFromFuture, this::releaseDeadlineSlot);
+        }
+
+        private void reserveDeadlineSlot() {
+            if (!timedAdmission || !deadlineSlotReserved.compareAndSet(false, true)) {
+                throw new IllegalStateException("wall deadline slot reserved twice");
+            }
+        }
+
+        private void releaseDeadlineSlot() {
+            // The only normal release is the actual winning Future settlement,
+            // *after* its synchronous waiter notifications return. Reusing a
+            // slot at task quiescence would leak unlimited blocked notifiers.
+            if (deadlineSlotReserved.get()
+                    && deadlineSlotReleased.compareAndSet(false, true)) {
+                WALL_DEADLINE_ADMISSIONS.release();
+            }
         }
 
         private void armWallDeadline(long delayNanos, Throwable failure) {
