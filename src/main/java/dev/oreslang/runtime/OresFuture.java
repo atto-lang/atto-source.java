@@ -99,6 +99,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private final BooleanSupplier cancelAdmission;
+    /** Released only after all subscribers present at settlement have returned. */
+    private final Runnable onNotificationDrained;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
@@ -112,6 +114,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         this(() -> true, cancelHook);
     }
 
+    /** Scheduler-owned terminal notification completion (not guest admission). */
+    OresFuture(Runnable cancelHook, Runnable onNotificationDrained) {
+        this(() -> true, cancelHook, onNotificationDrained);
+    }
+
     /**
      * Runtime-only constructor for operations whose cancellation must win an
      * external arbitration before the Future transitions to cancelled.
@@ -121,10 +128,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * Guest code never receives the admission capability.</p>
      */
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook) {
+        this(cancelAdmission, cancelHook, () -> { });
+    }
+
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
+            Runnable onNotificationDrained) {
         this.cancelAdmission = Objects.requireNonNull(
                 cancelAdmission, "cancelAdmission");
         this.cancelHook = new AtomicReference<>(
                 Objects.requireNonNull(cancelHook, "cancelHook"));
+        this.onNotificationDrained = Objects.requireNonNull(
+                onNotificationDrained, "onNotificationDrained");
     }
 
     public static <T> OresFuture<T> completed(T value) {
@@ -560,11 +574,18 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private boolean settle(Object terminal) {
         if (!state.compareAndSet(PENDING, terminal)) return false;
 
-        RuntimeWaiterRegistration<T> waiter;
-        while ((waiter = waiters.poll()) != null) {
-            notifyWaiter(waiter, terminal);
+        try {
+            RuntimeWaiterRegistration<T> waiter;
+            while ((waiter = waiters.poll()) != null) {
+                notifyWaiter(waiter, terminal);
+            }
+            return true;
+        } finally {
+            // Terminal state can be visible long before a synchronous waiter
+            // returns. A bounded host notification permit cannot be reused
+            // just because isDone() became true during a blocked callback.
+            onNotificationDrained.run();
         }
-        return true;
     }
 
     @SuppressWarnings("unchecked")
