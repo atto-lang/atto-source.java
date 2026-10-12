@@ -325,4 +325,112 @@ final class ActorCapabilityIsolationTest {
     }
 
 
+
+    @Test
+    void untrustedActorCannotHideStdoutInsideValueMatchDefer() {
+        Ast.Program program = Parser.parse("""
+                pub untrusted actor fnc worker(): void {
+                  val result = match<ret=int> 7 over {
+                    default {
+                      defer stdio.println("denied");
+                      return 7;
+                    }
+                  };
+                  return;
+                }
+                """);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("STDOUT"));
+    }
+
+    @Test
+    void untrustedActorCannotHideCapabilityInsideArmReturnExpression() {
+        Ast.Program program = Parser.parse("""
+                pub untrusted actor fnc worker(): void {
+                  val result = match<ret=int> 7 over {
+                    default { return process.context_id; }
+                  };
+                  return;
+                }
+                """);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("PROCESS_INFO"));
+    }
+
+    @Test
+    void untrustedActorMayUsePureValueProducingMatchWithoutCapabilities() {
+        Ast.Program program = Parser.parse("""
+                pub untrusted actor fnc worker(): void {
+                  val result = match<ret=int> 7 over {
+                    default {
+                      val value = 41;
+                      return value + 1;
+                    }
+                  };
+                  return;
+                }
+                """);
+        assertDoesNotThrow(() ->
+                CapabilityChecker.check(program, IsolatePolicy.developer()));
+    }
+
+    @Test
+    void valueMatchPatternTypesCannotHideRestrictedCapabilities() {
+        Ast.Program program = Parser.parse("""
+                pub untrusted actor fnc worker(): void {
+                  val result = match<ret=int> 7 over {
+                    on is SharedMutex<int> shared { return 2; }
+                    default { return 1; }
+                  };
+                  return;
+                }
+                """);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("SHARED_MEMORY"));
+    }
+
+    @Test
+    void castTypeCannotHideRestrictedCapabilities() {
+        Ast.Program program = Parser.parse("""
+                pub untrusted actor fnc worker(): void {
+                  val result = 7 as SharedMutex<int>;
+                  return;
+                }
+                """);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("SHARED_MEMORY"));
+    }
+
+    @Test
+    void explicitGenericCallTypeCannotHideRestrictedCapabilities() {
+        Ast.Program program = Parser.parse("""
+                pub untrusted actor fnc worker(): void {
+                  val result = helper<SharedMutex>();
+                  return;
+                }
+                """);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("SHARED_MEMORY"));
+    }
+
+    @Test
+    void zeroArityConstructorPatternStillCarriesNominalCapability() {
+        Ast.Program program = Parser.parse("""
+                pub untrusted actor fnc worker(): void {
+                  val result = match<ret=int> 7 over {
+                    on SharedMutex { return 2; }
+                    default { return 1; }
+                  };
+                  return;
+                }
+                """);
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("SHARED_MEMORY"));
+    }
 }
