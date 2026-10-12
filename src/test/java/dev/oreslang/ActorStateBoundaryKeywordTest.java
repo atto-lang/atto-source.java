@@ -229,6 +229,7 @@ final class ActorStateBoundaryKeywordTest {
                 "state { value: int; }",
                 "state { value: int = 0; value: int = 1; }",
                 "state { state: int = 0; }",
+                "state { left: int = 1 right: int = 2 }",
                 "pub state { value: int = 0; }",
                 "state { value: int = 0; } state { other: int = 0; }",
                 "let int value = 0; state { value: int = 1; }",
@@ -237,6 +238,32 @@ final class ActorStateBoundaryKeywordTest {
                     () -> Parser.parse("define actor Counter as " + source + " end"),
                     source);
         }
+    }
+
+    @Test
+    void sealedStateRespectsNewlineAndSemicolonBoundaries() {
+        Ast.Program parsed = Parser.parse("""
+                define actor Counter as
+                    state {
+                        left: int = 1
+                        right: int = 2
+                    }
+                end
+                """);
+        Ast.ClassDecl counter = (Ast.ClassDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        assertEquals(2, counter.actorState().fields().size());
+        assertEquals(List.of("left", "right"),
+                counter.actorState().fields().stream().map(Ast.FieldDecl::name).toList());
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(parsed),
+                "parsing is not permission to lower actor state");
+
+        // Distinct fields on one line require an explicit ';'.
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("define actor Counter as state { left: int = 1 right: int = 2 } end"));
+        assertDoesNotThrow(() -> Parser.parse(
+                "define actor Counter as state { left: int = 1; right: int = 2 } end"));
     }
 
     @Test
