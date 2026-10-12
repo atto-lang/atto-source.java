@@ -6107,6 +6107,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object executionDomain = new Object();
         private int activeTurns;
         private boolean carrierActive;
+        /** Physical worker currently owning this actor lane, guarded by lifecycleLock.
+         * Not an affinity requirement: a later turn may use a different worker. */
+        private Thread carrierOwnerThread;
         /**
          * Set when the currently executing actor envelope enqueues a source
          * continuation. The batch must then unwind through TurnExecutor before
@@ -6277,6 +6280,13 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
                 if (stopped.get() || forceKillFenced || finalized) return false;
+                // The full actor execution domain (including lifecycle and resumed
+                // continuations) must be entered on the single admitted carrier.
+                if (!carrierActive || carrierOwnerThread != Thread.currentThread()
+                        || !scheduled.get()) {
+                    throw new IllegalStateException(
+                            "actor turn entered without owning its physical carrier for " + ref.id());
+                }
                 if (activeTurns != 0) {
                     throw new IllegalStateException(
                             "actor single-writer execution lease violation for " + ref.id()
@@ -6328,6 +6338,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void endTurn() {
             synchronized (lifecycleLock) {
+                if (!carrierActive || carrierOwnerThread != Thread.currentThread()) {
+                    throw new IllegalStateException(
+                            "actor turn left from a non-owning physical carrier for " + ref.id());
+                }
                 if (activeTurns != 1) {
                     throw new IllegalStateException(
                             "actor execution lease accounting violation for " + ref.id()
@@ -6565,6 +6579,11 @@ public final class ActorRuntime implements AutoCloseable {
                         return;
                     }
 
+                    if (carrierActive || carrierOwnerThread != null || activeTurns != 0) {
+                        throw new IllegalStateException(
+                                "actor physical carrier already occupied for " + ref.id());
+                    }
+                    carrierOwnerThread = Thread.currentThread();
                     carrierActive = true;
                     carrierEntered = true;
                 }
@@ -6580,14 +6599,28 @@ public final class ActorRuntime implements AutoCloseable {
                     // The actor remains logically scheduled until TurnExecutor
                     // returns. Truffle context exit belongs to that boundary.
                     synchronized (lifecycleLock) {
-                        if (carrierEntered) carrierActive = false;
-                        if (scheduled.get()) scheduled.set(false);
-                        if (stopped.get() && activeTurns == 0) finalizeStopLocked();
-                        reschedule = !stopped.get()
-                                && !forceKillFenced
-                                && !closed.get()
-                                && !finalized
-                                && hasQueuedWorkLocked();
+                        if (carrierEntered) {
+                            if (carrierOwnerThread != Thread.currentThread()
+                                    || activeTurns != 0) {
+                                // Never release another thread's actor execution
+                                // authority, even on a faulty scheduler path.
+                                throw new IllegalStateException(
+                                        "actor carrier release before execution quiesced for " + ref.id());
+                            }
+                            carrierOwnerThread = null;
+                            carrierActive = false;
+                        }
+                        // A duplicate unexpected runBatch must NOT drop the
+                        // existing owner's scheduled lease.
+                        if (carrierEntered || !carrierActive) {
+                            if (scheduled.get()) scheduled.set(false);
+                            if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                            reschedule = !stopped.get()
+                                    && !forceKillFenced
+                                    && !closed.get()
+                                    && !finalized
+                                    && hasQueuedWorkLocked();
+                        }
                         lifecycleLock.notifyAll();
                     }
                 } finally {
