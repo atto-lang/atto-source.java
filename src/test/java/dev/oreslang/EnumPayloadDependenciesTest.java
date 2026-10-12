@@ -45,7 +45,7 @@ final class EnumPayloadDependenciesTest {
                 .getMessage().contains("Foo -> Foo"));
     }
 
-    @Test void distinctNestedEnumTypeIsRecognizedButWireCodecsFailClosed() {
+    @Test void distinctNestedEnumTypeGetsFiniteClosedWireSchema() {
         var source = Parser.parse("""
             define enum Priority as
                 Low
@@ -59,9 +59,9 @@ final class EnumPayloadDependenciesTest {
         assertEquals(1, references.size());
         assertEquals("Priority", references.getFirst().to());
         assertTrue(references.getFirst().byValue());
-        var error = assertThrows(IllegalArgumentException.class,
-                () -> TaggedMessageContracts.verify(source));
-        assertTrue(error.getMessage().contains("portable nested enum wire codec"), error.toString());
+        var registry = assertDoesNotThrow(() -> TaggedMessageContracts.verify(source));
+        assertInstanceOf(dev.oreslang.runtime.MessagePackCollectionCodec.NestedEnum.class,
+                registry.requireCase("Foo.Message1").payload());
     }
 
     @Test void explicitIndirectionBreaksSizeCycleButDoesNotCreateWireSupport() {
@@ -76,7 +76,7 @@ final class EnumPayloadDependenciesTest {
         assertFalse(references.getFirst().byValue());
         assertTrue(assertThrows(IllegalArgumentException.class,
                 () -> TaggedMessageContracts.verify(source))
-                .getMessage().contains("portable nested enum wire codec"));
+                .getMessage().contains("recursive enum wire schema"));
     }
 
     @Test void twoFooDeclarationsCannotBeMergedOrSilentlyShadowed() {

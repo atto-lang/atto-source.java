@@ -65,6 +65,12 @@ public final class TaggedMessageContracts {
         }
     }
 
+    private static boolean hasExplicitBox(Ast.TypeRef ref) {
+        if (ref == null) return false;
+        if (ref.name().equals("Box")) return true;
+        return ref.arguments().stream().anyMatch(TaggedMessageContracts::hasExplicitBox);
+    }
+
     private static void appendPatternCase(List<Case> items, Set<String> seen, Case entry) {
         if (!seen.add(entry.qualifiedName())) {
             throw new IllegalArgumentException(
@@ -87,7 +93,7 @@ public final class TaggedMessageContracts {
         return build(program, true);
     }
 
-    /** Requires the entire declared graph to have portable message codecs. */
+    /** Requires every enum payload to have a finite portable wire shape. */
     public static Registry verify(Ast.Program program) {
         return build(program, false);
     }
@@ -96,13 +102,16 @@ public final class TaggedMessageContracts {
         Objects.requireNonNull(program);
         List<EnumPayloadDependencies.Reference> nested =
                 EnumPayloadDependencies.check(program);
-        if (!localOnly && !nested.isEmpty()) {
-            var first = nested.getFirst();
-            throw new IllegalArgumentException(
-                    "enum payload " + first.from() + "." + first.caseName()
-                    + " refers to nominal enum '" + first.to() + "'; "
-                    + "nested enum values are valid type-level dependencies but "
-                    + "a portable nested enum wire codec is not yet implemented");
+        // Direct/mutual unboxed cycles were already rejected by the graph
+        // pass. Acyclic nested enum *values* now have a finite wire codec.
+        // Indirect recursive schemas and Box<T> remain local-only.
+        Map<String, Ast.EnumDecl> sourceEnums = new LinkedHashMap<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.EnumDecl enumeration) {
+                    sourceEnums.put(enumeration.name(), enumeration);
+                }
+            }
         }
         Set<String> localOnlyCases = new HashSet<>();
         for (var dependency : nested) {
@@ -149,9 +158,37 @@ public final class TaggedMessageContracts {
                                 "enum wire tags must be positive and strictly increasing");
                     }
                     previousTag = entry.tag();
-                    MessagePackCollectionCodec.Shape shape = entry.payload() == null
-                            || localOnlyCases.contains(enumDecl.name() + "." + entry.name())
-                            ? null : ActorWireSchema.fromSource(entry.payload());
+                    MessagePackCollectionCodec.Shape shape = null;
+                    if (entry.payload() != null) {
+                        try {
+                            shape = NestedEnumWireShapes.forPayload(entry.payload(), sourceEnums);
+                        } catch (IllegalArgumentException unsupported) {
+                            // Only known nominal dependency cycles may stay
+                            // local-only. Other malformed types must fail even
+                            // in local registration rather than being erased.
+                            boolean indirect = localOnlyCases.contains(
+                                    enumDecl.name() + "." + entry.name());
+                            boolean recursiveWire = unsupported.getMessage().contains(
+                                    "recursive enum wire schema");
+                            boolean boxedWire = unsupported.getMessage().contains(
+                                    "no portable Serializable wire codec: Box")
+                                    && hasExplicitBox(entry.payload());
+                            if (!localOnly
+                                    || (!boxedWire && !(indirect && recursiveWire))) {
+                                throw unsupported;
+                            }
+                        }
+                    }
+                    if (shape != null) {
+                        // Every compiler-bound actor enum case must have a
+                        // finite, bounded descriptor before it can be sent.
+                        // Otherwise the first send could perform expensive
+                        // descriptor expansion in the actor's hot path.
+                        MessagePackCollectionCodec.shapeDigest(
+                                MessagePackCollectionCodec.tuple(
+                                        MessagePackCollectionCodec.string(),
+                                        MessagePackCollectionCodec.int64(), shape));
+                    }
                     entries.add(new Case(enumDecl.name(), entry.name(), entry.tag(),
                             entry.payload(), shape));
                 }

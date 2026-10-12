@@ -45,6 +45,20 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         }
         Map<String, CaseCodec> entries = new HashMap<>();
         Map<String, CaseCodec> schemas = new HashMap<>();
+        // The native nested-v2 emitter and the Java shape grammar both
+        // require ASCII nominal identifiers across the *entire closed
+        // domain*, not merely the inner referenced enum. Restrict only
+        // domains that opt into the new nested format, leaving legacy
+        // scalar-only domains unchanged.
+        boolean nestedDomain = domain.cases().stream().anyMatch(
+                c -> c.payload() != null && containsNestedEnum(c.payload()));
+        if (nestedDomain) {
+            MessagePackCollectionCodec.requireCanonicalEnumWireName(domain.name());
+            for (TaggedMessageContracts.Case c : domain.cases()) {
+                MessagePackCollectionCodec.requireCanonicalEnumWireName(c.owner());
+                MessagePackCollectionCodec.requireCanonicalEnumWireName(c.name());
+            }
+        }
         StringBuilder fingerprint = new StringBuilder("oreslang.tagged.domain.v1/");
         fingerprint.append(domain.name()).append('/');
         domain.cases().stream().map(TaggedMessageContracts.Case::qualifiedName)
@@ -88,6 +102,17 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         bySchemaId = Map.copyOf(schemas);
     }
 
+    private static boolean containsNestedEnum(MessagePackCollectionCodec.Shape shape) {
+        if (shape instanceof MessagePackCollectionCodec.NestedEnum) return true;
+        if (shape instanceof MessagePackCollectionCodec.Sequence sequence) {
+            for (MessagePackCollectionCodec.Shape member : sequence.slots()) {
+                if (containsNestedEnum(member)) return true;
+            }
+            return sequence.element() != null && containsNestedEnum(sequence.element());
+        }
+        return false;
+    }
+
     private static String digestHex(String input) {
         try {
             return java.util.HexFormat.of().formatHex(
@@ -96,6 +121,60 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
         } catch (NoSuchAlgorithmException error) {
             throw new IllegalStateException("SHA-256 unavailable", error);
         }
+    }
+
+    /**
+     * Data-only preflight view of an *already decoded, schema-authenticated*
+     * tagged value. ActorRuntime accounts and capability-checks this
+     * projection before queue admission, while the mailbox stores only the
+     * owned binary frame and later decodes the original nominal values on
+     * the receiving actor lane. Never call this on an untrusted host value
+     * instead of invoking the compiled codec first.
+     */
+    public static Object preflightProjection(TaggedValue trustedDecoded) {
+        Objects.requireNonNull(trustedDecoded, "decoded enum");
+        return project(trustedDecoded, new java.util.IdentityHashMap<>(),
+                new int[]{0}, 0);
+    }
+
+    private static Object project(Object value,
+                                  java.util.IdentityHashMap<Object, Boolean> visiting,
+                                  int[] nodes, int depth) {
+        if (depth > MessagePackCollectionCodec.MAX_DEPTH
+                || ++nodes[0] > MessagePackCollectionCodec.MAX_NODES) {
+            throw new IllegalArgumentException("enum actor preflight exceeds depth/node quota");
+        }
+        if (value instanceof TaggedValue nested) {
+            if (visiting.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("cyclic tagged actor value");
+            }
+            try {
+                if (nested.payload() == null)
+                    return List.of(nested.enumName(), (long) nested.tag());
+                return List.of(nested.enumName(), (long) nested.tag(),
+                        project(nested.payload(), visiting, nodes, depth + 1));
+            } finally {
+                visiting.remove(value);
+            }
+        }
+        if (value instanceof List<?> list) {
+            if (visiting.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("cyclic tagged actor collection");
+            }
+            try {
+                java.util.ArrayList<Object> copy = new java.util.ArrayList<>(list.size());
+                for (Object item : list) {
+                    copy.add(project(item, visiting, nodes, depth + 1));
+                }
+                return List.copyOf(copy);
+            } finally {
+                visiting.remove(value);
+            }
+        }
+        // The decoder produced this scalar from a compiler-closed wire shape.
+        // Any unexpected host reference still fails the ActorRuntime
+        // capability/Sendable validation against the returned projection.
+        return value;
     }
 
     @Override
