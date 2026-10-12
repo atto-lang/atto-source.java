@@ -509,6 +509,77 @@ final class ActorGroupMultiMembershipTest {
     }
 
     @Test
+    void multiRoomMembershipNeverRunsOneActorOnTwoCarriers() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup roomA = runtime.createActorGroup();
+            ActorRuntime.ActorGroup roomB = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability joinA = roomA.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability joinB = roomB.joinCapability();
+
+            CountDownLatch firstTurnEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirstTurn = new CountDownLatch(1);
+            CountDownLatch bothTurnsFinished = new CountDownLatch(2);
+            java.util.concurrent.atomic.AtomicInteger activeTurns =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger peakConcurrentTurns =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<Integer> connection = runtime.spawnSharedTrusted(
+                    factory -> (message, context) -> {
+                        int nowActive = activeTurns.incrementAndGet();
+                        peakConcurrentTurns.accumulateAndGet(nowActive, Math::max);
+                        try {
+                            if (message == 1) {
+                                joinA.join();
+                                joinB.join();
+                                assertTrue(roomA.contains(context.self()));
+                                assertTrue(roomB.contains(context.self()));
+                                firstTurnEntered.countDown();
+                                if (!releaseFirstTurn.await(5, TimeUnit.SECONDS)) {
+                                    throw new AssertionError("first actor turn was not released");
+                                }
+                            } else {
+                                assertEquals(2, message.intValue());
+                                assertTrue(roomA.contains(context.self()));
+                                assertTrue(roomB.contains(context.self()));
+                            }
+                        } catch (Throwable failure) {
+                            unexpected.compareAndSet(null, failure);
+                        } finally {
+                            activeTurns.decrementAndGet();
+                            bothTurnsFinished.countDown();
+                        }
+                    });
+
+            try {
+                connection.send(1);
+                assertTrue(firstTurnEntered.await(5, TimeUnit.SECONDS),
+                        "first turn never acquired the actor execution lane");
+                // The actor participates in two cooperation groups, but neither
+                // group owns another execution lane. The second message must
+                // not run concurrently while the first turn remains suspended.
+                connection.send(2);
+            } finally {
+                releaseFirstTurn.countDown();
+            }
+            assertTrue(bothTurnsFinished.await(5, TimeUnit.SECONDS),
+                    "both actor messages did not complete");
+            assertNull(unexpected.get());
+            assertEquals(1, peakConcurrentTurns.get(),
+                    "a multi-room actor ran concurrently on two carriers");
+            assertEquals(0, activeTurns.get());
+            assertEquals(1, roomA.memberCount());
+            assertEquals(1, roomB.memberCount());
+
+            connection.stop();
+            assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, roomA.memberCount());
+            assertEquals(0, roomB.memberCount());
+        }
+    }
+
+    @Test
     void creatorShutdownDuringGroupCreationAlwaysReclaimsOwnedGroup()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
