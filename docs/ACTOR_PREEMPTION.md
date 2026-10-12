@@ -197,7 +197,10 @@ Additional top-level task admission fails closed while it is active; nested
 source tasks must share the same actor-bound quota. Each task releases
 exactly one cohort reference only after scheduler-confirmed **carrier
 quiescence**, not merely when its Future settles. Last-quiescent-task
-retirement clears the cohort. In particular `Future.cancel(false)` can
+retirement clears the cohort. Outstanding nested source tasks are
+bounded by the runtime's internal continuation-slot cap (currently 1,024);
+exceeding it rejects admission rather than overflowing the cohort counter.
+In particular `Future.cancel(false)` can
 settle while a guest turn is still physically executing; that does not
 grant permission to free its quota or start a second root task.
 A synchronous actor mailbox turn cannot consume a separate physical-turn
@@ -211,6 +214,13 @@ restricts parallel untrusted source-task spawning until aggregate
 per-actor/per-isolate accounting can be proven. The budget is bound to
 the source task's scheduled execution and does not remain installed on
 reusable carrier thread-local storage after its resume exits.
+
+Scheduler shutdown and admission are linearized at the open-state check
+and task registration, without holding the admission lock across the
+executor's enqueue operation. A blocked enqueue cannot prevent close from
+cancelling that registered task. Task references are retained through
+terminal Future settlement until the physical guest dispatch is quiescent;
+a stale duplicate dispatch cannot clear the legitimate dispatch's lease.
 
 **Not an authorization to enable UNTRUSTED automatic loop cooperation.**
 Other continuation/cancellation/cleanup paths, nested source scopes, early
