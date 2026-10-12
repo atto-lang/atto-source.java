@@ -21,14 +21,14 @@ final class SerialActorTypedMatchIntegrationTest {
     @Test
     void sourceReceiveKeepsOneTicketUntilAwaitedMatchCleanupFinishes() throws Exception {
         String guest = """
-            async fnc ready(): int {
-                stdio.println("producer");
-                rt cooperate;
-                return 7;
-            }
-
             define serial actor Counter as
                 state { count: int = 0; }
+
+                async produce_value(): int {
+                    stdio.println("producer");
+                    rt cooperate;
+                    return 7;
+                }
 
                 pub increment(): int using state.read, state.write {
                     return self.handle_state(|s| -> {
@@ -38,7 +38,7 @@ final class SerialActorTypedMatchIntegrationTest {
                 }
 
                 suspends receive(ActorMail<String> mail): void {
-                    const answer: int = match<ret=int> await ready() over {
+                    const answer: int = match<ret=int> await self.produce_value() over {
                         on 7 {
                             defer stdio.println("first");
                             defer stdio.println("last");
