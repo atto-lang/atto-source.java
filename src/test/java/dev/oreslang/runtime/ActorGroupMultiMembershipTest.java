@@ -530,8 +530,10 @@ final class ActorGroupMultiMembershipTest {
                                 } catch (IllegalStateException alreadyStopping) {
                                     // Only creator retirement is expected. Never
                                     // silently swallow quota or runtime defects.
-                                    if (alreadyStopping.getMessage() == null
-                                            || !alreadyStopping.getMessage().contains("group creator")) {
+                                    String message = alreadyStopping.getMessage();
+                                    if (!"current actor is no longer registered".equals(message)
+                                            && !"group creator is no longer alive".equals(message)
+                                            && !"group creator stopped during creation".equals(message)) {
                                         throw alreadyStopping;
                                     }
                                 }
