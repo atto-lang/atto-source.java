@@ -4687,6 +4687,10 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(ref);
         LinearPipeline linkedRoute = linearPipelines.get(ref.id());
         boolean initialPipelineIngress = false;
+        /* A root phase claimed before frame validation is only provisional.
+         * Distinguish a rejected pre-publication attempt from an already
+         * committed DATA message: never roll back a published root turn. */
+        boolean initialPipelinePublished = false;
         if (linkedRoute != null && currentPipelineSend.get() != linkedRoute) {
             if (currentActor.get() != null
                     || !ref.id().equals(linkedRoute.source().id())) {
@@ -4845,6 +4849,10 @@ public final class ActorRuntime implements AutoCloseable {
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
                     }
+                    /* tryWrite is the DATA publication linearization point.
+                     * The recipient may start executing immediately, so never
+                     * restore phase 0 once this publication succeeded. */
+                    if (initialPipelineIngress) initialPipelinePublished = true;
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
                     admitted = true;
@@ -4863,13 +4871,17 @@ public final class ActorRuntime implements AutoCloseable {
             if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
         }
         } catch (RuntimeException | Error admissionFailure) {
-            // The root owns exactly one causal-flow reservation. If encoding,
-            // quota, lifecycle admission or scheduling fails, never leave the
-            // state in phase 1 (which would look like a successful ingress).
-            // Poison only our own pending reservation: after admission another
-            // scheduler actor may already have advanced the route.
+            /* Before DATA publication a rejected root never used its single-
+             * flow credit. Return to phase 0 so the trusted source may retry.
+             * This mirrors LLVM's successful-publication-only root token.
+             * After mailbox publication, retry must remain forbidden: DATA
+             * may already have reached another actor even if scheduling or
+             * post-publication bookkeeping fails.
+             *
+             * CAS prevents a late loser from rolling back a later phase. */
             if (initialPipelineIngress) {
-                linkedRoute.phase().compareAndSet(1, -1);
+                linkedRoute.phase().compareAndSet(1,
+                        initialPipelinePublished ? -1 : 0);
             }
             throw admissionFailure;
         }
