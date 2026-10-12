@@ -123,6 +123,40 @@ final class HostFutureBridgeExecutionTest {
     }
 
     @Test
+    void legacyAsyncReturnFailsBeforeDispatchOrSourceEffects() throws Exception {
+        ConcurrentOutput output = new ConcurrentOutput();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true).out(output).build()) {
+            Value parsed = context.parse(Source.newBuilder(OresLanguage.ID,
+                    PROGRAM, "legacy-future-fail-closed.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+            parsed.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+            for (int i = 0; i < 16; i++) {
+                PolyglotException failure = assertThrows(PolyglotException.class,
+                        () -> parsed.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "work"));
+                assertTrue(failure.getMessage().contains(
+                        "legacy public Future return is unsafe"));
+                assertEquals("", output.toString(),
+                        "legacy rejected request must not start an orphaned source task");
+            }
+            // Rejected legacy calls must not consume or poison a fresh scoped
+            // ticket: the supported bridge can still start and cancel cleanup.
+            @SuppressWarnings("unchecked")
+            ChannelRuntime.Channel<Integer> cleanup =
+                    (ChannelRuntime.Channel<Integer>) parsed.execute(
+                            OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
+                            "exposeCleanup").asHostObject();
+            OresFuture<Integer> safe = OresHostFutureBridge.invokePublicFuture(parsed, "work");
+            awaitOutput(output, "armed");
+            assertTrue(safe.cancel(false));
+            awaitOutput(output, "cleanup-entered");
+            cleanup.writeAsync(33).get(5, TimeUnit.SECONDS);
+            assertThrows(CancellationException.class,
+                    () -> safe.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void forgedBridgedCommandCannotStartAnOrphanedGuestTask()
             throws Exception {
         ConcurrentOutput output = new ConcurrentOutput();

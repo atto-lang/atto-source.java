@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.nodes.OresHostFutureBridge;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.OresScheduler;
@@ -82,10 +83,10 @@ final class SourcePendingCleanupExecutionTest {
         assertSame(fin, command.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND,
                 "exposeFinallyGate").asHostObject(),
                 "reading a module field must reuse its exact process-local channel identity");
-        Value result = command.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "work");
-        assertTrue(result.isHostObject(), "async source invocation must return a host Future");
-        return new Started(assertInstanceOf(OresFuture.class, result.asHostObject()),
-                start, fin, defer);
+        // The Future is captured before Truffle Value.execute returns. Never
+        // enter Polyglot Value.asHostObject once the source task can execute.
+        OresFuture<?> task = OresHostFutureBridge.invokePublicFuture(command, "work");
+        return new Started(task, start, fin, defer);
     }
 
 

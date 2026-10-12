@@ -232,6 +232,90 @@ final class MixedSourceInteropTest {
     }
 
     @Test
+    void javaMixedBridgeUsesScopedFutureHandoffForTypedAndDynamicAsyncExports()
+            throws Exception {
+        Path source = temp.resolve("AsyncFutureBridge.java");
+        Files.writeString(source, """
+                public final class AsyncFutureBridge {
+                  public static void main(String[] args) throws Exception {
+                    dev.oreslang.runtime.OresFuture<?> typed = Ores.work();
+                    if (((Number) typed.get(5, java.util.concurrent.TimeUnit.SECONDS))
+                            .intValue() != 42) {
+                      throw new AssertionError("typed Future bridge returned wrong value");
+                    }
+                    Object dynamic = Ores.call("work");
+                    if (!(dynamic instanceof dev.oreslang.runtime.OresFuture<?> future)
+                            || ((Number) future.get(5, java.util.concurrent.TimeUnit.SECONDS))
+                                .intValue() != 42) {
+                      throw new AssertionError("dynamic Future bridge returned wrong type/value");
+                    }
+                    Ores.report();
+                  }
+                  ores {
+                    pub async fnc work(): int { return 42; }
+                    pub fnc report(): void {
+                      stdio.println("async-java-bridge-ok");
+                      return;
+                    }
+                  }
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        assertDoesNotThrow(() -> LinkedProgramRunner.run(
+                source, trustedMixedPolicy(), ExecutionProfile.serverJit(),
+                Set.of(), out, new ByteArrayOutputStream()));
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains(
+                "async-java-bridge-ok"));
+    }
+
+    @Test
+    void javaMixedFacadeExposesSynchronousAndAsyncGeneratorHandles() throws Exception {
+        Path source = temp.resolve("GeneratorFacade.java");
+        Files.writeString(source, """
+                public final class GeneratorFacade {
+                  public static void main(String[] args) throws Exception {
+                    try (dev.oreslang.runtime.GeneratorRuntime.Generator<?> values = Ores.values()) {
+                      var step = values.nextStep();
+                      if (step.done() || ((Number) step.value()).intValue() != 7) {
+                        throw new AssertionError("sync generator yielded wrong value");
+                      }
+                    }
+                    // An external Java-host async generator pull cannot safely
+                    // enter this context without a scheduler-owned isolate pump.
+                    // Reject before starting the producer, not after nextStep().
+                    boolean asyncRejected = false;
+                    try {
+                      Ores.stream();
+                    } catch (RuntimeException expected) {
+                      if (!String.valueOf(expected).contains("host async generator pulls require")) {
+                        throw expected;
+                      }
+                      asyncRejected = true;
+                    }
+                    if (!asyncRejected) {
+                      throw new AssertionError("unsafe Java async generator was admitted");
+                    }
+                    Ores.report();
+                  }
+                  ores {
+                    pub generator fnc values(): int { yield 7; return; }
+                    pub async generator fnc stream(): int { yield 8; return; }
+                    pub fnc report(): void {
+                      stdio.println("generator-java-facade-ok");
+                      return;
+                    }
+                  }
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        assertDoesNotThrow(() -> LinkedProgramRunner.run(
+                source, trustedMixedPolicy(), ExecutionProfile.serverJit(),
+                Set.of(), out, new ByteArrayOutputStream()));
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains(
+                "generator-java-facade-ok"));
+    }
+
+    @Test
     void mixedJavaSourceRequiresSeparateTrustedCapability() throws Exception {
         Path source = temp.resolve("capability.ores");
         Files.writeString(source, """

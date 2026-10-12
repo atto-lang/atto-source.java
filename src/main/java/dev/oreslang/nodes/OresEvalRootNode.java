@@ -196,12 +196,15 @@ public final class OresEvalRootNode extends RootNode {
                 // must not call Value.asHostObject() while guest work runs.
                 return 0;
             }
-            // Runtime Future/Channel handles are not valid raw Truffle interop
-            // results. Adapt only the explicit public embedder boundary:
-            // guest dispatch retains native Oreslang handles, and no arbitrary
-            // host object gains admission across an async guest task boundary.
+            // Runtime-owned Future, Channel and pull-driven Generator handles
+            // cannot be returned as raw Truffle guest results. Convert only
+            // at the explicit public embedder boundary to satisfy the Polyglot
+            // interop value contract. Generators remain lazy; no producer is
+            // dispatched until Java requests a pull from its typed handle.
             if (result instanceof OresFuture<?>
-                    || result instanceof ChannelRuntime.Channel<?>) {
+                    || result instanceof ChannelRuntime.Channel<?>
+                    || result instanceof GeneratorRuntime.Generator<?>
+                    || result instanceof GeneratorRuntime.AsyncGenerator<?>) {
                 return context.env().asGuestValue(result);
             }
             return result;
@@ -802,12 +805,36 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export public function '" + name + "'");
             }
+            // External host iteration of an async generator would start
+            // an AsyncRuntime virtual carrier without an authorized, pumped
+            // Truffle guest turn. The generator is lazy, so reject here
+            // BEFORE constructing/publishing its handle or guest side effects.
+            // Guest-to-guest async generator iteration remains available.
+            if (!requireAsync && fn.generator() && fn.async()) {
+                throw new SecurityException(
+                        "host async generator pulls require an authorized isolate turn pump: "
+                        + name);
+            }
+            // An async public callable produces a scheduler-owned Future.
+            // Legacy Value.execute() plus Value.asHostObject() must not return
+            // that Future: the host's second interop entry can race the freshly
+            // dispatched guest task. Reject BEFORE calling any guest body.
+            // Pull-driven async generators are not Futures and keep their
+            // separate iterator protocol.
+            if (!requireAsync && !fn.generator()
+                    && (fn.async() || (fn.returnType() != null && "Future".equals(fn.returnType().name())))) {
+                throw new IllegalArgumentException(
+                        "legacy public Future return is unsafe; use "
+                        + "OresHostFutureBridge.invokePublicFuture: " + name);
+            }
             // Reject unsupported synchronous functions BEFORE any guest body
             // executes. Otherwise the host Future bridge may throw after
             // running user side effects and misreporting a rejected request.
-            if (requireAsync && !fn.async()) {
+            if (requireAsync && !fn.async()
+                    && !(fn.returnType() != null && "Future".equals(fn.returnType().name()))) {
                 throw new IllegalArgumentException(
-                        "host Future handoff requires an async public function: " + name);
+                        "host Future handoff requires an async public function or "
+                        + "a public function returning Future<T>: " + name);
             }
             if (requireAsync && fn.generator()) {
                 // Async generators are pull-driven iterators, not Futures;
@@ -1372,9 +1399,10 @@ public final class OresEvalRootNode extends RootNode {
                 context.actors().ownCurrentActorFuture(future);
             } else {
                 OresScheduler current = OresScheduler.current();
-                future = (current != null
+                OresScheduler scheduler = current != null
                         ? current
-                        : context.vm().rootScheduler()).start(task);
+                        : context.vm().rootScheduler();
+                future = OresHostFutureBridge.startSourceTask(context, scheduler, task);
             }
             return future;
         }
@@ -1404,9 +1432,10 @@ public final class OresEvalRootNode extends RootNode {
                 context.actors().ownCurrentActorFuture(future);
             } else {
                 OresScheduler current = OresScheduler.current();
-                future = (current != null
+                OresScheduler scheduler = current != null
                         ? current
-                        : context.vm().rootScheduler()).start(task);
+                        : context.vm().rootScheduler();
+                future = OresHostFutureBridge.startSourceTask(context, scheduler, task);
             }
             return future;
         }
