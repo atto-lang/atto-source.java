@@ -66,13 +66,18 @@ final class CriticalReadWriteUsingContractTest {
                         program("critical write", "with state.read", increment))));
     }
 
-    @Test void oldBareCriticalAndImplicitCallbacksCannotAccessState() {
+    @Test void plainCallbacksReadAndCriticalCallbacksWriteWithoutUpgradingWith() {
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(
+                program("", "with state.read", "return s.v;"))));
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(
+                program("critical", "with state.read, state.write",
+                        "s.v = 3; return s.v;"))));
+        // A plain callback stays readonly even with an effect declaration
+        // that permits writes elsewhere in the method.
         assertThrows(IllegalArgumentException.class,
-                () -> ActorStateContract.verify(Parser.parse(
-                        program("critical", "with state.read", "return s.v;"))));
-        assertThrows(IllegalArgumentException.class,
-                () -> ActorStateContract.verify(Parser.parse(
-                        program("", "with state.read", "return s.v;"))));
+                () -> TypeChecker.checkTypes(Parser.parse(
+                        program("", "with state.read, state.write",
+                                "s.v = 3; return s.v;"))));
     }
 
     @Test void stateNamespaceRemainsCompletelySealed() {
