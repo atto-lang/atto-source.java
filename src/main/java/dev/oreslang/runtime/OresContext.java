@@ -553,6 +553,10 @@ public final class OresContext implements AutoCloseable {
                 // cleanup still owns this context, retries must leave its
                 // resources available rather than retiring actors too early.
                 hostGeneratorTurns.requireQuiescent();
+                // An already-indeterminate Truffle enter/leave must not
+                // retire CONTROL or actor dependencies first and only then
+                // discover that physical cleanup could not be certified.
+                hostFutureAdmission.requireProvenEntryAndExit();
                 actors.close();
                 vm.close();
                 // An async carrier may still own an entered Truffle context
