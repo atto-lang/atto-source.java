@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.interop.MixedInteropBridge;
@@ -221,12 +222,25 @@ public final class LinkedProgramRunner {
                     List<String> ids = new ArrayList<>(build.units().keySet());
                     ids.sort(String::compareTo);
 
+                    LinkedHashMap<String, Ast.Program> checkedPrograms = new LinkedHashMap<>();
                     for (String id : ids) {
-                        IncrementalCompiler.CompiledUnit unit = build.units().get(id);
-                        Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
-                                .mimeType(OresLanguage.MIME_TYPE)
-                                .buildLiteral();
-                        parsedUnits.put(id, context.parse(source));
+                        checkedPrograms.put(id, build.units().get(id).program());
+                    }
+                    Map<String, Map<String, Ast.FunctionDecl>> verifiedSignatures =
+                            IncrementalCompiler.resolveImportedFunctionSignatures(
+                                    checkedPrograms, importResolutions);
+                    // Only source units admitted by the closed-world import
+                    // graph can lend signatures. Restore the previous scope
+                    // before any guest code is executed.
+                    try (OresCompiler.LinkedImportScope ignored =
+                                 OresCompiler.installVerifiedLinkedImports(verifiedSignatures)) {
+                        for (String id : ids) {
+                            IncrementalCompiler.CompiledUnit unit = build.units().get(id);
+                            Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
+                                    .mimeType(OresLanguage.MIME_TYPE)
+                                    .buildLiteral();
+                            parsedUnits.put(id, context.parse(source));
+                        }
                     }
 
                     for (Map.Entry<String, Map<String, String>> importer : importResolutions.entrySet()) {

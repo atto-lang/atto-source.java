@@ -4277,7 +4277,10 @@ public final class TypeChecker {
             };
             case "HttpHandler" -> switch (name) {
                 case "isolated" -> Primitive.BOOL;
-                case "dispatch" -> new Function(List.of(new Borrow(exchange, true)), Primitive.VOID);
+                // Handler dispatch retains the exchange beyond this call until
+                // actor admission and delivery. It is an ownership transfer,
+                // never a scoped &mut loan.
+                case "dispatch" -> new Function(List.of(exchange), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
             };
             case "HttpServer" -> switch (name) {
@@ -6498,6 +6501,7 @@ public final class TypeChecker {
         for (int i = 0; i < expanded.size(); i++) {
             Type actual = expandedCallArgumentType(
                     expanded.get(i), patterns.get(i), env, callerGenerics, callerSelf);
+            actual = structuralBorrowTarget(actual, params.get(i), i + 1);
             inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
         }
         Set<String> unbound = new HashSet<>(unique);
@@ -6514,6 +6518,7 @@ public final class TypeChecker {
             }
             Type actual = expandedCallArgumentType(
                     argument, expected, env, callerGenerics, callerSelf);
+            actual = structuralBorrowTarget(actual, params.get(i), i + 1);
             if (!params.get(i).structural()) {
                 requireReadonlyCapabilityPreserved(
                         actual,
@@ -6534,6 +6539,16 @@ public final class TypeChecker {
             throw new IllegalArgumentException("cannot infer generic return type for " + label + "; add an inferable value parameter");
         }
         return result;
+    }
+
+    /** Structural arguments are read-only views; explicit mutable loans cannot degrade to shared ones. */
+    private Type structuralBorrowTarget(Type actual, Ast.Param parameter, int position) {
+        if (!parameter.structural() || !(actual instanceof Borrow borrowed)) return actual;
+        if (borrowed.mutable()) {
+            throw new IllegalArgumentException("argument " + position
+                    + " is a read-only structural view; rt borrow mut is not permitted");
+        }
+        return borrowed.target();
     }
 
     private void inferGenericBindings(Type pattern, Type actual, Map<String, Type> bindings, Set<String> fixedBindings, String label) {

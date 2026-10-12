@@ -11,14 +11,57 @@ import dev.oreslang.types.OwnershipChecker;
 public final class OresCompiler {
     private OresCompiler() { }
 
+    // Linked source signatures are bound to a concrete unit identity and only
+    // installed by the trusted linked-runner in a synchronous admission scope.
+    // No unlinked or dynamic call gains a borrow contract by default.
+    private static final ThreadLocal<java.util.Map<String, java.util.Map<String, Ast.FunctionDecl>>>
+            LINKED_IMPORT_SIGNATURES = new ThreadLocal<>();
+
+    public static final class LinkedImportScope implements AutoCloseable {
+        private final java.util.Map<String, java.util.Map<String, Ast.FunctionDecl>> previous;
+        private LinkedImportScope(java.util.Map<String, java.util.Map<String, Ast.FunctionDecl>> previous) {
+            this.previous = previous;
+        }
+        @Override public void close() {
+            if (previous == null) LINKED_IMPORT_SIGNATURES.remove();
+            else LINKED_IMPORT_SIGNATURES.set(previous);
+        }
+    }
+
+    /** Trusted host-only, lexical linked-source admission scope. */
+    public static LinkedImportScope installVerifiedLinkedImports(
+            java.util.Map<String, java.util.Map<String, Ast.FunctionDecl>> signatures) {
+        var previous = LINKED_IMPORT_SIGNATURES.get();
+        LINKED_IMPORT_SIGNATURES.set(java.util.Map.copyOf(signatures));
+        return new LinkedImportScope(previous);
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
     }
 
+    /** Called with the canonical source-unit identity by the language parser. */
+    public static Ast.Program parseAndTypeCheck(String source, String unitId) {
+        var scoped = LINKED_IMPORT_SIGNATURES.get();
+        return analyze(Parser.parse(source),
+                scoped == null ? java.util.Map.of() : scoped.getOrDefault(unitId, java.util.Map.of()));
+    }
+
+    public static Ast.Program parseAndTypeCheck(
+            String source, java.util.Map<String, Ast.FunctionDecl> importedSignatures) {
+        return analyze(Parser.parse(source), importedSignatures);
+    }
+
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
+        return analyze(program, java.util.Map.of());
+    }
+
+    /** Linked source signature entrypoint, still fail-closed for unverified calls. */
+    public static Ast.Program analyze(
+            Ast.Program program, java.util.Map<String, Ast.FunctionDecl> importedSignatures) {
         program = TypeChecker.checkTypes(program);
-        OwnershipChecker.check(program);
+        OwnershipChecker.check(program, importedSignatures);
         return program;
     }
 

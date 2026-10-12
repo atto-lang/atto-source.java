@@ -148,6 +148,23 @@ final class ArgumentsTupleSpreadTest {
     }
 
     @Test
+    void borrowedParameterInArgumentsTupleCannotBypassOwnedCallAdmission() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse("""
+                        fnc consume(int owned): int {
+                          return owned;
+                        }
+
+                        fnc unsafe(borrow int borrowed): int {
+                          return consume(...arguments);
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("borrowed parameter") && error.getMessage().contains("arguments"), error.getMessage());
+    }
+
+    @Test
     void argumentsCannotBeShadowedByAParameter() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,

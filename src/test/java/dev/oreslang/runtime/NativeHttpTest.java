@@ -88,8 +88,9 @@ class NativeHttpTest {
               stdio.println(server.port);
               val request = await server.accept();
               val completion = request.completion;
-              http.handler("Owner").dispatch(rt borrow mut request);
-              try { request.completion; } catch (err) { stdio.println("moved-observer-rejected"); }
+              // Handler dispatch retains the exchange until the actor is ready.
+              // Transfer ownership; a temporary mutable loan would outlive this call.
+              http.handler("Owner").dispatch(rt take request);
               val int status = await completion;
               stdio.println(status);
               stdio.println(server.active);
@@ -98,7 +99,7 @@ class NativeHttpTest {
             }
             """, port -> assertEquals(201, request(port, "GET", "/", "").statusCode()));
         assertTrue(output.contains("true"), output);
-        assertTrue(output.contains("moved-observer-rejected"), output);
+
         assertTrue(output.indexOf("actor-finished") < output.lastIndexOf("201"), output);
         assertTrue(output.contains("201\n0"), output);
     }
