@@ -74,29 +74,36 @@ public final class OresScheduler implements AutoCloseable {
         private final HostGeneratorTurnPump.OwnerToken owner;
         private final long generation;
         private final OresFuture<?> sourceTask;
+        // Opaque pump Request identity, never exposed to the guest or host.
+        // Null means issued without an active, authorized pump reservation.
+        private final Object boundRequest;
         private final OresFuture<Void> physicalDone;
         private final AtomicBoolean redeemed = new AtomicBoolean();
 
         private PhysicalDoneReceipt(OresScheduler issuer,
                 HostGeneratorTurnPump.OwnerToken owner, long generation,
-                OresFuture<?> sourceTask, OresFuture<Void> physicalDone) {
+                OresFuture<?> sourceTask, Object boundRequest,
+                OresFuture<Void> physicalDone) {
             this.issuer = Objects.requireNonNull(issuer, "issuer");
             this.owner = Objects.requireNonNull(owner, "owner");
             this.generation = generation;
             this.sourceTask = Objects.requireNonNull(sourceTask, "sourceTask");
+            this.boundRequest = boundRequest;
             this.physicalDone = Objects.requireNonNull(physicalDone, "physicalDone");
         }
 
         OresFuture<Void> physicalDone() { return physicalDone; }
 
         boolean claimFor(HostGeneratorTurnPump.OwnerToken expectedOwner,
-                OresScheduler expectedScheduler, OresFuture<?> expectedResult,
-                OresFuture<?> expectedPhysicalDone) {
+                OresScheduler expectedScheduler, Object expectedRequest,
+                OresFuture<?> expectedResult, OresFuture<?> expectedPhysicalDone) {
             // A proof must be bound to the original task AND may authorize
             // precisely one pull. Reusing an already-DONE task to advance the
             // next request would be a physical turn replay.
             return generation > 0 && owner.equals(expectedOwner)
-                    && issuer == expectedScheduler && sourceTask == expectedResult
+                    && issuer == expectedScheduler && boundRequest != null
+                    && boundRequest == expectedRequest
+                    && sourceTask == expectedResult
                     && physicalDone == expectedPhysicalDone
                     && redeemed.compareAndSet(false, true);
         }
@@ -115,6 +122,10 @@ public final class OresScheduler implements AutoCloseable {
             HostGeneratorTurnPump.OwnerToken owner, Task<T> task) {
         Objects.requireNonNull(owner, "owner");
         Objects.requireNonNull(task, "task");
+        // If a pump has reserved a certified pull on this thread, claim its
+        // exact one-use issuance lease BEFORE scheduling any guest task.
+        // Outside that scope the receipt is deliberately unredeemable.
+        Object boundRequest = HostGeneratorTurnPump.bindCertifiedIssuance(owner, this);
         long generation = NEXT_PHYSICAL_RECEIPT_GENERATION.incrementAndGet();
         TaskRunner<T> runner = startRunner(task);
         OresFuture<T> result = runner.completion;
@@ -132,7 +143,8 @@ public final class OresScheduler implements AutoCloseable {
             }
         });
         return new HostGeneratorTurnPump.Turn<>(result,
-                new PhysicalDoneReceipt(this, owner, generation, result, physicalDone));
+                new PhysicalDoneReceipt(this, owner, generation, result,
+                        boundRequest, physicalDone));
     }
 
     /** Cancellation-aware compiler frames can suspend during lexical cleanup. */

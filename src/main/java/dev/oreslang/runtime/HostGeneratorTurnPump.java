@@ -62,6 +62,44 @@ final class HostGeneratorTurnPump implements AutoCloseable {
 
     private static final int DEFAULT_CAPACITY = 256;
 
+    /**
+     * A certified DONE lease must originate during the one specific pump
+     * reservation that will later redeem it. The dynamic authority is never
+     * inherited by a producer thread or a separate scheduler carrier.
+     *
+     * A certificate created outside this scope may still be used by internal
+     * scheduler tests, but it cannot authorize a host pull.
+     */
+    private static final ThreadLocal<StartAuthority> CERTIFIED_START = new ThreadLocal<>();
+
+    private static final class StartAuthority {
+        final OwnerToken owner;
+        final OresScheduler scheduler;
+        final Object request;
+        final Thread originalThread;
+        final java.util.concurrent.atomic.AtomicBoolean issued =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
+        StartAuthority(OwnerToken owner, OresScheduler scheduler, Object request) {
+            this.owner = owner;
+            this.scheduler = scheduler;
+            this.request = request;
+            this.originalThread = Thread.currentThread();
+        }
+    }
+
+    static Object bindCertifiedIssuance(OwnerToken owner, OresScheduler scheduler) {
+        StartAuthority authority = CERTIFIED_START.get();
+        if (authority == null) return null;
+        if (!authority.owner.equals(owner) || authority.scheduler != scheduler
+                || authority.originalThread != Thread.currentThread()
+                || !authority.issued.compareAndSet(false, true)) {
+            throw new SecurityException(
+                    "physical DONE issuance must match one authorized host pull reservation");
+        }
+        return authority.request;
+    }
+
     private static final class Request<T> {
         final Start<T> start;
         final OresFuture<T> future;
@@ -218,7 +256,18 @@ final class HostGeneratorTurnPump implements AutoCloseable {
             // NEVER execute user-supplied starter code while holding gate.
             // A stalled or reentrant callback must not prevent close() from
             // sealing admission or cancelling pending/active host Futures.
-            started = selected.start.start();
+            StartAuthority previous = CERTIFIED_START.get();
+            if (selected.certified) {
+                CERTIFIED_START.set(new StartAuthority(owner, owningScheduler, selected));
+            }
+            try {
+                started = selected.start.start();
+            } finally {
+                if (selected.certified) {
+                    if (previous == null) CERTIFIED_START.remove();
+                    else CERTIFIED_START.set(previous);
+                }
+            }
             if (started == null) {
                 throw new IllegalStateException(
                         "generator turn starter returned no physical-exit barrier");
@@ -226,7 +275,7 @@ final class HostGeneratorTurnPump implements AutoCloseable {
             if (selected.certified) {
                 OresScheduler.PhysicalDoneReceipt proof = started.certificate();
                 if (proof == null || !proof.claimFor(owner, owningScheduler,
-                        started.result(), started.physicalExit())) {
+                        selected, started.result(), started.physicalExit())) {
                     throw new SecurityException(
                             "generator physical DONE was not issued by owning root scheduler");
                 }
