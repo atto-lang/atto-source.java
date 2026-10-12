@@ -191,6 +191,90 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void invokeAsyncPublishesSuccessOnlyAfterDetachedContinuationDrains() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CompletableFuture<Void> producer = new CompletableFuture<>();
+            AtomicBoolean continuationRan = new AtomicBoolean();
+
+            OresFuture<Integer> result =
+                    runtime.invokeAsync(
+                            ActorRuntime.ActorKind.SHARED,
+                            41,
+                            (value, context) -> {
+                                OresFuture<Void> pending =
+                                        OresFuture.from(producer);
+                                ActorRuntime.ContinuationTarget target =
+                                        runtime.captureCurrentContinuationTarget();
+                                runtime.enqueueOnCompletion(
+                                        pending,
+                                        target,
+                                        (ignored, failure) -> {
+                                            if (failure != null) {
+                                                throw new RuntimeException(
+                                                        OresFuture.unwrap(failure));
+                                            }
+                                            continuationRan.set(true);
+                                        });
+                                producer.complete(null);
+                                return value + 1;
+                            });
+
+            assertEquals(42, result.get(2, TimeUnit.SECONDS));
+            assertTrue(
+                    continuationRan.get(),
+                    "successful one-shot actor result must not publish before detached actor continuations drain");
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (runtime.actorCount() != 0 && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(0, runtime.actorCount());
+        }
+    }
+
+    @Test
+    void explicitCloseCancelsQuiescentOneShotResult() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        CompletableFuture<Void> producer = new CompletableFuture<>();
+        CountDownLatch invoked = new CountDownLatch(1);
+        try {
+            OresFuture<Integer> result =
+                    runtime.invokeAsync(
+                            ActorRuntime.ActorKind.SHARED,
+                            41,
+                            (value, context) -> {
+                                OresFuture<Void> pending =
+                                        OresFuture.from(producer);
+                                ActorRuntime.ContinuationTarget target =
+                                        runtime.captureCurrentContinuationTarget();
+                                runtime.enqueueOnCompletion(
+                                        pending,
+                                        target,
+                                        (ignored, failure) -> { });
+                                invoked.countDown();
+                                return value + 1;
+                            });
+
+            assertTrue(invoked.await(2, TimeUnit.SECONDS));
+            assertFalse(
+                    result.isDone(),
+                    "normal result must remain pending while a detached continuation lease is outstanding");
+
+            runtime.close();
+
+            assertTrue(
+                    result.isCancelled(),
+                    "explicit shutdown must abandon/cancel a quiescent normal completion");
+        } finally {
+            try {
+                runtime.close();
+            } catch (IllegalStateException ignored) {
+                // Preserve the primary assertion if shutdown already reported it.
+            }
+        }
+    }
+
+    @Test
     void rejectsUnknownMutableHostObjects() {
         assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(new StringBuilder("mutable")));
     }
