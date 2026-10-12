@@ -1056,10 +1056,12 @@ public final class Parser {
         List<Ast.Annotation> result = new ArrayList<>();
         while (match(AT)) {
             String name = consume(IDENT, "expected annotation name").lexeme();
-            // These names claim code generation, target selection or ABI effects.
-            // Until a typed annotation registry and AOT lowering exist, retaining
-            // them as inert metadata would silently change program semantics.
-            if (List.of("derive", "Derive", "repr", "Repr", "align", "Align",
+            // Reject unimplemented code-generation/ABI attributes, but never
+            // swallow already-implemented compile-time type metadata. In
+            // particular, @Align maps to the "align" type parameter in
+            // applyTypeMetadataAnnotations; lowercase @align is unimplemented.
+            // A future registry must validate targets before this gate.
+            if (List.of("derive", "Derive", "repr", "Repr", "align",
                     "cfg", "Cfg", "inline", "Inline", "expand", "GenerateBuilder",
                     "GenerateSchema", "GenerateClient", "ActorMessage",
                     "PipelineStage", "RequiresState").contains(name)) {
