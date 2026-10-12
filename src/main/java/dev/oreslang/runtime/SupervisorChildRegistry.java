@@ -171,6 +171,78 @@ public final class SupervisorChildRegistry {
         return permit;
     }
 
+    /**
+     * Call after physical spawn, before routing the candidate. Admission proof
+     * must be obtained from the owning scheduler, not guest-supplied IDs.
+     */
+    synchronized void stageReplacement(RestartReservation permit,
+                                       ActorRuntime.ActorId candidate) {
+        checkReservation(permit);
+        if (restartClosed) throw new IllegalStateException("supervisor is closed");
+        requireFreshActor(candidate);
+        if (replacements.containsKey(permit.child().logicalId()))
+            throw new IllegalStateException("candidate already staged");
+        replacements.put(permit.child().logicalId(), new ReplacementState(
+                candidate, permit.incarnation() + 1, ReplacementPhase.SPAWNED));
+    }
+
+    private ReplacementState requireReplacement(
+            RestartReservation permit, ActorRuntime.ActorId actor) {
+        checkReservation(permit);
+        var result = replacements.get(permit.child().logicalId());
+        if (result == null || !result.actor().equals(actor)
+                || result.generation() != permit.incarnation() + 1)
+            throw new IllegalStateException("missing or stale physical replacement");
+        return result;
+    }
+
+    /** Verify host scheduler admission outside the registry monitor. */
+    void acknowledgeReplacementAdmission(
+            RestartReservation permit, ActorRuntime.ActorId actor,
+            java.util.function.BooleanSupplier admittedByScheduler) {
+        Objects.requireNonNull(admittedByScheduler);
+        synchronized (this) {
+            if (requireReplacement(permit, actor).phase() != ReplacementPhase.SPAWNED
+                    || restartClosed)
+                throw new IllegalStateException("replacement cannot be admitted");
+        }
+        if (!admittedByScheduler.getAsBoolean())
+            throw new IllegalStateException("scheduler has not admitted replacement");
+        synchronized (this) {
+            if (requireReplacement(permit, actor).phase() != ReplacementPhase.SPAWNED
+                    || restartClosed)
+                throw new IllegalStateException("admission became stale");
+            replacements.put(permit.child().logicalId(), new ReplacementState(
+                    actor, permit.incarnation() + 1, ReplacementPhase.ADMITTED));
+        }
+    }
+
+    /** Verify physical termination outside the registry monitor. */
+    void acknowledgeReplacementCleanup(
+            RestartReservation permit, ActorRuntime.ActorId actor,
+            java.util.function.BooleanSupplier cleanedByScheduler) {
+        Objects.requireNonNull(cleanedByScheduler);
+        synchronized (this) {
+            var status = requireReplacement(permit, actor).phase();
+            if (status != ReplacementPhase.SPAWNED && status != ReplacementPhase.ADMITTED)
+                throw new IllegalStateException("candidate not live");
+        }
+        if (!cleanedByScheduler.getAsBoolean())
+            throw new IllegalStateException("candidate still physically live");
+        synchronized (this) {
+            var status = requireReplacement(permit, actor).phase();
+            if (status != ReplacementPhase.SPAWNED && status != ReplacementPhase.ADMITTED)
+                throw new IllegalStateException("cleanup became stale");
+            replacements.put(permit.child().logicalId(), new ReplacementState(
+                    actor, permit.incarnation() + 1, ReplacementPhase.CLEANED));
+        }
+    }
+
+    /** A closed supervisor may clean up, but cannot publish a new incarnation. */
+    synchronized void closeRestartAdmission() {
+        restartClosed = true;
+    }
+
     /** Caller must have admitted the actual replacement before commit. */
     synchronized Snapshot replace(
             RestartReservation permit, ActorRuntime.ActorId replacement) {
