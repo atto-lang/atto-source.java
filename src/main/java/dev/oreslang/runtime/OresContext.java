@@ -134,8 +134,9 @@ public final class OresContext implements AutoCloseable {
             this.asyncRuntime = async;
             this.garbageCollector = gc;
             this.hostGeneratorTurns = new HostGeneratorTurnPump(
-                    contextId, () -> vm.isRootSchedulerCurrent()
-                            && Boolean.TRUE.equals(rootGuestEntryScope.get()));
+                    contextId, () -> generatorRootTurnAuthorized(
+                            vm.isRootSchedulerCurrent(),
+                            Boolean.TRUE.equals(rootGuestEntryScope.get())));
         } catch (RuntimeException | Error failure) {
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
@@ -392,6 +393,12 @@ public final class OresContext implements AutoCloseable {
         return hostGeneratorTurns;
     }
 
+    /** Neither a scheduler binding nor a guest-entry lease alone suffices. */
+    static boolean generatorRootTurnAuthorized(
+            boolean rootSchedulerBound, boolean rootGuestPhysicallyEntered) {
+        return rootSchedulerBound && rootGuestPhysicallyEntered;
+    }
+
     private void executeRootTurn(Runnable turn) {
         executeGuestTurn(() -> {
             // Scoped only after a successful physical guest Context.enter.
@@ -484,12 +491,13 @@ public final class OresContext implements AutoCloseable {
                 // Actor-owned finalizers may still need the VM CONTROL scheduler,
                 // async workers, imported code, network or native I/O. Never
                 // retire those dependencies before actor quiescence is proven.
-                actors.close();
                 // A cancelled host pull does not release its physical guest
                 // turn lease until its explicit exit barrier has completed.
-                // Check before terminating its root CONTROL scheduler, so
-                // unfinished cleanup can still run on a retryable close.
+                // Check BEFORE shutting down actor/CONTROL dependencies; if
+                // cleanup still owns this context, retries must leave its
+                // resources available rather than retiring actors too early.
                 hostGeneratorTurns.requireQuiescent();
+                actors.close();
                 vm.close();
                 // An async carrier may still own an entered Truffle context
                 // even after its Future was cancelled. Its executor shutdown

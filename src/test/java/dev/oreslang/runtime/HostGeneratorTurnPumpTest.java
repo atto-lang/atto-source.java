@@ -20,6 +20,16 @@ import static org.junit.jupiter.api.Assertions.*;
 final class HostGeneratorTurnPumpTest {
 
     @Test
+    void rootSchedulerIdentityAloneDoesNotAuthorizeGuestEntry() {
+        assertFalse(OresContext.generatorRootTurnAuthorized(false, false));
+        assertFalse(OresContext.generatorRootTurnAuthorized(true, false),
+                "bound scheduler without physical Truffle guest entry is not enough");
+        assertFalse(OresContext.generatorRootTurnAuthorized(false, true),
+                "guest entry without owning root scheduler is not enough");
+        assertTrue(OresContext.generatorRootTurnAuthorized(true, true));
+    }
+
+    @Test
     void cannotEnterGuestFromForeignThreadEvenWithValidOwnerToken() throws Exception {
         Thread legitimateOwner = Thread.currentThread();
         HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
