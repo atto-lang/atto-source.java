@@ -6280,12 +6280,49 @@ public final class ActorRuntime implements AutoCloseable {
                     // cancellation is best-effort after the actor has finalized.
                 }
             }
-            drainMailboxReservations();
+            Throwable cleanupFailure = null;
+            try {
+                drainMailboxReservations();
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = failure;
+            }
             staticSelectCursors.clear();
             codeActorState = null;
-            Throwable terminalOutput = ref.terminationCause.get();
-            outputStream.close(terminalOutput);
-            if (memorySlice != null) memorySlice.close();
+            try {
+                outputStream.close(ref.terminationCause.get());
+            } catch (RuntimeException | Error failure) {
+                if (cleanupFailure == null) cleanupFailure = failure;
+                else if (cleanupFailure != failure) cleanupFailure.addSuppressed(failure);
+            }
+            if (memorySlice != null) {
+                try {
+                    memorySlice.close();
+                } catch (RuntimeException | Error failure) {
+                    // The slice is logically revoked but physical FFM cleanup
+                    // may fail once after native Arena.close(). Retry once so
+                    // a transient bookkeeping callback cannot strand bytes.
+                    // Even after a successful retry preserve the first fault
+                    // in the actor's terminal result for supervisor diagnosis.
+                    if (cleanupFailure == null) cleanupFailure = failure;
+                    else if (cleanupFailure != failure) cleanupFailure.addSuppressed(failure);
+                    try {
+                        memorySlice.close();
+                    } catch (RuntimeException | Error retryFailure) {
+                        if (cleanupFailure != retryFailure) cleanupFailure.addSuppressed(retryFailure);
+                    }
+                }
+            }
+            if (cleanupFailure != null) {
+                Throwable previous = ref.terminationCause.get();
+                if (previous == null) {
+                    if (!ref.terminationCause.compareAndSet(null, cleanupFailure)) {
+                        previous = ref.terminationCause.get();
+                    }
+                }
+                if (previous != null && previous != cleanupFailure) {
+                    previous.addSuppressed(cleanupFailure);
+                }
+            }
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
