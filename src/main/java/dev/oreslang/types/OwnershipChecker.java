@@ -1487,7 +1487,12 @@ public final class OwnershipChecker {
                 throw error("guard-bearing values cannot cross an arbitrary call boundary");
             }
             if (isBorrowValue(argument) || containsBorrowType(argument.type)) {
-                throw error("unknown call cannot retain borrowed arguments without an explicit callable lifetime contract");
+                String calleeName = call.callee() instanceof Ast.NameExpr unresolvedName
+                        ? unresolvedName.name()
+                        : call.callee() instanceof Ast.MemberExpr unresolvedMember
+                                ? unresolvedMember.member() : "<dynamic>";
+                throw error("unknown call cannot retain borrowed arguments without an explicit callable lifetime contract"
+                        + " (callee: " + calleeName + ")");
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
