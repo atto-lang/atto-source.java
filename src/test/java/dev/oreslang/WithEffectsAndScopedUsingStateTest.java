@@ -31,7 +31,7 @@ final class WithEffectsAndScopedUsingStateTest {
                 .modules().getFirst().declarations().getFirst();
         Ast.MethodDecl method = klass.methods().getFirst();
         assertTrue(method.annotations().stream()
-                .anyMatch(a -> a.name().equals("$using$")
+                .anyMatch(a -> a.name().equals("$with$")
                     && a.arguments().getFirst().name().equals("state.read")));
         Ast.CallExpr call = (Ast.CallExpr)
                 ((Ast.ReturnStmt) method.body().getFirst()).value();
