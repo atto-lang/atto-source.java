@@ -30,18 +30,29 @@ public final class NativeHttp implements AutoCloseable {
         timers.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
     }
 
+    /** Backwards-compatible API: capacity also selects the requested TCP accept backlog. */
     public synchronized Server listen(String host, int port, int capacity, int bodyLimit, int deadlineMillis) {
+        return listenWithLimits(host, port, capacity, capacity, bodyLimit, deadlineMillis);
+    }
+
+    /**
+     * The kernel TCP accept backlog is independent of HTTP exchange admission.
+     * Both are bounded, and neither is an actor-pool size or a wait-queue size.
+     */
+    public synchronized Server listenWithLimits(String host, int port, int backlog, int capacity,
+                                                 int bodyLimit, int deadlineMillis) {
         long perf = CorePerf.start();
         if (closed) throw new IllegalStateException("HTTP runtime closed");
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP listeners belong to the supervisor");
         if (host == null || host.isBlank() || port < 0 || port > 65535
-                || capacity < 1 || capacity > 65536 || bodyLimit < 1 || bodyLimit > 64 * 1024 * 1024
+                || backlog < 1 || backlog > 65536 || capacity < 1 || capacity > 65536
+                || bodyLimit < 1 || bodyLimit > 64 * 1024 * 1024
                 || deadlineMillis < 1) throw new IllegalArgumentException("invalid HTTP listener limits");
         context.requirePermission(RuntimePermissions.Permission.NET, host.toLowerCase(Locale.ROOT) + ":" + port, "http.listen");
         configureTransportDefaults();
         try {
-            Server server = new Server(HttpServer.create(new InetSocketAddress(host, port), capacity),
-                    capacity, bodyLimit, deadlineMillis);
+            Server server = new Server(HttpServer.create(new InetSocketAddress(host, port), backlog),
+                    capacity, backlog, bodyLimit, deadlineMillis);
             servers.add(server);
             server.transport.start();
             CorePerf.end(CorePerf.HTTP_LISTEN, perf);
@@ -199,7 +210,7 @@ public final class NativeHttp implements AutoCloseable {
     public final class Server implements AutoCloseable {
         private final HttpServer transport;
         private final Semaphore admission;
-        private final int bodyLimit, deadlineMillis;
+        private final int bodyLimit, deadlineMillis, admissionCapacity, requestedBacklog;
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
         private OresFuture<Object> waiter;
@@ -207,8 +218,9 @@ public final class NativeHttp implements AutoCloseable {
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
 
-        private Server(HttpServer transport, int capacity, int bodyLimit, int deadlineMillis) {
+        private Server(HttpServer transport, int capacity, int backlog, int bodyLimit, int deadlineMillis) {
             this.transport = transport; this.admission = new Semaphore(capacity);
+            this.admissionCapacity = capacity; this.requestedBacklog = backlog;
             this.bodyLimit = bodyLimit; this.deadlineMillis = deadlineMillis;
             // Preserve the original executor when diagnostics are off. In
             // diagnostic mode, measure the JDK-to-virtual-thread handoff.
@@ -232,6 +244,9 @@ public final class NativeHttp implements AutoCloseable {
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP server is supervisor-owned");
         }
         public int port() { supervisor(); return transport.getAddress().getPort(); }
+        public int admissionCapacity() { supervisor(); return admissionCapacity; }
+        /** Requested OS backlog. Effective backlog depends on kernel settings. */
+        public int requestedBacklog() { supervisor(); return requestedBacklog; }
         public long accepted() { supervisor(); return accepted.get(); }
         public long rejected() { supervisor(); return rejected.get(); }
         public long completed() { supervisor(); return completed.get(); }
