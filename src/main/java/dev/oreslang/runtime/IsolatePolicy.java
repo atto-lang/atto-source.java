@@ -153,9 +153,9 @@ public record IsolatePolicy(
      * Graal baseline: no host reflection, native access, polyglot calls,
      * environment access, guest-created threads, or host filesystem/network IO.
      *
-     * For adversarial policies, Graal's UNTRUSTED sandbox is selected. It
-     * spawns a VM-level polyglot isolate when the language-isolate artifact is
-     * available and enforces guest/isolate resource limits.
+     * Adversarial callers must supply the application's pool-owned Engine
+     * through sharedUntrustedIsolateContextBuilder(). Ad-hoc per-Context
+     * isolates and JVM fallback are rejected before guest execution.
      */
     public Context.Builder restrictedContextBuilder() {
         return restrictedContextBuilder(ExecutionProfile.parse(NativeBuildMode.defaultExecutionMode(), "server"), Set.of());
