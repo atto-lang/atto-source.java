@@ -79,14 +79,30 @@ public final class DopGpuAdmission {
         }
         return new Binding(shape, artifact, first, second, bytes, total);
     }
-    public record ClaimedBinding(Binding binding, GpuBufferFence.PairTickets tickets) { }
+    /**
+     * Construct the result BEFORE claiming device fences. After claimPair
+     * succeeds, assigning the already-created ticket reference cannot allocate
+     * or throw, so a Java allocation failure cannot strand two IN_FLIGHT
+     * buffers without a returned completion capability.
+     */
+    public static final class ClaimedBinding {
+        private final Binding binding;
+        private GpuBufferFence.PairTickets tickets;
+
+        private ClaimedBinding(Binding binding) { this.binding = binding; }
+        public Binding binding() { return binding; }
+        public GpuBufferFence.PairTickets tickets() {
+            return Objects.requireNonNull(tickets, "GPU claim not completed");
+        }
+    }
 
     static ClaimedBinding claim(DopKernelIR.Kernel kernel, DopKernelIR.GpuTarget target,
-                                       DeviceBuffer input, DeviceBuffer output) {
+                                DeviceBuffer input, DeviceBuffer output) {
         var plan = preflight(kernel, target, input, output);
-        var tickets = GpuBufferFence.claimPair(input.fence(), output.fence(),
+        var result = new ClaimedBinding(plan);
+        result.tickets = GpuBufferFence.claimPair(input.fence(), output.fence(),
                 plan.bytesPerBuffer());
-        return new ClaimedBinding(plan, tickets);
+        return result;
     }
 
 }
