@@ -57,3 +57,15 @@ https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/
 passed 26/26 focused native CTests. General async state, multiple concurrent
 flows, Java runtime parity and full legacy regression migrations are
 outstanding. See `docs/ACTOR_STATE_INVARIANT.md`.
+
+## Scoped `using` syntax admission
+
+A native LLVM subset now compiles value-returning read and critical write
+capabilities. The Java parser recognizes the spelling well enough to
+issue a deliberate diagnostic: `using state.read/write requires Java scoped
+actor-state capability lowering (not implemented)`. It must **not**
+reinterpret this syntax as ordinary actor method invocation.
+
+[Exact-source Java JDK25 smoke CI #38313160385](https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/actions/runs/38313160385)
+passed **25** focused checks. No Java guest state-loan execution was
+tested or enabled. See `docs/ACTOR_STATE_USING_CAPABILITIES.md`.
