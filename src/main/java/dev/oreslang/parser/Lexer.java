@@ -150,6 +150,21 @@ public final class Lexer {
     private void identifier() {
         while (isIdentPart(peek())) advance();
         String text = source.substring(start, current);
+        // 'nb-select' is a whitelisted compound keyword in select position.
+        // Emit the same pair of tokens as 'nb select', preserving real source
+        // columns. Ordinary '-' remains subtraction and is never admitted as
+        // an identifier character.
+        if (text.equals("nb") && source.startsWith("-select", current)
+                && (current + 7 == source.length()
+                    || (source.charAt(current + 7) != '-'
+                        && !isIdentPart(source.charAt(current + 7))))) {
+            add(NB);
+            advance(); // ASCII hyphen-minus, U+002D
+            int keywordColumn = column;
+            for (int i = 0; i < 6; i++) advance(); // select
+            tokens.add(new Token(SELECT, "select", line, keywordColumn));
+            return;
+        }
         add(KEYWORDS.getOrDefault(text, IDENT));
     }
 
