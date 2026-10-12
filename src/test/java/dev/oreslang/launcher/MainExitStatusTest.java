@@ -36,6 +36,8 @@ final class MainExitStatusTest {
 
     @Test void cliSeparatesUsageErrorsFromCompilationErrors() throws Exception {
         assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--invalid-option"}));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--define="}));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--allow-host-class="}));
         Path path = temp.resolve("bad.ores");
         Files.writeString(path, "pub routine main(): int { return missing_variable; }");
         assertEquals(1, OresMain.exitStatusForArgs(new String[] {path.toString()}));
