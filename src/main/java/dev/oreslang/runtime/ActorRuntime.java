@@ -6992,29 +6992,27 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
             }
 
-            // Once admissions are sealed, detach mailbox envelopes under the
-            // actor monitor and release their backing resources outside it.
-            // Do this before publishing any termination receipts.
-            drainMailboxReservations();
-
-            // Runtime Future callbacks can take other actor/lifecycle locks.
-            // Publish failure only after teardown has released lifecycleLock.
-            Throwable drainFailure = cause == null ? terminated(ref) : cause;
-            for (DrainWaiter waiter : failedDrainWaiters) {
-                waiter.completion().failFromRuntime(drainFailure);
-            }
-
-            // Cancellation removes channel/select waiter registrations before
-            // any future channel activity can revive work for this dead actor.
-            for (OresFuture<?> future : pending) future.cancel(false);
-
             try {
+                // Detach closed mailbox envelopes while holding the monitor,
+                // but release their resources after leaving the lock.
+                drainMailboxReservations();
+
+                Throwable drainFailure = cause == null ? terminated(ref) : cause;
+                for (DrainWaiter waiter : failedDrainWaiters) {
+                    waiter.completion().failFromRuntime(drainFailure);
+                }
+                // Cancel runtime-owned operations before canceling children;
+                // none of these Future callbacks may run under lifecycleLock.
+                for (OresFuture<?> future : pending) future.cancel(false);
                 for (ActorCell<?> child : descendants) {
                     child.cancel(new ActorCancelledException(
                             child.ref.id(),
                             "parent actor " + ref.id() + " terminated"));
                 }
             } finally {
+                // Even if an envelope release, waiter or cancellation hook
+                // fails, never leave terminationCleanupPending permanently
+                // armed or strand a waiter behind the finalization barrier.
                 synchronized (lifecycleLock) {
                     terminationCleanupPending = false;
                     finalizeStopLocked();
