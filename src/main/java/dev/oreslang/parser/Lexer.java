@@ -150,22 +150,46 @@ public final class Lexer {
     private void identifier() {
         while (isIdentPart(peek())) advance();
         String text = source.substring(start, current);
-        // 'nb-select' is a whitelisted compound keyword in select position.
-        // Emit the same pair of tokens as 'nb select', preserving real source
-        // columns. Ordinary '-' remains subtraction and is never admitted as
-        // an identifier character.
-        if (text.equals("nb") && source.startsWith("-select", current)
-                && (current + 7 == source.length()
-                    || (source.charAt(current + 7) != '-'
-                        && !isIdentPart(source.charAt(current + 7))))) {
+
+        // Whitelist compound keywords; do not extend the general identifier
+        // grammar with '-'. Plain subtraction and -> remain their own tokens.
+        if (text.equals("nb") && matchesCompoundSuffix("select")) {
             add(NB);
-            advance(); // ASCII hyphen-minus, U+002D
+            advance(); // U+002D hyphen-minus
             int keywordColumn = column;
-            for (int i = 0; i < 6; i++) advance(); // select
+            for (int i = 0; i < "select".length(); i++) advance();
             tokens.add(new Token(SELECT, "select", line, keywordColumn));
             return;
         }
+
+        Token.Type compoundType = null;
+        String suffix = null;
+        if (text.equals("critical")) {
+            if (matchesCompoundSuffix("read")) {
+                compoundType = CRITICAL_READ;
+                suffix = "read";
+            } else if (matchesCompoundSuffix("write")) {
+                compoundType = CRITICAL_WRITE;
+                suffix = "write";
+            }
+        } else if (text.equals("transform") && matchesCompoundSuffix("pipe")) {
+            compoundType = TRANSFORM_PIPE;
+            suffix = "pipe";
+        }
+        if (compoundType != null) {
+            for (int i = 0; i < suffix.length() + 1; i++) advance();
+            add(compoundType);
+            return;
+        }
         add(KEYWORDS.getOrDefault(text, IDENT));
+    }
+
+    private boolean matchesCompoundSuffix(String suffix) {
+        String candidate = "-" + suffix;
+        if (!source.startsWith(candidate, current)) return false;
+        int after = current + candidate.length();
+        return after == source.length()
+                || (source.charAt(after) != '-' && !isIdentPart(source.charAt(after)));
     }
 
     private boolean isAtEnd() { return current >= source.length(); }
