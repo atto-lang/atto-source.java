@@ -246,6 +246,7 @@ public final class OwnershipChecker {
                     && !state.mutableBorrowed)
                 && (state.kind == ValueKind.IMM_BORROW
                     || state.kind == ValueKind.MUT_BORROW
+                    || containsBorrowedType(state.type)
                     || state.immutableBorrows > 0
                     || state.mutableBorrowed));
         if (liveOrdinaryLoan) {
