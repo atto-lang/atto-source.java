@@ -462,4 +462,44 @@ final class SupervisorChildRegistryTest {
         registry.abortRestart(claim);
     }
 
+
+    @Test
+    void matchesSharedVerifiedRestartRefinementTrace() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var trace = new java.util.ArrayList<String>();
+        var old = ActorRuntime.ActorId.create();
+        var child = registry.register(old);
+        trace.add("ACTIVE");
+        registry.finalized(child.child(), old, 1);
+        trace.add("FINALIZED");
+        var first = registry.beginRestart(child.child(), old, 1);
+        trace.add("RESTARTING");
+        var next = ActorRuntime.ActorId.create();
+        registry.stageReplacement(first, next);
+        trace.add("SPAWNED");
+        assertThrows(IllegalStateException.class, () -> registry.replace(first, next));
+        registry.acknowledgeReplacementAdmission(first, next, () -> true);
+        trace.add("ADMITTED");
+        var activated = registry.replace(first, next);
+        assertEquals(2, activated.incarnation());
+        trace.add("ACTIVE");
+        registry.finalized(activated.child(), next, 2);
+        trace.add("FINALIZED");
+        var retry = registry.beginRestart(activated.child(), next, 2);
+        trace.add("RESTARTING");
+        var candidate = ActorRuntime.ActorId.create();
+        registry.stageReplacement(retry, candidate);
+        trace.add("SPAWNED");
+        assertThrows(IllegalStateException.class, () -> registry.abortRestart(retry));
+        registry.acknowledgeReplacementCleanup(retry, candidate, () -> true);
+        trace.add("CLEANED");
+        registry.abortRestart(retry);
+        trace.add("FINALIZED");
+        var expected = "ACTIVE>FINALIZED>RESTARTING>SPAWNED>ADMITTED>"
+                + "ACTIVE>FINALIZED>RESTARTING>SPAWNED>CLEANED>FINALIZED";
+        assertEquals(expected, String.join(">", trace));
+        System.out.println("SUPERVISOR_RESTART_TRACE_V1=" + expected);
+    }
+
 }
