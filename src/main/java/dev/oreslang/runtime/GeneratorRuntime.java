@@ -413,6 +413,74 @@ public final class GeneratorRuntime {
         boolean awaitingSourceFuture() { return waitingOnFuture; }
     }
 
+    /**
+     * Internal Java-host pull facade backed by the context's certified root
+     * scheduler. This does not expose the legacy virtual-thread producer.
+     * The OresContext pump dispatches from a physically entered CONTROL turn.
+     */
+    static final class HostPullSession implements AutoCloseable {
+        private final HostGeneratorTurnPump pump;
+        private final SchedulerBacked<Object> frame;
+        // Only the session's public Futures are tracked here; physical exit
+        // remains owned by the context pump and the root scheduler.
+        private final Object lifecycle = new Object();
+        private final java.util.Set<OresFuture<Step<Object>>> pulls =
+                new java.util.HashSet<>();
+        private boolean closed;
+
+        HostPullSession(HostGeneratorTurnPump pump, SchedulerBacked<Object> frame) {
+            this.pump = Objects.requireNonNull(pump, "pump");
+            this.frame = Objects.requireNonNull(frame, "frame");
+        }
+
+        OresFuture<Step<Object>> nextStep() {
+            synchronized (lifecycle) {
+                if (closed) {
+                    throw new java.util.concurrent.RejectedExecutionException(
+                            "source generator host session is closed");
+                }
+            }
+
+            // Never hold the session lifecycle monitor while signalling the
+            // root scheduler. An owner notifier is permitted to block or
+            // fail; close must not wait for host submission to return.
+            return pump.requestCertified(pump.token(), frame.nextTurn(), accepted -> {
+                final boolean cancelAfterClose;
+                synchronized (lifecycle) {
+                    cancelAfterClose = closed;
+                    if (!closed) pulls.add(accepted);
+                }
+                if (cancelAfterClose) {
+                    // Registered after session closure but BEFORE any owner
+                    // wake: do not allow a stale pull to enter guest code.
+                    accepted.cancel(false);
+                } else {
+                    accepted.whenCompleteRuntime((value, failure) -> {
+                        synchronized (lifecycle) {
+                            pulls.remove(accepted);
+                        }
+                    });
+                }
+            });
+        }
+
+        @Override
+        public void close() {
+            final java.util.List<OresFuture<Step<Object>>> toCancel;
+            synchronized (lifecycle) {
+                if (closed) return;
+                closed = true;
+                toCancel = java.util.List.copyOf(pulls);
+                pulls.clear();
+            }
+            // Never cancel under the lifecycle monitor: cancellation can run
+            // callbacks and source-cleanup coordination synchronously.
+            for (OresFuture<Step<Object>> result : toCancel) {
+                result.cancel(false);
+            }
+        }
+    }
+
     public static <T> Generator<T> generator(AsyncRuntime runtime, Producer<T> producer) {
         return new Generator<>(new Engine<>(runtime, producer));
     }

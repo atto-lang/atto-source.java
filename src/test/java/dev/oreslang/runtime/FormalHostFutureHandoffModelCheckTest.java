@@ -416,17 +416,17 @@ final class FormalHostFutureHandoffModelCheckTest {
      * runnables may return to the admission FIFO. An uncertain in-flight exit
      * poisons admission instead of manufacturing successful DONE.
      */
-    private enum ExecutorEvent {
+    private enum InlineExecutorEvent {
         SUBMIT, EXECUTE, REPORT_REJECTION, INLINE_EXECUTOR_THROWS,
         PHYSICAL_DONE, UNPROVEN_EXIT, RETRY
     }
-    private record ExecutorState(boolean queued, boolean submitted,
+    private record InlineExecutorState(boolean queued, boolean submitted,
             boolean started, boolean done, boolean poisoned, int guestStarts) {
-        static ExecutorState initial() {
-            return new ExecutorState(true, false, false, false, false, 0);
+        static InlineExecutorState initial() {
+            return new InlineExecutorState(true, false, false, false, false, 0);
         }
     }
-    private static ExecutorState executorStep(ExecutorState s, ExecutorEvent e) {
+    private static InlineExecutorState inlineExecutorStep(InlineExecutorState s, InlineExecutorEvent e) {
         boolean queued = s.queued, submitted = s.submitted;
         boolean started = s.started, done = s.done, poisoned = s.poisoned;
         int starts = s.guestStarts;
@@ -462,9 +462,9 @@ final class FormalHostFutureHandoffModelCheckTest {
                 if (started && !done) poisoned = true;
             }
         }
-        return new ExecutorState(queued, submitted, started, done, poisoned, starts);
+        return new InlineExecutorState(queued, submitted, started, done, poisoned, starts);
     }
-    private static void executorInvariant(ExecutorState s) {
+    private static void inlineExecutorInvariant(InlineExecutorState s) {
         assertTrue(s.guestStarts >= 0 && s.guestStarts <= 1,
                 "physical guest body executed more than once");
         assertFalse(s.started && s.queued,
@@ -474,25 +474,25 @@ final class FormalHostFutureHandoffModelCheckTest {
     }
     @Test
     void boundedInlineExecutorFailureCannotReplayPhysicalGuestEffects() {
-        Set<ExecutorState> visited = new HashSet<>();
-        ArrayDeque<ExecutorState> frontier = new ArrayDeque<>();
-        visited.add(ExecutorState.initial());
-        frontier.addLast(ExecutorState.initial());
+        Set<InlineExecutorState> visited = new HashSet<>();
+        ArrayDeque<InlineExecutorState> frontier = new ArrayDeque<>();
+        visited.add(InlineExecutorState.initial());
+        frontier.addLast(InlineExecutorState.initial());
         boolean sawInlineAfterDone = false, sawRetry = false, sawPoison = false;
         while (!frontier.isEmpty()) {
-            ExecutorState s = frontier.removeFirst();
-            executorInvariant(s);
+            InlineExecutorState s = frontier.removeFirst();
+            inlineExecutorInvariant(s);
             sawPoison |= s.poisoned;
             sawRetry |= s.submitted && !s.started;
-            for (ExecutorEvent event : ExecutorEvent.values()) {
-                ExecutorState next = executorStep(s, event);
-                executorInvariant(next);
-                if (event == ExecutorEvent.INLINE_EXECUTOR_THROWS && s.done) {
+            for (InlineExecutorEvent event : InlineExecutorEvent.values()) {
+                InlineExecutorState next = inlineExecutorStep(s, event);
+                inlineExecutorInvariant(next);
+                if (event == InlineExecutorEvent.INLINE_EXECUTOR_THROWS && s.done) {
                     sawInlineAfterDone = true;
                     assertEquals(s, next,
                             "executor failed after physical completion: never replay");
                 }
-                if (s.poisoned && event == ExecutorEvent.RETRY) {
+                if (s.poisoned && event == InlineExecutorEvent.RETRY) {
                     assertEquals(s, next, "poisoned entry cannot be retried");
                 }
                 if (visited.add(next)) frontier.addLast(next);
@@ -502,9 +502,9 @@ final class FormalHostFutureHandoffModelCheckTest {
     }
     @Test
     void unsafeInlineFailureReplayViolatesExecutorOwnershipInvariant() {
-        ExecutorState unsafe = new ExecutorState(true, false,
+        InlineExecutorState unsafe = new InlineExecutorState(true, false,
                 true, true, false, 2);
-        assertThrows(AssertionError.class, () -> executorInvariant(unsafe));
+        assertThrows(AssertionError.class, () -> inlineExecutorInvariant(unsafe));
     }
 
     /** An executor may throw before, during or after physical guest execution. */
