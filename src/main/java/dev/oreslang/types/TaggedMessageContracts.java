@@ -77,19 +77,36 @@ public final class TaggedMessageContracts {
         items.add(entry);
     }
 
+    /**
+     * Compiler symbol/type registry. A nested enum payload can be a local
+     * nominal value even though it has NO compiled wire shape yet.
+     * A null payload shape with non-null sourcePayload means "not wire-safe",
+     * never "payloadless". Wire admission must check both fields.
+     */
+    public static Registry forTypes(Ast.Program program) {
+        return build(program, true);
+    }
+
+    /** Requires the entire declared graph to have portable message codecs. */
     public static Registry verify(Ast.Program program) {
+        return build(program, false);
+    }
+
+    private static Registry build(Ast.Program program, boolean localOnly) {
         Objects.requireNonNull(program);
-        // Detect infinitely sized direct and mutual recursion before
-        // constructing any case schema, independent of declaration order.
         List<EnumPayloadDependencies.Reference> nested =
                 EnumPayloadDependencies.check(program);
-        if (!nested.isEmpty()) {
+        if (!localOnly && !nested.isEmpty()) {
             var first = nested.getFirst();
             throw new IllegalArgumentException(
                     "enum payload " + first.from() + "." + first.caseName()
                     + " refers to nominal enum '" + first.to() + "'; "
                     + "nested enum values are valid type-level dependencies but "
                     + "a portable nested enum wire codec is not yet implemented");
+        }
+        Set<String> localOnlyCases = new HashSet<>();
+        for (var dependency : nested) {
+            localOnlyCases.add(dependency.from() + "." + dependency.caseName());
         }
         Map<String, EnumType> enums = new LinkedHashMap<>();
         Map<String, Ast.PatternDecl> pending = new LinkedHashMap<>();
@@ -133,6 +150,7 @@ public final class TaggedMessageContracts {
                     }
                     previousTag = entry.tag();
                     MessagePackCollectionCodec.Shape shape = entry.payload() == null
+                            || localOnlyCases.contains(enumDecl.name() + "." + entry.name())
                             ? null : ActorWireSchema.fromSource(entry.payload());
                     entries.add(new Case(enumDecl.name(), entry.name(), entry.tag(),
                             entry.payload(), shape));
