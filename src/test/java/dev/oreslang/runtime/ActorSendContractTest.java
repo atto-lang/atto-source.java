@@ -452,4 +452,52 @@ final class ActorSendContractTest {
         }
     }
 
+    @Test
+    void failedMailboxResourceReleaseDoesNotStrandLaterReservations() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((java.util.Map<?, ?>) actorsField.get(runtime)).get(actor.id());
+            assertNotNull(cell);
+
+            var mailboxField = cell.getClass().getDeclaredField("mailbox");
+            mailboxField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ChannelRuntime.Channel<Object> mailbox =
+                    (ChannelRuntime.Channel<Object>) mailboxField.get(cell);
+            var reserveMethod = cell.getClass().getDeclaredMethod("reserveMailboxSlot");
+            reserveMethod.setAccessible(true);
+            Class<?> envelopeClass =
+                    Class.forName("dev.oreslang.runtime.ActorRuntime$MessageEnvelope");
+            var envelopeFactory = envelopeClass.getDeclaredMethod(
+                    "message", Object.class, Runnable.class, ActorRuntime.ActorId.class, long.class);
+            envelopeFactory.setAccessible(true);
+            AtomicInteger secondReleaseCount = new AtomicInteger();
+            assertEquals(Boolean.TRUE, reserveMethod.invoke(cell));
+            Object first = envelopeFactory.invoke(null, Integer.valueOf(1),
+                    (Runnable) () -> { throw new IllegalStateException("synthetic release failure"); },
+                    null, 0L);
+            assertTrue(mailbox.tryWrite(first));
+            assertEquals(Boolean.TRUE, reserveMethod.invoke(cell));
+            Object second = envelopeFactory.invoke(null, Integer.valueOf(2),
+                    (Runnable) secondReleaseCount::incrementAndGet, null, 1L);
+            assertTrue(mailbox.tryWrite(second));
+
+            actor.stop();
+            assertEquals(1, secondReleaseCount.get(),
+                    "failure releasing one envelope must not strand the next");
+            var queuedMessages = cell.getClass().getDeclaredField("queuedMessages");
+            queuedMessages.setAccessible(true);
+            assertEquals(0, queuedMessages.getInt(cell),
+                    "all mailbox reservations must be reclaimed on cleanup failure");
+            assertThrows(ExecutionException.class,
+                    () -> actor.getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(actor.failure().orElseThrow().getMessage()
+                    .contains("synthetic release failure"));
+        }
+    }
+
 }
