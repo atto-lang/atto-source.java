@@ -167,6 +167,13 @@ final class HostGeneratorTurnPump implements AutoCloseable {
     }
 
     <T> OresFuture<T> request(OwnerToken token, Start<T> start) {
+        // The synthetic completion path exists only for isolated queue
+        // regressions. A production OresContext always supplies the owning
+        // root scheduler and must never downgrade to caller-supplied DONE.
+        if (owningScheduler != null) {
+            throw new SecurityException(
+                    "context-owned generator pulls require a certified physical DONE receipt");
+        }
         return requestInternal(token, start, false);
     }
 

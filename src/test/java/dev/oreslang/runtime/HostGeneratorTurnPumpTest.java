@@ -478,6 +478,24 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void contextOwnedPumpCannotDowngradeToSyntheticPhysicalExit() throws Exception {
+        try (OresScheduler root = new OresScheduler(1)) {
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> true, root);
+            AtomicInteger starts = new AtomicInteger();
+            assertThrows(SecurityException.class,
+                    () -> pump.request(pump.token(), () -> {
+                        starts.incrementAndGet();
+                        return new HostGeneratorTurnPump.Turn<>(
+                                OresFuture.completed(1), OresFuture.completed(null));
+                    }));
+            assertEquals(0, starts.get(), "legacy guest producer must never start");
+            assertTrue(pump.isQuiescent());
+            pump.close();
+        }
+    }
+
+    @Test
     void certifiedPullRejectsSyntheticOrForeignSchedulerDoneProof() throws Exception {
         try (OresScheduler root = new OresScheduler(1);
              OresScheduler foreign = new OresScheduler(1)) {
