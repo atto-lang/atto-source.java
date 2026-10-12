@@ -20,7 +20,7 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         ENQUEUE, OWNER_DISPATCH, FOREIGN_DISPATCH, WRONG_INCARNATION,
         SETTLE_RESULT, PHYSICAL_EXIT, CANCEL_PENDING, CANCEL_ACTIVE,
         SEAL_CONTEXT, STARTER_FAILED_NO_EXIT_RECEIPT,
-        PUBLISH_AFTER_EXIT, RETRY_CLOSE
+        FAILED_EXIT_RECEIPT, PUBLISH_AFTER_EXIT, RETRY_CLOSE
     }
 
     private record State(
@@ -83,6 +83,19 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
                     result = true;
                 }
             }
+            case FAILED_EXIT_RECEIPT -> {
+                if (active) {
+                    // Cancellation/failure of a physical exit Future is not a
+                    // host-owned DONE receipt. The public result may settle,
+                    // but the context remains quarantined permanently.
+                    sealed = true;
+                    queued = 0;
+                    cancelled = true;
+                    result = true;
+                    exited = true;
+                    unprovenExit = true;
+                }
+            }
             case STARTER_FAILED_NO_EXIT_RECEIPT -> {
                 if (active && !result && !exited) {
                     // Starter may have launched untracked work before throwing;
@@ -124,7 +137,7 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
                     "inactive activation retained source-task state");
         }
         if (s.unprovenExit) {
-            assertTrue(s.sealed && !s.active && !s.retired,
+            assertTrue(s.sealed && !s.retired,
                     "unknown producer exit must quarantine context");
         }
         if (s.retired) {
@@ -175,6 +188,20 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
         assertTrue(sawResultBeforeExit && sawCancelledWithoutExit
                 && sawTwoSequentialTurns && sawRetirement,
                 "expected safety-relevant states not reachable");
+    }
+
+    @Test
+    void failedExitReceiptCannotRetireEvenAfterPublicCancellation() {
+        State state = State.initial();
+        state = step(state, Event.ENQUEUE);
+        state = step(state, Event.OWNER_DISPATCH);
+        state = step(state, Event.FAILED_EXIT_RECEIPT);
+        assertTrue(state.unprovenExit);
+        state = step(state, Event.PUBLISH_AFTER_EXIT);
+        assertFalse(state.active);
+        state = step(state, Event.RETRY_CLOSE);
+        assertFalse(state.retired);
+        invariant(state);
     }
 
     @Test

@@ -124,6 +124,47 @@ final class HostGeneratorTurnPumpTest {
     }
 
     @Test
+    void cancelledPhysicalExitReceiptCannotAuthorizeNextTurnOrRetirement() {
+        HostGeneratorTurnPump pump = new HostGeneratorTurnPump(UUID.randomUUID(), () -> true);
+        OresFuture<Integer> producer = new OresFuture<>();
+        OresFuture<Void> exit = new OresFuture<>();
+        AtomicInteger secondStarts = new AtomicInteger();
+        OresFuture<Integer> first = pump.request(pump.token(),
+                () -> new HostGeneratorTurnPump.Turn<>(producer, exit));
+        OresFuture<Integer> second = pump.request(pump.token(), () -> {
+            secondStarts.incrementAndGet();
+            return new HostGeneratorTurnPump.Turn<>(
+                    OresFuture.completed(22), OresFuture.completed(null));
+        });
+        assertTrue(pump.dispatchOne());
+        assertTrue(exit.cancel(false));
+        assertTrue(producer.isCancelled(),
+                "failed exit proof must request cancellation of the producer");
+        assertTrue(second.isCancelled(), "a failed physical exit seals the pending queue");
+        assertFalse(pump.dispatchOne());
+        assertFalse(pump.isQuiescent());
+        assertThrows(IllegalStateException.class, pump::close,
+                "cancelled physical exit is not a DONE receipt");
+        assertEquals(0, secondStarts.get());
+        assertTrue(first.isDone());
+    }
+
+    @Test
+    void exceptionalPhysicalExitReceiptCannotAuthorizeRetirement() {
+        HostGeneratorTurnPump pump = new HostGeneratorTurnPump(UUID.randomUUID(), () -> true);
+        OresFuture<Integer> producer = OresFuture.completed(13);
+        OresFuture<Void> exit = new OresFuture<>();
+        OresFuture<Integer> pull = pump.request(pump.token(),
+                () -> new HostGeneratorTurnPump.Turn<>(producer, exit));
+        assertTrue(pump.dispatchOne());
+        exit.failFromRuntime(new IllegalStateException("physical exit unknown"));
+        assertTrue(pull.isDone());
+        assertFalse(pump.isQuiescent(),
+                "failure of DONE evidence must remain permanently quarantined");
+        assertThrows(IllegalStateException.class, pump::close);
+    }
+
+    @Test
     void contextIncarnationAndBackpressureAreFailClosed() {
         AtomicInteger started = new AtomicInteger();
         HostGeneratorTurnPump pump = new HostGeneratorTurnPump(

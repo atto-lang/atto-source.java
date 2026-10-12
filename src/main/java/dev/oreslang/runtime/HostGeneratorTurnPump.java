@@ -249,10 +249,18 @@ final class HostGeneratorTurnPump implements AutoCloseable {
     }
 
     private void settleExit(Request<?> request, Throwable failure) {
+        boolean unproven = failure != null;
         synchronized (gate) {
             if (request.finished || request.exited) return;
             request.exited = true;
             request.exitFailure = failure;
+            if (unproven) unprovenPhysicalExit = true;
+        }
+        if (unproven) {
+            // A cancelled/exceptional barrier reports no physical DONE.
+            // Request producer cancellation but NEVER treat the settlement
+            // as evidence that TruffleContext.leave has completed.
+            seal();
         }
         finishIfExited(request);
     }
