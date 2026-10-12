@@ -22,6 +22,8 @@ final class ActorMixedShutdownIsolationTest {
         CountDownLatch cleanupEntered = new CountDownLatch(1);
         CountDownLatch privateEntered = new CountDownLatch(1);
         CountDownLatch privateInterrupted = new CountDownLatch(1);
+        CountDownLatch sameKindEntered = new CountDownLatch(1);
+        CountDownLatch sameKindInterrupted = new CountDownLatch(1);
         AtomicBoolean cleaning = new AtomicBoolean();
         try {
             var shared = runtime.<Integer>spawnShared(() -> (mail, ctx) ->
@@ -59,14 +61,27 @@ final class ActorMixedShutdownIsolationTest {
                     Thread.interrupted();
                 }
             });
+            var sameKindBlocked = runtime.<String>spawnShared(() -> (mail, ctx) -> {
+                sameKindEntered.countDown();
+                try {
+                    Thread.sleep(30_000);
+                } catch (InterruptedException interrupted) {
+                    sameKindInterrupted.countDown();
+                    Thread.interrupted();
+                }
+            });
             shared.ready().get(5, TimeUnit.SECONDS);
             privateActor.ready().get(5, TimeUnit.SECONDS);
             shared.send(1);
-            privateActor.send("block");
             assertTrue(sourceArmed.await(5, TimeUnit.SECONDS));
+            sameKindBlocked.send("block");
+            privateActor.send("block");
+            assertTrue(sameKindEntered.await(5, TimeUnit.SECONDS));
             assertTrue(privateEntered.await(5, TimeUnit.SECONDS));
 
             CompletableFuture<Void> closing = CompletableFuture.runAsync(runtime::close);
+            assertTrue(sameKindInterrupted.await(3, TimeUnit.SECONDS),
+                    "stopped SHARED blocker must be interrupted to free the one SHARED lane");
             assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS),
                     "source cleanup must reach its bounded CONTROL lane");
             assertTrue(privateInterrupted.await(3, TimeUnit.SECONDS),
@@ -78,6 +93,7 @@ final class ActorMixedShutdownIsolationTest {
             closing.get(5, TimeUnit.SECONDS);
             shared.get_done().get(5, TimeUnit.SECONDS);
             privateActor.get_done().get(5, TimeUnit.SECONDS);
+            sameKindBlocked.get_done().get(5, TimeUnit.SECONDS);
         } finally {
             cleanup.completeFromRuntime(7);
             runtime.close();
