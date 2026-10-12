@@ -31,6 +31,24 @@ final class AcceleratorAndDopContractTest {
     }
 
     @Test
+    void acceleratorAdmissionPreservesExistingEffectKeywords() {
+        // Forward-port of DOP must not silently drop newer main-branch
+        // suspend or exception/supervision token admission.
+        assertEquals(Token.Type.SUSPENDS, new Lexer("suspends").scan().getFirst().type());
+        assertEquals(Token.Type.THROW, new Lexer("throw").scan().getFirst().type());
+        assertEquals(Token.Type.RAISE, new Lexer("raise").scan().getFirst().type());
+        assertEquals(Token.Type.PANIC, new Lexer("panic").scan().getFirst().type());
+        assertEquals(Token.Type.RECOVER, new Lexer("recover").scan().getFirst().type());
+        for (String effect : new String[]{"throw", "raise", "panic", "recover"}) {
+            var program = "pub fnc main(): void { " + effect + " 1; }";
+            RuntimeException rejected = assertThrows(RuntimeException.class,
+                    () -> Parser.parse(program));
+            assertTrue(rejected.getMessage().contains("checked exception and supervision lowering")
+                    || rejected.getMessage().contains("exception"), rejected.getMessage());
+        }
+    }
+
+    @Test
     void identicalAosSoaAndAosoaOffsetsHaveCheckedPaddedSizes() {
         var aos = new DataOrientedLayout.Plan(Kind.AOS, 3, 2, 4, 16, 1);
         var soa = new DataOrientedLayout.Plan(Kind.SOA, 3, 2, 4, 16, 1);
