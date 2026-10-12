@@ -80,6 +80,56 @@ final class OresSchedulerQuiescenceTest {
     }
 
     @Test
+    void losingDuplicateDispatchNeverReleasesWinnersPhysicalLease()
+            throws Exception {
+        CountDownLatch winnerEntered = new CountDownLatch(1);
+        CountDownLatch releaseWinner = new CountDownLatch(1);
+        CountDownLatch retired = new CountDownLatch(1);
+        AtomicInteger retireCount = new AtomicInteger();
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> winner = scheduler.start(resume -> {
+                winnerEntered.countDown();
+                assertTrue(releaseWinner.await(3, TimeUnit.SECONDS));
+                return OresScheduler.done(42);
+            }, () -> {
+                retireCount.incrementAndGet();
+                retired.countDown();
+            });
+            try {
+                assertTrue(winnerEntered.await(3, TimeUnit.SECONDS));
+                // Inject a duplicate physical dispatch for the same task. This
+                // is otherwise unrepresentable via the public scheduling API,
+                // but it proves that a losing stale callback cannot release
+                // the winner's execution lease or watchdog.
+                java.lang.reflect.Field tasksField =
+                        OresScheduler.class.getDeclaredField("tasks");
+                tasksField.setAccessible(true);
+                java.util.Set<?> tasks = (java.util.Set<?>) tasksField.get(scheduler);
+                Object taskRunner = tasks.iterator().next();
+                java.lang.reflect.Method enqueue =
+                        taskRunner.getClass().getDeclaredMethod("enqueueTurn");
+                enqueue.setAccessible(true);
+                enqueue.invoke(taskRunner);
+
+                // Same second carrier executes a FIFO barrier after the
+                // duplicate, proving the losing callback already ran.
+                OresFuture<Integer> barrier = scheduler.start(
+                        resume -> OresScheduler.done(7));
+                assertEquals(7, barrier.get(3, TimeUnit.SECONDS));
+                assertEquals(0, retireCount.get(),
+                        "duplicate cleanup must not release a live winner");
+                assertFalse(retired.await(50, TimeUnit.MILLISECONDS),
+                        "quota retirement cannot precede winner's unwinding");
+            } finally {
+                releaseWinner.countDown();
+            }
+            assertTrue(retired.await(3, TimeUnit.SECONDS));
+            assertEquals(1, retireCount.get());
+            assertTrue(winner.isDone());
+        }
+    }
+
+    @Test
     void successfulTurnRetiresExactlyOnceAfterCompletion() throws Exception {
         CountDownLatch retired = new CountDownLatch(1);
         AtomicInteger count = new AtomicInteger();
