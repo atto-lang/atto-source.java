@@ -1307,8 +1307,9 @@ final class MutexRuntimeTest {
             waiter.join(3_000);
             assertFalse(waiter.isAlive(), "handoff/timeout raced into a hang");
             assertNull(failure.get());
-            var after = held.lock();
-            after.release();
+            var after = held.lockFor(Duration.ofSeconds(2));
+            assertTrue(after.isPresent(), "handoff/timeout leaked the physical permit");
+            after.orElseThrow().release();
         }
     }
 
