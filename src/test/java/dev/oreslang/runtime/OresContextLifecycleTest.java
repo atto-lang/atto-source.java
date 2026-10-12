@@ -146,6 +146,8 @@ final class OresContextLifecycleTest {
             // already-created guest channel object. No guest function, new
             // async task, or scheduler admission is invoked after sealing.
             assertTrue(hostAccessibleGate.tryWrite(77L));
+            assertEquals(0, hostAccessibleGate.size(),
+                    "authorized source cleanup must consume the original guest channel");
             assertThrows(java.util.concurrent.CancellationException.class,
                     () -> task.get(5, TimeUnit.SECONDS));
             awaitOutput(output, "cleanup-result");
