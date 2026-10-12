@@ -36,6 +36,26 @@ final class GpuAtomicAdmissionTest {
     }
 
     @Test
+    void pairCompletionRejectsForeignTicketWithMatchingNumericFields() {
+        var input = owner(5, "tenant", "device", 64);
+        var output = owner(6, "tenant", "device", 64);
+        var unrelated = owner(5, "tenant", "device", 64);
+        var outsiderTicket = unrelated.beginCommand(unrelated.identity());
+        var tickets = GpuBufferFence.claimPair(input, output, 64);
+        assertEquals(outsiderTicket.generation(), tickets.inputTicket().generation());
+        assertEquals(outsiderTicket.sequence(), tickets.inputTicket().sequence());
+        assertThrows(IllegalStateException.class,
+                () -> input.complete(outsiderTicket, true));
+        assertThrows(IllegalStateException.class,
+                () -> input.cancelPending(outsiderTicket));
+        assertEquals(GpuBufferFence.Status.IN_FLIGHT, input.status());
+        assertEquals(GpuBufferFence.Status.IN_FLIGHT, output.status());
+        unrelated.complete(outsiderTicket, true);
+        input.complete(tickets.inputTicket(), true);
+        output.complete(tickets.outputTicket(), true);
+    }
+
+    @Test
     void rejectBusyInvalidOrMovedPairWithoutClaimingOtherBuffer() {
         var input = owner(7, "t", "d", 32);
         var output = owner(8, "t", "d", 32);
