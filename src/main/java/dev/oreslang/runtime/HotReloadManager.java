@@ -15,8 +15,6 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.FutureTask;
 
 /**
  * Versioned source hot loader.
@@ -283,10 +281,9 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionProfile executionProfile;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
-        private final FutureTask<Void> closeOnce = new FutureTask<>(() -> {
+        private final VerifiedCloseFence closeFence = new VerifiedCloseFence(() -> {
             if (group != null) group.close();
             else context.close(true);
-            return null;
         });
 
         private Generation(long id, String codeUnitId, String sha256,
@@ -349,17 +346,7 @@ public final class HotReloadManager implements AutoCloseable {
         @Override
         public void close() {
             closed.set(true);
-            closeOnce.run();
-            try {
-                closeOnce.get();
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException(
-                        "hot generation close interrupted before retirement completed");
-            } catch (ExecutionException failed) {
-                throw new IllegalStateException(
-                        "hot generation Context retirement was not confirmed");
-            }
+            closeFence.awaitConfirmedClose("hot generation Context");
         }
     }
 }
