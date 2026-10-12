@@ -1418,6 +1418,81 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(12)
+    void blockingHostTimeoutCallbackDoesNotStarveUnrelatedMutexDeadline() throws Exception {
+        var slowMutex = OresMutex.shared(new int[]{0});
+        var fastMutex = OresMutex.shared(new int[]{0});
+        var slowOwner = slowMutex.lock();
+        var fastOwner = fastMutex.lock();
+        var callbackStarted = new CountDownLatch(1);
+        var releaseCallback = new CountDownLatch(1);
+        var registered = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        AtomicBoolean secondTimedOut = new AtomicBoolean();
+        Thread slowRequester = null;
+        Thread fastRequester = null;
+        try {
+            slowRequester = Thread.ofPlatform().start(() -> {
+                try {
+                    var pending = slowMutex.lockAsyncFor(Duration.ofMillis(500));
+                    assertFalse(pending.isDone(), "slow timeout completed before callback registration");
+                    pending.whenComplete((guard, error) -> {
+                        callbackStarted.countDown();
+                        try {
+                            if (!releaseCallback.await(4, TimeUnit.SECONDS)) {
+                                failure.compareAndSet(null,
+                                        new AssertionError("blocking callback was never released"));
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            failure.compareAndSet(null, interrupted);
+                        }
+                    });
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                } finally {
+                    registered.countDown();
+                }
+            });
+            assertTrue(registered.await(2, TimeUnit.SECONDS),
+                    "timed waiter was not registered");
+            assertNull(failure.get(), String.valueOf(failure.get()));
+            assertTrue(callbackStarted.await(2, TimeUnit.SECONDS),
+                    "slow timeout completion callback was not reached");
+
+            // One unrelated slow host completion must not monopolize the
+            // process-wide timeout scheduler. The held permit forces B to
+            // expire, and B's owner domain is isolated to its requester.
+            fastRequester = Thread.ofPlatform().start(() -> {
+                try {
+                    var pending = fastMutex.lockAsyncFor(Duration.ofMillis(30));
+                    var outcome = assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> pending.get(1, TimeUnit.SECONDS),
+                            "unrelated mutex timeout was delayed by a blocked callback");
+                    assertInstanceOf(OresMutex.LockTimeoutException.class, outcome.getCause());
+                    secondTimedOut.set(true);
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            fastRequester.join(1_500);
+            assertFalse(fastRequester.isAlive(), "unrelated mutex timeout stalled");
+            assertTrue(secondTimedOut.get(),
+                    "second mutex should expire while the first host callback is blocked");
+            assertNull(failure.get(), String.valueOf(failure.get()));
+        } finally {
+            releaseCallback.countDown();
+            if (slowRequester != null) slowRequester.join(5_000);
+            if (fastRequester != null) fastRequester.join(5_000);
+            slowOwner.release();
+            fastOwner.release();
+        }
+        assertEquals(0, queuedAsyncReservations(slowMutex));
+        assertEquals(0, queuedAsyncReservations(fastMutex));
+    }
+
+    @Test
     void zeroDurationLockForRemainsTryOnly() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
         var owner = mutex.lock();
