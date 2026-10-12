@@ -54,6 +54,23 @@ public final class AcceleratorSafetySmoke {
         unrelated.complete(b, true);
         unrelated.retireAfterBackendRelease(identity);
         unrelated.close();
-        System.out.println("PASS: high-dimensional quantum quota + zero-weight samples + device fence anti-forgery");
+        var inputOwner = new GpuBufferFence(
+                new GpuBufferFence.Identity("tenant", "device", 101), 1024);
+        var outputOwner = new GpuBufferFence(
+                new GpuBufferFence.Identity("tenant", "device", 102), 1024);
+        var pair = GpuBufferFence.claimPair(inputOwner, outputOwner, 1024);
+        require(inputOwner.status() == GpuBufferFence.Status.IN_FLIGHT
+                        && outputOwner.status() == GpuBufferFence.Status.IN_FLIGHT,
+                "paired GPU admission must reserve both buffers");
+        rejects(IllegalStateException.class, inputOwner::take);
+        rejects(IllegalStateException.class,
+                () -> GpuBufferFence.claimPair(inputOwner, outputOwner, 1024));
+        inputOwner.complete(pair.inputTicket(), true);
+        outputOwner.complete(pair.outputTicket(), true);
+        inputOwner.retireAfterBackendRelease(pair.input());
+        outputOwner.retireAfterBackendRelease(pair.output());
+        inputOwner.close();
+        outputOwner.close();
+        System.out.println("PASS: high-dimensional quantum quota + zero-weight samples + device fence anti-forgery + atomic pair claim");
     }
 }
