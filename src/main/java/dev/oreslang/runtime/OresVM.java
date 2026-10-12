@@ -73,10 +73,14 @@ public final class OresVM implements AutoCloseable {
     }
 
     static OresVM create(OresScheduler.TurnExecutor turnExecutor, Executor rootAdmission) {
+        // Experimental Java-hosted generator pulls must not overlap the
+        // dispatching root guest turn on a second CONTROL carrier. This is a
+        // conservative opt-in gate, NOT global actor/async Truffle admission.
         return new OresVM(
-                Integer.getInteger(
-                        "ores.runtime.control.parallelism",
-                        DEFAULT_CONTROL_PARALLELISM),
+                Boolean.getBoolean("ores.host.generator.experimental")
+                        ? 1 : Integer.getInteger(
+                                "ores.runtime.control.parallelism",
+                                DEFAULT_CONTROL_PARALLELISM),
                 turnExecutor,
                 rootAdmission);
     }
