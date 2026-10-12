@@ -79,7 +79,7 @@ final class CriticalReadWriteUsingContractTest {
         assertThrows(IllegalArgumentException.class, () ->
                 ActorStateContract.verify(Parser.parse(
                         "define actor A as state { v: int = 0; } "
-                        + "get(): int using state.read { return self.state.v; } end")));
+                        + "get(): int with state.read { return self.state.v; } end")));
     }
 
     @Test void readToWriteUpgradeRejected() {
