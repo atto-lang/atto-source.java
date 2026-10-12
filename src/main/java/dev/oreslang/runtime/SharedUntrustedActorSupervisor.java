@@ -1,0 +1,250 @@
+package dev.oreslang.runtime;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * Supervisor-backed source UNTRUSTED actors in exactly ONE shared Graal
+ * polyglot Engine/isolate, not one isolate per actor.
+ *
+ * Each actor currently owns a separate bounded guest Context for independent
+ * context retirement and cumulative CPU quotas. All those Contexts share the
+ * same Engine, physical GC/JIT and aggregate isolate heap limit. This is not
+ * hard per-actor native GC isolation or tenant-level crash independence.
+ *
+ * This explicit host API does not yet automatically lower source-level spawn.
+ * A missing native Oreslang language-isolate image fails closed.
+ */
+public final class SharedUntrustedActorSupervisor implements AutoCloseable {
+    private static final long MIB = 1024L * 1024L;
+    private static final long MIN_HEAP_BYTES = 128L * MIB;
+    private static final long MAX_HEAP_BYTES = 1024L * MIB;
+    private static final int MAX_ACTORS = 256;
+    private static final int MAX_SOURCE_CHARS = 256 * 1024;
+
+    private final Object lifecycle = new Object();
+    private final long isolateHeapBytes;
+    private final int maxActors;
+    private final boolean ownsPool;
+    private SharedUntrustedIsolatePool pool;
+    private final Set<Actor> active = new HashSet<>();
+    private int pendingSpawns;
+    private boolean closed;
+
+    /**
+     * Lazy ownership: validates arguments without constructing a native
+     * Engine. The first accepted spawn constructs the ONE UNTRUSTED Engine.
+     */
+    public SharedUntrustedActorSupervisor(long isolateHeapBytes, int maxActors) {
+        validateConfiguration(isolateHeapBytes, maxActors);
+        this.isolateHeapBytes = isolateHeapBytes;
+        this.maxActors = maxActors;
+        this.ownsPool = true;
+    }
+
+    /**
+     * Share an already created application Engine, e.g. with other supervisor
+     * components. Closing this supervisor closes only its Context leases.
+     */
+    public SharedUntrustedActorSupervisor(
+            SharedUntrustedIsolatePool applicationPool, int maxActors) {
+        Objects.requireNonNull(applicationPool, "applicationPool");
+        if (maxActors < 1 || maxActors > MAX_ACTORS) {
+            throw new IllegalArgumentException("untrusted actor capacity must be 1..256");
+        }
+        this.pool = applicationPool;
+        this.isolateHeapBytes = applicationPool.isolateHeapBytes();
+        this.maxActors = maxActors;
+        this.ownsPool = false;
+    }
+
+    public static void validateConfiguration(long bytes, int maxActors) {
+        if (bytes < MIN_HEAP_BYTES || bytes > MAX_HEAP_BYTES) {
+            throw new IllegalArgumentException("shared isolate heap must be 128..1024 MiB");
+        }
+        if (maxActors < 1 || maxActors > MAX_ACTORS) {
+            throw new IllegalArgumentException("untrusted actor capacity must be 1..256");
+        }
+    }
+
+    public long isolateHeapBytes() { return isolateHeapBytes; }
+
+    public int activeActors() {
+        synchronized (lifecycle) { return active.size(); }
+    }
+
+    /**
+     * Host-only admission. Only bounded source text/identifiers are inspected
+     * before native Engine admission; guest syntax is parsed INSIDE the
+     * isolated Context. Capacity reserves a slot before guest code runs.
+     */
+    public Actor spawn(String source, String sourceId, String actorType) {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(sourceId, "sourceId");
+        Objects.requireNonNull(actorType, "actorType");
+        if (source.isEmpty() || source.length() > MAX_SOURCE_CHARS) {
+            throw new IllegalArgumentException("untrusted source must be 1..262144 chars");
+        }
+        if (sourceId.length() < 1 || sourceId.length() > 128
+                || !sourceId.matches("[a-zA-Z0-9_.-]+")) {
+            throw new IllegalArgumentException("invalid bounded source identity");
+        }
+        if (actorType.length() < 1 || actorType.length() > 128
+                || !actorType.matches("[a-zA-Z_][a-zA-Z0-9_]*")) {
+            throw new IllegalArgumentException("invalid untrusted actor type");
+        }
+
+        synchronized (lifecycle) {
+            if (closed) throw new IllegalStateException("untrusted supervisor is closed");
+            if (active.size() + pendingSpawns >= maxActors) {
+                throw new IllegalStateException("shared untrusted actor capacity exceeded");
+            }
+            pendingSpawns++;
+        }
+
+        SharedUntrustedIsolatePool.Group group = null;
+        UntrustedJitCodeUnit code = null;
+        try {
+            // Each actor gets a Context, NOT a new Engine. Every group shares
+            // the singleton pool's physical isolate collector and JIT.
+            group = applicationPool().createGroup();
+            code = new UntrustedJitCodeUnit(group, source, sourceId);
+            UntrustedJitCodeUnit.RemoteUntrustedActor remote =
+                    code.spawnUntrustedActor(code.generation(), actorType);
+            synchronized (lifecycle) {
+                if (closed) throw new IllegalStateException(
+                        "untrusted supervisor retired during actor admission");
+                Actor actor = new Actor(group, code, remote);
+                active.add(actor);
+                return actor;
+            }
+        } catch (RuntimeException | Error failure) {
+            if (group != null) {
+                try { group.close(); }
+                catch (RuntimeException | Error cleanup) { failure.addSuppressed(cleanup); }
+            }
+            if (code != null) code.fenceAfterContextClose();
+            throw failure;
+        } finally {
+            synchronized (lifecycle) { pendingSpawns--; }
+        }
+    }
+
+    private SharedUntrustedIsolatePool applicationPool() {
+        synchronized (lifecycle) {
+            if (closed) throw new IllegalStateException("untrusted supervisor is closed");
+            if (pool == null) {
+                pool = new SharedUntrustedIsolatePool(isolateHeapBytes, maxActors);
+            }
+            return pool;
+        }
+    }
+
+    public final class Actor implements AutoCloseable {
+        private final UUID identity = UUID.randomUUID();
+        private final SharedUntrustedIsolatePool.Group group;
+        private final UntrustedJitCodeUnit code;
+        private final UntrustedJitCodeUnit.RemoteUntrustedActor remote;
+        private final AtomicBoolean revoked = new AtomicBoolean();
+
+        private Actor(SharedUntrustedIsolatePool.Group group,
+                      UntrustedJitCodeUnit code,
+                      UntrustedJitCodeUnit.RemoteUntrustedActor remote) {
+            this.group = group;
+            this.code = code;
+            this.remote = remote;
+        }
+
+        public UUID identity() { return identity; }
+
+        /** There is no independent per-actor native GC inside this pool. */
+        public boolean independentlyCollectable() { return false; }
+
+        /** Contexts are in the sandboxed Engine, not the trusted host Engine. */
+        public boolean sandboxedInUntrustedIsolate() { return true; }
+
+        /** Host-only test proof of shared physical engine/collector identity. */
+        boolean sharesPhysicalCollectorWith(Actor other) {
+            Objects.requireNonNull(other, "other");
+            return group.contextForSupervisor().getEngine()
+                    == other.group.contextForSupervisor().getEngine();
+        }
+
+        /** Different actor contexts allow targeted context retirement. */
+        boolean sharesGuestContextWith(Actor other) {
+            Objects.requireNonNull(other, "other");
+            return group.contextForSupervisor() == other.group.contextForSupervisor();
+        }
+
+        public boolean closed() { return revoked.get(); }
+
+        private void requireActive() {
+            if (revoked.get()) throw new IllegalStateException("untrusted actor lease is closed");
+        }
+
+        public void send(Object data) {
+            requireActive();
+            remote.send(data);
+        }
+
+        public boolean ready() {
+            requireActive();
+            return remote.ready();
+        }
+
+        public boolean done() {
+            requireActive();
+            return remote.done();
+        }
+
+        public boolean cancel() {
+            requireActive();
+            return remote.cancel();
+        }
+
+        @Override public void close() {
+            if (!revoked.compareAndSet(false, true)) return;
+            try {
+                // Important: do NOT acquire the group's guest execution
+                // monitor to cancel first. Context.close(true) must be able
+                // to revoke a stuck guest while its operation holds that lock.
+                group.close();
+            } finally {
+                code.fenceAfterContextClose();
+                synchronized (lifecycle) { active.remove(this); }
+            }
+        }
+    }
+
+    @Override public void close() {
+        ArrayList<Actor> snapshot;
+        SharedUntrustedIsolatePool owned = null;
+        synchronized (lifecycle) {
+            if (closed) return;
+            closed = true;
+            snapshot = new ArrayList<>(active);
+            if (ownsPool) owned = pool;
+        }
+
+        RuntimeException failure = null;
+        for (Actor actor : snapshot) {
+            try { actor.close(); }
+            catch (RuntimeException e) {
+                if (failure == null) failure = e;
+                else failure.addSuppressed(e);
+            }
+        }
+        if (owned != null) {
+            try { owned.close(); }
+            catch (RuntimeException e) {
+                if (failure == null) failure = e;
+                else failure.addSuppressed(e);
+            }
+        }
+        if (failure != null) throw failure;
+    }
+}

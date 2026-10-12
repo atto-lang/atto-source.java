@@ -1,0 +1,90 @@
+name: Shared UNTRUSTED Graal isolate E2E
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/untrusted-isolate-e2e.yml'
+      - 'pom.xml'
+      - 'src/main/java/dev/oreslang/**'
+      - 'src/test/java/dev/oreslang/**'
+      - 'docs/ACTOR_HEAP_ISOLATION.md'
+
+permissions:
+  contents: read
+
+jobs:
+  host-admission:
+    name: Host source must fail closed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Verify host-only source admission and tests not requiring an isolate
+        run: >
+          mvn -B -ntp
+          -Dtest=SourceActorSpawnExecutionTest,IsolationHotReloadTest,SharedUntrustedIsolatePoolTest,SharedUntrustedActorSupervisorTest,ActorStrictHeapAdmissionTest
+          test
+
+  native-isolate-e2e:
+    name: Real shared language isolate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+          components: native-image
+      - name: Build Oreslang language isolate shared library
+        run: mvn -B -ntp -DskipTests -Pnative-isolate package
+      - name: Require a native-image isolate artifact (no interpreter fallback)
+        run: |
+          set -eu
+          test -s target/liboresvm.so
+          file target/liboresvm.so
+      - name: Execute physically isolated actor and hot-reload tests without skip
+        env:
+          ORES_TEST_SHARED_UNTRUSTED_ISOLATE: 'true'
+        run: |
+          set -eu
+          mvn -B -ntp \
+            -DargLine="-Dpolyglot.engine.IsolateLibrary=${PWD}/target/liboresvm.so" \
+            -Dtest=SharedUntrustedIsolatePoolTest,UntrustedJitCodeUnitTest,SharedUntrustedActorSupervisorTest,ActorStrictHeapAdmissionTest \
+            test
+      - name: Report actually executed integration tests
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          names = [
+              'target/surefire-reports/TEST-dev.oreslang.runtime.SharedUntrustedIsolatePoolTest.xml',
+              'target/surefire-reports/TEST-dev.oreslang.runtime.UntrustedJitCodeUnitTest.xml',
+              'target/surefire-reports/TEST-dev.oreslang.runtime.SharedUntrustedActorSupervisorTest.xml',
+              'target/surefire-reports/TEST-dev.oreslang.runtime.ActorStrictHeapAdmissionTest.xml',
+          ]
+          executed = skipped = 0
+          for path in names:
+              if not __import__('os').path.isfile(path):
+                  raise SystemExit('required isolate test report missing: ' + path)
+              root = ET.parse(path).getroot()
+              executed += int(root.get('tests', '0')) - int(root.get('skipped', '0'))
+              skipped += int(root.get('skipped', '0'))
+          print('Executed tests:', executed, 'Skipped tests:', skipped)
+          if executed < 6 or skipped:
+              raise SystemExit('isolate E2E must execute all required tests without skip')
+          PY

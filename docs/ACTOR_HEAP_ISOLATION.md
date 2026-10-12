@@ -34,6 +34,40 @@ cumulative CPU budget expires. One group Context has
 Contexts can run within the same isolated Engine to achieve concurrency,
 subject to hard aggregate memory/CPU bounds.
 
+### Source-level placement and hot loading (2026-10-12 hardening)
+
+Trusted-context `spawn UntrustedActor()` and direct UNTRUSTED
+actor-callable invocation now **fail closed** before dispatching onto the
+host's ActorRuntime. The guest-side `OresEvalRootNode` source actor control
+plane still supports UNTRUSTED execution *inside* the pooled guest Context.
+The missing fully transparent host-to-isolate source `ActorRef` router remains
+a release blocker: returning a host-local `ActorRef` would be unsafe, and a
+remote actor must preserve ready/done Future semantics, typed mailbox,
+terminal CONTROL, cancellation and version/actor generation fencing.
+
+`HotReloadManager.forUntrustedActors()` now owns the singleton pooled
+UNTRUSTED Engine lazily. It admits bounded source metadata in the host without
+parsing or type checking attacker-controlled syntax there. Each generation
+allocates a distinct sandboxed Context in the **same** physical Engine.
+On start, adversarial generations only parse, link and initialize guest code:
+they never execute an arbitrary `main` under the Context's long-lived
+12-hour cumulative CPU budget. Only the isolated actor control plane is
+allowed to dispatch guest actor turns. Guest `Value` and exception objects
+are sanitized at the loader boundary; the supervisor receives no guest
+object references from an untrusted `Generation.start()`.
+
+The singleton slot rejects additional pools and closes only after the
+underlying Engine closes. Separate classloaders or processes still need an
+external application supervisor to enforce that deployment-wide cardinality.
+There is no auto-fallback to ordinary trusted JVM execution if the native
+language-isolate library is missing.
+
+The `untrusted-isolate-e2e.yml` workflow builds an Oreslang native language
+isolate and requires all isolated actor tests to **execute without skips**.
+Until that job actually runs and passes, image loading and actual GC/JIT
+separation are unverified. Host fail-closed unit tests alone do not establish
+physical security.
+
 The host's AOT Native Image compilation is distinct from AOT-lowering
 native Oreslang actor functions. Current Java/Graal host AOT build modes
 exist, but full LLVM Oreslang AOT codegen for actors is still unfinished.
@@ -42,7 +76,15 @@ Oreslang language-isolate artifact. No compilation-mode CLI switch alone
 can turn an actor into a new physical isolate.
 
 `SharedUntrustedIsolatePool` constructs one shared Engine and a bounded
-number of untrusted group Contexts. This is **hosting infrastructure**, not
+number of untrusted group Contexts. A process-local singleton admission fence
+rejects a second live pool and is released only after the first Engine closes.
+Ad-hoc adversarial `IsolatePolicy.restrictedContextBuilder()` is now rejected
+before Engine allocation; all adversarial callers must use the pool-owned
+Engine. Different classloaders or JVM processes still require an external
+deployment supervisor to enforce a process-wide / cluster-wide one-pool
+topology. Existing `HotReloadManager.forUntrustedActors()` staging that has
+not yet been routed to the pool intentionally fails closed at Context
+admission; update its transport before enabling production hot loading. This is **hosting infrastructure**, not
 yet a working cross-engine actor router. Existing
 `ActorRuntime.spawnUntrusted` inside the trusted host still runs on
 its parent's JVM heap; production admission must reject that path until
@@ -160,7 +202,15 @@ readiness/done polling, structured cancellation, and on-close cancel-all.
 Messages still go through the guest `ActorRuntime` and per-actor mailbox
 quotas; the trusted host never receives a guest object reference.
 
-**Not yet production complete:** Native Graal Oreslang language-isolate
+**Not yet production complete:** A single shared Graal isolate is a shared
+fault domain: it cannot independently hard-kill one malicious actor if the
+entire guest VM or engine becomes wedged. `Context.close(true)` is a best-effort
+cancellation boundary and shutdown must not depend on the guest releasing a
+Java monitor. Physical isolate failure and OOM can affect every untrusted
+actor in the engine. Additional per-tenant OS process isolation would violate
+the fixed two-domain topology and therefore requires a separate deployment tier.
+
+Native Graal Oreslang language-isolate
 packaging and physical isolation/JIT instrumentation are still unverified.
 The actor execution test is gated on
 `ORES_TEST_SHARED_UNTRUSTED_ISOLATE=true`; no compiler-generated host

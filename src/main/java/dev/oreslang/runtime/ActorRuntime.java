@@ -382,9 +382,11 @@ public final class ActorRuntime implements AutoCloseable {
     private volatile ForceCancellationHook forceCancellationHook =
             request -> false;
 
+
     /**
-     * Explicit heap requirement for all actor kinds. A shared Truffle/JVM
-     * context cannot satisfy independent collector admission.
+     * A shared Graal/Truffle ActorRuntime cannot provide a separate physical
+     * garbage collector for each actor, regardless of scheduling domain.
+     * The separate UNTRUSTED Engine is one collector for all guest actors.
      */
     public enum HeapIsolationRequirement {
         ALLOW_SHARED_JVM,
@@ -392,21 +394,20 @@ public final class ActorRuntime implements AutoCloseable {
 
         public static HeapIsolationRequirement fromApplicationArguments(String[] args) {
             Objects.requireNonNull(args, "application arguments");
-            HeapIsolationRequirement requirement = ALLOW_SHARED_JVM;
+            HeapIsolationRequirement result = ALLOW_SHARED_JVM;
             boolean seen = false;
             for (String arg : args) {
                 if (!arg.startsWith("--ores-actor-heaps=")) continue;
-                if (seen) throw new IllegalArgumentException(
-                        "duplicate --ores-actor-heaps setting");
+                if (seen) throw new IllegalArgumentException("duplicate --ores-actor-heaps setting");
                 seen = true;
-                requirement = switch (arg.substring("--ores-actor-heaps=".length())) {
+                result = switch (arg.substring("--ores-actor-heaps=".length())) {
                     case "shared-jvm" -> ALLOW_SHARED_JVM;
                     case "independent" -> REQUIRE_INDEPENDENT_COLLECTOR;
                     default -> throw new IllegalArgumentException(
                             "actor heap mode must be shared-jvm or independent");
                 };
             }
-            return requirement;
+            return result;
         }
     }
 
@@ -461,11 +462,6 @@ public final class ActorRuntime implements AutoCloseable {
                 HeapIsolationRequirement.ALLOW_SHARED_JVM);
     }
 
-    /**
-     * Strict admission ensures source actors cannot quietly fall back to the
-     * shared-JVM collector. Use a dedicated polyglot isolate or process-backed
-     * actor host instead when this is REQUIRED.
-     */
     public ActorRuntime(
             IsolatePolicy policyCeiling,
             HeapIsolationRequirement requirement) {
@@ -3606,13 +3602,14 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
         if (heapIsolationRequirement == HeapIsolationRequirement.REQUIRE_INDEPENDENT_COLLECTOR) {
-            // All actor kinds allocate Java guest objects inside this one
-            // parent Truffle context, regardless of dispatcher or ByteBuffer
-            // regions. Fail BEFORE invoking a factory or reserving an actor.
+            // The default trusted host and a pooled untrusted Graal Engine do
+            // NOT promise a separate collector per actor. Reject before actor
+            // cell or factory allocation. The explicit process-isolation tier
+            // must be selected separately if this guarantee is required.
             throw new IllegalStateException(
                     "independent per-actor GC heap required for " + kind
-                    + ": shared JVM ActorRuntime cannot provide it; "
-                    + "launch through a dedicated polyglot isolate or worker process");
+                    + ": this ActorRuntime shares one collector; "
+                    + "the pooled UNTRUSTED Engine also shares one collector");
         }
         if ((behaviorFactory == null) == (codeExecutor == null)) {
             throw new IllegalArgumentException(

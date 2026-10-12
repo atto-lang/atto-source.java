@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class UntrustedJitCodeUnit implements AutoCloseable {
     private static final int MAX_SOURCE_CHARS = 256 * 1024;
     private static final int MAX_ARGS = 16;
-    private final UntrustedGuestIsolateScope group;
+    private final SharedUntrustedIsolatePool.Group group;
     private final UUID generation = UUID.randomUUID();
     private final Value parsedRoot;
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -36,11 +36,6 @@ public final class UntrustedJitCodeUnit implements AutoCloseable {
      */
     public UntrustedJitCodeUnit(SharedUntrustedIsolatePool.Group group,
                                 String source, String sourceId) {
-        this((UntrustedGuestIsolateScope) group, source, sourceId);
-    }
-
-    UntrustedJitCodeUnit(UntrustedGuestIsolateScope group,
-                         String source, String sourceId) {
         this.group = Objects.requireNonNull(group, "group");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(sourceId, "sourceId");
@@ -110,6 +105,15 @@ public final class UntrustedJitCodeUnit implements AutoCloseable {
         }
     }
 
+    /**
+     * Host-side invalidation after the supervisor has closed this actor's
+     * Context. Does not acquire the guest Context monitor or execute code.
+     * A malicious guest cannot prevent its host-issued revocation.
+     */
+    void fenceAfterContextClose() {
+        closed.set(true);
+    }
+
     /** No object graphs, handles, byte buffers or Java callbacks may enter. */
     public static Object copyScalar(Object value) {
         return UntrustedJitScalarTransport.copyScalar(value);
@@ -141,10 +145,6 @@ public final class UntrustedJitCodeUnit implements AutoCloseable {
         synchronized (group) {
             requireActive(expectedGeneration);
             group.contextForSupervisor();
-            // Dedicated physical heaps have one guest actor each. Consume the
-            // admission before executing untrusted code: a partial guest
-            // failure must not permit a second actor in the same collector.
-            group.admitActorSpawn();
             Value answer = executeGuest(
                     OresEvalRootNode.ISOLATED_ACTOR_SPAWN_COMMAND, actorType);
             if (!answer.fitsInLong() || answer.asLong() <= 0) {

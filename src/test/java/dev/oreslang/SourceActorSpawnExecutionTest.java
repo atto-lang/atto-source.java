@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.*;
 final class SourceActorSpawnExecutionTest {
 
     @Test
-    void spawnRunsOnStartReceiveAndDoneAcrossActorKinds() throws Exception {
+    void trustedSourceSpawnsSharedAndPrivateActors() throws Exception {
         String program = """
                 define actor SharedWorker as
                   let int started;
@@ -41,29 +41,18 @@ final class SourceActorSpawnExecutionTest {
                   }
                 end
 
-                define untrusted actor SandboxedWorker as
-                  receive(ActorMail<String> mail): void {
-                    self.end();
-                    return;
-                  }
-                end
-
                 pub async routine main(): void {
                   val shared = spawn SharedWorker();
                   val privateWorker = spawn PrivateWorker();
-                  val sandboxed = spawn SandboxedWorker();
 
                   await shared.ready;
                   await privateWorker.ready;
-                  await sandboxed.ready;
 
                   shared.send("stop");
                   privateWorker.send("stop");
-                  sandboxed.send("stop");
 
                   await shared.done;
                   await privateWorker.done;
-                  await sandboxed.done;
 
                   stdio.stdout.write("actors-done");
                   return;
@@ -71,6 +60,45 @@ final class SourceActorSpawnExecutionTest {
                 """;
 
         assertEquals("actors-done", run(program, "source-actor-spawn.ores"));
+    }
+
+    @Test
+    void sourceUntrustedSpawnMustNotRunOnTrustedHostHeap() throws Exception {
+        String program = """
+                define untrusted actor SandboxedWorker as
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub routine main(): void {
+                  val sandboxed = spawn SandboxedWorker();
+                  return;
+                }
+                """;
+        PolyglotException rejected = assertThrows(PolyglotException.class,
+                () -> run(program, "host-untrusted-spawn-denied.ores"));
+        assertTrue(rejected.getMessage().contains(
+                "shared sandboxed Graal isolate"), rejected::getMessage);
+    }
+
+    @Test
+    void untrustedActorCallableMustNotRunOnTrustedHostHeap() throws Exception {
+        String program = """
+                pub untrusted actor fnc dangerous(): void {
+                  return;
+                }
+
+                pub routine main(): void {
+                  dangerous();
+                  return;
+                }
+                """;
+        PolyglotException rejected = assertThrows(PolyglotException.class,
+                () -> run(program, "host-untrusted-call-denied.ores"));
+        assertTrue(rejected.getMessage().contains(
+                "shared sandboxed Graal isolate"), rejected::getMessage);
     }
 
     @Test

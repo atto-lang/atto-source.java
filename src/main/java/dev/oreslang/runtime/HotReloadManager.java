@@ -19,9 +19,11 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Versioned source hot loader.
  *
- * Loading is side-effect free with respect to guest execution: source is
- * parsed/type/capability checked, then assigned a fresh context. The trusted
- * supervisor explicitly starts the generation after activation.
+ * Loading is side-effect free with respect to guest execution. For trusted
+ * code the host validates before creating a Context. For UNTRUSTED code the
+ * trusted host checks bounded source metadata only and routes parsing,
+ * linking and capability admission through the single shared guest isolate.
+ * The supervisor explicitly starts the generation after activation.
  *
  * No JNI/FFI or OS dynamic-library loading is required.
  */
@@ -33,6 +35,10 @@ public final class HotReloadManager implements AutoCloseable {
     private final IsolatePolicy supervisorPolicy;
     private final IsolatePolicy guestPolicy;
     private final ExecutionProfile executionProfile;
+    // Lazily created to preserve reject-before-isolate-allocation semantics.
+    // One HotReloadManager owns one app-wide UNTRUSTED pool; concurrent owners
+    // fail closed under SharedUntrustedIsolatePool's singleton admission.
+    private SharedUntrustedIsolatePool untrustedPool;
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
@@ -76,7 +82,13 @@ public final class HotReloadManager implements AutoCloseable {
      */
     public synchronized Generation load(String name, String sourceText) {
         validateAdmissionInputs(name, sourceText);
-        OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        // NEVER parse or type-check attacker-supplied source in the trusted
+        // bootstrap JVM. The isolated Context will parse/link/capability-check
+        // when Generation.start() evaluates the source. Keep only cheap input
+        // length/identity admission here, before allocating the guest Engine.
+        if (!guestPolicy.adversarial()) {
+            OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        }
         return stage(name, digest(sourceText), sourceText);
     }
 
@@ -88,6 +100,12 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
+        if (guestPolicy.adversarial()) {
+            // A trusted compiler cache/AST is NOT an untrusted isolate proof.
+            // Restage the original bounded source and verify its digest here;
+            // isolated parsing and type checking occur on guest evaluation.
+            return stage(unit.unitId(), digest(unit.sourceText()), unit.sourceText());
+        }
         CapabilityChecker.check(unit.program(), guestPolicy);
         return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
     }
@@ -121,19 +139,40 @@ public final class HotReloadManager implements AutoCloseable {
                             + MAX_ADVERSARIAL_LIVE_GENERATIONS);
         }
         long id = sequence.incrementAndGet();
-        Context context =
-                guestPolicy.restrictedContextBuilder(executionProfile).build();
+        SharedUntrustedIsolatePool.Group group = null;
+        Context context;
+        if (guestPolicy.adversarial()) {
+            // The isolated Engine must outlive all hot-loaded code generations.
+            // Per-generation contexts share ONE physical isolate heap/GC/JIT.
+            // No standalone restrictedContextBuilder() fallback is permitted.
+            if (untrustedPool == null) {
+                untrustedPool = new SharedUntrustedIsolatePool(
+                        256L * 1024 * 1024, MAX_ADVERSARIAL_LIVE_GENERATIONS);
+            }
+            group = untrustedPool.createGroup();
+            context = group.contextForSupervisor();
+        } else {
+            context = guestPolicy.restrictedContextBuilder(executionProfile).build();
+        }
         try {
             Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
                     .mimeType(OresLanguage.MIME_TYPE)
                     .buildLiteral();
-            Generation generation = new Generation(id, codeUnitId, sourceDigest, context, source, executionProfile);
+            Generation generation = new Generation(
+                    id, codeUnitId, sourceDigest, context, source,
+                    group == null ? executionProfile : ExecutionProfile.serverHybrid(),
+                    group);
             generations.put(id, generation);
             activeByCodeUnit.put(codeUnitId, generation);
             active.set(generation);
             return generation;
-        } catch (RuntimeException failure) {
-            context.close(true);
+        } catch (RuntimeException | Error failure) {
+            try {
+                if (group != null) group.close();
+                else context.close(true);
+            } catch (RuntimeException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
             throw failure;
         }
     }
@@ -170,10 +209,31 @@ public final class HotReloadManager implements AutoCloseable {
 
     @Override
     public synchronized void close() {
-        for (Generation generation : generations.values()) generation.close();
+        RuntimeException failure = null;
+        for (Generation generation : generations.values()) {
+            try {
+                generation.close();
+            } catch (RuntimeException error) {
+                if (failure == null) failure = error;
+                else failure.addSuppressed(error);
+            }
+        }
         generations.clear();
         activeByCodeUnit.clear();
         active.set(null);
+        if (untrustedPool != null) {
+            try {
+                untrustedPool.close();
+                untrustedPool = null;
+            } catch (RuntimeException error) {
+                // An unsuccessful isolate close must not be marked as fully
+                // released. SharedUntrustedIsolatePool keeps its admission
+                // slot fenced until the underlying Engine really closes.
+                if (failure == null) failure = error;
+                else failure.addSuppressed(error);
+            }
+        }
+        if (failure != null) throw failure;
     }
 
     private static String digest(String text) {
@@ -190,16 +250,21 @@ public final class HotReloadManager implements AutoCloseable {
         private final String codeUnitId;
         private final String sha256;
         private final Context context;
+        private final SharedUntrustedIsolatePool.Group group;
         private final Source source;
         private final ExecutionProfile executionProfile;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
 
-        private Generation(long id, String codeUnitId, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
+        private Generation(long id, String codeUnitId, String sha256,
+                           Context context, Source source,
+                           ExecutionProfile executionProfile,
+                           SharedUntrustedIsolatePool.Group group) {
             this.id = id;
             this.codeUnitId = codeUnitId;
             this.sha256 = sha256;
             this.context = context;
+            this.group = group;
             this.source = source;
             this.executionProfile = executionProfile;
         }
@@ -213,10 +278,33 @@ public final class HotReloadManager implements AutoCloseable {
         public boolean started() { return started.get(); }
         public boolean closed() { return closed.get(); }
 
-        /** Starts the staged generation exactly once. */
+        /** Starts the staged generation exactly once.
+         * An untrusted guest may return only a void main result here: never
+         * export a guest Value or exception object to the trusted JVM.
+         */
         public Value start() {
             if (closed.get()) throw new IllegalStateException("generation is closed");
             if (!started.compareAndSet(false, true)) throw new IllegalStateException("generation already started");
+            if (group != null) {
+                try {
+                    // Untrusted actor hot-loading is not authorization to run
+                    // an arbitrary top-level main with the group's long-lived
+                    // cumulative CPU budget. Link and initialize only; actor
+                    // messages are admitted separately through the isolated
+                    // source actor control plane with per-actor turn quotas.
+                    Value parsed = context.parse(source);
+                    parsed.execute(dev.oreslang.nodes.OresEvalRootNode.LINK_ONLY_COMMAND);
+                    parsed.execute(dev.oreslang.nodes.OresEvalRootNode.INIT_ONLY_COMMAND);
+                    return null;
+                } catch (RuntimeException guestFailure) {
+                    try { close(); } catch (RuntimeException ignored) {
+                        // Keep the original guest error and its host-reachable
+                        // cause chain out of the supervisor API entirely.
+                    }
+                    throw new IllegalStateException(
+                            "untrusted generation failed or isolated Context was revoked");
+                }
+            }
             try {
                 return context.eval(source);
             } catch (RuntimeException failure) {
@@ -227,7 +315,10 @@ public final class HotReloadManager implements AutoCloseable {
 
         @Override
         public void close() {
-            if (closed.compareAndSet(false, true)) context.close(true);
+            if (closed.compareAndSet(false, true)) {
+                if (group != null) group.close();
+                else context.close(true);
+            }
         }
     }
 }

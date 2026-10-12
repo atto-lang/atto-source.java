@@ -594,6 +594,15 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private void requireUntrustedActorGuestPlacement(ActorRuntime.ActorKind kind) {
+            if (kind == ActorRuntime.ActorKind.UNTRUSTED
+                    && !context.isolatePolicy().adversarial()) {
+                throw new SecurityException(
+                        "source UNTRUSTED actor requires the shared sandboxed Graal "
+                        + "isolate; trusted host ActorRuntime dispatch is forbidden");
+            }
+        }
+
         private void requireIsolatedGuestRoot() {
             // An adversarial group policy is required but not, alone,
             // proof of VM-level isolation. The trusted host adapter MUST
@@ -4418,6 +4427,10 @@ public final class OresEvalRootNode extends RootNode {
                 case SHARED -> ActorRuntime.ActorKind.SHARED;
                 case UNTRUSTED -> ActorRuntime.ActorKind.UNTRUSTED;
             };
+            // The compiler's source actor-callable path must not silently
+            // downgrade physical isolation by executing an UNTRUSTED actor
+            // function on the trusted host JVM.
+            requireUntrustedActorGuestPlacement(runtimeKind);
 
             if (fn.async() || functionContainsPotentialSuspension(fn)) {
                 OresFuture<Object> completion =
@@ -5925,6 +5938,7 @@ public final class OresEvalRootNode extends RootNode {
                                 case SHARED -> ActorRuntime.ActorKind.SHARED;
                                 case UNTRUSTED -> ActorRuntime.ActorKind.UNTRUSTED;
                             };
+                    requireUntrustedActorGuestPlacement(runtimeKind);
                     return context.actors().spawnCodeActor(
                             runtimeKind,
                             this,
