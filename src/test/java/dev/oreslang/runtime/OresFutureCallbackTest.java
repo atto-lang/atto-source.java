@@ -200,6 +200,26 @@ final class OresFutureCallbackTest {
     }
 
     @Test
+    void minimalCompletionStageCannotBeCancelledButKeepsItsLateValue() throws Exception {
+        CompletableFuture<Object> producer = new CompletableFuture<>();
+        java.util.concurrent.CompletionStage<Object> minimal =
+                producer.minimalCompletionStage();
+        // This type implements Future but its cancel() throws
+        // UnsupportedOperationException, unlike ordinary CompletableFuture.
+        assertTrue(minimal instanceof java.util.concurrent.Future<?>);
+
+        OresFuture<Object> awaited = OresFuture.from(minimal);
+        Object linearResource = new Object();
+
+        assertFalse(awaited.cancel(false),
+                "unsupported producer cancellation must not publish a cancelled consumer");
+        assertFalse(awaited.isDone());
+        producer.complete(linearResource);
+        assertSame(linearResource, awaited.get(2, TimeUnit.SECONDS));
+        assertFalse(awaited.isCancelled());
+    }
+
+    @Test
     void acceptedHostStageCancellationPropagatesExactlyOnce() {
         CompletableFuture<Integer> producer = new CompletableFuture<>();
         OresFuture<Integer> awaited = OresFuture.from(producer);
