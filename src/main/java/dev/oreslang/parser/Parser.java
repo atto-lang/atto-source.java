@@ -802,9 +802,13 @@ public final class Parser {
     private List<Ast.Annotation> parseSignatureEffects(List<Ast.Annotation> annotations) {
         List<Ast.Annotation> result = new ArrayList<>(annotations);
         if (match(WITH) || match(USING)) {
-            // `with` is the canonical effect-bound signature spelling. The
-            // historical signature `using` is accepted only during migration;
-            // `using state.read/write(...)` in expressions is a scoped loan.
+            // Keep distinct AST identities: `with` bounds effects; a
+            // source `using` expression is a lexical state capability.
+            Token signature = previous();
+            if (signature.type() == USING) {
+                warnings.add(new SyntaxWarning(signature.line(), signature.column(),
+                        "signature 'using' is deprecated; use 'with' for effect bounds"));
+            }
             List<String> names = new ArrayList<>();
             do {
                 String name = consume(IDENT, "expected function effect after with").lexeme();
@@ -812,8 +816,9 @@ public final class Parser {
                 names.add(name);
             } while (match(COMMA));
             dev.oreslang.types.FunctionEffects.ofNames(names);
-            result.add(new Ast.Annotation("$using$", names.stream()
-                    .map(Ast.TypeRef::simple).toList()));
+            result.add(new Ast.Annotation(
+                    signature.type() == WITH ? "$with$" : "$using$",
+                    names.stream().map(Ast.TypeRef::simple).toList()));
         }
         if (matchContextualIdentifier("requires")) {
             List<String> names = new ArrayList<>();
