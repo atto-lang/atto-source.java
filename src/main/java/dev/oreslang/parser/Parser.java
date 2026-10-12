@@ -1620,6 +1620,12 @@ public final class Parser {
             advance();
             return new Ast.LoopStmt(parseLoopBody());
         }
+        if (match(WHILE)) {
+            // Reuse the existing ForStmt continuation/safepoint machinery.
+            // Parenthesized and bare predicates share parseExpression().
+            Ast.Expr condition = parseExpression();
+            return new Ast.ForStmt(null, condition, null, parseLoopBody());
+        }
         if (match(FOR)) {
             boolean asyncIteration = match(AWAIT);
             return parseFor(asyncIteration);
