@@ -36,6 +36,8 @@ public final class OwnershipChecker {
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
+    private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -59,6 +61,7 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.InterfaceDecl iface) index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
             }
         }
     }
@@ -1415,6 +1418,52 @@ public final class OwnershipChecker {
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
                     : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());
+            // Interface member calls are fully typed synchronous callables, not
+            // unknown host operations. Preserve a borrow tied to the incoming
+            // receiver for Self-returning methods; never invent a free lifetime.
+            Ast.InterfaceDecl interfaceOwner = concreteReceiver == null ? null : findInterface(concreteReceiver.name());
+            if (target == null && interfaceOwner != null) {
+                if (!interfaceOwner.genericParameters().isEmpty()) {
+                    throw error("interface call requires resolved generic lifetime substitution");
+                }
+                Ast.InterfaceFunctionDecl matched = null;
+                for (Ast.InterfaceMember candidate : interfaceOwner.members()) {
+                    if (candidate instanceof Ast.InterfaceFunctionDecl fn
+                            && fn.name().equals(member.member()) && fn.parameters().size() == call.arguments().size()) {
+                        if (matched != null) throw error("ambiguous interface method " + member.member());
+                        matched = fn;
+                    }
+                }
+                if (matched != null) {
+                    List<Ast.Param> safeParams = new ArrayList<>();
+                    for (Ast.Param parameter : matched.parameters()) {
+                        if (parameter.type().name().equals("self") && parameter.type().arguments().isEmpty()) {
+                            safeParams.add(new Ast.Param(Ast.TypeRef.borrowed(concreteReceiver, false),
+                                    parameter.name(), false, false));
+                        } else {
+                            safeParams.add(parameter);
+                        }
+                    }
+                    checkArguments(call.arguments(), safeParams, scope,
+                            "interface method " + interfaceOwner.name() + "." + member.member(),
+                            member.receiver(), false);
+                    Ast.TypeRef result = matched.returnType();
+                    if (result.name().equals("self") && result.arguments().isEmpty()) {
+                        VarState root = receiverValue.borrowSource;
+                        if (root == null && member.receiver() instanceof Ast.NameExpr name) {
+                            root = scope.lookup(name.name());
+                        }
+                        if (root == null) {
+                            throw error("interface Self return cannot outlive an untracked receiver");
+                        }
+                        return new ValueInfo(concreteReceiver, ValueKind.IMM_BORROW, ownershipRoot(root));
+                    }
+                    if (containsBorrowType(result)) {
+                        throw error("interface borrowed result requires explicit receiver/argument lifetime relation");
+                    }
+                    return new ValueInfo(result, kindOfType(result), null);
+                }
+            }
             if (target != null) {
                 Ast.MethodDecl method = target.method();
                 if (AnnotationExpander.isGeneratedFromJsonSetter(method)) {
@@ -2732,6 +2781,11 @@ public final class OwnershipChecker {
     private Ast.ClassDecl findClass(String name) {
         if (ambiguousClasses.contains(name)) return null;
         return classes.get(name);
+    }
+
+    private Ast.InterfaceDecl findInterface(String name) {
+        if (ambiguousInterfaces.contains(name)) return null;
+        return interfaces.get(name);
     }
 
     private VarState ownershipRoot(VarState state) {
