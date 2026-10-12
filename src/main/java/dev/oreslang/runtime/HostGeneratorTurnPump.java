@@ -36,6 +36,11 @@ final class HostGeneratorTurnPump implements AutoCloseable {
         Turn {
             Objects.requireNonNull(result, "result");
             Objects.requireNonNull(physicalExit, "physicalExit");
+            if (result == physicalExit) {
+                throw new IllegalArgumentException(
+                        "physical exit must be a distinct source-owned barrier, "
+                        + "not the public Future's early completion/cancellation");
+            }
         }
     }
 
@@ -109,7 +114,17 @@ final class HostGeneratorTurnPump implements AutoCloseable {
             pending.addLast(request);
             wake = active == null;
         }
-        if (wake) signalOwner.run();
+        if (wake) {
+            try {
+                signalOwner.run();
+            } catch (RuntimeException | Error wakeFailure) {
+                // The caller cannot receive a handle when submission throws.
+                // Fail closed and cancel every staged request, rather than
+                // leaving an unowned producer eligible for later dispatch.
+                seal();
+                throw wakeFailure;
+            }
+        }
         return request.future;
     }
 
@@ -209,12 +224,24 @@ final class HostGeneratorTurnPump implements AutoCloseable {
             if (active != request) {
                 throw new IllegalStateException("generator turn lost physical owner");
             }
-            active = null;
+            // Retain physical/logical ownership until the previous public
+            // result is published. A second scheduler carrier must not race
+            // ahead of that result even after the physical exit is observed.
             wake = !sealed && !pending.isEmpty();
         }
-        if (failure == null) request.future.completeFromRuntime(value);
-        else request.future.failFromRuntime(OresFuture.unwrap(failure));
-        if (wake) signalOwner.run();
+        try {
+            if (failure == null) request.future.completeFromRuntime(value);
+            else request.future.failFromRuntime(OresFuture.unwrap(failure));
+        } finally {
+            synchronized (gate) {
+                if (active != request) {
+                    throw new IllegalStateException("generator turn changed owner before publication");
+                }
+                active = null;
+                wake = !sealed && !pending.isEmpty();
+            }
+            if (wake) notifyOwnerOrSeal();
+        }
     }
 
     private static void failSelected(Request<?> selected, Throwable failure) {
@@ -226,7 +253,18 @@ final class HostGeneratorTurnPump implements AutoCloseable {
         synchronized (gate) {
             wake = !sealed && active == null && !pending.isEmpty();
         }
-        if (wake) signalOwner.run();
+        if (wake) notifyOwnerOrSeal();
+    }
+
+    /** A failed notifier may not strand already-admitted work. */
+    private void notifyOwnerOrSeal() {
+        try {
+            signalOwner.run();
+        } catch (RuntimeException | Error rejected) {
+            seal();
+            // Notification is not guest execution. Avoid throwing an owner
+            // dispatch failure into an unrelated Future-completion callback.
+        }
     }
 
     private void cancel(Request<?> request) {
