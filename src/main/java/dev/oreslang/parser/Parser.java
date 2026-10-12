@@ -797,10 +797,16 @@ public final class Parser {
             }
             // Explicit name: Type = initializer only: no public/static
             // modifiers, inference, uninitialized slots or ordinary fields.
-            Ast.FieldDecl field = parseColonField(List.of(), Ast.Visibility.PRIVATE);
-            if (field.initializer() == null) {
-                throw error(previous(), "sealed actor state fields require initialization");
-            }
+            String fieldName = consume(IDENT, "expected sealed actor state field name").lexeme();
+            consume(COLON, "sealed actor state fields require 'name: Type = initializer'");
+            Ast.TypeRef fieldType = parseTypeRef();
+            consume(EQUAL, "sealed actor state fields require initialization");
+            Ast.Expr initializer = parseExpression();
+            consumeExpressionStatementTerminator(
+                    initializer, "sealed actor state fields require a semicolon or newline");
+            Ast.FieldDecl field = new Ast.FieldDecl(
+                    fieldName, Ast.Visibility.PRIVATE, Ast.BindingKind.VAL,
+                    fieldType, List.of(), initializer);
             if (field.name().equals("state") || !names.add(field.name())) {
                 throw error(previous(), "duplicate or reserved sealed actor state field: " + field.name());
             }
