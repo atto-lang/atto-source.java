@@ -128,6 +128,20 @@ final class TransformPipeActorRoleTest {
     }
 
     @Test
+    void canonicalHandleStateReadsAndCriticalWritesFailClosedOnJava() {
+        String state = "state { value: int = 0; }\n";
+        String read = FORWARD.replace("return;",
+                "const next = self.handle_state(|state| -> { return state.value; }); return;");
+        String write = FORWARD.replace("return;",
+                "const next = self.handle_state(critical |state| -> { "
+                + "state.value = 1; return state.value; }); return;");
+        assertRejected(HEADER + state + read + BACKWARD + "end",
+                "self.handle_state requires Java scoped actor-state");
+        assertRejected(HEADER + state + write + BACKWARD + "end",
+                "self.handle_state requires Java scoped actor-state");
+    }
+
+    @Test
     void javaGuestRuntimeRemainsExplicitlyFailClosed() {
         IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse(
