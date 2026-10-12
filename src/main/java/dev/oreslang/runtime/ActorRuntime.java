@@ -1967,6 +1967,14 @@ public final class ActorRuntime implements AutoCloseable {
         // Guarded by authorityLock; never expose their refs to ordinary users.
         private final Map<ActorId, ActorRef<?>> pendingRestartCandidates =
                 new java.util.HashMap<>();
+        // Exact immutable spawn authority for each physical candidate.
+        // Unlike ActorRefs, retain these small identity tokens across group
+        // close so a post-shutdown cleanup cannot substitute a different
+        // terminated actor for the originally authorized candidate.
+        // Every entry is removed only by successful commit or DONE-backed
+        // exact abort; guarded by authorityLock.
+        private final Map<ActorId, SupervisorChildRegistry.RestartReservation>
+                pendingRestartPermits = new java.util.HashMap<>();
         // Guarded by authorityLock: a stop-admitted actor cannot be released
         // into a different supervisor before stop actually dispatches.
         private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
@@ -2054,9 +2062,14 @@ public final class ActorRuntime implements AutoCloseable {
          * cleanup/abort; no guest can call these package-private methods.
          */
         <M> ActorRef<M> spawnUnpublishedRestartCandidate(
+                SupervisorChildRegistry.RestartReservation permit,
                 ActorKind kind, IsolatePolicy policy,
                 BehaviorFactory<M> factory) {
             requireSupervisorContext("spawn unpublished supervisor RESTART");
+            Objects.requireNonNull(permit);
+            if (!supervisorId.equals(permit.child().supervisorId())
+                    || !id.equals(permit.child().groupId()))
+                throw new SecurityException("foreign RESTART spawn reservation");
             if (currentActor.get() != null)
                 throw new IllegalStateException("RESTART spawn requires host CONTROL");
             // Match runtime.close()'s runtimeLifecycleLock -> group ownership
@@ -2065,9 +2078,11 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (runtimeLifecycleLock) {
                 synchronized (authorityLock) {
                     requireOpen();
-                    if (!childRegistry.restartAdmissionOpen())
+                    childRegistry.requireOpenRestartReservation(permit);
+                    if (pendingRestartPermits.values().stream().anyMatch(
+                            existing -> existing.child().equals(permit.child())))
                         throw new IllegalStateException(
-                                "supervisor RESTART admission already fenced");
+                                "logical child already has a pending physical replacement");
                     if (managedWorkers.size() + pendingRestartCandidates.size()
                             >= memberLimit)
                         throw new IllegalStateException(
@@ -2076,6 +2091,7 @@ public final class ActorRuntime implements AutoCloseable {
                             kind, policy, factory, true,
                             null, null, null, true);
                     pendingRestartCandidates.put(candidate.id(), candidate);
+                    pendingRestartPermits.put(candidate.id(), permit);
                     return candidate;
                 }
             }
@@ -2098,15 +2114,18 @@ public final class ActorRuntime implements AutoCloseable {
                     || !id.equals(permit.child().groupId()))
                 throw new SecurityException("foreign RESTART abort authority");
             synchronized (authorityLock) {
-                if (!groupClosed.get()
-                        && pendingRestartCandidates.get(candidate.id()) != candidate)
-                    throw new IllegalStateException("candidate is not owned as pending");
+                if (!permit.equals(pendingRestartPermits.get(candidate.id()))
+                        || (!groupClosed.get()
+                            && pendingRestartCandidates.get(candidate.id()) != candidate))
+                    throw new IllegalStateException(
+                            "physical candidate was not spawned by this exact RESTART permit");
                 childRegistry.acknowledgeCleanupIfStaged(
                         permit, candidate.id(),
                         () -> candidate.done().isDone()
                                 && !actors.containsKey(candidate.id()));
                 var restored = childRegistry.abortRestart(permit);
                 pendingRestartCandidates.remove(candidate.id(), candidate);
+                pendingRestartPermits.remove(candidate.id(), permit);
                 return restored;
             }
         }
@@ -2143,7 +2162,8 @@ public final class ActorRuntime implements AutoCloseable {
                             || cell.supervisedChild.get() != null
                             || !cell.children.isEmpty()
                             || managedWorkers.containsKey(replacement.id())
-                            || pendingRestartCandidates.get(replacement.id()) != replacement) {
+                            || pendingRestartCandidates.get(replacement.id()) != replacement
+                            || !permit.equals(pendingRestartPermits.get(replacement.id()))) {
                         throw new IllegalStateException(
                                 "replacement is not an idle, unpublished ActorCell");
                     }
@@ -2175,6 +2195,7 @@ public final class ActorRuntime implements AutoCloseable {
                         // The routing flip itself cannot allocate or fail.
                         cell.restartUnpublished = false;
                         pendingRestartCandidates.remove(replacement.id());
+                        pendingRestartPermits.remove(replacement.id());
                         return committed;
                     } catch (RuntimeException | Error failure) {
                         managedWorkers.remove(replacement.id(), replacement);
