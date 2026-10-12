@@ -137,7 +137,8 @@ final class HttpTransferBudgetTest {
 
     private static NativeHttp.TransferBudget.Reservation assertLease(
             NativeHttp.TransferBudget.Reservation lease) {
-        return assertNotNull(lease);
+        assertNotNull(lease);
+        return lease;
     }
 
 }
