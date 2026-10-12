@@ -6983,9 +6983,9 @@ public final class ActorRuntime implements AutoCloseable {
                 // one while holding lifecycleLock.
                 failedDrainWaiters = List.copyOf(pendingDrains);
                 pendingDrains.clear();
-                if (cause == null) mailbox.close();
-                else mailbox.close(cause);
-                continuationMailbox.close(cause);
+                // Sealing is authoritative under this monitor. Close both
+                // channels afterwards: close() publishes asynchronous waiter
+                // callbacks inline and must never run under lifecycleLock.
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
@@ -6993,6 +6993,21 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             try {
+                // Stop admission already linearized under lifecycleLock. Closing
+                // a channel settles registered asynchronous selectors inline.
+                // Each close must run outside that monitor and both lanes must
+                // be attempted even if one completion callback throws.
+                try {
+                    mailbox.close(cause);
+                } catch (Throwable closeFailure) {
+                    ref.terminationCause.compareAndSet(null, closeFailure);
+                }
+                try {
+                    continuationMailbox.close(cause);
+                } catch (Throwable closeFailure) {
+                    ref.terminationCause.compareAndSet(null, closeFailure);
+                }
+
                 // Detach closed mailbox envelopes while holding the monitor,
                 // but release their resources after leaving the lock.
                 drainMailboxReservations();
