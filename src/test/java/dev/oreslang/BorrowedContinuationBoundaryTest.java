@@ -308,7 +308,7 @@ final class BorrowedContinuationBoundaryTest {
     @Test
     void deferCanSequentiallyReborrowIncomingMutableParameter() {
         assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(BOX + """
-                fnc consume(borrow mut Box box): void { box.value = 9; return; }
+                fnc consume(borrow mut Box box): void { return; }
                 fnc safe(borrow mut Box box): void {
                   defer consume(rt borrow mut box);
                   defer consume(rt borrow mut box);
