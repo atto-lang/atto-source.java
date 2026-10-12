@@ -236,6 +236,32 @@ final class HostSchedulerEntryGateTest {
     }
 
     @Test
+    void inlineGuestCannotDeadlockByReenteringHostAdmission() throws Exception {
+        var gate = new HostSchedulerEntryGate(2);
+        var denied = new AtomicInteger();
+        gate.submitGuest(Runnable::run, () -> {
+            assertThrows(SecurityException.class, gate::enterHost);
+            denied.incrementAndGet();
+        }, error -> fail("guest admission failed", error));
+        try (var host = gate.enterHost()) {
+            gate.submitGuest(Runnable::run, () -> {
+                assertThrows(SecurityException.class, gate::enterHost);
+                denied.incrementAndGet();
+            }, error -> fail("queued guest admission failed", error));
+            assertEquals(1, denied.get(),
+                    "queued inline guest must wait until host scope actually exits");
+        }
+        assertEquals(2, denied.get());
+        // The thread-local gate must not grant or deny host entry after the
+        // guest physically unwinds. No virtual-thread inheritance is allowed.
+        try (var host = gate.enterHost()) {
+            assertNotNull(host);
+        }
+        gate.sealAdmission();
+        assertTrue(gate.physicallyQuiescent());
+    }
+
+    @Test
     void queuedCancellationPreventsExecutionAndNotifiesExactlyOnce() throws Exception {
         var gate = new HostSchedulerEntryGate(2);
         var guestRuns = new AtomicInteger();
