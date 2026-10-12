@@ -1612,6 +1612,10 @@ public final class OwnershipChecker {
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
         int parameterIndex = 0;
+        // Temporary argument loans coexist until invocation completes, even
+        // though they are evaluated sequentially. Tracking only lexical borrows
+        // would unsoundly accept f(rt borrow mut q, rt borrow mut q).
+        Map<VarState, Boolean> invocationLoans = new IdentityHashMap<>();
         for (Ast.Expr argument : arguments) {
             if (argument instanceof Ast.SpreadExpr spread) {
                 Ast.TypeRef spreadType = syntacticType(spread.expression(), scope);
@@ -1642,9 +1646,38 @@ public final class OwnershipChecker {
             }
 
             if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
-            checkArgument(argument, params.get(parameterIndex), scope, callable, parameterIndex + 1);
+            Ast.Param param = params.get(parameterIndex);
+            checkArgument(argument, param, scope, callable, parameterIndex + 1);
+            if (param.type().isBorrow()) {
+                VarState owner = invocationLoanRoot(argument, scope);
+                if (owner != null) {
+                    boolean mutable = param.type().mutableBorrow();
+                    Boolean previous = invocationLoans.get(owner);
+                    if (previous != null && (previous || mutable)) {
+                        throw error(callable + " has overlapping mutable borrow arguments at position "
+                                + (parameterIndex + 1));
+                    }
+                    invocationLoans.put(owner, mutable);
+                }
+            }
             parameterIndex++;
         }
+    }
+
+    private VarState invocationLoanRoot(Ast.Expr expression, Scope scope) {
+        if (expression instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+            return ownershipRoot(borrowPlace(unary.operand(), scope).owner());
+        }
+        if (expression instanceof Ast.RuntimeCallExpr runtime
+                && runtime.operation().equals("borrow") && runtime.arguments().size() == 1) {
+            return ownershipRoot(borrowPlace(runtime.arguments().getFirst(), scope).owner());
+        }
+        if (expression instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            return state == null ? null : ownershipRoot(state);
+        }
+        return null;
     }
 
     private void checkArgument(
