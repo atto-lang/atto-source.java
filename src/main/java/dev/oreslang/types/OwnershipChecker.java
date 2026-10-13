@@ -1249,11 +1249,34 @@ public final class OwnershipChecker {
         // Calling any instance method on self can transitively read absent
         // fields, publish the receiver or invoke suspension. No transitive
         // constructor-safe method effect summaries exist yet, so fail closed.
-        if (initializingClass != null
-                && call.callee() instanceof Ast.MemberExpr member
-                && member.receiver() instanceof Ast.NameExpr name
-                && name.name().equals("self")) {
-            throw error("constructor cannot invoke methods on partially initialized self");
+        if (initializingClass != null) {
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr name
+                    && name.name().equals("self")) {
+                throw error("constructor cannot invoke methods on partially initialized self");
+            }
+            for (Ast.Expr argument : call.arguments()) {
+                // Some intrinsic and first-class callable paths inspect their
+                // arguments without consuming them. That is appropriate for
+                // fully initialized borrows, but not for the constructor's
+                // unpublishable self capability.
+                if (argument instanceof Ast.NameExpr name && name.name().equals("self")) {
+                    throw error("constructor cannot pass partially initialized self to a call");
+                }
+                if (argument instanceof Ast.UnaryExpr unary
+                        && (unary.operator().equals("&") || unary.operator().equals("&mut"))
+                        && unary.operand() instanceof Ast.NameExpr name
+                        && name.name().equals("self")) {
+                    throw error("constructor cannot borrow partially initialized self for a call");
+                }
+                if (argument instanceof Ast.RuntimeCallExpr runtime
+                        && runtime.operation().equals("borrow")
+                        && runtime.arguments().size() == 1
+                        && runtime.arguments().getFirst() instanceof Ast.NameExpr name
+                        && name.name().equals("self")) {
+                    throw error("constructor cannot borrow partially initialized self for a call");
+                }
+            }
         }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
