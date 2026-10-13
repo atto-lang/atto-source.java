@@ -5673,7 +5673,18 @@ public final class ActorRuntime implements AutoCloseable {
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
-        private final Object executionDomain = new Object();
+        private final Object executionDomain = new CriticalRwGate.FencedLogicalOwner() {
+            @Override
+            public void cancelAndReleaseAfterUnwind(Runnable release) {
+                Objects.requireNonNull(release, "release");
+                // Actor finalization (not STOP publication) is the safety
+                // barrier: it occurs after the final guest TurnExecutor exit.
+                // Never revoke a live actor's critical permit from a foreign
+                // host callback while its current envelope is still running.
+                finalizedFuture.whenCompleteRuntime((value, failure) -> release.run());
+                ActorCell.this.stop();
+            }
+        };
         private int activeTurns;
         private boolean carrierActive;
         /**
