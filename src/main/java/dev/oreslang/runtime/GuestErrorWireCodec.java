@@ -69,6 +69,26 @@ public final class GuestErrorWireCodec {
     }
 
     /**
+     * Canonical std/error variant. Catalog code is derived from trusted
+     * runtime-owned metadata, NOT from guest code(), text or field contents.
+     * Callers must separately authenticate the nominal class identity.
+     */
+    public static ErrorSnapshot supervisorCompactCoreSnapshot(
+            CoreErrorDescriptors.Descriptor descriptor,
+            java.util.Map<String, ?> ignoredGuestFields) {
+        java.util.Objects.requireNonNull(descriptor, "core error descriptor");
+        java.util.Objects.requireNonNull(ignoredGuestFields, "guest fields");
+        if (descriptor.abstractType())
+            throw new IllegalArgumentException("abstract error category cannot be a value");
+        // Only private-constructed catalog instances qualify; no arbitrary
+        // caller-supplied name/code pairs are ever serialized as trusted types.
+        if (CoreErrorDescriptors.requireKnown(descriptor.name()) != descriptor)
+            throw new IllegalArgumentException("untrusted error descriptor");
+        return new ErrorSnapshot(descriptor.name(), descriptor.code(),
+                "", List.of(), false);
+    }
+
+    /**
      * Host-authorized local diagnostics only; never the default supervisor
      * transfer path. Read exactly two allowlisted scalar/array fields without
      * ever invoking code(), getters, toString(), reflection or other guest
