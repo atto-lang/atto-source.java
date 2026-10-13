@@ -154,6 +154,45 @@ final class FutureChannelSelectTest {
     }
 
     @Test
+    void tooManySelectableDescriptorsFailWithoutConsumingAnyPayload() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        assertTrue(channel.tryWrite(91));
+        var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
+        for (int i = 0; i < 257; i++) cases.add(ChannelRuntime.read(channel));
+        assertThrows(ChannelRuntime.SelectAdmissionException.class,
+                () -> new ChannelRuntime.SelectSet(cases));
+        assertEquals(91, channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void fullPendingQuotaCannotSuppressAnImmediatelyReadyFutureOrRead() {
+        var pending = new java.util.ArrayList<OresFuture<ChannelRuntime.SelectResult>>();
+        try {
+            for (int i = 0; i < 4096; i++) {
+                var channel = new ChannelRuntime.Channel<Integer>(0);
+                pending.add(ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
+                        .selectAsync(ChannelRuntime.SelectPolicy.FAIR));
+            }
+            var full = new ChannelRuntime.Channel<Integer>(0);
+            var rejected = ChannelRuntime.SelectSet.of(ChannelRuntime.read(full)).selectAsync();
+            var rejectedFailure = assertThrows(CompletionException.class, rejected::join);
+            assertTrue(rejectedFailure.getCause()
+                    instanceof ChannelRuntime.SelectAdmissionException);
+
+            var readyFuture = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.await(OresFuture.completed(99))).selectAsync();
+            assertEquals(99, readyFuture.join().value());
+
+            var buffered = new ChannelRuntime.Channel<Integer>(1);
+            assertTrue(buffered.tryWrite(100));
+            var readyRead = ChannelRuntime.SelectSet.of(ChannelRuntime.read(buffered)).selectAsync();
+            assertEquals(100, readyRead.join().value());
+        } finally {
+            for (var waiter : pending) waiter.cancel(false);
+        }
+    }
+
+    @Test
     void immediateProbeOnPendingFutureRegistersNoWaiter() {
         var future = new OresFuture<Integer>();
         var set = ChannelRuntime.SelectSet.of(ChannelRuntime.await(future));
