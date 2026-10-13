@@ -1497,6 +1497,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return false;
             }
+            if (expr instanceof Ast.TrapExpr trapped) {
+                return expressionContainsPotentialSuspension(trapped.expression(), seen);
+            }
             if (expr instanceof Ast.UnaryExpr unary) {
                 return expressionContainsPotentialSuspension(
                         unary.operand(), seen);
@@ -3048,6 +3051,21 @@ public final class OresEvalRootNode extends RootNode {
                                             t,
                                             null,
                                             failure2);
+                                }
+                            });
+                    return;
+                }
+
+                if (expr instanceof Ast.TrapExpr trapped) {
+                    evalSuspendableExpr(task, trapped.expression(), env,
+                            (t, value, failure) -> {
+                                if (failure == null) {
+                                    continuation.accept(t, new OptionValue(true, value), null);
+                                } else if (failure instanceof RuntimeException ordinary
+                                        && isTrappableFailure(ordinary)) {
+                                    continuation.accept(t, new OptionValue(false, null), null);
+                                } else {
+                                    continuation.accept(t, null, failure);
                                 }
                             });
                     return;
@@ -5891,6 +5909,14 @@ public final class OresEvalRootNode extends RootNode {
                 return truth(eval(conditional.condition(), env))
                         ? eval(conditional.whenTrue(), env)
                         : eval(conditional.whenFalse(), env);
+            }
+            if (expr instanceof Ast.TrapExpr trapped) {
+                try {
+                    return new OptionValue(true, eval(trapped.expression(), env));
+                } catch (RuntimeException failure) {
+                    if (!isTrappableFailure(failure)) throw failure;
+                    return new OptionValue(false, null);
+                }
             }
             if (expr instanceof Ast.UnaryExpr unary) {
                 Object value = eval(unary.operand(), env);

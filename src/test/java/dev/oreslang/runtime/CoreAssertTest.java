@@ -38,6 +38,50 @@ final class CoreAssertTest {
             """));
     }
 
+    @Test void qualifiedDoubleColonAndCallSiteTrapAreEquivalent() throws Exception {
+        for (String qualifier : new String[]{".", "::"}) {
+            assertEquals("truetruetruetruetruetrue", run("""
+                pub routine main(): void {
+                    const success = Assert%sequal_throws(10, 10);
+                    const wrapped = trap Assert%sequal_throws(10, 10);
+                    const failure = trap Assert%sequal_throws(10, 20);
+                    stdio.stdout.write(success);
+                    stdio.stdout.write(wrapped.is_some());
+                    stdio.stdout.write(wrapped.unwrap());
+                    stdio.stdout.write(failure.is_none());
+                    stdio.stdout.write(Assert%sequal(3, 3));
+                    stdio.stdout.write(Assert%snot_equal(3, 4));
+                    return;
+                }
+                """.formatted(qualifier, qualifier, qualifier, qualifier, qualifier)
+                ));
+        }
+    }
+
+    @Test void callSiteTrapNeverCatchesPanic() {
+        for (String qualifier : new String[]{".", "::"}) {
+            Exception failure = assertThrows(Exception.class, () -> run("""
+                pub routine main(): void {
+                    const absent = trap Assert%sequal_throws(1, 2);
+                    const not_catchable = trap absent.unwrap();
+                    stdio.stdout.write(not_catchable);
+                    return;
+                }
+                """.formatted(qualifier)));
+            assertTrue(failure.getMessage().contains("Option::unwrap"), failure::toString);
+        }
+    }
+
+    @Test void doubleColonDoesNotConfuseTypeAnnotationsOrTernary() throws Exception {
+        assertEquals("true", run("""
+            pub routine main(): void {
+                const result: bool = Assert::equal(1, 1);
+                stdio.stdout.write(result ? true : false);
+                return;
+            }
+            """));
+    }
+
     @Test void trapPreservesSuccessAndCatchesEveryAssertionFailure() throws Exception {
         assertEquals("truetruetruetruetruetruetruetruetruetruetrue", run("""
             trap fnc success(): bool {
