@@ -5,10 +5,19 @@ import java.util.List;
 public final class Ast {
     private Ast() { }
 
-    public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+    public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules,
+                          java.util.Map<CallExpr, FunctionDecl> boundDirectCalls) {
         public Program {
             imports = List.copyOf(imports);
             modules = List.copyOf(modules);
+            // AST records have *structural* equality: two syntactically equal
+            // call expressions must NOT share a binding by Map.equals/hashCode.
+            // Preserve identity keys and publish an immutable snapshot.
+            boundDirectCalls = java.util.Collections.unmodifiableMap(
+                    new java.util.IdentityHashMap<>(boundDirectCalls));
+        }
+        public Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+            this(namespace, imports, modules, java.util.Map.of());
         }
         public Program(List<ImportDecl> imports, List<ModuleDecl> modules) { this(null, imports, modules); }
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
