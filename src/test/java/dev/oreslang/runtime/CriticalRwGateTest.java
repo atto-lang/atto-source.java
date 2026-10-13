@@ -434,6 +434,85 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void simultaneousStopCancelAndReleaseCannotResurrectCriticalOwnership()
+            throws Exception {
+        for (int n = 0; n < 128; n++) {
+            CriticalRwGate gate = new CriticalRwGate();
+            var active = gate.newCriticalTicket();
+            var waiting = gate.newTicket(CriticalRwGate.Mode.READ);
+            assertTrue(active.enterAsync().isDone());
+            var pending = waiting.enterAsync();
+            assertFalse(pending.isDone());
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread stop = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    gate.close();
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            Thread cancel = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    pending.cancel(false);
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            Thread release = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    active.close();
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            start.countDown();
+            stop.join(5_000);
+            cancel.join(5_000);
+            release.join(5_000);
+            assertFalse(stop.isAlive());
+            assertFalse(cancel.isAlive());
+            assertFalse(release.isAlive());
+            assertNull(failure.get(), "no lifecycle race may fail with an uncaught exception");
+            assertTrue(pending.isDone(), "STOP must settle pending admission");
+            assertFalse(active.isHeld());
+            assertFalse(waiting.isHeld());
+            assertEquals(0, gate.activeReaderCount());
+            assertEquals(0, gate.queuedCount());
+            assertFalse(gate.hasWriter());
+            assertEquals(0, gate.trackedTicketCount(),
+                    "STOP/cancellation/release must retire all tracked tickets");
+        }
+    }
+
+    @Test
+    void boundedCriticalQueueRejectsOverflowAndStopReclaimsAllTickets() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var writer = gate.newCriticalTicket();
+        assertTrue(writer.enterAsync().isDone());
+        for (int n = 0; n < CriticalRwGate.MAX_WAITERS; n++) {
+            var pending = gate.newTicket(CriticalRwGate.Mode.READ);
+            assertFalse(pending.enterAsync().isDone());
+        }
+        assertEquals(CriticalRwGate.MAX_WAITERS, gate.queuedCount());
+        assertEquals(CriticalRwGate.MAX_WAITERS + 1, gate.trackedTicketCount());
+        var overflow = gate.newTicket(CriticalRwGate.Mode.READ);
+        var denied = assertThrows(IllegalStateException.class, overflow::enterAsync);
+        assertTrue(denied.getMessage().contains("full"));
+        assertEquals(CriticalRwGate.MAX_WAITERS + 1, gate.trackedTicketCount(),
+                "a denied overflow must immediately release its facade wrapper");
+        gate.close();
+        assertEquals(0, gate.queuedCount());
+        assertEquals(0, gate.activeReaderCount());
+        assertEquals(0, gate.trackedTicketCount());
+        assertFalse(gate.hasWriter());
+        assertFalse(writer.isHeld());
+    }
+
+    @Test
     void independentGatesAndDoubleCloseAreSafe() {
         CriticalRwGate first = new CriticalRwGate();
         CriticalRwGate second = new CriticalRwGate();
