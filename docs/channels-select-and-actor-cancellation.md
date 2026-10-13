@@ -148,11 +148,24 @@ then validates the actual scalar/tuple/record/list/Option/Result shape
 against `T` before registration/publication. A differently shaped
 *data-only* value cannot silently masquerade as the declared `T`.
 The checks also apply when a runtime host attempts a forged write through
-a guest-created typed channel. Erased/indirect invocations of the channel
-factory without an explicit `T` are rejected. An internal privileged
-`ChannelRuntime.Channel<T>` without this validator still exists for
-supervisor/actor envelopes; direct untrusted host access to that
-constructor must not be exposed as the guest `Channel.new<T>` API.
+a guest-created typed channel. Guest channels **deep-snapshot** records,
+tuples, lists/arrays and nested Option/Result data before a writer is
+registered or a buffer can receive it, then revalidate the detached value
+against `T`. A sender's later mutation cannot change queued data.
+Readonly inferred struct snapshots recursively freeze nested records/lists.
+Each execution of a reused dynamic `SelectSet` takes a fresh detached copy
+of its write candidates, so the next send cannot replay a prior receiver's
+mutations. Readch, static select and dynamic select factories reject unsealed
+internal/host channel handles.
+
+Erased/indirect invocations of the channel factory without an explicit
+`T` are rejected. An internal privileged `ChannelRuntime.Channel<T>`
+without a validator remains available for supervisor/actor envelopes; it is
+not a guest `Channel<T>`. The current guest seal checks the presence of
+validator/snapshot policies; a fully unforgeable context-specific host
+capability stamp remains a separate hardening item if malicious in-process
+Java callers are in the threat model. None of this permits leaking private
+repository source or using a public CI mirror for private code.
 
 **Internal actor mailbox channels are not public generic channels.** They
 transport trusted runtime-only envelopes with scheduler and supervision
