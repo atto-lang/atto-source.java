@@ -153,12 +153,22 @@ public final class NativeHttp implements AutoCloseable {
                     });
                 }
                 String token = exchange.moveToPooled(actor);
-                Set<State> pending = inFlight.computeIfPresent(actor, (key, current) -> {
-                    current.add(exchange.state);
-                    return current;
-                });
-                if (pending == null) throw new IllegalStateException("pooled actor terminated during dispatch");
-                exchange.state.poolHandler = this;
+                // A deadline or shutdown can terminate and release the exchange
+                // immediately after its capability moves. Registering it later
+                // would retain a completed State indefinitely on a live worker.
+                // Make the terminal check, cleanup association and registration
+                // atomic with respect to abort/finish's state monitor.
+                synchronized (exchange.state) {
+                    if (exchange.state.terminal)
+                        throw new IllegalStateException("HTTP exchange expired during pooled dispatch");
+                    exchange.state.poolHandler = this;
+                    boolean registered = inFlight.computeIfPresent(actor, (key, current) -> {
+                        current.add(exchange.state);
+                        return current;
+                    }) != null;
+                    if (!registered)
+                        throw new IllegalStateException("pooled actor terminated during dispatch");
+                }
                 actor.send(token);
             } catch (RuntimeException failure) {
                 // A dispatch failure belongs to this exchange. In particular,
