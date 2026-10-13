@@ -60,7 +60,7 @@ final class MacroExpanderTest {
                 "while (true) do 1; done"
         }) {
             String source = "macro_rules! forbidden { () => { " + body
-                    + " }; }\\ndefine module app as end";
+                    + " }; }\ndefine module app as end";
             IllegalArgumentException rejected = assertThrows(
                     IllegalArgumentException.class,
                     () -> MacroExpander.expand(new Lexer(source).scan()),
