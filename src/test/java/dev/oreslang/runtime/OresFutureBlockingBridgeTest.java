@@ -40,6 +40,73 @@ final class OresFutureBlockingBridgeTest {
     }
 
     @Test
+    void physicalActorCarrierRemainsNonblockingAfterMailboxContextExits() throws Exception {
+        var shared = OresMutex.shared(18);
+        var hostGuard = shared.lock();
+        var critical = new CriticalGate();
+        var active = critical.newTicket();
+        assertTrue(active.enterAsync().isDone());
+        CountDownLatch inspected = new CountDownLatch(1);
+        AtomicReference<Throwable> unexpected = new AtomicReference<>();
+        AtomicBoolean observedOnce = new AtomicBoolean();
+        ActorRuntime.TurnExecutor executor = turn -> {
+            turn.run();
+            // A turn is finished and its actor execution context is cleared,
+            // but the same physical worker is still an admitted actor carrier.
+            if (!observedOnce.compareAndSet(false, true)) return;
+            try {
+                assertTrue(ActorRuntime.isActorCarrierThread());
+                assertFalse(ActorRuntime.inActorExecution());
+                OresFuture<Void> pending = new OresFuture<>();
+                assertThrows(IllegalStateException.class, pending::join);
+                assertThrows(IllegalStateException.class, pending::get);
+                assertThrows(IllegalStateException.class,
+                        () -> pending.get(1, TimeUnit.SECONDS));
+                assertEquals(0, pending.pendingRuntimeWaiterCount());
+
+                var contender = critical.newTicket();
+                assertThrows(IllegalStateException.class, contender::enterSync);
+                assertEquals(0, critical.queuedCount());
+                contender.close();
+
+                assertThrows(OresMutex.WrongMutexDomainException.class, shared::lock);
+                assertThrows(OresMutex.WrongMutexDomainException.class,
+                        () -> shared.lockFor(java.time.Duration.ofMillis(25)));
+                assertThrows(OresMutex.WrongMutexDomainException.class,
+                        () -> shared.recover(value -> value));
+                var mutexFuture = shared.lockAsync();
+                try {
+                    assertThrows(OresMutex.WrongMutexDomainException.class,
+                            mutexFuture::join);
+                } finally {
+                    mutexFuture.cancel(false);
+                }
+                assertFalse(pending.isDone());
+                assertTrue(active.isHeld());
+            } catch (Throwable failure) {
+                unexpected.set(failure);
+            } finally {
+                inspected.countDown();
+            }
+        };
+        try {
+            try (var runtime = new ActorRuntime(
+                    IsolatePolicy.developer(), ActorRuntime.DispatcherConfig.defaults(), executor)) {
+                var worker = runtime.<String>spawnShared(() -> (message, context) -> { });
+                worker.send("verify");
+                assertTrue(inspected.await(5, TimeUnit.SECONDS),
+                        "actor carrier post-turn callback was not observed");
+                assertNull(unexpected.get());
+            }
+        } finally {
+            active.close();
+            hostGuard.close();
+        }
+        assertEquals(0, critical.queuedCount());
+        assertFalse(critical.held());
+    }
+
+    @Test
     void schedulerTerminalCallbackCannotParkCarrierOnAnotherFuture() throws Exception {
         OresFuture<Void> gate = new OresFuture<>();
         OresFuture<Integer> neverCompletes = new OresFuture<>();
