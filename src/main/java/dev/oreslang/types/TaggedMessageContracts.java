@@ -71,6 +71,42 @@ public final class TaggedMessageContracts {
         return ref.arguments().stream().anyMatch(TaggedMessageContracts::hasExplicitBox);
     }
 
+    /**
+     * Local source enum values are not automatically actor-wire values.
+     * These closed scalar/sequence forms have runtime payload validation,
+     * even when today's MessagePack v2 codec lacks an exact-width encoding.
+     * This is deliberately NOT a general permission for unknown classes,
+     * inferred types, capabilities, Option/Result codecs or raw pointers.
+     */
+    private static boolean locallyValidatedPayload(Ast.TypeRef type, int depth) {
+        if (type == null || depth > 32 || type.inferArguments() || type.isBorrow()
+                || type.isNamedParameter() || type.isRecordType() || type.isUnion()
+                || type.isRepeatExact() || type.isRepeatMany()) return false;
+        String name = type.name();
+        if (Set.of("u8", "i8", "u16", "i16", "u32", "i32", "u64", "uint",
+                "bigint", "f32").contains(name)) {
+            return type.arguments().isEmpty();
+        }
+        if (Set.of("bool", "Bool", "boolean", "int", "i64", "float",
+                "f64", "string", "String").contains(name)) {
+            return type.arguments().isEmpty();
+        }
+        if (type.isSequenceShape()) {
+            return !type.arguments().isEmpty()
+                    && type.arguments().stream().allMatch(
+                            a -> locallyValidatedPayload(a, depth + 1));
+        }
+        if (type.isTupleType() || Set.of("Tuple", "FixedArray", "FixedList",
+                "List", "Array").contains(name)) {
+            if (type.arguments().isEmpty()) return false;
+            if (Set.of("List", "Array").contains(name)
+                    && type.arguments().size() != 1) return false;
+            return type.arguments().stream().allMatch(
+                    a -> locallyValidatedPayload(a, depth + 1));
+        }
+        return false;
+    }
+
     private static void appendPatternCase(List<Case> items, Set<String> seen, Case entry) {
         if (!seen.add(entry.qualifiedName())) {
             throw new IllegalArgumentException(
@@ -173,8 +209,11 @@ public final class TaggedMessageContracts {
                             boolean boxedWire = unsupported.getMessage().contains(
                                     "no portable Serializable wire codec: Box")
                                     && hasExplicitBox(entry.payload());
-                            if (!localOnly
-                                    || (!boxedWire && !(indirect && recursiveWire))) {
+                            boolean localScalarNoWire = unsupported.getMessage().startsWith(
+                                    "type has no portable Serializable wire codec:")
+                                    && locallyValidatedPayload(entry.payload(), 0);
+                            if (!localOnly || (!boxedWire
+                                    && !(indirect && recursiveWire) && !localScalarNoWire)) {
                                 throw unsupported;
                             }
                         }
