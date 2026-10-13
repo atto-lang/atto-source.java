@@ -5588,11 +5588,13 @@ public final class OresEvalRootNode extends RootNode {
         /** Deeply detach data before buffering or registering a channel write. */
         private static Object snapshotChannelDataValue(Object value) {
             requireChannelDataValue(value);
-            return copyChannelDataValue(value, new IdentityHashMap<>(), 0);
+            return copyChannelDataValue(value, new IdentityHashMap<>(), 0, false);
         }
 
         private static Object copyChannelDataValue(
-                Object value, IdentityHashMap<Object, Boolean> active, int depth) {
+                Object value, IdentityHashMap<Object, Boolean> active,
+                int depth, boolean inheritedReadonly) {
+            boolean readonly = inheritedReadonly || value instanceof ReadonlyRecordValue;
             if (depth > 128 || value == null || value == UNINITIALIZED_FIELD) {
                 throw new IllegalArgumentException("invalid channel snapshot value/depth");
             }
@@ -5610,26 +5612,26 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 if (value instanceof OptionValue option) {
                     return option.present()
-                            ? new OptionValue(true, copyChannelDataValue(option.value(), active, depth + 1))
+                            ? new OptionValue(true, copyChannelDataValue(option.value(), active, depth + 1, readonly))
                             : new OptionValue(false, null);
                 }
                 if (value instanceof ResultValue result) {
                     return new ResultValue(result.ok(),
-                            copyChannelDataValue(result.value(), active, depth + 1));
+                            copyChannelDataValue(result.value(), active, depth + 1, readonly));
                 }
                 if (value instanceof Object[] tuple) {
                     Object[] copy = new Object[tuple.length];
                     for (int i = 0; i < tuple.length; i++) {
-                        copy[i] = copyChannelDataValue(tuple[i], active, depth + 1);
+                        copy[i] = copyChannelDataValue(tuple[i], active, depth + 1, readonly);
                     }
-                    return copy;
+                    return readonly ? List.copyOf(java.util.Arrays.asList(copy)) : copy;
                 }
                 if (value instanceof List<?> list) {
                     ArrayList<Object> copy = new ArrayList<>(list.size());
                     for (Object member : list) {
-                        copy.add(copyChannelDataValue(member, active, depth + 1));
+                        copy.add(copyChannelDataValue(member, active, depth + 1, readonly));
                     }
-                    return copy;
+                    return readonly ? List.copyOf(copy) : copy;
                 }
                 if (value instanceof Map<?, ?> map) {
                     LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
@@ -5637,10 +5639,9 @@ public final class OresEvalRootNode extends RootNode {
                         if (!(field.getKey() instanceof String key)) {
                             throw new IllegalArgumentException("channel record key must be a string");
                         }
-                        copy.put(key, copyChannelDataValue(field.getValue(), active, depth + 1));
+                        copy.put(key, copyChannelDataValue(field.getValue(), active, depth + 1, readonly));
                     }
-                    return value instanceof ReadonlyRecordValue
-                            ? new ReadonlyRecordValue(copy) : copy;
+                    return readonly ? new ReadonlyRecordValue(copy) : copy;
                 }
                 throw new IllegalArgumentException(
                         "channel data snapshot rejected " + value.getClass().getSimpleName());
