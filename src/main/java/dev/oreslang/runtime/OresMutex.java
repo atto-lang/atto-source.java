@@ -86,6 +86,7 @@ public final class OresMutex {
 
         private void rejectBlockingCarrierRead() {
             if (!isDone() && (ActorRuntime.inActorExecution()
+                    || ActorRuntime.isActorCarrierThread()
                     || OresScheduler.current() != null
                     || OresScheduler.isSchedulerCarrierThread())) {
                 throw new WrongMutexDomainException(
@@ -485,6 +486,7 @@ public final class OresMutex {
             // permission to use its blocking acquisition API on a carrier:
             // another task may win the permit between observation and acquire.
             if (ActorRuntime.inActorExecution()
+                    || ActorRuntime.isActorCarrierThread()
                     || OresScheduler.current() != null
                     || OresScheduler.isSchedulerCarrierThread()) {
                 throw new WrongMutexDomainException(
@@ -910,6 +912,7 @@ public final class OresMutex {
             boolean waiting = false;
             try {
                 if (ActorRuntime.inActorExecution()
+                        || ActorRuntime.isActorCarrierThread()
                         || OresScheduler.current() != null
                         || OresScheduler.isSchedulerCarrierThread()) {
                     // Recovery is expected to happen after the poisoning guard
