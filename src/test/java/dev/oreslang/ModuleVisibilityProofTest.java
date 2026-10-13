@@ -203,8 +203,8 @@ final class ModuleVisibilityProofTest {
         var updated = compiler.compile(Map.of(
                 "pkg/lib.ores", publicApi + hiddenAfter,
                 "pkg/main.ores", entry));
-        assertTrue(updated.rebuilt().contains("pkg/lib.ores"));
-        assertTrue(updated.reused().contains("pkg/main.ores"),
+        assertTrue(updated.rebuilt("pkg/lib.ores"));
+        assertTrue(updated.reused("pkg/main.ores"),
                 "private named module edits must not change public ABI");
     }
 
