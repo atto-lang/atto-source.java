@@ -25,6 +25,40 @@ final class ColonClassFieldInitializerTest {
     }
 
     @Test
+    void finalConstLiteralHasTheSameFixedSlotBindingAsFinal() {
+        Ast.Program program = Parser.parse("""
+                define class Foo as
+                  final int baseline: 5
+                  final const int number: 5
+                  final const string label: "ready"
+                  final const bool enabled: true
+                end
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+        Ast.ClassDecl foo = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        assertEquals(4, foo.fields().size());
+        foo.fields().forEach(field -> assertEquals(Ast.BindingKind.VAL, field.bindingKind()));
+    }
+
+    @Test
+    void finalConstRejectsNonliteralAndMutableReferentWithoutDroppingConst() {
+        IllegalArgumentException computed = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define class Foo as
+                          final const int value: calculate()
+                        end
+                        """));
+        assertTrue(computed.getMessage().contains("literal initializer"), computed.getMessage());
+        IllegalArgumentException mutable = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define class Foo as
+                          final const mut Array<int> values: [1, 2]
+                        end
+                        """));
+        assertTrue(mutable.getMessage().contains("mutable referent"), mutable.getMessage());
+    }
+
+    @Test
     void preservesFieldTypeCheckingAndFinalSlotSemantics() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define class Foo as
