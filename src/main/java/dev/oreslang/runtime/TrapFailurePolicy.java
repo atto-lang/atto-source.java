@@ -8,12 +8,16 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Guest trap admission. Only ordinary guest failures may become None.
+ * Distinct guest failure boundaries:
+ * <ul>
+ *   <li>{@code trap} converts only ordinary failures to None. Authority denial
+ *       and timeout remain terminal at that boundary.</li>
+ *   <li>Explicit guest {@code catch} may recover denied operations and timeouts,
+ *       without consuming panic, scheduler cancellation or host failures.</li>
+ * </ul>
  *
- * <p>Guest and host boundaries can wrap termination, capability denial, scheduler
- * rejection, or cancellation in otherwise trappable runtime exceptions. The
- * bounded graph traversal includes suppressed cleanup failures, not just causes.
- * Cyclic, excessively deep or excessively wide failure graphs fail closed.</p>
+ * <p>Wrapped and suppressed failures are inspected with bounded, identity-based
+ * traversal. Cyclic and oversized graphs fail closed.</p>
  */
 public final class TrapFailurePolicy {
     private static final int MAX_FAILURE_NODES = 64;
@@ -22,6 +26,17 @@ public final class TrapFailurePolicy {
 
     public static boolean isTrappable(
             RuntimeException failure, Class<? extends Throwable> panicType) {
+        return permits(failure, panicType, false);
+    }
+
+    public static boolean isGuestCatchable(
+            Throwable failure, Class<? extends Throwable> panicType) {
+        return permits(failure, panicType, true);
+    }
+
+    private static boolean permits(
+            Throwable failure, Class<? extends Throwable> panicType,
+            boolean explicitGuestCatch) {
         Objects.requireNonNull(failure, "failure");
         Objects.requireNonNull(panicType, "panicType");
 
@@ -34,11 +49,14 @@ public final class TrapFailurePolicy {
             if (visited.put(current, Boolean.TRUE) != null) return false;
             if (panicType.isInstance(current)
                     || current instanceof Error
-                    || current instanceof SecurityException
                     || current instanceof CancellationException
                     || current instanceof InterruptedException
-                    || current instanceof RejectedExecutionException
-                    || current instanceof TimeoutException) {
+                    || current instanceof RejectedExecutionException) {
+                return false;
+            }
+            if (!explicitGuestCatch
+                    && (current instanceof SecurityException
+                            || current instanceof TimeoutException)) {
                 return false;
             }
             Throwable cause = current.getCause();
