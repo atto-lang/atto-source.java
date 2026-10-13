@@ -3154,7 +3154,10 @@ public final class Parser {
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after new type");
-            List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+            // Use the same explicit labeled-argument grammar as ordinary calls.
+            // TypeChecker must reject these labels until constructor binding is
+            // statically verified; do not let an opaque parser error mask it.
+            List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
