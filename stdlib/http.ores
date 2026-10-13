@@ -1,0 +1,168 @@
+// HTTP/1.1 framing is Oreslang source, not a Java HttpServer adapter.
+// First hardened incremental request-head slice: strict ASCII GET/HEAD,
+// origin-form targets, bounded headers, and explicit Host/Connection handling.
+// Unsupported body/framing fields (including CL/TE) fail closed. Full
+// production HTTP semantics and actor dispatch remain separate gates.
+define module http_wire as
+  pub define class Head as
+    pub val int status;
+    pub val int consumed;
+    pub val int route;
+    pub val bool keep_alive;
+    pub val bool head_only;
+    pub constructor(int status, int consumed, int route, bool keep_alive, bool head_only) {
+      self.status = status;
+      self.consumed = consumed;
+      self.route = route;
+      self.keep_alive = keep_alive;
+      self.head_only = head_only;
+    }
+  end
+
+  // Exact byte matching never decodes arbitrary client bytes through a host
+  // string conversion. Every byte must stay within the bounded input window.
+  pub fnc byte_equal(borrow Array<int> data, int at, Array<int> expected) -> bool {
+    if at < 0 || at + expected.size > data.size; then return false; fi
+    for (let int j = 0; j < expected.size; j = j + 1) {
+      if data.get(at + j) != expected.get(j); then return false; fi
+    }
+    return true;
+  }
+
+  pub fnc parse_head(borrow Array<int> bytes) -> Head {
+    if bytes.size > 8192; then return new Head(431, 0, 0, false, false); fi
+    let int head_end = -1;
+    for (let int i = 0; i < bytes.size; i = i + 1) {
+      val int c = bytes.get(i);
+      // Reject controls and non-ASCII octets (strict bootstrap dialect).
+      if c == 0 || c == 9 || c > 126 || (c < 32 && c != 13 && c != 10); then
+        return new Head(400, 0, 0, false, false);
+      fi
+      if c == 10 && (i == 0 || bytes.get(i - 1) != 13); then
+        return new Head(400, 0, 0, false, false);
+      fi
+      if c == 13 && i + 1 < bytes.size && bytes.get(i + 1) != 10; then
+        return new Head(400, 0, 0, false, false);
+      fi
+      if i >= 3 && c == 10 && bytes.get(i - 1) == 13
+         && bytes.get(i - 2) == 10 && bytes.get(i - 3) == 13; then
+        head_end = i + 1;
+        break;
+      fi
+    }
+    if head_end < 0; then return new Head(0, 0, 0, false, false); fi
+
+    let int pos = 0;
+    let bool head_only = false;
+    if byte_equal(bytes, 0, arr[71, 69, 84, 32]); then
+      pos = 4;
+    elif byte_equal(bytes, 0, arr[72, 69, 65, 68, 32]); then
+      pos = 5;
+      head_only = true;
+    else
+      return new Head(405, head_end, 0, false, false);
+    fi
+    val int target_start = pos;
+    loop {
+      if pos >= head_end || bytes.get(pos) == 32; then break; fi
+      pos = pos + 1;
+    }
+    val int target_size = pos - target_start;
+    if target_size < 1 || pos + 11 > head_end; then
+      return new Head(400, head_end, 0, false, head_only);
+    fi
+    // SP HTTP/1.1 CRLF: exact framing, with no extra spaces/tokens.
+    if !byte_equal(bytes, pos, arr[32,72,84,84,80,47,49,46,49,13,10]); then
+      return new Head(400, head_end, 0, false, head_only);
+    fi
+    let int route = 0;
+    if target_size == 7 && byte_equal(bytes, target_start, arr[47,115,104,97,114,101,100]); then
+      route = 1;
+    elif target_size == 9 && byte_equal(bytes, target_start, arr[47,105,115,111,108,97,116,101,100]); then
+      route = 2;
+    elif target_size == 7 && byte_equal(bytes, target_start, arr[47,95,95,115,116,111,112]); then
+      route = 3;
+    else
+      // Only origin form is accepted; invalid targets never reach routing.
+      if bytes.get(target_start) != 47 || (target_size >= 2 && bytes.get(target_start + 1) == 47); then
+        return new Head(400, head_end, 0, false, head_only);
+      fi
+    fi
+    pos = pos + 11;
+    let bool host_seen = false;
+    let bool connection_seen = false;
+    let bool keep_alive = true;
+    loop {
+      if pos >= head_end - 2; then break; fi
+      val int line_start = pos;
+      loop {
+        if pos + 1 >= head_end || (bytes.get(pos) == 13 && bytes.get(pos + 1) == 10); then break; fi
+        pos = pos + 1;
+      }
+      if pos + 1 >= head_end || pos == line_start; then
+        return new Head(400, head_end, 0, false, head_only);
+      fi
+      val int line_size = pos - line_start;
+      if line_size >= 7 && byte_equal(bytes, line_start, arr[72,111,115,116,58,32]); then
+        if host_seen || line_size == 6 || line_size > 261; then
+          return new Head(400, head_end, 0, false, head_only);
+        fi
+        host_seen = true;
+        for (let int x = line_start + 6; x < pos; x = x + 1) {
+          val int c = bytes.get(x);
+          if c < 33 || c > 126 || c == 47 || c == 92 || c == 64; then
+            return new Head(400, head_end, 0, false, head_only);
+          fi
+        }
+      elif line_size == 17 && byte_equal(bytes, line_start, arr[67,111,110,110,101,99,116,105,111,110,58,32,99,108,111,115,101]); then
+        if connection_seen; then return new Head(400, head_end, 0, false, head_only); fi
+        connection_seen = true;
+        keep_alive = false;
+      elif line_size == 22 && byte_equal(bytes, line_start, arr[67,111,110,110,101,99,116,105,111,110,58,32,107,101,101,112,45,97,108,105,118,101]); then
+        if connection_seen; then return new Head(400, head_end, 0, false, head_only); fi
+        connection_seen = true;
+      else
+        // No Content-Length, Transfer-Encoding, obs-fold, duplicate
+        // host/case variants or other unrecognized headers.
+        return new Head(400, head_end, 0, false, head_only);
+      fi
+      pos = pos + 2;
+    }
+    if !host_seen; then return new Head(400, head_end, 0, false, head_only); fi
+    if route == 0; then return new Head(404, head_end, 0, keep_alive, head_only); fi
+    return new Head(200, head_end, route, keep_alive, head_only);
+  }
+
+  // Bounded fixed-response bootstrap; headers/body are emitted as bytes from
+  // Oreslang. No Java HTTP parser, response engine, or socket streams.
+  pub fnc response(int status, bool keep_alive, bool head_only) -> Array<int> {
+    let mut Array<int> out = new Array<int>();
+    if status == 200; then
+      for (const c of arr[72,84,84,80,47,49,46,49,32,50,48,48,32,79,75,13,10]) { out.add(c); }
+    elif status == 404; then
+      for (const c of arr[72,84,84,80,47,49,46,49,32,52,48,52,32,78,111,116,32,70,111,117,110,100,13,10]) { out.add(c); }
+    elif status == 405; then
+      for (const c of arr[72,84,84,80,47,49,46,49,32,52,48,53,32,77,101,116,104,111,100,32,78,111,116,32,65,108,108,111,119,101,100,13,10]) { out.add(c); }
+    elif status == 431; then
+      for (const c of arr[72,84,84,80,47,49,46,49,32,52,51,49,32,82,101,113,117,101,115,116,32,72,101,97,100,101,114,32,70,105,101,108,100,115,32,84,111,111,32,76,97,114,103,101,13,10]) { out.add(c); }
+    else
+      for (const c of arr[72,84,84,80,47,49,46,49,32,52,48,48,32,66,97,100,32,82,101,113,117,101,115,116,13,10]) { out.add(c); }
+    fi
+    if status == 200; then
+      for (const c of arr[67,111,110,116,101,110,116,45,76,101,110,103,116,104,58,32,51,13,10]) { out.add(c); }
+      for (const c of arr[67,111,110,116,101,110,116,45,84,121,112,101,58,32,116,101,120,116,47,112,108,97,105,110,13,10]) { out.add(c); }
+    else
+      for (const c of arr[67,111,110,116,101,110,116,45,76,101,110,103,116,104,58,32,48,13,10]) { out.add(c); }
+    fi
+    if status == 200 && keep_alive; then
+      for (const c of arr[67,111,110,110,101,99,116,105,111,110,58,32,107,101,101,112,45,97,108,105,118,101,13,10]) { out.add(c); }
+    else
+      for (const c of arr[67,111,110,110,101,99,116,105,111,110,58,32,99,108,111,115,101,13,10]) { out.add(c); }
+    fi
+    out.add(13); out.add(10);
+    if status == 200 && !head_only; then
+      out.add(111); out.add(107); out.add(10);
+    fi
+    return out;
+  }
+end
