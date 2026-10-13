@@ -16,6 +16,35 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void rootBufferedResponseTransfersOwnershipAndRejectsRootStreaming() throws Exception {
+        String output = run("""
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              try { request.start(200, "text/plain"); stdio.println("STREAM ACCEPTED"); }
+              catch (err) { stdio.println("stream-rejected"); }
+              val completion = request.completion;
+              val pending = request.respond(401, "text/plain", "denied");
+              try { request.set_header("X-Late", "bad"); stdio.println("OWNER ACCEPTED"); }
+              catch (err) { stdio.println("owner-revoked"); }
+              await pending;
+              stdio.println(await completion);
+              await server.shutdown(1000);
+              stdio.println(server.active);
+              return;
+            }
+            """, port -> {
+                HttpResponse<String> response = request(port, "GET", "/", "");
+                assertEquals(401, response.statusCode());
+                assertEquals("denied", response.body());
+            });
+        assertFalse(output.contains("ACCEPTED"), output);
+        assertTrue(output.contains("stream-rejected"), output);
+        assertTrue(output.contains("owner-revoked"), output);
+        assertTrue(output.contains("401\n0\n"), output);
+    }
+
     @Test void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
             String output = run("""
