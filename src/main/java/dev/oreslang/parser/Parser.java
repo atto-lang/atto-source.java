@@ -2634,6 +2634,16 @@ public final class Parser {
 
         if (check(IDENT)) {
             String name = advance().lexeme();
+            if (match(DOT)) {
+                // A qualified enum case is a nominal constructor pattern,
+                // never a catch-all binding or raw payload comparison.
+                name += "." + consume(IDENT, "expected enum case after '.' in match pattern").lexeme();
+                if (match(AS)) {
+                    // Canonical payload destructuring:
+                    // on Status.Active as (ok, message) -> { ... }
+                    return new Ast.ConstructorPattern(name, List.of(parsePattern()));
+                }
+            }
             if (match(LPAREN)) {
                 List<Ast.Pattern> args = new ArrayList<>();
                 if (!check(RPAREN)) {
