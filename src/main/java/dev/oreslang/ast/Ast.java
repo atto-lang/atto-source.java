@@ -605,7 +605,7 @@ public final class Ast {
      * They deliberately do not encode JVM Class/instanceof semantics.
      */
     public sealed interface Pattern permits WildcardPattern, LiteralPattern, BindingPattern,
-            TypePattern, StructuralPattern, TuplePattern, ConstructorPattern { }
+            TypePattern, StructuralPattern, TuplePattern, ConstructorPattern, RecordPattern { }
 
     public record WildcardPattern() implements Pattern { }
     public record LiteralPattern(Object value) implements Pattern { }
@@ -635,6 +635,28 @@ public final class Ast {
         public ConstructorPattern { arguments = List.copyOf(arguments); }
     }
 
+    /**
+     * Closed record projection within a match pattern, e.g.:
+     *   on Some as {id, name} -> { ... }
+     * The projected fields bind by name; unlike a structural type guard,
+     * a record projection never invokes members or methods.
+     */
+    public record RecordPattern(List<String> fields) implements Pattern {
+        public RecordPattern {
+            fields = List.copyOf(fields);
+            if (fields.isEmpty()) {
+                throw new IllegalArgumentException("record match projection requires a field");
+            }
+            java.util.HashSet<String> names = new java.util.HashSet<>();
+            for (String field : fields) {
+                if (field == null || field.isBlank() || field.equals("_") || !names.add(field)) {
+                    throw new IllegalArgumentException(
+                            "invalid or duplicate match record projection field: " + field);
+                }
+            }
+        }
+    }
+
     public record MatchArm(Pattern pattern, Expr guard, List<Stmt> body) {
         public MatchArm { body = List.copyOf(body); }
     }
@@ -644,8 +666,13 @@ public final class Ast {
      * flag is retained for AST compatibility; canonical source syntax is
      * always ordered and the parser emits true.
      */
-    public record MatchStmt(Expr subject, boolean ordered, List<MatchArm> arms) implements Stmt {
+    public record MatchStmt(
+            Expr subject, boolean ordered, List<MatchArm> arms, boolean explicitDo)
+            implements Stmt {
         public MatchStmt { arms = List.copyOf(arms); }
+        public MatchStmt(Expr subject, boolean ordered, List<MatchArm> arms) {
+            this(subject, ordered, arms, false);
+        }
     }
 
     public record SwitchCase(List<Expr> constants, List<Stmt> body) {
