@@ -4654,6 +4654,9 @@ public final class TypeChecker {
             List<Object> result = new ArrayList<>();
             result.add(List.of());
             for (Type member : tuple.elements()) {
+                // A zero-inhabitant component makes the whole product empty.
+                // Avoid dividing by zero on the next component.
+                if (result.isEmpty()) return List.of();
                 List<Object> choices = finiteAdtWitnesses(member, generics, self, depth + 1);
                 if (choices == null || choices.size() > MAX_ADT_MATCH_WITNESSES / result.size()) {
                     return null;
