@@ -77,6 +77,67 @@ public final class NominalEnumValueGuards {
             return;
         }
 
+        // Construction is a trust boundary, including for host-created
+        // TaggedValue payloads. A syntactically declared u8 must NOT silently
+        // admit 256 merely because the current type IR erases integer width.
+        switch (expected.name()) {
+            case "bool", "Bool", "boolean" -> {
+                if (!expected.arguments().isEmpty() || !(actual instanceof Boolean)) {
+                    throw new IllegalArgumentException("enum bool payload type mismatch");
+                }
+                return;
+            }
+            case "string", "String" -> {
+                if (!expected.arguments().isEmpty() || !(actual instanceof String)) {
+                    throw new IllegalArgumentException("enum string payload type mismatch");
+                }
+                return;
+            }
+            case "int", "i64", "i32", "i16", "i8", "u8", "u16", "u32",
+                    "u64", "uint", "bigint" -> {
+                if (!expected.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("enum integer payload cannot have type arguments");
+                }
+                java.math.BigInteger number;
+                if (actual instanceof java.math.BigInteger big) {
+                    number = big;
+                } else if (actual instanceof Byte || actual instanceof Short
+                        || actual instanceof Integer || actual instanceof Long) {
+                    number = java.math.BigInteger.valueOf(((Number) actual).longValue());
+                } else {
+                    throw new IllegalArgumentException("enum integer payload type mismatch");
+                }
+                int bits = switch (expected.name()) {
+                    case "i8", "u8" -> 8;
+                    case "i16", "u16" -> 16;
+                    case "i32", "u32" -> 32;
+                    case "u64", "uint", "int", "i64" -> 64;
+                    default -> 0;
+                };
+                if (bits > 0) {
+                    boolean unsigned = expected.name().startsWith("u");
+                    java.math.BigInteger lowest = unsigned ? java.math.BigInteger.ZERO
+                            : java.math.BigInteger.ONE.shiftLeft(bits - 1).negate();
+                    java.math.BigInteger highest = java.math.BigInteger.ONE.shiftLeft(
+                            unsigned ? bits : bits - 1).subtract(java.math.BigInteger.ONE);
+                    if (number.compareTo(lowest) < 0 || number.compareTo(highest) > 0) {
+                        throw new IllegalArgumentException("enum " + expected.name()
+                                + " payload out of range");
+                    }
+                }
+                return;
+            }
+            case "float", "f64" -> {
+                if (!expected.arguments().isEmpty()
+                        || !(actual instanceof Float || actual instanceof Double)
+                        || !Double.isFinite(((Number) actual).doubleValue())) {
+                    throw new IllegalArgumentException("enum finite f64 payload type mismatch");
+                }
+                return;
+            }
+            default -> { }
+        }
+
         // The compiler does not yet lower owned Box<T> storage. Do not
         // accidentally treat its source type as a free host object pointer.
         if (expected.name().equals("Box")) {
@@ -110,10 +171,13 @@ public final class NominalEnumValueGuards {
             } finally {
                 visiting.remove(actual);
             }
+            return;
         }
-        // Scalars and non-enum nominal values are statically checked by
-        // TypeChecker; this runtime guard revalidates nominal enum boundaries
-        // only, and makes no claim of a complete dynamically typed codec.
+        // There is no safe dynamic contract for an arbitrary value here.
+        // Never accept a host-injected capability, raw pointer or object as
+        // a value of a compiler-owned enum payload type.
+        throw new IllegalArgumentException("unsupported local enum payload type: "
+                + expected.name());
     }
 
     private static List<Ast.TypeRef> elements(Ast.TypeRef type) {
