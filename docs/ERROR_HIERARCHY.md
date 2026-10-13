@@ -89,8 +89,8 @@ Do not use codes for secure type identity or exception catch admission.
 
 ## Cross-language extension: ten concrete errors
 
-The catalog now has 74 concrete leaf classes and 10 abstract classes (84 classes total).
-The original 74 classes, their names, parents, codes, abstract flags and interface memberships are unchanged.
+The preceding cross-language milestone had 74 concrete leaf classes and 10 abstract classes (84 classes total); the actor-focused milestone below extends that to 88 concrete leaves and 11 abstract classes (99 total).
+The 74 original pre-cross-language classes retain their names, parents, codes and abstract flags. The subsequent actor expansion additively introduces the ActorApiError interface on two existing StateError types, without changing their class parents or numeric codes.
 
 | Name | Parent | Code | Intended meaning |
 | --- | --- | ---: | --- |
