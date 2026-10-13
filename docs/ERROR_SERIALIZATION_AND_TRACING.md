@@ -79,6 +79,34 @@ redaction, quotas and authorization before details can leave the actor
 isolation boundary. Ordinary `to_json` return values are **not**
 safe CONTROL messages.
 
+### Additional serializer attack-surface hardening
+
+The JVM wire encoder now caps nominal display names at **128 ASCII
+characters**. As before, messages are capped at 4,096 UTF-16 code units;
+traces are capped at 64 frames and 256 code units per frame.
+
+Before even calling a list's `size()`, `get()` or `iterator()`, an
+`ErrorSnapshot` verifies that the frame list uses the runtime-owned
+`ArrayList` or JDK immutable-list representation. For trusted local
+snapshot capture, the source object fields must be exactly a JVM
+`HashMap` or `LinkedHashMap` (the production OresObject representation),
+not a subclass or arbitrary `Map` implementation. This prevents
+polymorphic `get()`/`entrySet()`/`size()` implementations from
+executing guest or host callbacks during serialization. Other collection
+implementations **fail closed**, even if they would be harmless.
+
+Text diagnostics escape guest-supplied newlines, carriage returns, tabs,
+ISO control characters, and Unicode bidirectional override/isolate
+characters. Actual line separators between host-controlled stack frames
+remain explicit. The JSON and binary formats retain their existing
+version-1 schemas; these changes do not add serialized fields.
+
+The actor-to-supervisor compact factory must still never read the
+guest-owned `Map`, regardless of its implementation. The source
+runtime-to-supervisor CONTROL integration remains gated pending a
+trusted nominal metadata descriptor, actor-generation fencing,
+supervision provenance, and executable conformance tests.
+
 ## Stack trace as a value
 
 std/tracing exports capture_trace_string(): String and capture_trace_frames(): Array<String>. Both snapshot only active Oreslang callable frames and never allocate Error. Current JVM runtime records synchronous guest call names using a bounded scope stack and owns the returned snapshot. It is independent of Throwable.getStackTrace, does not include Java carrier frames or raw guest receivers, and clears per-thread state when unwinding.
