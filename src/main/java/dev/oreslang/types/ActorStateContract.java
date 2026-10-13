@@ -205,6 +205,16 @@ public final class ActorStateContract {
             visit(lambda.blockBody(), actor, keys, activeAccess, true, instanceMethod, accessMode);
             return;
         }
+        // A live actor-state projection is not yet a compiler-proven owned
+        // snapshot. In particular, rt copy(s.field) must not silently
+        // manufacture an escaping value before typed snapshot lowering.
+        // Unrelated owned rt copy expressions remain permitted.
+        if (node instanceof Ast.RuntimeCallExpr copy && activeAccess != null
+                && copy.operation().equals("copy")
+                && referencesAccess(copy.arguments(), activeAccess)) {
+            throw new IllegalArgumentException(
+                    "actor state-backed rt copy requires verified snapshot lowering");
+        }
         if (node instanceof Ast.RuntimeCallExpr op && activeAccess != null
                 && (op.operation().equals("borrow") || op.operation().equals("borrow_mut")
                     || op.operation().equals("borrowMut") || op.operation().equals("take")
