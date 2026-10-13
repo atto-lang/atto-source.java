@@ -41,9 +41,13 @@ are never updated.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
-checkout**, rejects symbolic links, unsafe source reads and `.git`
-directories, and verifies every uploaded Git blob SHA-1 against the source
-bytes. It checks that the reviewed destination policy has not changed
+checkout**, and walks the source **through directory file descriptors** to
+prevent parent-directory symlink swap races. It rejects symbolic links,
+hardlinks to outside files, FIFOs, `.git` directories, and other unsafe
+filesystem objects. Directory enumeration is bounded to 4,096 entries,
+1,024 directories and a maximum depth of 64. It verifies every uploaded
+Git blob SHA-1 against the source bytes. It checks that the reviewed
+destination policy has not changed
 before every API write, in addition to rechecking the destination's live
 private visibility. It does not print source contents in API failures.
 API failure before ref creation can leave unreferenced Git objects in
