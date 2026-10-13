@@ -313,6 +313,69 @@ final class PatternMatchingHardeningTest {
     }
 
     @Test
+    void numericWideningNeverProvesRuntimeTypeCoverage() {
+        // int -> float is valid assignment widening, but an int value does
+        // not satisfy the runtime float type pattern.
+        IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc classify(int | float value): int {
+                          match value over
+                            on float n -> { return 1; }
+                          end
+                        }
+                        """)));
+        assertTrue(incomplete.getMessage().contains("non-exhaustive match"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc classify(int | float value): int {
+                  match value over
+                    on int n -> { return 1; }
+                    on float n -> { return 2; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
+    void independentlyCompleteArmsMakeLaterFallbackUnreachable() {
+        IllegalArgumentException deadBool = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc bad(bool value): int {
+                          match value over
+                            on true -> { return 1; }
+                            on false -> { return 0; }
+                            on _ -> { return -1; }
+                          end
+                        }
+                        """)));
+        assertTrue(deadBool.getMessage().contains("unreachable match arm"));
+
+        IllegalArgumentException deadOption = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc bad(Option<bool> value): int {
+                          match value over
+                            on Some(true) -> { return 1; }
+                            on Some(false) -> { return 2; }
+                            on None -> { return 0; }
+                            on _ -> { return -1; }
+                          end
+                        }
+                        """)));
+        assertTrue(deadOption.getMessage().contains("unreachable match arm"));
+
+        // A guarded arm does not make an otherwise needed fallback dead.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc good(bool value): int {
+                  match value over
+                    on true when false -> { return 1; }
+                    on false -> { return 0; }
+                    on _ -> { return -1; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
     void switchIsConstantDispatchAndRejectsDuplicateCases() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int value): int {
