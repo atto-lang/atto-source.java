@@ -407,17 +407,25 @@ public final class Ast {
             List<Annotation> annotations,
             Expr initializer,
             boolean mutableReferent,
-            boolean finalDeclaration) implements Decl {
+            boolean finalDeclaration,
+            boolean compileTimeRequired) implements Decl {
         public FieldDecl { annotations = List.copyOf(annotations); }
+        /** Keep explicit-final metadata separate from legacy val bindings. */
+        public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type,
+                         List<Annotation> annotations, Expr initializer,
+                         boolean mutableReferent, boolean finalDeclaration) {
+            this(name, visibility, bindingKind, type, annotations, initializer,
+                    mutableReferent, finalDeclaration, false);
+        }
         /** Legacy val is fixed, but only the explicit final spelling seals inheritance. */
         public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type,
                          List<Annotation> annotations, Expr initializer, boolean mutableReferent) {
-            this(name, visibility, bindingKind, type, annotations, initializer, mutableReferent, false);
+            this(name, visibility, bindingKind, type, annotations, initializer, mutableReferent, false, false);
         }
         public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type,
                          List<Annotation> annotations, Expr initializer) {
             this(name, visibility, bindingKind, type, annotations, initializer,
-                    bindingKind == BindingKind.VAL, false);
+                    bindingKind == BindingKind.VAL, false, false);
         }
         public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type, Expr initializer) {
             this(name, visibility, bindingKind, type, List.of(), initializer);
