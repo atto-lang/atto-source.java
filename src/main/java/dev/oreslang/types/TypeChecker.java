@@ -5082,6 +5082,15 @@ public final class TypeChecker {
             if (patternCoversType(pattern, subject, generics, self)) return true;
         }
 
+        // A finite product/sum can be proven with a bounded constructor
+        // matrix. Every witness is an abstract runtime shape, not a guest
+        // value; guards have already been excluded by the caller.
+        List<Object> witnesses = finiteAdtWitnesses(subject, 0);
+        if (witnesses != null) {
+            return witnesses.stream().allMatch(witness -> patterns.stream().anyMatch(
+                    pattern -> finiteAdtPatternMatches(pattern, witness, subject, generics, self)));
+        }
+
         if (subject instanceof Union union) {
             return union.options().stream().allMatch(option ->
                     patternsProvablyExhaustive(patterns, option, generics, self, depth + 1));
@@ -5132,6 +5141,124 @@ public final class TypeChecker {
         // Open/infinite domains require an irrefutable pattern. More elaborate
         // coverage proofs (e.g. multiple partially covering tuple rows) can
         // be added without weakening this soundness boundary.
+        return false;
+    }
+
+    private static final int MAX_ADT_MATRIX_CASES = 256;
+    private static final int MAX_ADT_MATRIX_DEPTH = 16;
+
+    /** Abstract witnesses: tags are always distinct from identically-shaped payloads. */
+    private record AdtCase(String tag, List<Object> fields) {
+        private AdtCase { fields = List.copyOf(fields); }
+    }
+
+    private record AdtTuple(List<Object> fields) {
+        private AdtTuple { fields = List.copyOf(fields); }
+    }
+
+    /**
+     * Enumerate a small, provably finite domain, returning null when the
+     * domain is open, unknown, recursive, or exceeds the proof budget.
+     * A null result means "cannot prove", not "contains zero values".
+     */
+    private List<Object> finiteAdtWitnesses(Type type, int depth) {
+        if (depth >= MAX_ADT_MATRIX_DEPTH) return null;
+        if (type == Primitive.BOOL) return List.of(Boolean.TRUE, Boolean.FALSE);
+
+        if (type instanceof Named named && named.name().equals("Option")
+                && named.arguments().size() == 1) {
+            List<Object> elements = finiteAdtWitnesses(named.arguments().getFirst(), depth + 1);
+            if (elements == null || elements.size() >= MAX_ADT_MATRIX_CASES) return null;
+            List<Object> values = new ArrayList<>(elements.size() + 1);
+            values.add(new AdtCase("None", List.of()));
+            for (Object element : elements) values.add(new AdtCase("Some", List.of(element)));
+            return List.copyOf(values);
+        }
+
+        if (type instanceof Named named && named.name().equals("Result")
+                && named.arguments().size() == 2) {
+            List<Object> ok = finiteAdtWitnesses(named.arguments().get(0), depth + 1);
+            List<Object> err = finiteAdtWitnesses(named.arguments().get(1), depth + 1);
+            if (ok == null || err == null || ok.size() > MAX_ADT_MATRIX_CASES - err.size()) return null;
+            List<Object> values = new ArrayList<>(ok.size() + err.size());
+            for (Object value : ok) values.add(new AdtCase("Ok", List.of(value)));
+            for (Object value : err) values.add(new AdtCase("Err", List.of(value)));
+            return List.copyOf(values);
+        }
+
+        if (type instanceof Tuple tuple && tuple.kind() == TupleKind.TUPLE) {
+            List<List<Object>> rows = new ArrayList<>();
+            rows.add(List.of());
+            for (Type component : tuple.elements()) {
+                List<Object> values = finiteAdtWitnesses(component, depth + 1);
+                if (values == null || values.isEmpty()
+                        || rows.size() > MAX_ADT_MATRIX_CASES / values.size()) return null;
+                List<List<Object>> expanded = new ArrayList<>(rows.size() * values.size());
+                for (List<Object> row : rows) {
+                    for (Object value : values) {
+                        List<Object> next = new ArrayList<>(row);
+                        next.add(value);
+                        expanded.add(List.copyOf(next));
+                    }
+                }
+                rows = expanded;
+            }
+            List<Object> witnesses = new ArrayList<>(rows.size());
+            for (List<Object> row : rows) witnesses.add(new AdtTuple(row));
+            return List.copyOf(witnesses);
+        }
+        return null;
+    }
+
+    /**
+     * Interpret the AST pattern against a compiler-generated finite witness.
+     * This is a proof checker, not a runtime interpreter. Unknown shapes are
+     * deliberately non-matching so that no unproved coverage is accepted.
+     */
+    private boolean finiteAdtPatternMatches(
+            Ast.Pattern pattern, Object witness, Type subject,
+            Set<String> generics, Type self) {
+        if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.BindingPattern) return true;
+        if (pattern instanceof Ast.LiteralPattern literal) {
+            return java.util.Objects.equals(literal.value(), witness);
+        }
+        if (pattern instanceof Ast.TypePattern || pattern instanceof Ast.StructuralPattern) {
+            // A type/shape predicate is admitted only if the normal checker
+            // already proves it covers the complete static witness type.
+            return patternCoversType(pattern, subject, generics, self);
+        }
+        if (pattern instanceof Ast.TuplePattern tuplePattern
+                && subject instanceof Tuple tuple && witness instanceof AdtTuple value
+                && tuple.kind() == TupleKind.TUPLE
+                && tuple.elements().size() == tuplePattern.elements().size()
+                && value.fields().size() == tuple.elements().size()) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                if (!finiteAdtPatternMatches(
+                        tuplePattern.elements().get(i),
+                        value.fields().get(i), tuple.elements().get(i), generics, self)) return false;
+            }
+            return true;
+        }
+        if (pattern instanceof Ast.ConstructorPattern ctor && witness instanceof AdtCase value
+                && subject instanceof Named named && ctor.constructor().equals(value.tag())
+                && ctor.arguments().size() == value.fields().size()) {
+            List<Type> fieldTypes;
+            if (named.name().equals("Option") && named.arguments().size() == 1) {
+                fieldTypes = value.tag().equals("Some") ? List.of(named.arguments().getFirst())
+                        : value.tag().equals("None") ? List.of() : null;
+            } else if (named.name().equals("Result") && named.arguments().size() == 2) {
+                fieldTypes = value.tag().equals("Ok") ? List.of(named.arguments().get(0))
+                        : value.tag().equals("Err") ? List.of(named.arguments().get(1)) : null;
+            } else {
+                fieldTypes = null;
+            }
+            if (fieldTypes == null || fieldTypes.size() != ctor.arguments().size()) return false;
+            for (int i = 0; i < fieldTypes.size(); i++) {
+                if (!finiteAdtPatternMatches(
+                        ctor.arguments().get(i), value.fields().get(i), fieldTypes.get(i), generics, self)) return false;
+            }
+            return true;
+        }
         return false;
     }
 
