@@ -124,6 +124,37 @@ final class TaggedEnumFrontendTest {
     }
 
     @Test
+    void enumTypeOverloadSignaturesParseButDoNotBypassExecutionGate() {
+        Ast.Program parsed = Parser.parse("""
+                define enum Color as
+                  Red
+                  Blue
+                end
+                define enum Direction as
+                  North
+                  South
+                end
+
+                fnc describe(Color input): int { return 1; }
+                fnc describe(Direction input): int { return 2; }
+                """);
+        assertEquals(4, parsed.modules().getFirst().declarations().size());
+        Ast.FunctionDecl first = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().get(2);
+        Ast.FunctionDecl second = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().get(3);
+        assertEquals("Color", first.parameters().getFirst().type().name());
+        assertEquals("Direction", second.parameters().getFirst().type().name());
+        // Nominal enum types are the future discriminants, never the variant
+        // labels themselves. This source must not silently execute before
+        // tagged values and type-aware overload dispatch are implemented.
+        IllegalArgumentException error =
+                assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertTrue(error.getMessage().contains("not executable"),
+                error.getMessage());
+    }
+
+    @Test
     void nonExecutableEnumsFailClosedInTypeChecker() {
         Ast.Program parsed = Parser.parse("""
                 define enum Expr as
