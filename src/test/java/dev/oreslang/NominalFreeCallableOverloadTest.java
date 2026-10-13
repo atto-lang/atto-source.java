@@ -3,6 +3,9 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.Types;
+import dev.oreslang.types.TaggedMessageContracts;
+import dev.oreslang.types.FreeCallableOverloads;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -200,6 +203,51 @@ final class NominalFreeCallableOverloadTest {
                         fnc dispatch(int value): int { return 2; }
                         """)));
         assertTrue(error.getMessage().contains("already has arity 1"), error::getMessage);
+    }
+
+    @Test
+    void fabricatedDottedTypesDoNotImpersonateRegisteredEnumVariants() {
+        Ast.Program source = Parser.parse("""
+                define enum A { Foo = 1 }
+                define enum B { Foo = 1 }
+                fnc pick(A value): int { return 1; }
+                fnc pick(B value): int { return 2; }
+                """);
+        var enums = TaggedMessageContracts.forTypes(source).enums();
+        java.util.List<Ast.FunctionDecl> candidates = source.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(decl -> decl instanceof Ast.FunctionDecl fn
+                        && fn.name().equals("pick"))
+                .map(decl -> (Ast.FunctionDecl) decl).toList();
+        assertEquals(2, candidates.size());
+        assertEquals("A", FreeCallableOverloads.chooseStatic(
+                candidates, java.util.List.of(new Types.Named("A.Foo", java.util.List.of())),
+                enums, "pick").parameters().getFirst().type().name());
+        assertThrows(IllegalArgumentException.class, () ->
+                FreeCallableOverloads.chooseStatic(candidates,
+                        java.util.List.of(new Types.Named("A.NotARealCase", java.util.List.of())),
+                        enums, "pick"));
+        assertThrows(IllegalArgumentException.class, () ->
+                FreeCallableOverloads.chooseStatic(candidates,
+                        java.util.List.of(new Types.Named("A.Foo.Extra", java.util.List.of())),
+                        enums, "pick"));
+    }
+
+    @Test
+    void qualifiedCallsCannotReachPrivateModuleOverload() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define enum A { Foo = 1 }
+                        define enum B { Foo = 1 }
+                        define module secret as
+                            fnc pick(A a): int { return 1; }
+                            pub fnc pick(B b): int { return 2; }
+                        end
+                        pub routine main(): void {
+                            stdio.stdout.write(secret.pick(A.Foo));
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("must be public"), error::getMessage);
     }
 
     private static String run(String program) throws Exception {
