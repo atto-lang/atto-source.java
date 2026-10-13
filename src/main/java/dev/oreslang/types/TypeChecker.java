@@ -6770,7 +6770,8 @@ public final class TypeChecker {
             requireAssignable(
                     actual,
                     expected,
-                    "argument " + (i + 1));
+                    "argument " + (i + 1),
+                    params.get(i).structural());
         }
 
         Type result = substituteGenerics(resolve(returnRef, unique, callableSelf), bindings);
@@ -7845,7 +7846,36 @@ public final class TypeChecker {
     }
 
     private void requireAssignable(Type actual, Type expected, String where) {
-        if (!assignable(actual, expected)) throw new IllegalArgumentException(where + " has type " + actual + " but expected " + expected);
+        requireAssignable(actual, expected, where, false);
+    }
+
+    /**
+     * A nominal object matching a record *shape* is still a nominal object,
+     * not an owned data-only record. Allow this projection only for an
+     * explicitly borrowed 'structural' parameter. Ordinary assignments,
+     * returns, and by-value record arguments must never launder object
+     * identity into an apparently sendable record.
+     */
+    private void requireAssignable(
+            Type actual, Type expected, String where, boolean explicitStructuralBorrow) {
+        if (!explicitStructuralBorrow && requiresNominalProjection(actual, expected)) {
+            throw new IllegalArgumentException(
+                    where + " cannot implicitly convert a nominal class/interface value into an owned record;"
+                            + " use an explicit structural borrowed parameter or construct an owned data-only struct");
+        }
+        if (!assignable(actual, expected)) {
+            throw new IllegalArgumentException(where + " has type " + actual + " but expected " + expected);
+        }
+    }
+
+    private boolean requiresNominalProjection(Type actual, Type expected) {
+        if (actual instanceof SelfType receiver) {
+            return requiresNominalProjection(receiver.bound(), expected);
+        }
+        if (actual instanceof Union union) {
+            return union.options().stream().anyMatch(option -> requiresNominalProjection(option, expected));
+        }
+        return expected instanceof Record && actual instanceof Named;
     }
 
     private String methodContractKey(String name, int arity, int genericArity) {
