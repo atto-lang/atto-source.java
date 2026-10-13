@@ -2346,6 +2346,12 @@ public final class TypeChecker {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException(name.name() + " does not accept call-site type arguments");
                 }
+                // Zero-payload Ok() is legal only when the expected T is
+                // void. Its inferred type remains Result<void, Unknown>,
+                // so a Result<int,E> target rejects it without coercion.
+                if (name.name().equals("Ok") && call.arguments().isEmpty()) {
+                    return new Named("Result", List.of(Primitive.VOID, Unknown.INSTANCE));
+                }
                 if (call.arguments().size() != 1) {
                     throw new IllegalArgumentException(name.name() + " expects exactly one value");
                 }
@@ -4824,7 +4830,9 @@ public final class TypeChecker {
                 case "None" -> named.name().equals("Option") && named.arguments().size() == 1
                         ? List.of() : null;
                 case "Ok" -> named.name().equals("Result") && named.arguments().size() == 2
-                        ? List.of(named.arguments().get(0)) : null;
+                        ? (named.arguments().get(0) == Primitive.VOID
+                                ? List.of() : List.of(named.arguments().get(0)))
+                        : null;
                 case "Err" -> named.name().equals("Result") && named.arguments().size() == 2
                         ? List.of(named.arguments().get(1)) : null;
                 default -> null;
