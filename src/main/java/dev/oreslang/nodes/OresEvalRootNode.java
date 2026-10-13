@@ -1590,6 +1590,28 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (expressionContainsPotentialSuspension(call.callee(), seen)) return true;
                 if (call.callee() instanceof Ast.MemberExpr member) {
+                    if (member.receiver() instanceof Ast.NameExpr lexicalModule
+                            && modules.containsKey(lexicalModule.name())) {
+                        List<Ast.FunctionDecl> moduleCandidates = nominalCandidates(
+                                lexicalModule.name() + "." + member.member(),
+                                call.arguments().size());
+                        if (moduleCandidates != null) {
+                            // Qualified module calls are also overload families:
+                            // inspecting only instance methods misses a
+                            // suspending implementation in another slot.
+                            for (Ast.FunctionDecl candidate : moduleCandidates) {
+                                if (candidate.generator()) continue;
+                                if (candidate.async() || candidate.suspends()
+                                        || candidate.actorKind() != Ast.ActorKind.NONE)
+                                    return true;
+                                Set<Object> branchSeen = java.util.Collections.newSetFromMap(
+                                        new IdentityHashMap<>());
+                                branchSeen.addAll(seen);
+                                if (functionContainsPotentialSuspension(candidate, branchSeen))
+                                    return true;
+                            }
+                        }
+                    }
                     // Resolve local method families conservatively across
                     // overrides, without turning every builtin call into a task.
                     // Declaration aliases refer to the same AST object. Structural
