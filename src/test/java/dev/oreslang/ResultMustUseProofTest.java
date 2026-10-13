@@ -93,6 +93,39 @@ final class ResultMustUseProofTest {
     }
 
     @Test
+    void nameShadowingCannotDischargeOuterResult() {
+        rejects("""
+                fnc bad(bool flag): void {
+                  val Result<void, String> result = Ok();
+                  if flag; do
+                    val Result<void, String> result = Ok();
+                    match result over
+                      on Ok() -> { stdio.println("inner ok"); }
+                      on Err(message) -> { stdio.println(message); }
+                    end
+                  else
+                    match result over
+                      on Ok() -> { stdio.println("outer ok"); }
+                      on Err(message) -> { stdio.println(message); }
+                    end
+                  fi
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void checkedExtractionIsExplicitHandling() {
+        accepts("""
+                fnc good(): void {
+                  val Result<void, String> result = Ok();
+                  result.unwrap();
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void everyBranchMayPropagateOrHandle() {
         accepts("""
                 fnc good(bool flag): Result<void, String> {
