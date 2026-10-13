@@ -475,6 +475,12 @@ public final class TypeChecker {
             }
         }
 
+        // Names do not affect overload dispatch, but they are part of the
+        // source contract when callers use labeled arguments. Validate the
+        // complete inherited method family, including conflicting diamonds.
+        validateInheritedInterfaceParameterLabels(
+                iface, new LinkedHashMap<>(), new LinkedHashSet<>());
+
         Set<String> memberKeys = new HashSet<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
@@ -500,6 +506,46 @@ public final class TypeChecker {
                 if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
                 resolve(field.type(), generics, null);
             }
+        }
+    }
+
+    private void validateInheritedInterfaceParameterLabels(
+            Ast.InterfaceDecl iface,
+            Map<String, List<String>> inheritedLabels,
+            Set<Ast.InterfaceDecl> visiting) {
+        if (!visiting.add(iface)) {
+            throw new IllegalArgumentException(
+                    "interface inheritance cycle involving '" + iface.name() + "'");
+        }
+        try {
+            for (Ast.TypeRef parentRef : iface.parents()) {
+                Ast.InterfaceDecl parent = findInterface(parentRef.name());
+                if (parent == null) {
+                    throw new IllegalArgumentException(
+                            "unknown parent interface '" + parentRef.name()
+                                    + "' for " + iface.name());
+                }
+                validateInheritedInterfaceParameterLabels(
+                        parent, inheritedLabels, visiting);
+            }
+            for (Ast.InterfaceMember member : iface.members()) {
+                if (!(member instanceof Ast.InterfaceFunctionDecl fn)) continue;
+                String slot = CallableSelector.instance(
+                        fn.name(), fn.parameters().size()).mangledName();
+                List<String> names = fn.parameters().stream()
+                        .map(Ast.Param::name).toList();
+                List<String> previous = inheritedLabels.putIfAbsent(slot, names);
+                if (previous != null && !previous.equals(names)) {
+                    throw new IllegalArgumentException(
+                            "incompatible inherited interface parameter labels for '"
+                                    + iface.name() + "." + fn.name() + "' with arity "
+                                    + fn.parameters().size() + ": inherited "
+                                    + previous + ", declared " + names
+                                    + "; labeled calls require stable parameter names");
+                }
+            }
+        } finally {
+            visiting.remove(iface);
         }
     }
 
