@@ -748,10 +748,15 @@ public final class NativeHttp implements AutoCloseable {
         try { return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString(); }
         catch (CharacterCodingException invalid) { throw new IllegalArgumentException("invalid UTF-8", invalid); }
     }
-    /** Execute an abort cleanup exactly once, including after executor rejection. */
+    /** Keep cleanup off actor carriers even when the runtime executor is closing. */
     static void executeCleanup(Executor executor, Runnable cleanup) {
         try { executor.execute(cleanup); }
-        catch (RejectedExecutionException unavailable) { cleanup.run(); }
+        catch (RejectedExecutionException unavailable) {
+            // Completing a socket close inline could park an actor scheduler
+            // carrier or a deadline timer thread. Use a detached virtual
+            // thread after the I/O pool no longer accepts new work.
+            Thread.ofVirtual().name("ores-http-abort-fallback").start(cleanup);
+        }
     }
 
     private static void reject(HttpExchange raw, int status) {
