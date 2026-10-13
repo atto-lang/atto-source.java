@@ -134,9 +134,11 @@ public final class StaticConstantFolder {
         if (expression instanceof Ast.UnaryExpr unary) {
             Object value = eval(unary.operand(), module);
             return switch (unary.operator()) {
-                case "-" -> value instanceof Long number ? Math.negateExact(number)
-                        : value instanceof Double number ? -number
-                        : invalid("unary - requires a numeric constant");
+                case "-" -> {
+                    if (value instanceof Long number) yield Math.negateExact(number);
+                    if (value instanceof Double number) yield -number;
+                    yield invalid("unary - requires a numeric constant");
+                }
                 case "+" -> value instanceof Number ? value : invalid("unary + requires a numeric constant");
                 case "!" -> value instanceof Boolean flag ? !flag
                         : invalid("unary ! requires a bool constant");
