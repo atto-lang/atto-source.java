@@ -285,7 +285,10 @@ channel_wait_mode
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ call_argument_list ] ")" ;
 call_argument_list = call_argument { "," call_argument } ;
-call_argument   = [ "..." ] expression ;
+call_argument   = [ "..." ] expression | IDENT ":" expression ;
+(* Named value arguments use ':' exclusively. Positional arguments must precede
+   named arguments; spreads and named arguments may not coexist. Named type
+   metadata uses '=' exclusively and is a separate grammar production. *)
 member_suffix   = "." member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
                 | "match" | "matches" | "eq" | "neq" | "is" | "when"
