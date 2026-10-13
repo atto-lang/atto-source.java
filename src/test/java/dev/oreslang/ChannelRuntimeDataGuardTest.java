@@ -166,4 +166,21 @@ final class ChannelRuntimeDataGuardTest {
         assertEquals(List.of("first"), channel.tryRead().orElseThrow());
     }
 
+    @Test
+    void reusedSelectSetResnapshotsEachDeliveryRatherThanSharingReaderMutation() {
+        ChannelRuntime.Channel<Object> channel = new ChannelRuntime.Channel<>(
+                1, ChannelRuntimeDataGuardTest::check, ChannelRuntimeDataGuardTest::snapshot);
+        ArrayList<Object> source = new ArrayList<>(List.of("original"));
+        ChannelRuntime.SelectSet set =
+                ChannelRuntime.SelectSet.of(ChannelRuntime.write(channel, source));
+
+        assertTrue(set.trySelect().isPresent());
+        @SuppressWarnings("unchecked")
+        List<Object> first = (List<Object>) channel.tryRead().orElseThrow();
+        first.set(0, "receiver changed this");
+
+        assertTrue(set.trySelect().isPresent());
+        assertEquals(List.of("original"), channel.tryRead().orElseThrow());
+    }
+
 }
