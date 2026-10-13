@@ -202,6 +202,15 @@ public final class CriticalRwGate implements AutoCloseable {
             FencedLogicalOwner owner = null;
             synchronized (coordinator) {
                 if (state == State.CLOSED || externalCloseRequested) return;
+                // Synchronous host entry has no scheduler unwind barrier.
+                // An unrelated host thread cannot prove the owner's critical
+                // region has exited. Reject external release rather than grant
+                // a conflicting permit while that thread is still executing.
+                if (state == State.GRANTED && domain instanceof Thread thread
+                        && thread != Thread.currentThread()) {
+                    throw new IllegalStateException(
+                            "foreign thread cannot release a live synchronous critical permit");
+                }
                 // A compiler-owned logical task or actor may hold this permit
                 // while guest instructions are executing on another carrier.
                 // In that case, close is a cancellation *request*, not release.
