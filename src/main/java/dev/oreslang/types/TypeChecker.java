@@ -949,8 +949,20 @@ public final class TypeChecker {
             // callback-publishing effects inside the callee.
             return true;
         }
-        if (expr instanceof Ast.NewExpr created)
-            return created.arguments().stream().anyMatch(this::fieldInitializerMaySuspend);
+        if (expr instanceof Ast.NewExpr created) {
+            // Nested construction is itself a transitive initialization
+            // effect. Until class-constructor effect summaries exist, permit
+            // only zero-argument ctorless objects with literal-only fields:
+            // no methods execute, no owned resources are acquired, and no
+            // partially initialized child can escape into user callbacks.
+            if (!created.arguments().isEmpty() || !created.type().arguments().isEmpty())
+                return true;
+            Ast.ClassDecl nested = findClass(created.type().name());
+            if (nested == null || nested.constructor() != null || !nested.parents().isEmpty()
+                    || nested.actorKind() != Ast.ActorKind.NONE) return true;
+            return nested.fields().stream().anyMatch(field ->
+                    !(field.initializer() instanceof Ast.LiteralExpr));
+        }
         if (expr instanceof Ast.MemberExpr member)
             return fieldInitializerMaySuspend(member.receiver());
         if (expr instanceof Ast.IndexExpr indexed)
