@@ -132,6 +132,11 @@ are a separate, outstanding implementation task.
 4. **Borrow lifetime**: projected borrows are lexical loans. No projection
    into an owned tuple/record, async suspension, `await`, `select`, closure
    capture or actor payload may create an untracked escaping borrow.
+   **Current fail-closed restriction:** unpacking a borrowed aggregate into
+   independent locals is rejected unless it is the separately checked
+   immediate-tuple-literal path. Scoped projection leases for general borrowed
+   tuples/records are a future implementation task, not a capability this
+   patch pretends to supply.
 5. **Exhaustiveness**: no guards may be assumed true by default. A tagged
    sum match is exhaustive only when every constructor is covered or there
    is an explicit unguarded fallback. A wildcard does not turn an invalid
