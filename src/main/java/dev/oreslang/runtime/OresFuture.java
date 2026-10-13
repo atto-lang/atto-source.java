@@ -256,10 +256,25 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public static <T> OresFuture<T> from(CompletionStage<? extends T> stage) {
         Objects.requireNonNull(stage, "stage");
-        Runnable cancelHook = stage instanceof Future<?> cancellable
-                ? () -> cancellable.cancel(true)
-                : () -> { };
-        OresFuture<T> result = new OresFuture<>(cancelHook);
+        // A host future may carry a linear resource (such as a MutexGuard).
+        // Do not publish OresFuture cancellation unless the producer accepted
+        // it: after a physical handoff, GuardFuture.cancel() returns false.
+        // An arbitrary CompletionStage with no cancellation claim must not
+        // discard a later successful resource-bearing result.
+        BooleanSupplier cancelAdmission = stage instanceof Future<?> cancellable
+                ? () -> {
+                    try {
+                        return cancellable.cancel(true);
+                    } catch (UnsupportedOperationException unsupported) {
+                        // CompletableFuture.minimalCompletionStage() is a
+                        // Future<?> but deliberately refuses cancel(). A
+                        // host stage lacking cancellation authority must
+                        // never drop a later linear-resource result.
+                        return false;
+                    }
+                }
+                : () -> false;
+        OresFuture<T> result = new OresFuture<>(cancelAdmission, () -> { });
         stage.whenComplete((value, failure) -> {
             if (failure == null) {
                 result.completeFromRuntime(value);
@@ -267,12 +282,25 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             }
 
             Throwable terminalFailure = unwrap(failure);
-            boolean cancelled = stage instanceof Future<?> hostFuture
-                    ? hostFuture.isCancelled()
-                    : terminalFailure instanceof CancellationException;
+            // MinimalStage implements Future yet forbids isCancelled(), just
+            // as it forbids cancel(). Falling back to the observed terminal
+            // failure is safe here: this callback was invoked only AFTER the
+            // producer actually completed, and no ownership is discarded.
+            boolean cancelled;
+            if (stage instanceof Future<?> hostFuture) {
+                try {
+                    cancelled = hostFuture.isCancelled();
+                } catch (UnsupportedOperationException unsupported) {
+                    cancelled = terminalFailure instanceof CancellationException;
+                }
+            } else {
+                cancelled = terminalFailure instanceof CancellationException;
+            }
 
             if (cancelled) {
-                result.cancel(false);
+                // The host has ALREADY settled cancellation. Do not invoke its
+                // cancellation claim again from its completion callback.
+                result.cancelFromProducer();
             } else {
                 result.failFromRuntime(terminalFailure);
             }
@@ -449,6 +477,13 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return waiters.size();
     }
 
+    /** Reflect an independently cancelled host stage without re-entering its
+     * cancellation callback or claiming a foreign producer twice. */
+    private boolean cancelFromProducer() {
+        return settle(new Cancelled(
+                new CancellationException("host CompletionStage was cancelled")), () -> { });
+    }
+
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
         if (state.get() != PENDING) return false;
@@ -460,7 +495,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         // block terminal notification. isCancelled() becomes visible at the
         // successful state CAS; guest/producer authority must then be removed
         // before ordinary host completion callbacks are entered.
-        return settle(new Cancelled(cancelled), this::invokeCancelHook);
+        boolean claimed = settle(new Cancelled(cancelled), this::invokeCancelHook);
+        // A host CompletionStage may synchronously notify its cancellation
+        // callback while cancelAdmission is still running. If that producer
+        // already settled us as cancelled, the consumer's claim still succeeded.
+        return claimed || isCancelled();
     }
 
     @Override
