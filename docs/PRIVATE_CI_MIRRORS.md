@@ -12,9 +12,9 @@ Before any Git blob/tree creation, branch creation containing source, commit, ar
 
        python3 scripts/ci_private_mirror_preflight.py \
          --source ores-truffle-oreslang/oreslang-source.java \
-         --source-id <PINNED_SOURCE_REPOSITORY_ID> \
-         --destination <AUTHORIZED_PRIVATE_CARRIER_FULL_NAME> \
-         --destination-id <PINNED_DESTINATION_REPOSITORY_ID>
+         --source-id "$PINNED_SOURCE_REPOSITORY_ID" \
+         --destination "$AUTHORIZED_PRIVATE_CARRIER_FULL_NAME" \
+         --destination-id "$PINNED_DESTINATION_REPOSITORY_ID"
 
 4. Treat missing credentials, 404/403, network failures, redirects, public/internal/unknown visibility, mismatched identities or malformed metadata as hard failures. NO source-transfer operations are permitted after denial.
 5. Recheck before each source-transfer batch and immediately after. This preflight is not atomic with Git writes; enforce organizational controls against visibility changes during transfer and use a dedicated private carrier.
