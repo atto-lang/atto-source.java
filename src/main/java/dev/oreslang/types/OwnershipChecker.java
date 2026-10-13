@@ -128,6 +128,10 @@ public final class OwnershipChecker {
     }
 
     private Ast.ClassDecl initializingClass;
+    // A deliberately conservative one-write constructor ledger. A later CFG
+    // refinement may permit mutually exclusive writes, but this checker must
+    // never permit a fixed slot to be assigned twice along a path.
+    private Set<String> constructorFixedFieldWrites;
 
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.FieldDecl field : klass.fields()) {
@@ -150,11 +154,15 @@ public final class OwnershipChecker {
                 scope.define(param.name(), stateForParam(param));
             }
             defineImplicitArguments(scope, constructor.parameters());
+            Ast.ClassDecl previousInitializingClass = initializingClass;
+            Set<String> previousFixedWrites = constructorFixedFieldWrites;
             initializingClass = klass;
+            constructorFixedFieldWrites = new HashSet<>();
             try {
                 checkBlock(constructor.body(), scope, Ast.TypeRef.simple("void"));
             } finally {
-                initializingClass = null;
+                initializingClass = previousInitializingClass;
+                constructorFixedFieldWrites = previousFixedWrites;
             }
             scope.close();
         }
@@ -1875,12 +1883,21 @@ public final class OwnershipChecker {
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
                 if (field == null) throw error("unknown field '" + member.member() + "' on " + klass.name());
-                if (field.bindingKind() != Ast.BindingKind.LET
-                        && !(field.initializer() == null
+                if (field.bindingKind() != Ast.BindingKind.LET) {
+                    boolean initializingFixedSlot =
+                            field.initializer() == null
                             && klass == initializingClass
                             && member.receiver() instanceof Ast.NameExpr name
-                            && name.name().equals("self"))) {
-                    throw error("field '" + klass.name() + "." + member.member() + "' is immutable; declare the field with let to permit mutation");
+                            && name.name().equals("self");
+                    if (!initializingFixedSlot) {
+                        throw error("field '" + klass.name() + "." + member.member()
+                                + "' is immutable; declare the field with let to permit mutation");
+                    }
+                    if (constructorFixedFieldWrites == null
+                            || !constructorFixedFieldWrites.add(member.member())) {
+                        throw error("field '" + klass.name() + "." + member.member()
+                                + "' is immutable; constructor must initialize it at most once");
+                    }
                 }
             }
             ensureMutableReceiver(member.receiver(), scope, "field '" + member.member() + "'");
