@@ -90,10 +90,9 @@ final class NativeNioTcpKernel implements AutoCloseable {
         if (timeoutMillis == 0) selector.selectNow();
         else selector.select(timeoutMillis);
         int count = 0;
-        for (Iterator<SelectionKey> it = selector.selectedKeys().iterator(); it.hasNext(); ) {
+        for (Iterator<SelectionKey> it = selector.selectedKeys().iterator(); it.hasNext() && count < tokens.length; ) {
             SelectionKey key = it.next();
             it.remove();
-            if (count == tokens.length) break; // bounded result; caller will repoll.
             if (!key.isValid()) continue;
             tokens[count] = (long) key.attachment();
             operations[count] = key.readyOps();
