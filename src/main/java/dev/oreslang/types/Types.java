@@ -152,16 +152,17 @@ public final class Types {
 
         if (from instanceof Borrow source && to instanceof Borrow target) {
             if (target.mutable() && !source.mutable()) return false;
-            return isAssignable(source.target(), target.target()) && isAssignable(target.target(), source.target());
+            // No type-changing alias through a loan. Bidirectional assignability
+            // is NOT type equality: Unknown/Generic can satisfy both directions.
+            // Shared-borrow covariance needs an explicit lifetime/variance proof.
+            return source.target().equals(target.target());
         }
 
         if (from instanceof Named source && to instanceof Named target && source.name().equals(target.name())) {
-            if (source.arguments().size() != target.arguments().size()) return false;
-            for (int i = 0; i < source.arguments().size(); i++) {
-                Type a = source.arguments().get(i), b = target.arguments().get(i);
-                if (!isAssignable(a, b) || !isAssignable(b, a)) return false;
-            }
-            return true;
+            // Until a declaration explicitly proves variance, generic
+            // instantiations are invariant. Unknown/Generic inference is not
+            // representation equivalence or permission to mutate storage.
+            return source.arguments().equals(target.arguments());
         }
 
         if (from instanceof Record source && to instanceof Record target) {
@@ -200,14 +201,23 @@ public final class Types {
         }
 
         if (from instanceof ListType source && to instanceof ListType target) {
-            return isAssignable(source.element(), target.element()) && isAssignable(target.element(), source.element());
+            // Lists are mutable and cannot alias storage with a substituted
+            // element type, including Unknown and unresolved generics.
+            return source.element().equals(target.element());
         }
 
         if (from instanceof Tuple source && to instanceof Tuple target) {
             if (source.kind() != target.kind()) return false;
             if (source.elements().size() != target.elements().size()) return false;
             for (int i = 0; i < source.elements().size(); i++) {
-                if (!isAssignable(source.elements().get(i), target.elements().get(i))) return false;
+                // Tuple projection does not synthesize numeric conversions.
+                // Fixed arrays/lists are writable; those require invariance.
+                Type a = source.elements().get(i), b = target.elements().get(i);
+                if (source.kind() != TupleKind.TUPLE) {
+                    if (!a.equals(b)) return false;
+                } else if (!isRepresentationallyReadable(a, b)) {
+                    return false;
+                }
             }
             return true;
         }
