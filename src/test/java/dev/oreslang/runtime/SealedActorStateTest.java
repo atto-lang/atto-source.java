@@ -100,6 +100,36 @@ final class SealedActorStateTest {
             assertThrows(IllegalStateException.class, () -> state.get().critical(s -> s.read("count")));
         }
     }
+    @Test void stateConstructionRequiresCurrentOwnerNotJustActorId() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var other = runtime.<Integer>spawnShared(() -> (mail, ctx) -> { });
+            // An ActorId is not permission to initialize that actor's state.
+            assertThrows(SecurityException.class,
+                    () -> new SealedActorState(other.id(),
+                            Map.of("items", "List[int]"),
+                            Map.of("items", new java.util.ArrayList<>(
+                                    java.util.List.of(1L)))));
+            var checked = new CountDownLatch(1);
+            var failure = new AtomicReference<Throwable>();
+            var testActor = runtime.<Integer>spawnShared(() -> (mail, ctx) -> {
+                try {
+                    assertThrows(SecurityException.class,
+                            () -> new SealedActorState(other.id(),
+                                    Map.of("items", "List[int]"),
+                                    Map.of("items", new java.util.ArrayList<>(
+                                            java.util.List.of(1L)))));
+                } catch (Throwable error) {
+                    failure.set(error);
+                } finally {
+                    checked.countDown();
+                }
+            });
+            testActor.send(1);
+            assertTrue(checked.await(15, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+        }
+    }
+
     @Test void flatIntegerListsAreDetachedAtEveryActorStateBoundary() throws Exception {
         var failure = new AtomicReference<Throwable>();
         var finished = new CountDownLatch(1);
