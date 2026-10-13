@@ -32,6 +32,8 @@ public final class CriticalRwGate implements AutoCloseable {
     // by a distinct gate-local monitor: an unrelated tenant's gate must not
     // contend on one process-global admission/queue monitor.
     private static final Object DOMAIN_COORDINATOR = new Object();
+    private static final java.util.concurrent.atomic.AtomicInteger WAITING_COUNT =
+            new java.util.concurrent.atomic.AtomicInteger();
     private final Object coordinator = new Object();
     public static final int MAX_ACTIVE_READERS = MAX_WAITERS;
 
@@ -281,7 +283,7 @@ public final class CriticalRwGate implements AutoCloseable {
     }
 
     public static int waitingLogicalDomains() {
-        synchronized (DOMAIN_COORDINATOR) { return DOMAINS.size(); }
+        return WAITING_COUNT.get();
     }
 
     public int activeReaderCount() {
