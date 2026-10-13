@@ -49,6 +49,60 @@ final class OresMutexCarrierSafetyTest {
     }
 
     @Test
+    void pendingAsyncMutexFutureRejectsBlockingJoinGetAndTimedGetOnScheduler()
+            throws Exception {
+        var shared = OresMutex.shared(5);
+        try (var owner = shared.lock()) {
+            try (var scheduler = new OresScheduler(1)) {
+                assertTrue(scheduler.startSync(() -> {
+                    var pending = shared.lockAsync();
+                    assertFalse(pending.isDone());
+                    assertThrows(OresMutex.WrongMutexDomainException.class, pending::join);
+                    assertThrows(OresMutex.WrongMutexDomainException.class, pending::get);
+                    assertThrows(OresMutex.WrongMutexDomainException.class,
+                            () -> pending.get(1, TimeUnit.SECONDS));
+                    assertThrows(java.util.concurrent.TimeoutException.class,
+                            () -> pending.get(0, TimeUnit.SECONDS));
+                    assertTrue(pending.cancel(false));
+                    return true;
+                }).join());
+                assertEquals(13, scheduler.startSync(() -> 13).join());
+            }
+        }
+    }
+
+    @Test
+    void asyncSharedMutexGuardCannotEscapeItsOwningSchedulerTask() throws Exception {
+        var shared = OresMutex.shared(31);
+        var resume = new OresFuture<Void>();
+        var acquired = new CountDownLatch(1);
+        var guard = new AtomicReference<OresMutex.Guard<Integer>>();
+        try (var scheduler = new OresScheduler(1)) {
+            var owner = scheduler.start(turn -> {
+                if (turn.initial()) {
+                    var ready = shared.lockAsync();
+                    assertTrue(ready.isDone());
+                    guard.set(ready.join());
+                    acquired.countDown();
+                    return OresScheduler.await(resume);
+                }
+                assertEquals(31, guard.get().value());
+                guard.get().release();
+                return OresScheduler.done(57);
+            });
+            assertTrue(acquired.await(5, TimeUnit.SECONDS));
+            assertTrue(scheduler.startSync(() -> {
+                assertThrows(OresMutex.WrongMutexDomainException.class,
+                        () -> guard.get().value(),
+                        "an async guard must not be exposed to another task on one carrier");
+                return true;
+            }).join());
+            assertTrue(resume.completeFromRuntime(null));
+            assertEquals(57, owner.join());
+        }
+    }
+
+    @Test
     void sharedMutexGuardRemainsBoundToLogicalTaskAcrossAwaitAndNotCarrier()
             throws Exception {
         var shared = OresMutex.shared(17);
@@ -74,6 +128,9 @@ final class OresMutexCarrierSafetyTest {
                         "a different logical task cannot steal the guard on the same carrier");
                 assertTrue(shared.tryLock().isEmpty());
                 assertTrue(shared.lockFor(Duration.ZERO).isEmpty());
+                assertThrows(OresMutex.WrongMutexDomainException.class,
+                        () -> shared.recover(value -> value),
+                        "contended SharedMutex recovery cannot park the scheduler");
                 return true;
             }).join());
             assertTrue(resume.completeFromRuntime(null));
