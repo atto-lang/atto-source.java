@@ -21,6 +21,33 @@ final class WithStateCapabilityContractTest {
     private static final String WRITE =
         "self.handle_state(critical |s| -> { s.v = s.v + 1; return s.v; })";
 
+    @Test void emptyCallbackStillRequiresMatchingWithLoanEffect() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { return 7; })",
+            "self.handle_state(critical read |s| -> { return 7; })",
+            "using state.read(|s| -> { return 7; })",
+            "using state.read(critical read |s| -> { return 7; })"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                () -> DeclaredEffectVerifier.verify(Parser.parse(actor("with state.write", callback))),
+                "READ loan requires declared state.read even without field reads: " + callback);
+            assertDoesNotThrow(() ->
+                DeclaredEffectVerifier.verify(Parser.parse(actor("with state.read", callback))));
+        }
+        for (String callback : new String[] {
+            "self.handle_state(critical |s| -> { return 7; })",
+            "self.handle_state(critical write |s| -> { return 7; })",
+            "using state.write(critical |s| -> { return 7; })",
+            "using state.write(critical write |s| -> { return 7; })"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                () -> DeclaredEffectVerifier.verify(Parser.parse(actor("with state.read", callback))),
+                "WRITE loan requires declared state.write even without field writes: " + callback);
+            assertDoesNotThrow(() ->
+                DeclaredEffectVerifier.verify(Parser.parse(actor("with state.write", callback))));
+        }
+    }
+
     @Test void readDefaultWithExplicitEffect() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(actor("with state.read", READ))));
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(
