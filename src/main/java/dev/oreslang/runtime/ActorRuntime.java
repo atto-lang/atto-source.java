@@ -7356,6 +7356,7 @@ public final class ActorRuntime implements AutoCloseable {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<AutoCloseable> revoke;
+            List<AutoCloseable> retractQueued;
             boolean ownsRevocation;
             boolean deferRevocation = false;
             synchronized (lifecycleLock) {
@@ -7383,15 +7384,32 @@ public final class ActorRuntime implements AutoCloseable {
                     if (deferRevocation) {
                         resourceRevocationDeferred = true;
                         revoke = List.of();
+                        // Queued admissions have no active guest protection to
+                        // preserve. Retract them now; held grants remain fenced
+                        // until physical carrier exit.
+                        retractQueued = List.copyOf(ownedResources);
                     } else {
                         revoke = List.copyOf(ownedResources);
                         ownedResources.clear();
+                        retractQueued = List.of();
                     }
                 } else {
                     revoke = List.of();
+                    retractQueued = List.of();
                 }
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
+            }
+
+            // An actor can be inside a different critical section while one
+            // of its asynchronous admissions is still queued. Remove those
+            // waiters promptly without ever closing a concurrent grant.
+            // Both the pending-only decision and its removal occur atomically
+            // under the gate coordinator, outside the actor lifecycle lock.
+            for (AutoCloseable resource : retractQueued) {
+                if (resource instanceof CriticalGate.Ticket ticket) {
+                    ticket.retractPendingAtStop();
+                }
             }
 
             // Closing a ticket settles Futures and can invoke callbacks.
