@@ -5421,6 +5421,21 @@ public final class OresEvalRootNode extends RootNode {
          * still enforced by the compiler. A separate transport-level check is
          * needed before allowing untrusted direct ChannelRuntime API callers.
          */
+        private Object createGuestTypedChannel(
+                List<Object> args, Ast.TypeRef declaredPayloadType) {
+            requireOne(args, "Channel.new<T>");
+            if (!(args.getFirst() instanceof Number number)) {
+                throw new IllegalArgumentException("Channel.new<T> capacity must be an integer");
+            }
+            int capacity = Math.toIntExact(number.longValue());
+            // Retain the explicit compile-time type in this channel's sealed
+            // runtime validator. A host value must satisfy the exact declared
+            // shape before it can enter a buffer or a select registration.
+            return new ChannelRuntime.Channel<>(
+                    capacity,
+                    value -> requireChannelTypedDataValue(declaredPayloadType, value));
+        }
+
         /**
          * Channel.new<T> retains its source T at runtime. The first traversal
          * rejects executable/host/actor objects and cycles; the second proves
@@ -9309,20 +9324,6 @@ public final class OresEvalRootNode extends RootNode {
     private record HostClassFacade(String className, Object symbol, boolean constructible) { }
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
-    }
-    private Object createGuestTypedChannel(
-            List<Object> args, Ast.TypeRef declaredPayloadType) {
-        requireOne(args, "Channel.new<T>");
-        if (!(args.getFirst() instanceof Number number)) {
-            throw new IllegalArgumentException("Channel.new<T> capacity must be an integer");
-        }
-        int capacity = Math.toIntExact(number.longValue());
-        // Retain the explicit compile-time type in this channel's sealed
-        // runtime validator. A host value must satisfy the exact declared
-        // shape before it can enter a buffer or a select registration.
-        return new ChannelRuntime.Channel<>(
-                capacity,
-                value -> requireChannelTypedDataValue(declaredPayloadType, value));
     }
 
     private static final class ChannelFactory {
