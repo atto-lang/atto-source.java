@@ -105,6 +105,11 @@ public final class NativeHttp implements AutoCloseable {
         public boolean isolated() { return kind == ActorRuntime.ActorKind.PRIVATE; }
         public long workersCreated() { return created.get(); }
         public long workersReused() { return reused.get(); }
+        public int workersInflight() {
+            int total = 0;
+            for (Set<State> outstanding : inFlight.values()) total += outstanding.size();
+            return total;
+        }
         public synchronized int workersAlive() {
             int count = 0;
             for (var worker : workers) if (worker != null && context.actors().isAlive(worker)) count++;
