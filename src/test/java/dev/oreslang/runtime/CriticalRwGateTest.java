@@ -266,6 +266,61 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void foreignCloseCannotReleaseRunningSchedulerWriterBeforeCarrierUnwind()
+            throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch exitGuest = new CountDownLatch(1);
+        AtomicReference<CriticalRwGate.Ticket> active = new AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                var writer = gate.newCriticalTicket();
+                active.set(writer);
+                writer.enterAsync();
+                entered.countDown();
+                if (!exitGuest.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("guest writer was never released");
+                }
+                assertTrue(writer.isHeld(),
+                        "foreign cancellation released WRITE while guest was executing");
+                return OresScheduler.done(9);
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var writer = active.get();
+                writer.releaseOnCompletion(task);
+                var nextReader = gate.newTicket(CriticalRwGate.Mode.READ);
+                nextReader.enterAsync();
+                assertFalse(nextReader.isHeld());
+
+                // This call is made on the host, not by the owning scheduler
+                // continuation. It must cancel the owner and defer release.
+                writer.close();
+                writer.close();
+                assertTrue(writer.isHeld(), "foreign close released active WRITE");
+                assertFalse(task.isDone(), "task completed before guest unwind");
+                assertFalse(nextReader.isHeld(), "reader overtook live writer");
+                exitGuest.countDown();
+
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while ((!task.isCancelled() || writer.isHeld() || !nextReader.isHeld())
+                        && System.nanoTime() < deadline) Thread.yield();
+                assertTrue(task.isCancelled(), "foreign close must cancel owning task");
+                assertFalse(writer.isHeld(), "writer ticket leaked after task terminal");
+                assertTrue(nextReader.isHeld(), "reader was not admitted after unwind");
+                nextReader.close();
+                assertEquals(0, gate.queuedCount());
+                assertEquals(0, gate.activeReaderCount());
+            } finally {
+                exitGuest.countDown();
+            }
+        } finally {
+            exitGuest.countDown();
+            gate.close();
+        }
+    }
+
+    @Test
     void sameLogicalContinuationCannotUpgradeOrNestWhileUnverified() {
         CriticalRwGate gate = new CriticalRwGate();
         try (OresScheduler scheduler = new OresScheduler(1)) {
