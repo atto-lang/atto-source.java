@@ -48,7 +48,10 @@ final class TypedExceptionalEffectAdmissionTest {
             }
             Ast.Program duck = Parser.parse("""
                     import class Error from "std/error";
-                    define class Pretender as
+                    define interface ErrorLike as
+                      fnc code() => int;
+                    end
+                    define class Pretender implements ErrorLike as
                       pub code(): int { return 5; }
                     end
                     fnc bad(): void { %s new Pretender(); }
