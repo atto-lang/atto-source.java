@@ -6,6 +6,7 @@ on:
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/run-in-private-ci-destination.sh'
       - '.github/private-ci-approved-repositories.txt'
+      - '.github/CODEOWNERS'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
   push:
     paths:
@@ -13,6 +14,7 @@ on:
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/run-in-private-ci-destination.sh'
       - '.github/private-ci-approved-repositories.txt'
+      - '.github/CODEOWNERS'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
 permissions:
   contents: read
