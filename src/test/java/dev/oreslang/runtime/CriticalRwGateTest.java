@@ -434,6 +434,70 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void actorStopCannotReleaseSharedWriterUntilPhysicalTurnUnwinds() throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        CountDownLatch writerEntered = new CountDownLatch(1);
+        CountDownLatch releaseTurn = new CountDownLatch(1);
+        AtomicReference<Throwable> actorFailure = new AtomicReference<>();
+        AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+        CriticalRwGate.Ticket reader = null;
+        Thread stopThread = null;
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    var writer = gate.newCriticalTicket();
+                    assertTrue(writer.enterAsync().isDone());
+                    assertTrue(writer.isHeld());
+                    writerEntered.countDown();
+                    assertTrue(releaseTurn.await(5, TimeUnit.SECONDS),
+                            "test never released the active actor turn");
+                } catch (Throwable failure) {
+                    actorFailure.compareAndSet(null, failure);
+                } finally {
+                    writerEntered.countDown();
+                }
+            });
+            actor.send("hold");
+            assertTrue(writerEntered.await(5, TimeUnit.SECONDS));
+            assertNull(actorFailure.get());
+            assertTrue(gate.hasWriter());
+
+            // Independent host-owned reader must remain behind the writer even
+            // after STOP admission, until the original guest turn has exited.
+            reader = gate.newTicket(CriticalRwGate.Mode.READ);
+            OresFuture<Void> waiting = reader.enterAsync();
+            assertFalse(waiting.isDone());
+            stopThread = Thread.ofVirtual().start(() -> {
+                try {
+                    runtime.stop(actor);
+                } catch (Throwable failure) {
+                    stopFailure.compareAndSet(null, failure);
+                }
+            });
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (runtime.isAlive(actor) && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertFalse(runtime.isAlive(actor), "host STOP was never admitted");
+            assertTrue(gate.hasWriter(),
+                    "STOP must not unlock a shared critical domain while guest code runs");
+            assertFalse(waiting.isDone(),
+                    "queued reader cannot execute until writer's carrier unwinds");
+            assertEquals(1, gate.queuedCount());
+        } finally {
+            releaseTurn.countDown();
+            if (stopThread != null) stopThread.join(5_000);
+            if (reader != null) reader.close();
+            gate.close();
+        }
+        assertNull(actorFailure.get());
+        assertNull(stopFailure.get());
+        assertFalse(gate.hasWriter());
+        assertEquals(0, gate.trackedTicketCount());
+    }
+
+    @Test
     void actorStopRevokesAlreadyGrantedRWWriterAndFacadeOwnership() throws Exception {
         CriticalRwGate gate = new CriticalRwGate();
         java.util.concurrent.CountDownLatch admitted = new java.util.concurrent.CountDownLatch(1);
