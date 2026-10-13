@@ -2497,6 +2497,21 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /**
+         * A failed loop resumption is not permission to replay the next
+         * iteration. Actor cancellation and native fatal control signals
+         * remain terminal; ordinary failures are delivered to the enclosing
+         * flow, which performs for-of iterator cleanup before publication.
+         */
+        private SourceFlow sourceLoopResumeFailure(Throwable failure) {
+            Throwable cause = OresFuture.unwrap(
+                    Objects.requireNonNull(failure, "failure"));
+            if (cause instanceof Error terminal) throw terminal;
+            if (cause instanceof java.util.concurrent.CancellationException cancellation)
+                throw cancellation;
+            return SourceFlow.throwing(cause);
+        }
+
         private void runForSuspendable(
                 SourceTask task,
                 Ast.ForStmt loop,
@@ -2591,7 +2606,7 @@ public final class OresEvalRootNode extends RootNode {
                                         (resumed, ignored, failure) -> {
                                             if (failure != null) {
                                                 continuation.accept(
-                                                        resumed, SourceFlow.throwing(failure));
+                                                        resumed, sourceLoopResumeFailure(failure));
                                                 return;
                                             }
                                             runForIteration(resumed, loop, loopEnv, continuation);
@@ -2613,7 +2628,7 @@ public final class OresEvalRootNode extends RootNode {
                                                         (resumed, ignoredResumeValue, failure2) -> {
                                                             if (failure2 != null) {
                                                                 continuation.accept(resumed,
-                                                                        SourceFlow.throwing(failure2));
+                                                                        sourceLoopResumeFailure(failure2));
                                                                 return;
                                                             }
                                                             runForIteration(
@@ -2649,7 +2664,7 @@ public final class OresEvalRootNode extends RootNode {
                                     (resumed, ignored, failure) -> {
                                         if (failure != null) {
                                             continuation.accept(
-                                                    resumed, SourceFlow.throwing(failure));
+                                                    resumed, sourceLoopResumeFailure(failure));
                                             return;
                                         }
                                         runLoopSuspendable(resumed, loop, env, continuation);
@@ -2814,7 +2829,7 @@ public final class OresEvalRootNode extends RootNode {
                                         if (failure != null) {
                                             // The enclosing continuation closes the iterable.
                                             continuation.accept(
-                                                    resumed, SourceFlow.throwing(failure));
+                                                    resumed, sourceLoopResumeFailure(failure));
                                             return;
                                         }
                                         runForOfIteration(
@@ -2883,7 +2898,7 @@ public final class OresEvalRootNode extends RootNode {
                                         if (failure != null) {
                                             // The enclosing continuation closes the iterable.
                                             continuation.accept(
-                                                    resumed, SourceFlow.throwing(failure));
+                                                    resumed, sourceLoopResumeFailure(failure));
                                             return;
                                         }
                                         runForOfDestructureIteration(
