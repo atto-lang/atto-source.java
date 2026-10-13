@@ -1184,6 +1184,17 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr ns
+                && ns.name().equals("Symbol")
+                && scope.lookup("Symbol") == null
+                && findClass("Symbol") == null
+                && !modules.contains("Symbol")
+                && (member.member().equals("process") || member.member().equals("stable"))
+                && call.arguments().size() == 1) {
+            checkExpr(call.arguments().getFirst(), scope, false);
+            return new ValueInfo(Ast.TypeRef.simple("Symbol"), ValueKind.COPY, null);
+        }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
@@ -3123,6 +3134,10 @@ public final class OwnershipChecker {
                 && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
+        if (concrete.name().equals("Map") && findClass("Map") == null
+                && concrete.arguments().size() == 2) {
+            return concrete.arguments().get(1);
+        }
         if (concrete.isTupleType() && !concrete.arguments().isEmpty()) {
             Ast.TypeRef first = concrete.arguments().getFirst();
             boolean same = concrete.arguments().stream().allMatch(first::equals);
@@ -3378,6 +3393,7 @@ public final class OwnershipChecker {
         if (value instanceof Long) return Ast.TypeRef.simple("int");
         if (value instanceof Double) return Ast.TypeRef.simple("float");
         if (value instanceof String) return Ast.TypeRef.simple("String");
+        if (value instanceof Ast.Symbol) return Ast.TypeRef.simple("Symbol");
         if (value instanceof Ast.Imaginary) return Ast.TypeRef.simple("complex");
         return Ast.TypeRef.inferred();
     }
