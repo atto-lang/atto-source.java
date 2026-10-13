@@ -113,24 +113,48 @@ public final class SymbolPropertyKeyCodec {
     }
 
     /**
+     * Immutable, detached export manifest. Its package-private constructor
+     * prevents a guest-facing decoder API from accepting an ad hoc mutable
+     * allowlist. The actor runtime must authenticate recipient scope before
+     * constructing/passing one of these trusted snapshots.
+     */
+    static final class ExportManifest {
+        private final java.util.Map<AdmissionScope, Set<OresSymbol>> scopes;
+
+        ExportManifest(java.util.Map<AdmissionScope, Set<OresSymbol>> source) {
+            Objects.requireNonNull(source, "export manifest");
+            java.util.Map<AdmissionScope, Set<OresSymbol>> frozen =
+                    new java.util.LinkedHashMap<>();
+            for (var entry : source.entrySet()) {
+                AdmissionScope scope = Objects.requireNonNull(entry.getKey(), "export scope");
+                Set<OresSymbol> exports = Set.copyOf(
+                        Objects.requireNonNull(entry.getValue(), "Symbol exports"));
+                frozen.put(scope, exports);
+            }
+            this.scopes = java.util.Map.copyOf(frozen);
+        }
+
+        boolean permits(AdmissionScope receivingScope, OresSymbol symbol) {
+            return scopes.getOrDefault(receivingScope, Set.of()).contains(symbol);
+        }
+    }
+
+    /**
      * Default fail-closed untrusted ingress. Userland exports are indexed by
      * the exact receiver (tenant, endpoint, protocol), never a global public
-     * flag or an unscoped set. The runtime must supply the authentic receiving
-     * scope and a trusted, immutable manifest snapshot; source code must not
-     * construct its own authority scope.
+     * flag or a mutable unscoped set.
      */
     static Object decodeForUntrusted(
             byte[] input,
             AdmissionScope receivingScope,
-            java.util.Map<AdmissionScope, Set<OresSymbol>> scopedExports) {
+            ExportManifest manifest) {
         Objects.requireNonNull(receivingScope, "receiving scope");
-        Objects.requireNonNull(scopedExports, "scoped export manifest");
+        Objects.requireNonNull(manifest, "trusted export manifest");
         Object key = decode(input);
-        if (key instanceof OresSymbol symbol && !symbol.publicToUntrustedCoreV1()) {
-            Set<OresSymbol> exported = scopedExports.getOrDefault(receivingScope, Set.of());
-            if (exported == null || !exported.contains(symbol)) {
-                throw new SecurityException("Symbol key is not exported to recipient scope");
-            }
+        if (key instanceof OresSymbol symbol
+                && !symbol.publicToUntrustedCoreV1()
+                && !manifest.permits(receivingScope, symbol)) {
+            throw new SecurityException("Symbol key is not exported to recipient scope");
         }
         return key;
     }
