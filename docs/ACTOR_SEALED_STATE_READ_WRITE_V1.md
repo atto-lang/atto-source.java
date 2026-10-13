@@ -244,3 +244,28 @@ pass the shape checker.
 Private exact-source [Java 21 JUnit CI #38330707512](https://github.com/agent-pontifex/agent-pontifex-daemon/actions/runs/38330707512)
 passed 20/20 targeted JUnit tests plus independent native gate/sanitizer
 checks. No end-to-end `Counter` binary is yet supported.
+
+## Re-audit: typed scalar effects and exceptional arithmetic (2026-10-12)
+
+The first Java `ActorStateLoanShapeChecker.analyze` now derives a field-level
+`LoanEffects(reads, writes)` result and a conservative internal expression
+type. The *verified shape subset* is **int/bool only**, not all potentially
+Copy numeric types. The checker rejects incompatible state initializers,
+wrongly typed writer assignments, mixed operand types, unsupported unary
+operations and division/remainder. These restrictions are intentional:
+otherwise a syntactic "pure" expression might silently require conversions
+or raise division errors without a proven state-loan unwind path.
+
+The shape checker can still accept int arithmetic that may overflow under
+a future checked-integer contract; **it does not prove a callback cannot
+throw/raise/panic**. This field-effect summary MUST NOT be substituted for
+an exception-effect analysis, a method `using state.read/write` row proof,
+borrow/alias analysis, or an executable scheduler-admission authorization.
+
+New negative parser/JUnit coverage was committed for incompatible scalar
+types, bool/int confusion and unchecked division, plus positive bool reads.
+The previous 23/23 JUnit green run predates these edits. A new private
+runner attempt completed without executing any steps because Actions capacity
+was unavailable. Treat these additions as **committed but unverified** until
+an exact-source Java 21 run executes the new JUnit suite and AOT semantics.
+`TypeChecker` and `OwnershipChecker` continue to fail closed.
