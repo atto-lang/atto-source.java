@@ -20,6 +20,17 @@ ownership/escape/liveness parity and not LLVM guest Result execution.
 - If/else and ordered match paths are joined conservatively. An early
   return with a pending Result fails; final fallthrough with a pending
   Result fails.
+- Function and concrete class-method parameters of type `Result<void,E>`
+  must also be discharged. A wildcard-only or Ok-plus-wildcard match
+  is **not** a discharge proof: an unguarded explicit Ok arm and Err
+  arm are required, as well as the normal exhaustive-match proof.
+- Fresh `Result<void,E>` temporaries may not be passed into untyped
+  call sinks; references to named Results may be inspected without
+  losing the originating pending obligation.
+- Nested Result obligations inside container/Option/tuple/record/union
+  types are rejected until recursive tracking exists. Class/actor
+  fields and module bindings storing Result obligations are likewise
+  rejected until storage lifetime obligations are modeled.
 - A new binding or match pattern shadowing a pending Result is rejected
   rather than allowing false handling of the unrelated inner value.
 - Direct binding/return erasure from `Result<void,E>` to an unrelated
@@ -31,8 +42,10 @@ ownership/escape/liveness parity and not LLVM guest Result execution.
 ## Deliberate limitations
 
 This is *not* yet a whole-program affine must-use proof:
-- Only local `Result<void,E>` obligations, not non-void `Result<T,E>`,
-  parameters, globals, class/actor fields or nested generic payloads.
+- Local and direct parameter `Result<void,E>` obligations only.
+  Non-void `Result<T,E>` must-use, globals, class/actor fields and
+  nested generic payloads are not yet supported and require their
+  own tracking (untracked void-Result storage now rejects).
 - Indirect propagation through aliases, function arguments, destructuring,
   callbacks and complicated expression trees has not been certified.
 - Unsupported control-flow shapes fail closed with an explicit diagnostic
