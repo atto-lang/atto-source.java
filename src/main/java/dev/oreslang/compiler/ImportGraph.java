@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.parser.Parser;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
