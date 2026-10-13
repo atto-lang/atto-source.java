@@ -1556,7 +1556,10 @@ public final class Parser {
             throw error(peek(), "typed exceptional effect '" + peek().lexeme()
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
-        if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
+        if (looksLikeStaticSelectStatement()) {
+            if (!check(DO)) throw error(peek(), "bare static select statement is forbidden; use do select or return select");
+            return parseStaticSelectStatement();
+        }
         if (check(DO) && checkNext(MATCH)) {
             advance();
             consume(MATCH, "expected 'match' after 'do'");
@@ -1675,8 +1678,12 @@ public final class Parser {
             return new Ast.ForStmt(null, condition, null, parseLoopBody());
         }
         if (match(IF)) return parseIf();
-        if (match(MATCH)) return parseMatch(false);
-        if (match(SWITCH)) return parseSwitch();
+        if (check(DO) && checkNext(SWITCH)) {
+            advance(); advance(); return parseSwitch();
+        }
+        if (check(MATCH) || check(SWITCH)) {
+            throw error(peek(), "bare match/switch statement is forbidden; use do or value-returning forms");
+        }
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
