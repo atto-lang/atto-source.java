@@ -57,7 +57,8 @@ public final class Parser {
 
             if (match(CLASS)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
-                consume(DEFINE, "compatibility class declaration requires both 'class' and 'define'");
+                // 'define' is optional; the old 'class ... define' order remains accepted.
+                if (match(DEFINE)) modifiers = mergeModifiers(modifiers, parseModifiers());
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
                 validateClassModifiers(modifiers);
@@ -132,7 +133,14 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, or trait after 'define'");
+                if (match(TYPE)) {
+                    modifiers = mergeModifiers(modifiers, parseModifiers());
+                    validateOnlyVisibilityModifiers(modifiers, "type aliases");
+                    rejectCallableStructuralAnnotation(annotations, "type aliases");
+                    rootDeclarations.add(parseTypeAlias(modifiers.visibility));
+                    continue;
+                }
+                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -241,7 +249,8 @@ public final class Parser {
 
         if (match(CLASS)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
-            consume(DEFINE, "compatibility class declaration requires both 'class' and 'define'");
+            // 'define' is optional; retain the legacy class-first permutation.
+            if (match(DEFINE)) modifiers = mergeModifiers(modifiers, parseModifiers());
             modifiers = mergeModifiers(modifiers, parseModifiers());
             rejectCallableStructuralAnnotation(annotations, "class declarations");
             validateClassModifiers(modifiers);
@@ -295,7 +304,13 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 return parseInterface(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, or trait after 'define'");
+            if (match(TYPE)) {
+                modifiers = mergeModifiers(modifiers, parseModifiers());
+                validateOnlyVisibilityModifiers(modifiers, "type aliases");
+                rejectCallableStructuralAnnotation(annotations, "type aliases");
+                return parseTypeAlias(modifiers.visibility);
+            }
+            throw error(previous(), "expected class, interface, trait, or type after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -373,9 +388,10 @@ public final class Parser {
             return parseInterface(modifiers.visibility);
         }
         if (match(TYPE)) {
-            validateNoModifiers(modifiers, "type aliases");
+            modifiers = mergeModifiers(modifiers, parseModifiers());
+            validateOnlyVisibilityModifiers(modifiers, "type aliases");
             rejectCallableStructuralAnnotation(annotations, "type aliases");
-            return parseTypeAlias();
+            return parseTypeAlias(modifiers.visibility);
         }
         if (isBindingKind(peek().type())) {
             validateOnlyVisibilityModifiers(modifiers, "module bindings");
@@ -960,8 +976,8 @@ public final class Parser {
 
         Ast.TypeRef returnType = parseReturnType(annotations);
         // An abstract class may declare required slots as `name(args): Type;`.
-        // Such signatures are implicitly public and abstract unless visibility
-        // was explicitly specified. Their identity is still name + arity only.
+        // Such signatures are abstract, but remain private unless explicitly pub.
+        // Their identity is still name + arity only.
         // Outside abstract classes, a stray semicolon is never a method body.
         boolean implicitAbstract = check(SEMICOLON) && !mods.isAbstract && enclosingAbstractClass;
         if (check(SEMICOLON) && !mods.isAbstract && !enclosingAbstractClass) {
@@ -973,9 +989,7 @@ public final class Parser {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else body = parseBlock();
-        Ast.Visibility visibility = implicitAbstract && !mods.visibilitySeen
-                ? Ast.Visibility.PUBLIC : mods.visibility;
-        return new Ast.MethodDecl(name, visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
+        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body);
     }
 
@@ -991,13 +1005,13 @@ public final class Parser {
         return consumeCallableName("expected method name (methods omit 'fnc')");
     }
 
-    private Ast.TypeAliasDecl parseTypeAlias() {
+    private Ast.TypeAliasDecl parseTypeAlias(Ast.Visibility visibility) {
         String name = consume(IDENT, "expected type alias name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(EQUAL, "expected '=' in type alias");
         Ast.TypeRef target = parseTypeRef();
         consumeStatementTerminator("type alias should end with ';'");
-        return new Ast.TypeAliasDecl(name, generics, target);
+        return new Ast.TypeAliasDecl(name, visibility, generics, target);
     }
 
     private List<Ast.Annotation> parseAnnotations() {
