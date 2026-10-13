@@ -107,6 +107,11 @@ public final class PipelineControlPlaneContractTest {
         PipelineController controller = new PipelineController(original, engine);
         PipelineRunner first = controller.start();
         check(first.generation() == 1 && engine.actorsConstructed == 3, "first generation");
+        // Mock engines must fail closed unless they explicitly attest the
+        // bound nominal result domain, without consuming ingress credit.
+        failed(first.sendExpected(5, "Signal.Result"));
+        check(controller.state() == PipelineController.State.RUNNING,
+                "unattested expected reply corrupted controller admission");
         CompletionStage<Object> result = first.send(5);
         result.toCompletableFuture().complete("forged delivery");
         failed(first.send(6));
