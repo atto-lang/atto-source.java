@@ -81,6 +81,8 @@ final class TypedOverloadResolverTest {
                 Domain.MODULE, "library.pick", List.of(directions), candidates).declaration());
         assertThrows(IllegalArgumentException.class, () -> TypeKey.nominalEnum("Color"));
         assertThrows(IllegalArgumentException.class, () -> TypeKey.nominalEnum("Color."));
+        assertThrows(IllegalArgumentException.class, () -> TypeKey.nominalEnum("module..Color"));
+        assertThrows(IllegalArgumentException.class, () -> TypeKey.nominalEnum(".Color"));
     }
 
     @Test
