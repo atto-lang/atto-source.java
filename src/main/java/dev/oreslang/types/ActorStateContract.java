@@ -247,6 +247,27 @@ public final class ActorStateContract {
                 throw new IllegalArgumentException(
                         "actor state-backed reference call requires verified no-escape lowering");
             }
+            // Destructuring and for-of bind new locals just as a plain
+            // BindingStmt does. They cannot smuggle a live actor-owned
+            // container/element reference into ordinary lexical variables.
+            if (node instanceof Ast.DestructureStmt destructure
+                    && containsReferenceBearingStateProjection(
+                            destructure.initializer(), activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state-backed reference destructure requires verified snapshot lowering");
+            }
+            if (node instanceof Ast.ForOfStmt loop
+                    && containsReferenceBearingStateProjection(
+                            loop.iterable(), activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state-backed reference iteration requires verified snapshot lowering");
+            }
+            if (node instanceof Ast.ForOfDestructureStmt loop
+                    && containsReferenceBearingStateProjection(
+                            loop.iterable(), activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state-backed reference iteration requires verified snapshot lowering");
+            }
         }
         // The state mode is a capability; using never upgrades read.
         if (activeAccess != null && accessMode == Ast.CriticalMode.READ
