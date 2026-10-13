@@ -9,6 +9,151 @@ import org.junit.jupiter.api.Test;
 
 final class CriticalRwGateTest {
     @Test
+    void foreignFutureCompletionKeepsRWWrapperAndWriterUntilCarrierExit() throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        OresFuture<Void> completedElsewhere = new OresFuture<>();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicReference<CriticalRwGate.Ticket> ticketRef = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            try {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        var writer = gate.newCriticalTicket();
+                        ticketRef.set(writer);
+                        assertTrue(writer.enterAsync().isDone());
+                        writer.releaseOnCompletion(completedElsewhere);
+                        entered.countDown();
+                        assertTrue(release.await(5, TimeUnit.SECONDS));
+                        assertTrue(writer.isHeld(),
+                                "completion from another thread must not revoke live grant");
+                    } catch (Throwable error) {
+                        failure.compareAndSet(null, error);
+                    } finally {
+                        entered.countDown();
+                    }
+                });
+                actor.send("hold");
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertNull(failure.get());
+                var pending = gate.newTicket(CriticalRwGate.Mode.READ);
+                var admission = pending.enterAsync();
+                assertFalse(admission.isDone());
+                Thread callback = Thread.ofVirtual().start(
+                        () -> completedElsewhere.completeFromRuntime(null));
+                callback.join(5_000);
+                assertFalse(callback.isAlive());
+                assertTrue(ticketRef.get().isHeld());
+                assertEquals(2, gate.trackedTicketCount(),
+                        "RW wrapper ownership must survive deferred release");
+                assertEquals(1, runtime.trackedActorResourceCount(actor));
+                assertFalse(admission.isDone());
+                release.countDown();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while ((!admission.isDone() || gate.trackedTicketCount() != 1)
+                        && System.nanoTime() < deadline) Thread.onSpinWait();
+                assertTrue(admission.isDone());
+                assertTrue(pending.isHeld());
+                assertFalse(ticketRef.get().isHeld());
+                assertEquals(1, gate.trackedTicketCount());
+                assertEquals(0, runtime.trackedActorResourceCount(actor));
+                pending.close();
+                runtime.stop(actor);
+            } finally {
+                release.countDown();
+            }
+        }
+        assertNull(failure.get());
+        assertEquals(0, gate.trackedTicketCount());
+        assertFalse(gate.hasWriter());
+    }
+
+    @Test
+    void simultaneousForeignCloseCompletionAndDomainStopRemainIdempotent()
+            throws Exception {
+        for (int trial = 0; trial < 24; trial++) {
+            CriticalRwGate gate = new CriticalRwGate();
+            OresFuture<Void> completedElsewhere = new OresFuture<>();
+            CountDownLatch guestEntered = new CountDownLatch(1);
+            CountDownLatch leaveGuest = new CountDownLatch(1);
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicReference<CriticalRwGate.Ticket> owned = new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                Thread stop = null;
+                Thread close = null;
+                Thread complete = null;
+                try {
+                    var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                        try {
+                            var writer = gate.newCriticalTicket();
+                            owned.set(writer);
+                            assertTrue(writer.enterAsync().isDone());
+                            writer.releaseOnCompletion(completedElsewhere);
+                            guestEntered.countDown();
+                            assertTrue(leaveGuest.await(5, TimeUnit.SECONDS));
+                            assertTrue(writer.isHeld());
+                        } catch (Throwable error) {
+                            failure.compareAndSet(null, error);
+                        } finally {
+                            guestEntered.countDown();
+                        }
+                    });
+                    actor.send("hold");
+                    assertTrue(guestEntered.await(5, TimeUnit.SECONDS));
+                    var next = gate.newTicket(CriticalRwGate.Mode.READ);
+                    var queued = next.enterAsync();
+                    stop = Thread.ofVirtual().start(() -> {
+                        try { start.await(); runtime.stop(actor); }
+                        catch (Throwable error) { failure.compareAndSet(null, error); }
+                    });
+                    close = Thread.ofVirtual().start(() -> {
+                        try {
+                            start.await();
+                            owned.get().close();
+                            gate.close();
+                        } catch (Throwable error) { failure.compareAndSet(null, error); }
+                    });
+                    complete = Thread.ofVirtual().start(() -> {
+                        try {
+                            start.await();
+                            completedElsewhere.completeFromRuntime(null);
+                        } catch (Throwable error) { failure.compareAndSet(null, error); }
+                    });
+                    start.countDown();
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (runtime.isAlive(actor) && System.nanoTime() < deadline)
+                        Thread.onSpinWait();
+                    assertFalse(runtime.isAlive(actor), "STOP must admit promptly");
+                    assertTrue(owned.get().isHeld(),
+                            "parallel foreign release cannot revoke executing writer");
+                    leaveGuest.countDown();
+                    stop.join(5_000);
+                    close.join(5_000);
+                    complete.join(5_000);
+                    assertFalse(stop.isAlive());
+                    assertFalse(close.isAlive());
+                    assertFalse(complete.isAlive());
+                    assertTrue(queued.isDone());
+                    assertFalse(next.isHeld());
+                    assertFalse(owned.get().isHeld());
+                    assertEquals(0, gate.trackedTicketCount());
+                    assertEquals(0, runtime.trackedActorResourceCount(actor));
+                } finally {
+                    leaveGuest.countDown();
+                    if (stop != null) stop.join(5_000);
+                    if (close != null) close.join(5_000);
+                    if (complete != null) complete.join(5_000);
+                    gate.close();
+                }
+            }
+            assertNull(failure.get(), "race trial " + trial);
+            assertEquals(0, CriticalRwGate.waitingLogicalDomains());
+        }
+    }
+
+    @Test
     void idleDomainCloseBlocksNewTurnDuringExternalObserver() throws Exception {
         CriticalGate gate = new CriticalGate();
         CountDownLatch firstTurn = new CountDownLatch(1);
