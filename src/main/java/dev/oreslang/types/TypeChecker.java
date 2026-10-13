@@ -44,6 +44,11 @@ public final class TypeChecker {
     // A name+arity slot may have an explicitly disjoint nominal enum/primitive
     // family; all members are validated before any call is type-checked.
     private final Map<String, Map<Integer, List<Ast.FunctionDecl>>> nominalFunctionFamilies = new HashMap<>();
+    // Each selected same-arity overload is bound to the *source call AST*.
+    // Runtime executes this exact declaration, never a different match based
+    // on mutable runtime values or unverified imported type metadata.
+    private final IdentityHashMap<Ast.CallExpr, Ast.FunctionDecl> resolvedFreeCalls =
+            new IdentityHashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
@@ -77,8 +82,17 @@ public final class TypeChecker {
     private final List<String> warnings = new ArrayList<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
-    public record TypeCheckResult(Ast.Program program, List<String> warnings) {
-        public TypeCheckResult { warnings = List.copyOf(warnings); }
+    public record TypeCheckResult(
+            Ast.Program program, List<String> warnings,
+            Map<Ast.CallExpr, Ast.FunctionDecl> resolvedFreeCalls) {
+        public TypeCheckResult {
+            warnings = List.copyOf(warnings);
+            resolvedFreeCalls = java.util.Collections.unmodifiableMap(
+                    new IdentityHashMap<>(resolvedFreeCalls));
+        }
+        public TypeCheckResult(Ast.Program program, List<String> warnings) {
+            this(program, warnings, Map.of());
+        }
     }
     /** The one explicit struct literal currently permitted to omit declared fields. */
     private Ast.ObjectExpr permittedPartialStructInitializer;
@@ -104,7 +118,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings);
+        return new TypeCheckResult(program, checker.warnings, checker.resolvedFreeCalls);
     }
 
     private void validateImports(Ast.Program program) {
@@ -202,7 +216,7 @@ public final class TypeChecker {
 
     /** Choose by statically known tag; ordinary type/loan/effect validation follows. */
     private Ast.FunctionDecl selectFreeFunction(String key, int arity, List<Ast.Expr> arguments,
-            Env env, Set<String> generics, Type self) {
+            Env env, Set<String> generics, Type self, Ast.CallExpr callSite) {
         Map<Integer, List<Ast.FunctionDecl>> family = nominalFunctionFamilies.get(key);
         List<Ast.FunctionDecl> candidates = family == null ? null : family.get(arity);
         if (candidates == null || candidates.isEmpty()) return null;
@@ -215,8 +229,10 @@ public final class TypeChecker {
         List<Type> tags = new ArrayList<>(arguments.size());
         for (Ast.Expr argument : arguments)
             tags.add(deref(typeOf(argument, env, generics, self)));
-        return FreeCallableOverloads.chooseStatic(
+        Ast.FunctionDecl chosen = FreeCallableOverloads.chooseStatic(
                 candidates, tags, taggedMessages.enums().keySet(), key);
+        resolvedFreeCalls.put(callSite, chosen);
+        return chosen;
     }
 
     private static <T> void putQualified(Map<String, T> map, Set<String> ambiguous, String module, String name, T value, String kind) {
@@ -2097,7 +2113,7 @@ public final class TypeChecker {
                         call.arguments(), env, generics, self,
                         "function " + functionName.name());
                 Ast.FunctionDecl target = selectFreeFunction(
-                        functionName.name(), arity, call.arguments(), env, generics, self);
+                        functionName.name(), arity, call.arguments(), env, generics, self, call);
                 if (target != null) {
                     rejectImplicitClassCallable(functionName.name());
                     if (target.actorKind() != Ast.ActorKind.NONE
@@ -2136,7 +2152,7 @@ public final class TypeChecker {
                         "function " + namespace.name() + "." + qualifiedCall.member());
                 Ast.FunctionDecl target = selectFreeFunction(
                         namespace.name() + "." + qualifiedCall.member(),
-                        arity, call.arguments(), env, generics, self);
+                        arity, call.arguments(), env, generics, self, call);
                 if (target != null) {
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
