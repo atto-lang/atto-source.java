@@ -7477,16 +7477,50 @@ public final class ActorRuntime implements AutoCloseable {
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
                     MessageEnvelope envelope;
+                    ActorFailureNotice controlNotice = null;
                     synchronized (lifecycleLock) {
-                        // Stop closes the user mailbox under this same lock.
+                        // Stop, CONTROL admission and user-mail admission are
+                        // serialized against each other on the actor lifecycle.
                         if (stopped.get() || finalized) break;
 
-                        // Continuations always outrank user mail. While a
-                        // source receive is suspended, user mail is not runnable.
-                        envelope = continuationMailbox.tryRead().orElse(null);
-                        if (envelope == null && !sourceReceiveSuspended) {
-                            envelope = mailbox.tryRead().orElse(null);
+                        // CONTROL outranks both continuations and user mail,
+                        // except when a source receive retains an exclusive
+                        // state loan across suspension. Its continuation must
+                        // restore the loan before any supervisor callback.
+                        if (!sourceReceiveSuspended) {
+                            controlNotice = childControl.poll().orElse(null);
                         }
+                        if (controlNotice == null) {
+                            envelope = continuationMailbox.tryRead().orElse(null);
+                            if (envelope == null && !sourceReceiveSuspended) {
+                                envelope = mailbox.tryRead().orElse(null);
+                            }
+                        } else {
+                            envelope = null;
+                        }
+                    }
+                    if (controlNotice != null) {
+                        // Invoke ONLY on the parent actor's exclusive carrier;
+                        // never on the failed child's finalization carrier.
+                        if (codeExecutor != null) {
+                            @SuppressWarnings("unchecked")
+                            ActorContext<Object> typedContext =
+                                    (ActorContext<Object>) (ActorContext<?>) context;
+                            codeExecutor.onChildFailure(
+                                    codeActorType, codeActorState, controlNotice, typedContext);
+                        } else {
+                            behavior.onChildFailure(controlNotice, context);
+                        }
+                        synchronized (lifecycleLock) {
+                            // If this callback stopped the parent, terminateTree
+                            // has already transferred the in-flight slot to root.
+                            if (!stopped.get()) {
+                                childControl.ack(controlNotice.actor());
+                                rootSupervisionControl.retireGracefully(controlNotice.actor());
+                            }
+                        }
+                        processed++;
+                        continue;
                     }
                     if (envelope == null) break;
                     releaseMailboxSlot(envelope.isContinuation());
