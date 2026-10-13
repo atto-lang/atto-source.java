@@ -155,6 +155,54 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void blockingChannelAndSelectCannotArmUnderLiveMutexGuard() {
+        // These must fail promptly instead of creating pending channel
+        // waiters or consuming a message while a no-yield guard is live.
+        for (String operation : new String[] {
+                "readch pipe;",
+                "writech pipe, 7;",
+                "select { case readch pipe: val item { } }"
+        }) {
+            RuntimeException rejected = assertThrows(RuntimeException.class,
+                    () -> run("""
+                            define class Counter as
+                              pub let int value = 0;
+                            end
+                            pub async routine main(): void {
+                              val mutex = Mutex.new(new Counter());
+                              val Channel<int> pipe = Channel.new<int>(0);
+                              val guard = mutex.lock();
+                            """ + operation + """
+                              guard.release();
+                              return;
+                            }
+                            """), operation);
+            assertTrue(rejected.getMessage().contains("MutexGuard"),
+                    operation + ": " + rejected.getMessage());
+        }
+    }
+
+    @Test
+    void blockingChannelReadWriteRemainUsableAfterReleasingMutex()
+            throws Exception {
+        assertEquals("7", run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val Channel<int> pipe = Channel.new<int>(1);
+                  val guard = mutex.lock();
+                  guard.value = 7;
+                  guard.release();
+                  writech pipe, 7;
+                  stdio.stdout.write(readch pipe);
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void explicitRtCooperateCannotSuspendALiveMutexGuard() {
         RuntimeException error = assertThrows(RuntimeException.class, () -> run("""
                 define class Counter as
