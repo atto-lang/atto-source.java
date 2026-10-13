@@ -226,9 +226,20 @@ public final class TypeChecker {
                     "nominal-overloaded callable '" + key + "' requires explicit fixed arguments;"
                     + " spread lowering must preserve static slot identity");
         }
+        // Inspect argument types without committing their definite-field
+        // initialization effects. checkGenericCallable will type-check these
+        // expressions once against the selected declaration and commit the
+        // actual state transitions. Otherwise selection + checking could
+        // initialize or consume a loan twice.
+        Map<Env.Binding, Set<String>> beforeSelection = env.initializationSnapshot();
         List<Type> tags = new ArrayList<>(arguments.size());
-        for (Ast.Expr argument : arguments)
-            tags.add(deref(typeOf(argument, env, generics, self)));
+        try {
+            for (Ast.Expr argument : arguments) {
+                tags.add(deref(typeOf(argument, env, generics, self)));
+            }
+        } finally {
+            env.restoreInitialization(beforeSelection);
+        }
         Ast.FunctionDecl chosen = FreeCallableOverloads.chooseStatic(
                 candidates, tags, taggedMessages.enums(), key);
         resolvedFreeCalls.put(callSite, chosen);
