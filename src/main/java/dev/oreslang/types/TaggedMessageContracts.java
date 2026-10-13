@@ -84,7 +84,7 @@ public final class TaggedMessageContracts {
                 || type.isRepeatExact() || type.isRepeatMany()) return false;
         String name = type.name();
         if (Set.of("u8", "i8", "u16", "i16", "u32", "i32", "u64", "uint",
-                "bigint", "f32").contains(name)) {
+                "bigint").contains(name)) {
             return type.arguments().isEmpty();
         }
         if (Set.of("bool", "Bool", "boolean", "int", "i64", "float",
