@@ -6984,8 +6984,74 @@ public final class ActorRuntime implements AutoCloseable {
                     physicalExitCallbacks.addLast(callback);
                     return;
                 }
+                // An idle actor can still have a queued scheduler dispatch.
+                // Publish the same cleanup lease *before* releasing the
+                // lifecycle monitor so that its next guest turn cannot race
+                // resource revocation on this foreign host thread.
+                physicalExitCleanupActive = true;
             }
-            callback.run(); // idle actor: never invoke callbacks under lifecycleLock
+            Error fatal = drainPhysicalExitCallbacks(List.of(callback));
+            if (fatal instanceof VirtualMachineError vm) throw vm;
+            if (fatal instanceof ThreadDeath death) throw death;
+            if (fatal instanceof LinkageError linkage) throw linkage;
+        }
+
+        /**
+         * Drain all physical-exit callbacks under one logical cleanup lease.
+         * External closes may append more callbacks while this drains; both
+         * scheduler admission and DONE remain fenced until the last callback
+         * has finished. Never execute callbacks under the lifecycle monitor.
+         */
+        private Error drainPhysicalExitCallbacks(List<Runnable> initial) {
+            Error fatalClose = null;
+            List<Runnable> batch = initial;
+            boolean finished = false;
+            boolean reschedule = false;
+            try {
+                while (true) {
+                    for (Runnable close : batch) {
+                        try {
+                            close.run();
+                        } catch (Throwable failure) {
+                            // A bad observer must not prevent remaining grants
+                            // from being revoked. Record actor-terminal failure.
+                            try {
+                                fail(failure);
+                            } catch (VirtualMachineError | ThreadDeath | LinkageError error) {
+                                if (fatalClose == null) fatalClose = error;
+                                else if (fatalClose != error) fatalClose.addSuppressed(error);
+                            }
+                            if (failure instanceof Error error) {
+                                if (fatalClose == null) fatalClose = error;
+                                else if (fatalClose != error) fatalClose.addSuppressed(error);
+                            }
+                        }
+                    }
+                    synchronized (lifecycleLock) {
+                        if (physicalExitCallbacks.isEmpty()) {
+                            physicalExitCleanupActive = false;
+                            finished = true;
+                            if (stopped.get()) finalizeStopLocked();
+                            reschedule = !stopped.get()
+                                    && !forceKillFenced && !closed.get()
+                                    && !finalized && hasQueuedWorkLocked();
+                            lifecycleLock.notifyAll();
+                            break;
+                        }
+                        batch = List.copyOf(physicalExitCallbacks);
+                        physicalExitCallbacks.clear();
+                    }
+                }
+            } finally {
+                if (!finished) {
+                    synchronized (lifecycleLock) {
+                        physicalExitCleanupActive = false;
+                        lifecycleLock.notifyAll();
+                    }
+                }
+            }
+            if (reschedule) schedule();
+            return fatalClose;
         }
 
         private void runBatch(Object dispatchTicket) {
@@ -7006,7 +7072,8 @@ public final class ActorRuntime implements AutoCloseable {
                     // Prevent obsolete queued runnables impersonating the
                     // next actor turn after scheduled was cleared and re-claimed.
                     if (scheduledDispatchToken != dispatchTicket || !scheduled.get()) return;
-                    if (stopped.get() || closed.get() || forceKillFenced) return;
+                    if (stopped.get() || closed.get() || forceKillFenced
+                            || physicalExitCleanupActive) return;
                     if (carrierActive || carrierOwnerThread != null || activeTurns != 0) {
                         throw new IllegalStateException(
                                 "actor physical carrier already occupied for " + ref.id());
@@ -7093,7 +7160,8 @@ public final class ActorRuntime implements AutoCloseable {
                         // Another sender may try to schedule immediately after
                         // scheduled=false below; it must not begin a new turn
                         // until every prior-turn cleanup callback completes.
-                        if (!carrierActive && !physicalExitCallbacks.isEmpty()) {
+                        if (!carrierActive && !physicalExitCleanupActive
+                                && !physicalExitCallbacks.isEmpty()) {
                             afterCarrierClose = List.copyOf(physicalExitCallbacks);
                             physicalExitCallbacks.clear();
                             physicalExitCleanupActive = true;
@@ -7127,61 +7195,8 @@ public final class ActorRuntime implements AutoCloseable {
                         else ACTOR_CARRIER.remove();
                     }
                 }
-                Error fatalClose = null;
-                // The drain itself owns the logical cleanup lease. Callback
-                // reentrancy or a concurrent closeAll can enqueue additional
-                // work until we atomically observe an empty queue under the
-                // lifecycle monitor. Clearing the fence sooner allows the
-                // next actor turn to race a still-live critical grant.
-                if (!afterCarrierClose.isEmpty()) {
-                    List<Runnable> batch = afterCarrierClose;
-                    boolean finished = false;
-                    try {
-                        while (true) {
-                            for (Runnable close : batch) {
-                                try {
-                                    close.run();
-                                } catch (Throwable failure) {
-                                    // A bad observer must not prevent the
-                                    // remaining grants from being revoked.
-                                    try {
-                                        fail(failure);
-                                    } catch (VirtualMachineError | ThreadDeath | LinkageError error) {
-                                        if (fatalClose == null) fatalClose = error;
-                                        else if (fatalClose != error) fatalClose.addSuppressed(error);
-                                    }
-                                    if (failure instanceof Error error) {
-                                        if (fatalClose == null) fatalClose = error;
-                                        else if (fatalClose != error) fatalClose.addSuppressed(error);
-                                    }
-                                }
-                            }
-                            synchronized (lifecycleLock) {
-                                if (physicalExitCallbacks.isEmpty()) {
-                                    physicalExitCleanupActive = false;
-                                    finished = true;
-                                    if (stopped.get()) finalizeStopLocked();
-                                    reschedule = reschedule || (!stopped.get()
-                                            && !forceKillFenced && !closed.get()
-                                            && !finalized && hasQueuedWorkLocked());
-                                    lifecycleLock.notifyAll();
-                                    break;
-                                }
-                                batch = List.copyOf(physicalExitCallbacks);
-                                physicalExitCallbacks.clear();
-                            }
-                        }
-                    } finally {
-                        if (!finished) {
-                            synchronized (lifecycleLock) {
-                                // Even if internal finalization throws, do
-                                // not leave an actor permanently fenced.
-                                physicalExitCleanupActive = false;
-                                lifecycleLock.notifyAll();
-                            }
-                        }
-                    }
-                }
+                Error fatalClose = afterCarrierClose.isEmpty()
+                        ? null : drainPhysicalExitCallbacks(afterCarrierClose);
                 if (finishDeferredResourceRevocation) {
                     finishResourceRevocation(afterCarrierRevoke);
                 }
