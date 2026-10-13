@@ -84,6 +84,16 @@ public final class OresMutex {
             return new CarrierSafeFuture<>();
         }
 
+        @Override
+        public java.util.concurrent.CompletionStage<T> minimalCompletionStage() {
+            // The JDK minimal stage's toCompletableFuture() can create a
+            // separate unguarded CompletableFuture. Never allow an actor lock
+            // result to be converted into a blocking host Future via this
+            // otherwise innocuous-looking CompletionStage escape hatch.
+            throw new UnsupportedOperationException(
+                    "SharedMutex completion cannot be downgraded to an unguarded minimal CompletionStage");
+        }
+
         private void rejectBlockingCarrierRead() {
             if (!isDone() && (ActorRuntime.inActorExecution()
                     || ActorRuntime.isActorCarrierThread()
