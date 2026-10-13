@@ -41,8 +41,29 @@ public record FixedProductCallPlan(List<FixedProductCallPlan.BoundSlot> sourceOr
     public FixedProductCallPlan {
         sourceOrder = List.copyOf(sourceOrder);
         abiToSource = List.copyOf(abiToSource);
-        if (sourceOrder.size() != abiToSource.size()) {
+        int arity = sourceOrder.size();
+        if (arity != abiToSource.size()) {
             throw new IllegalArgumentException("product call plan must be a total permutation");
+        }
+        // Records have a public canonical constructor. Validate *every* path,
+        // not just the bind() factory, so a forged permutation never reaches
+        // JVM/AOT/native invocation code.
+        boolean[] claimedTargets = new boolean[arity];
+        boolean[] claimedSources = new boolean[arity];
+        for (int i = 0; i < arity; i++) {
+            BoundSlot slot = Objects.requireNonNull(sourceOrder.get(i), "bound slot");
+            int source = slot.sourceIndex();
+            int target = slot.parameterIndex();
+            if (source < 0 || source >= arity || target < 0 || target >= arity
+                    || claimedSources[source] || claimedTargets[target]) {
+                throw new IllegalArgumentException("invalid product call plan permutation");
+            }
+            claimedSources[source] = true;
+            claimedTargets[target] = true;
+            if (source != i || !Objects.equals(abiToSource.get(target), source)) {
+                throw new IllegalArgumentException(
+                        "product call plan disagrees with lexical evaluation order or ABI mapping");
+            }
         }
     }
 
