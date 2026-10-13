@@ -274,6 +274,77 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         after = len(os.listdir("/proc/self/fd"))
         self.assertLessEqual(after, before + 2)
 
+    def test_concurrent_ancestor_swaps_do_not_expose_external_bytes(self):
+        import os
+        import threading
+        stop = threading.Event()
+        root = self.source / "nested"
+        moved = self.source / "moved"
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "private.ores").write_text("EXTERNAL SECRET")
+        def attacker():
+            for _ in range(700):
+                if stop.is_set(): break
+                try:
+                    if root.is_symlink(): root.unlink()
+                    if root.is_dir():
+                        for item in root.iterdir(): item.unlink()
+                        root.rmdir()
+                    root.mkdir()
+                    (root / "safe.ores").write_text("safe")
+                    root.rename(moved)
+                    root.symlink_to(outside, target_is_directory=True)
+                    root.unlink()
+                    for item in moved.iterdir(): item.unlink()
+                    moved.rmdir()
+                except OSError: pass
+        before = len(os.listdir("/proc/self/fd")) if Path("/proc/self/fd").is_dir() else None
+        worker = threading.Thread(target=attacker, daemon=True)
+        worker.start()
+        try:
+            for _ in range(450):
+                try: files = pub.collect_source(self.source, self.root)
+                except pub.Denied: continue
+                self.assertFalse(any(b"EXTERNAL SECRET" in data for _, data, _ in files))
+        finally:
+            stop.set()
+            worker.join(3)
+        self.assertFalse(worker.is_alive())
+        if before is not None:
+            self.assertLessEqual(len(os.listdir("/proc/self/fd")), before + 2)
+
+    def test_concurrent_policy_symlink_swap_never_grants_approval(self):
+        import os
+        import threading
+        outside = self.root / "outside-policy"
+        outside.write_text("trusted/ci\n")
+        self.approval.write_text("# no approval\n")
+        stop = threading.Event()
+        def attacker():
+            for _ in range(700):
+                if stop.is_set(): break
+                try:
+                    if self.approval.is_file() or self.approval.is_symlink():
+                        self.approval.unlink()
+                    self.approval.symlink_to(outside)
+                    self.approval.unlink()
+                    self.approval.write_text("# no approval\n")
+                except OSError: pass
+        before = len(os.listdir("/proc/self/fd")) if Path("/proc/self/fd").is_dir() else None
+        worker = threading.Thread(target=attacker, daemon=True)
+        worker.start()
+        try:
+            for _ in range(450):
+                with self.assertRaises(pub.Denied):
+                    pub.checked_policy_fingerprint(self.root, "trusted/ci")
+        finally:
+            stop.set()
+            worker.join(3)
+        self.assertFalse(worker.is_alive())
+        if before is not None:
+            self.assertLessEqual(len(os.listdir("/proc/self/fd")), before + 2)
+
     def test_invalid_api_sha_rejects_without_commit(self):
         original = self.fake_api
         def bad(route, method="GET", payload=None):
