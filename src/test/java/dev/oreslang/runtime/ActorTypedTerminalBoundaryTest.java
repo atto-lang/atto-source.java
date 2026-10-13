@@ -233,6 +233,31 @@ final class ActorTypedTerminalBoundaryTest {
     }
 
     @Test
+    void actorCannotReadRawThrowableFromAnotherActorOrItself() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var target = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        throw ActorRuntime.GuestEffectSignal.throwing(91);
+                    });
+            target.send("fail");
+            assertTerminated(target, THROW, 91);
+
+            var observer = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        assertThrows(SecurityException.class, target::failure);
+                        assertThrows(SecurityException.class, context.self()::failure);
+                        assertThrows(SecurityException.class, target::terminalFailureNotice);
+                        context.self().stop();
+                    });
+            observer.send("inspect");
+            assertTrue(observer.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(observer.failure().isEmpty(), "actor code must reject raw error access");
+            assertInstanceOf(ActorRuntime.GuestEffectSignal.class,
+                    target.failure().orElseThrow()); // still available to the trusted host
+        }
+    }
+
+    @Test
     void forgedSupervisorMetadataAndOversizeDiagnosticsFailClosed() {
         var id = ActorRuntime.ActorId.create();
         var terminal = ExceptionBoundaryPolicy.actorTerminal(PANIC);
