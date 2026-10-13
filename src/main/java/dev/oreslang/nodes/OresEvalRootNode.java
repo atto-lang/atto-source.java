@@ -9146,7 +9146,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("Channel.new<T> capacity must be an integer");
             }
             int capacity = Math.toIntExact(number.longValue());
-            return new ChannelRuntime.Channel<>(capacity);
+            // The guest surface always creates data-only channels. Trusted
+            // internal mailbox channels use their own privileged constructor.
+            return new ChannelRuntime.Channel<>(
+                    capacity, Evaluator::requireChannelDataValue);
         }
     }
 
