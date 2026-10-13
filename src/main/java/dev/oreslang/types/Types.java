@@ -146,9 +146,18 @@ public final class Types {
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
                 if (actual == null || !isAssignable(actual, required.getValue())) return false;
-                // Writable record members are invariant: otherwise an alias could
-                // write a wider value into an underlying narrower slot.
-                if (!target.readOnly() && !isAssignable(required.getValue(), actual)) return false;
+                // Writable data slots require equal resolved types. Bidirectional
+                // assignability is not enough: Unknown/Generic can match both
+                // directions and would allow writes through an unsafe alias.
+                // Compiler-owned callable selector slots describe methods, which
+                // are immutable contracts and retain function variance.
+                boolean methodSlot = required.getKey().startsWith("instance$")
+                        && required.getKey().contains("$arity")
+                        && required.getKey().contains("$generics")
+                        && actual instanceof Function && required.getValue() instanceof Function;
+                if (!target.readOnly() && !methodSlot && !actual.equals(required.getValue())) {
+                    return false;
+                }
             }
             return true;
         }
