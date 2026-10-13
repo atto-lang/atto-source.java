@@ -25,12 +25,12 @@ class SymbolTypingTest {
 
     @Test void symbolAsExistingStructValueDoesNotChangeStringNamedField() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(
-                "pub fnc tag() : Symbol { val r = infer struct{status: #ready}; return r.status; }")));
+                "pub fnc tag() : Symbol { const r = infer struct{status: #ready}; return r.status; }")));
     }
 
     @Test void symbolIndexDoesNotImplicitlyAliasExistingTextualStructField() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse(
-                "pub fnc bad() : int { val r = infer struct{status: 1}; return r[#status]; }")));
+                "pub fnc bad() : int { const r = infer struct{status: 1}; return r[#status]; }")));
     }
 
     @Test void historicalSymbolConstructorIsRejectedAtCompileTime() {
