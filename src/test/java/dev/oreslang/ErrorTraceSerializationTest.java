@@ -177,6 +177,52 @@ final class ErrorTraceSerializationTest {
     }
 
 
+
+    @Test
+    void errorSnapshotsRejectExecutableCollectionAccessorsAndOversizedNames() {
+        java.util.concurrent.atomic.AtomicInteger invoked = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.Map<String, Object> hostileFields = new java.util.AbstractMap<>() {
+            @Override public Object get(Object key) {
+                invoked.incrementAndGet();
+                throw new AssertionError("arbitrary field accessor executed");
+            }
+            @Override public java.util.Set<Entry<String, Object>> entrySet() {
+                invoked.incrementAndGet();
+                throw new AssertionError("arbitrary map enumeration executed");
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () ->
+                GuestErrorWireCodec.trustedLocalSnapshot("Error", 0, hostileFields));
+        assertEquals(0, invoked.get());
+
+        java.util.List<String> hostileFrames = new java.util.AbstractList<>() {
+            @Override public int size() {
+                invoked.incrementAndGet();
+                throw new AssertionError("arbitrary list size executed");
+            }
+            @Override public String get(int index) {
+                invoked.incrementAndGet();
+                throw new AssertionError("arbitrary frame accessor executed");
+            }
+        };
+        java.util.Map<String, Object> fields = new java.util.LinkedHashMap<>();
+        fields.put("message", "ok");
+        fields.put("stack", hostileFrames);
+        assertThrows(IllegalArgumentException.class, () ->
+                GuestErrorWireCodec.trustedLocalSnapshot("Error", 0, fields));
+        assertThrows(IllegalArgumentException.class, () ->
+                new GuestErrorWireCodec.ErrorSnapshot("Error", 0, "ok", hostileFrames, true));
+        assertEquals(0, invoked.get());
+
+        assertThrows(IllegalArgumentException.class, () ->
+                GuestErrorWireCodec.supervisorCompactSnapshot("A".repeat(129), 1, java.util.Map.of()));
+        var safe = GuestErrorWireCodec.supervisorCompactSnapshot("Error", 0, hostileFields);
+        assertEquals(0, safe.code());
+        assertFalse(safe.full());
+        assertTrue(safe.frames().isEmpty());
+        assertEquals(0, invoked.get(), "supervisor transport never reads guest fields");
+    }
+
     @Test
     void guestErrorCodecCannotExecuteOverriddenCodeMethod() throws Exception {
         Path entry = temp.resolve("untrusted-error-code.ores");

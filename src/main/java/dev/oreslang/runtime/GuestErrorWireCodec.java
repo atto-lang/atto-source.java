@@ -11,6 +11,7 @@ import java.util.List;
  * Wire schema version 1; protobuf field numbers are immutable.
  */
 public final class GuestErrorWireCodec {
+    private static final int MAX_NAME = 128;
     private static final int MAX_MESSAGE = 4096;
     private static final int MAX_FRAMES = 64;
     private static final int MAX_FRAME_TEXT = 256;
@@ -25,7 +26,8 @@ public final class GuestErrorWireCodec {
     public record ErrorSnapshot(String name, int code, String message,
                                 List<String> frames, boolean full) {
         public ErrorSnapshot {
-            // Validation is shared by all local/wire codecs. No guest code.
+            // Reject arbitrary List implementations before calling their methods.
+            requireJdkOwnedFrameArray(frames);
             validate(name, code, message, frames);
             frames = List.copyOf(frames);
             if (!full && (!message.isEmpty() || !frames.isEmpty())) {
@@ -76,12 +78,13 @@ public final class GuestErrorWireCodec {
     public static ErrorSnapshot trustedLocalSnapshot(
             String trustedNominalName, int trustedCatalogCode,
             java.util.Map<String, ?> guestFields) {
-        java.util.Objects.requireNonNull(guestFields, "guest fields");
+        requireJdkOwnedFields(guestFields);
         Object message = guestFields.get("message");
         Object trace = guestFields.get("stack");
         if (!(message instanceof String safeMessage) || !(trace instanceof List<?> rawFrames)) {
             throw new IllegalArgumentException("trusted error snapshot requires String message and frame array");
         }
+        requireJdkOwnedFrameArray(rawFrames);
         if (rawFrames.size() > MAX_FRAMES) {
             throw new IllegalArgumentException("too many guest error frames");
         }
@@ -98,8 +101,31 @@ public final class GuestErrorWireCodec {
                 safeMessage, safeFrames, true);
     }
 
+    /**
+     * Guest error frames come from a JVM-owned ArrayList, List.of() or
+     * List.copyOf(). Custom List implementations may execute arbitrary code in
+     * size(), iterator() or get(), so reject them before invoking an accessor.
+     */
+    private static void requireJdkOwnedFrameArray(List<?> frames) {
+        if (frames == null) throw new IllegalArgumentException("missing error frames");
+        Class<?> type = frames.getClass();
+        if (type != ArrayList.class
+                && !type.getName().startsWith("java.util.ImmutableCollections$")) {
+            throw new IllegalArgumentException("error frames require owned built-in array/list");
+        }
+    }
+
+    private static void requireJdkOwnedFields(java.util.Map<String, ?> fields) {
+        if (fields == null) throw new IllegalArgumentException("missing error fields");
+        Class<?> type = fields.getClass();
+        if (type != java.util.LinkedHashMap.class && type != java.util.HashMap.class) {
+            throw new IllegalArgumentException("local error fields require owned built-in map");
+        }
+    }
+
     private static void validate(String name, int code, String message, List<String> frames) {
-        if (name == null || !name.matches("[A-Za-z][A-Za-z0-9_]*")
+        if (name == null || name.length() > MAX_NAME
+                || !name.matches("[A-Za-z][A-Za-z0-9_]*")
                 || code < 0 || message == null || message.length() > MAX_MESSAGE
                 || frames == null || frames.size() > MAX_FRAMES)
             throw new IllegalArgumentException("invalid bounded guest error encoding");
