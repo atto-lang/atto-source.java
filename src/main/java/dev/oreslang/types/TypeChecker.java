@@ -2237,9 +2237,12 @@ public final class TypeChecker {
                 }
                 for (Ast.Expr argument : call.arguments()) {
                     if (argument instanceof Ast.SpreadExpr spread) {
-                        requireSpreadable(typeOf(spread.expression(), env, generics, self), "stdio.stdout.log spread");
+                        Type spreadType = typeOf(spread.expression(), env, generics, self);
+                        rejectUntrackedNestedResult(spreadType, "stdio.stdout.log spread");
+                        requireSpreadable(spreadType, "stdio.stdout.log spread");
                     } else {
                         Type actual = typeOf(argument, env, generics, self);
+                        rejectUntrackedNestedResult(actual, "stdio.stdout.log");
                         if (isMustUseVoidResult(actual) && !(argument instanceof Ast.NameExpr)) {
                             throw new IllegalArgumentException(
                                     "must-use Result<void,E> temporary cannot be discarded by stdout.log");
