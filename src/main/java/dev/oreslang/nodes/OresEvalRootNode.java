@@ -3981,6 +3981,23 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.RuntimeCallExpr runtime,
                 Env env,
                 SourceValueCont continuation) {
+            if (runtime.operation().equals("trace_frames") ||
+                    runtime.operation().equals("trace_string")) {
+                if (!runtime.arguments().isEmpty()) {
+                    continuation.accept(task, null,
+                            new IllegalArgumentException("rt trace capture takes no arguments"));
+                    return;
+                }
+                // This is only the active source callable portion. Suspended
+                // async ancestry must be drawn from continuation-owned frames;
+                // never fall back to the Java carrier stack.
+                continuation.accept(task,
+                        runtime.operation().equals("trace_frames")
+                                ? new ArrayList<>(GuestTraceCapture.frames())
+                                : GuestTraceCapture.text(),
+                        null);
+                return;
+            }
             if (runtime.operation().equals("cooperate")) {
                 if (!runtime.arguments().isEmpty()) {
                     continuation.accept(
