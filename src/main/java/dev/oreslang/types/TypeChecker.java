@@ -5161,7 +5161,11 @@ public final class TypeChecker {
         if (pattern instanceof Ast.StructuralPattern structural) {
             Type resolved = deref(resolve(structural.target(), generics, self));
             Record shape = structuralPatternShape(structural.target(), resolved, generics);
-            return assignable(subject, shape);
+            // Runtime structural patterns check every field with oresTypeMatches,
+            // not assignability. int -> float widening (including nested
+            // record fields) must never prove structural coverage.
+            return subject instanceof Record record
+                    && runtimeRecordShapeCovered(record, shape);
         }
         if (pattern instanceof Ast.TuplePattern tuplePattern
                 && subject instanceof Tuple tuple
@@ -5180,6 +5184,68 @@ public final class TypeChecker {
                 && subject instanceof StringLiteral stringLiteral
                 && literal.value() instanceof String value) {
             return stringLiteral.value().equals(value);
+        }
+        return false;
+    }
+
+    private boolean runtimeRecordShapeCovered(Record source, Record target) {
+        for (Map.Entry<String, Type> required : target.members().entrySet()) {
+            Type actual = source.members().get(required.getKey());
+            if (actual == null || !runtimeValueTypeCovered(actual, required.getValue())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Sufficient (not necessary) condition that every runtime value of source
+     * matches the target field type test. This is intentionally stricter than
+     * assignment compatibility; unknown, generic and callable field shapes
+     * require a fallback unless a future verified runtime descriptor proves
+     * otherwise.
+     */
+    private boolean runtimeValueTypeCovered(Type source, Type target) {
+        if (source == Unknown.INSTANCE || target == Unknown.INSTANCE
+                || source instanceof Generic || target instanceof Generic) return false;
+        if (source instanceof Union union) {
+            return union.options().stream().allMatch(option -> runtimeValueTypeCovered(option, target));
+        }
+        if (target instanceof Union union) {
+            return union.options().stream().anyMatch(option -> runtimeValueTypeCovered(source, option));
+        }
+        if (source instanceof Primitive left && target instanceof Primitive right) {
+            if (left == Primitive.VOID || left == Primitive.NULL
+                    || right == Primitive.VOID || right == Primitive.NULL) return false;
+            return left == right
+                    || (left == Primitive.FLOAT && right == Primitive.DECIMAL)
+                    || (left == Primitive.DECIMAL && right == Primitive.FLOAT);
+        }
+        if (source instanceof StringLiteral && target == Primitive.STRING) return true;
+        if (source instanceof Record left && target instanceof Record right) {
+            return runtimeRecordShapeCovered(left, right);
+        }
+        if (source instanceof Tuple left && target instanceof Tuple right) {
+            if (left.kind() != TupleKind.TUPLE || right.kind() != TupleKind.TUPLE
+                    || left.elements().size() != right.elements().size()) return false;
+            for (int i = 0; i < left.elements().size(); i++) {
+                if (!runtimeValueTypeCovered(left.elements().get(i), right.elements().get(i))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        // Runtime List/Array and Option/Result tests currently erase element
+        // parameters. Reified generic payload predicates are not assumed.
+        if (source instanceof ListType && target instanceof ListType) return true;
+        if (source instanceof Named left && target instanceof Named right) {
+            if (left.name().equals(right.name())) return true;
+            // A proven nominal subtype is also a runtime subtype; unrelated
+            // nominal values cannot be certified from structural assignability.
+            if (findClass(left.name()) != null && (findClass(right.name()) != null
+                    || findInterface(right.name()) != null)) {
+                return assignable(source, target);
+            }
         }
         return false;
     }
