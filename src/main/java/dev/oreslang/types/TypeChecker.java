@@ -71,6 +71,15 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
+    // Only an actual constructor may initialize an otherwise fixed, initially
+    // absent class field. Class methods never inherit constructor privileges.
+    private Ast.ClassDecl currentConstructorOwner;
+    // Conservative constructor-initialization ledger. A fixed field without
+    // a declaration initializer may be assigned syntactically at most once
+    // in a constructor, even across alternative CFG arms. Until this ledger
+    // is promoted to a path-sensitive may-initialize lattice, reject
+    // ambiguous multi-write constructors rather than permit double writes.
+    private Set<String> constructorFixedFieldWrites;
     // Unlike private-member access, declaration origin must survive nlex.
     private Ast.ClassDecl lexicalClassOrigin;
     // Source modules have their own lexical value namespace. File-level
@@ -170,7 +179,7 @@ public final class TypeChecker {
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
-                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
+                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "Any", "Unknown", "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -314,7 +323,10 @@ public final class TypeChecker {
             String category;
             if (decl instanceof Ast.FunctionDecl fn) {
                 name = fn.name();
-                category = fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "fnc";
+                // FNC and ROUTINE share the same name+arity callable family.
+                // Their kinds affect whether a value can be reified, not the slot key.
+                // putFunctionSlot has already rejected any duplicate arity.
+                category = "callable";
             } else if (decl instanceof Ast.ClassDecl klass) {
                 name = klass.name();
                 category = "class";
@@ -1042,14 +1054,20 @@ public final class TypeChecker {
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
+            Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+            Set<String> previousFixedWrites = constructorFixedFieldWrites;
             currentActorKind = Ast.ActorKind.NONE;
             currentClassOwner = klass;
+            currentConstructorOwner = klass;
+            constructorFixedFieldWrites = new HashSet<>();
             lexicalClassOrigin = klass;
             try {
                 checkBlock(constructor.body(), constructorEnv, classGenerics, Primitive.VOID, self);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
+                currentConstructorOwner = previousConstructorOwner;
+                constructorFixedFieldWrites = previousFixedWrites;
                 lexicalClassOrigin = previousLexicalClass;
             }
         }
@@ -1830,6 +1848,15 @@ public final class TypeChecker {
             if (value instanceof Double) return Primitive.FLOAT;
             if (value instanceof Boolean) return Primitive.BOOL;
             if (value instanceof String s) return new StringLiteral(s);
+            if (value instanceof dev.oreslang.runtime.OresSymbol symbol) {
+                // Userland identities need tenant-scoped exports before an untrusted
+                // actor may compile a reference to them. Never silently intern them.
+                if (currentActorKind == Ast.ActorKind.UNTRUSTED
+                        && !symbol.publicToUntrustedCoreV1()) {
+                    throw new SecurityException("Symbol is not exported to untrusted actor");
+                }
+                return new Named("$builtin$Symbol", List.of());
+            }
             if (value instanceof Ast.Imaginary) return Primitive.COMPLEX;
             return Unknown.INSTANCE;
         }
@@ -2014,6 +2041,13 @@ public final class TypeChecker {
             return cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Named("Option", List.of(narrowed))
                     : narrowed;
+        }
+        if (expr instanceof Ast.TrapExpr trapped) {
+            Type inner = typeOf(trapped.expression(), env, generics, self);
+            if (inner instanceof Borrow)
+                throw new IllegalArgumentException(
+                        "trap cannot wrap a borrowed value without a proven Option loan lifetime");
+            return new Named("Option", List.of(inner));
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
@@ -2397,6 +2431,12 @@ public final class TypeChecker {
                     && (name.name().equals("Some") || name.name().equals("Ok") || name.name().equals("Err"))) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException(name.name() + " does not accept call-site type arguments");
+                }
+                // Zero-payload Ok() is legal only when the expected T is
+                // void. Its inferred type remains Result<void, Unknown>,
+                // so a Result<int,E> target rejects it without coercion.
+                if (name.name().equals("Ok") && call.arguments().isEmpty()) {
+                    return new Named("Result", List.of(Primitive.VOID, Unknown.INSTANCE));
                 }
                 if (call.arguments().size() != 1) {
                     throw new IllegalArgumentException(name.name() + " expects exactly one value");
@@ -3301,6 +3341,11 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            // Guest Symbols are immutable keys, not fresh reference capabilities.
+            // Do not silently reinterpret the historical STABLE constructor.
+            if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
+                throw new IllegalArgumentException("new Symbol(...) is not supported; use #name or Symbol.stable(uuid)");
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
                         "DynamicStruct has been removed; use infer struct{...}, "
@@ -3556,8 +3601,13 @@ public final class TypeChecker {
             }
             defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
+            // A lambda checked within a constructor runs on invocation, not
+            // necessarily during initialization. It must never inherit the
+            // constructor's one-time fixed-field initialization privilege.
+            currentConstructorOwner = null;
             Type result;
             try {
                 if (lambda.expressionBody() != null) {
@@ -3572,6 +3622,7 @@ public final class TypeChecker {
                 // for the enclosing flow merely because the closure exists.
                 env.restoreInitialization(outerInitialization);
                 currentClassOwner = previousClassOwner;
+                currentConstructorOwner = previousConstructorOwner;
             }
             return new Function(parameters, result);
         }
@@ -4229,7 +4280,9 @@ public final class TypeChecker {
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         defineImplicitArguments(lambdaEnv, List.of(declared));
         Ast.ClassDecl previousClassOwner = currentClassOwner;
+        Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
         if (nonLexical) currentClassOwner = null;
+        currentConstructorOwner = null;
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -4240,6 +4293,7 @@ public final class TypeChecker {
             }
         } finally {
             currentClassOwner = previousClassOwner;
+            currentConstructorOwner = previousConstructorOwner;
         }
     }
 
@@ -4273,7 +4327,9 @@ public final class TypeChecker {
         }
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
+        Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
         if (nonLexical) currentClassOwner = null;
+        currentConstructorOwner = null;
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -4288,6 +4344,7 @@ public final class TypeChecker {
             }
         } finally {
             currentClassOwner = previousClassOwner;
+            currentConstructorOwner = previousConstructorOwner;
         }
         if (lambda.blockBody() != null
                 && expected.result() != Primitive.VOID
@@ -4594,6 +4651,28 @@ public final class TypeChecker {
                 if (field != null) {
                     requireClassMemberVisible(
                             field.field().visibility(), field.owner(), "field", field.field().name());
+                    if (writing && field.field().bindingKind() != Ast.BindingKind.LET) {
+                        // Preserve the pre-existing constructor assignment path
+                        // for fields declared without an initializer. A field
+                        // initialized in its declaration is NEVER writable
+                        // through that exception (including new 'final' fields).
+                        boolean initializingInConstructor =
+                                currentConstructorOwner == klass
+                                && field.field().initializer() == null
+                                && member.receiver() instanceof Ast.NameExpr root
+                                && root.name().equals("self");
+                        if (!initializingInConstructor) {
+                            throw new IllegalArgumentException(
+                                    "field '" + field.owner().name() + "." + field.field().name()
+                                            + "' is immutable/final; cannot reassign fixed class field");
+                        }
+                        if (constructorFixedFieldWrites == null
+                                || !constructorFixedFieldWrites.add(field.field().name())) {
+                            throw new IllegalArgumentException(
+                                    "field '" + field.owner().name() + "." + field.field().name()
+                                            + "' is immutable/final; constructor must initialize it at most once");
+                        }
+                    }
                     Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                 }
@@ -4969,7 +5048,9 @@ public final class TypeChecker {
                 case "None" -> named.name().equals("Option") && named.arguments().size() == 1
                         ? List.of() : null;
                 case "Ok" -> named.name().equals("Result") && named.arguments().size() == 2
-                        ? List.of(named.arguments().get(0)) : null;
+                        ? (named.arguments().get(0) == Primitive.VOID
+                                ? List.of() : List.of(named.arguments().get(0)))
+                        : null;
                 case "Err" -> named.name().equals("Result") && named.arguments().size() == 2
                         ? List.of(named.arguments().get(1)) : null;
                 default -> null;
@@ -6602,6 +6683,8 @@ public final class TypeChecker {
         } else if (expression instanceof Ast.BinaryExpr binary) {
             rejectStaticClassGenericReferences(binary.left(), classGenerics, klass, method);
             rejectStaticClassGenericReferences(binary.right(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.TrapExpr trapped) {
+            rejectStaticClassGenericReferences(trapped.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.UnaryExpr unary) {
             rejectStaticClassGenericReferences(unary.operand(), classGenerics, klass, method);
         } else if (expression instanceof Ast.ConditionalExpr conditional) {
@@ -7378,11 +7461,18 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            }
             case "Any", "Unknown" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException(ref.name() + " does not accept type arguments");
                 }
                 yield ref.name().equals("Any") ? Types.Any.INSTANCE : Types.UnknownValue.INSTANCE;
+            }
+            case "Symbol" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Symbol does not accept type arguments");
+                }
+                yield new Named("$builtin$Symbol", List.of());
             }
             case "void" -> Primitive.VOID;
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
