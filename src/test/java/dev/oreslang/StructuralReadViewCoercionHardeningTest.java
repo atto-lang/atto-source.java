@@ -70,6 +70,25 @@ final class StructuralReadViewCoercionHardeningTest {
     }
 
     @Test
+    void unknownCannotProveRecordCarriedByCollectionsOrFunctions() {
+        Types.Record record = new Types.Record(Map.of("foo", Types.Primitive.INT), true);
+        for (Types.Type expected : java.util.List.<Types.Type>of(
+                new Types.ListType(record),
+                new Types.Tuple(java.util.List.of(record)),
+                new Types.Named("Option", java.util.List.of(record)),
+                new Types.Borrow(record, false),
+                new Types.Function(java.util.List.of(record), Types.Primitive.VOID),
+                new Types.Function(java.util.List.of(), record))) {
+            assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, expected),
+                    "Unknown lacks representation proof for " + expected);
+            assertFalse(Types.isAssignable(new Types.Generic("T"), expected),
+                    "unbound generic lacks representation proof for " + expected);
+        }
+        assertTrue(Types.isAssignable(Types.Primitive.INT,
+                Types.Unknown.INSTANCE), "opaque destination remains supported");
+    }
+
+    @Test
     void readonlyCovarianceStillAllowsSafeWidthAndUnionViews() {
         Types.Record actual = new Types.Record(
                 Map.of("foo", Types.Primitive.INT, "bar", Types.Primitive.STRING), true);
