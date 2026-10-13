@@ -2,12 +2,15 @@
 define actor Snapshot as
     state { items: List[int] = [1, 2]; }
 
-    receive(ActorMail<String> mail): void with state.read {
+    pub sample(): int with state.read {
         val detached = self.handle_state(|s| -> { return s.items; });
         detached[0] = 99;
         val current = self.handle_state(|s| -> { return s.items; });
-        stdio.println(detached[0]);
-        stdio.println(current[0]);
+        return detached[0] * 10 + current[0];
+    }
+
+    receive(ActorMail<String> mail): void {
+        stdio.println(self.sample());
         self.end();
         return;
     }
