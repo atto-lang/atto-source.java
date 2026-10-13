@@ -293,6 +293,14 @@ public final class OwnershipChecker {
                 return;
             }
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
+            // An extracted binding is currently an independent local. It cannot
+            // inherit a borrow without a registered projection lease. Until
+            // scoped projection loans are implemented, reject borrowed aggregate
+            // extraction rather than making an apparently owned alias.
+            if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW
+                    || source.borrowSource != null || source.borrowLease) {
+                throw error("borrowed aggregate destructuring requires a scoped projection loan");
+            }
             for (int i = 0; i < destructure.bindings().size(); i++) {
                 Ast.DestructureBinding binding = destructure.bindings().get(i);
                 if (binding.isDiscard()) continue;
