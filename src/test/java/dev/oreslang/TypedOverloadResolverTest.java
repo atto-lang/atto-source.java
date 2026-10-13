@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.TypedOverloadResolver;
+import dev.oreslang.ast.Ast;
 import dev.oreslang.ast.TypedOverloadResolver.Candidate;
 import dev.oreslang.ast.TypedOverloadResolver.Domain;
 import dev.oreslang.ast.TypedOverloadResolver.Signature;
@@ -9,6 +10,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -96,6 +98,76 @@ final class TypedOverloadResolverTest {
         }
         assertThrows(IllegalArgumentException.class, () -> primitive("Option<int>"));
         assertThrows(IllegalArgumentException.class, () -> primitive("Result<String, int>"));
+    }
+
+    @Test
+    void sourceTypeBridgeUsesCompilerPrimitiveAliasesAndResolvedEnumIds() {
+        Map<String, String> nominal = Map.of(
+                "Color", "first.Color",
+                "second.Color", "second.Color",
+                "Direction", "first.Direction");
+        for (String type : List.of("i8", "u64", "bigint", "int", "uint")) {
+            assertEquals(primitive("int"), TypeKey.fromSource(Ast.TypeRef.simple(type), nominal));
+        }
+        for (String type : List.of("f32", "f64", "float")) {
+            assertEquals(primitive("float"), TypeKey.fromSource(Ast.TypeRef.simple(type), nominal));
+        }
+        for (String type : List.of("Bool", "boolean", "bool")) {
+            assertEquals(primitive("bool"), TypeKey.fromSource(Ast.TypeRef.simple(type), nominal));
+        }
+        for (String type : List.of("String", "string")) {
+            assertEquals(primitive("String"), TypeKey.fromSource(Ast.TypeRef.simple(type), nominal));
+        }
+        assertEquals(TypeKey.nominalEnum("first.Color"),
+                TypeKey.fromSource(Ast.TypeRef.simple("Color"), nominal));
+        assertEquals(TypeKey.nominalEnum("second.Color"),
+                TypeKey.fromSource(Ast.TypeRef.simple("second.Color"), nominal));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeKey.fromSource(Ast.TypeRef.simple("Unresolved"), nominal));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeKey.fromSource(new Ast.TypeRef("Option",
+                        List.of(Ast.TypeRef.simple("int")), false), nominal));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeKey.fromSource(new Ast.TypeRef("Color",
+                        List.of(Ast.TypeRef.simple("int")), false), nominal));
+    }
+
+    @Test
+    void parsedSameArityPrimitiveAndEnumSignaturesAreRankedButNotYetAdmitted() {
+        var program = dev.oreslang.parser.Parser.parse("""
+                define enum Color as
+                  Red
+                  Blue
+                end
+                define enum Direction as
+                  North
+                  South
+                end
+
+                fnc describe(int value): int { return 1; }
+                fnc describe(float value): int { return 2; }
+                fnc describe(Color value): int { return 3; }
+                fnc describe(Direction value): int { return 4; }
+                """);
+        var declarations = program.modules().getFirst().declarations();
+        List<Candidate<String>> candidates = new ArrayList<>();
+        Map<String, String> enums =
+                Map.of("Color", "__root__.Color", "Direction", "__root__.Direction");
+        for (int i = 2; i < declarations.size(); i++) {
+            Ast.FunctionDecl fn = (Ast.FunctionDecl) declarations.get(i);
+            var params = fn.parameters().stream()
+                    .map(p -> TypeKey.fromSource(p.type(), enums)).toList();
+            candidates.add(new Candidate<>(fn.parameters().getFirst().type().name(),
+                    new Signature(Domain.MODULE, "__root__." + fn.name(), params)));
+        }
+        assertEquals("int", TypedOverloadResolver.select(Domain.MODULE, "__root__.describe",
+                List.of(primitive("int")), candidates).declaration());
+        assertEquals("float", TypedOverloadResolver.select(Domain.MODULE, "__root__.describe",
+                List.of(primitive("float")), candidates).declaration());
+        assertEquals("Color", TypedOverloadResolver.select(Domain.MODULE, "__root__.describe",
+                List.of(TypeKey.nominalEnum("__root__.Color")), candidates).declaration());
+        assertEquals("Direction", TypedOverloadResolver.select(Domain.MODULE, "__root__.describe",
+                List.of(TypeKey.nominalEnum("__root__.Direction")), candidates).declaration());
     }
 
     @Test
