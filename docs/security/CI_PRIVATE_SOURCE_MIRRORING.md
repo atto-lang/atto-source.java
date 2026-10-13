@@ -1,40 +1,58 @@
-# Private CI mirrors: security preflight
+# Private CI mirrors: deny-by-default policy
 
 Never transfer private Oreslang source into a public or internal GitHub
 repository, including temporary refs, dangling Git objects, Actions artifacts,
 cache entries, and logs.
 
-## Only supported shell entry point
+## Destination approval
 
-The checked destination MUST be in an explicit exact-repository allowlist. Use
-the source-mirroring command as an argv vector (never eval or interpolate it
-into a shell command string):
+The policy file `.github/private-ci-approved-repositories.txt` is **empty by
+default**. No cross-repository mirroring is authorized until maintainers and
+security reviewers explicitly add an exact `owner/repo` destination through a
+reviewed, protected-branch change.
+
+Do **not** accept a CI destination allowlist from environment variables or
+unreviewed workflow inputs: a caller must not be able to grant its own approval.
+Run the checked transfer from trusted, reviewed source, not an untrusted PR
+checkout. If an approval policy can be modified by the code under test, treat
+the result as untrusted.
+
+## Only supported shell transfer entry point
+
+Once a private destination has been approved in the policy file, invoke a
+reviewed transfer command **as argv**, never by `eval`:
 
 ```bash
-ORESLANG_APPROVED_PRIVATE_CI_REPOS='trusted-org/private-ci' \
-  scripts/run-in-private-ci-destination.sh trusted-org/private-ci -- \
+scripts/run-in-private-ci-destination.sh trusted-org/private-ci -- \
   your-reviewed-transfer-command --destination trusted-org/private-ci
 ```
 
-The wrapper runs a fresh authenticated `gh api` check against `github.com`
-and requires a matching `full_name`, `visibility=private`, and
-`private=true`. A public, internal, inaccessible or different repository
-causes a hard failure *before* the transfer command can execute.
+The wrapper invokes a fresh authenticated GitHub API check using the
+`github.com` host, and requires matching `full_name`, `visibility=private`,
+and `private=true`. Public, internal, inaccessible, unexpected or unapproved
+repositories fail *before* the transfer command executes. The checked-in
+policy rejects symlinks, malformed entries, wildcards, and unexpected fields.
 
-The wrapper controls **only shell transfer paths that invoke it**. It cannot
-intercept arbitrary connector/API writes, cannot eliminate time-of-check to
-time-of-use changes after validation, and cannot undo public commits. The
-transfer command must still revalidate its actual destination, limit the token
-scope, and implement short-lived retention. Any destination change requires a
-new allowlist approval and new visibility preflight. Never use this as a
-workaround for exhausted Actions budget.
+The wrapper protects **only shell transfer paths that invoke it**. It cannot
+intercept connector/API calls, prevent all time-of-check/time-of-use changes,
+or undo previously uploaded Git objects. The reviewed transfer itself must
+revalidate its *actual* destination, use tightly scoped credentials, and limit
+artifact/log retention. Do not move the transfer to a different repository to
+bypass exhausted Actions minutes.
 
-Run the local regression tests with
-`bash scripts/test-private-ci-destination.sh`.
+Test without contacting GitHub or transferring source:
 
-## Open security incident
+```bash
+bash scripts/test-private-ci-destination.sh
+```
 
-See private issue #832. Source-bearing objects were still publicly retrievable
-by commit SHA after ref reset. GitHub repo administrators must address
-visibility, and GitHub Support must help assess removal of dangling objects,
-workflow logs, caches, and other retained copies before incident closure.
+The test uses an isolated fixture policy in a temporary checkout; it never
+modifies the real deny-by-default approval file.
+
+## Active disclosure incident
+
+Private issue #832 tracks source-bearing commits in a public CI repository.
+Resetting branch references did **not** remove the Git objects: commits were
+still retrievable by SHA. Administrators must restrict public access and seek
+GitHub Support assistance for retained Git objects, Actions caches/logs, and
+other copies before resolving the incident.
