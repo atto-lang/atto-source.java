@@ -5574,16 +5574,29 @@ public final class TypeChecker {
         }
     }
 
+    private static void rejectUserMethodContractKey(String name) {
+        // Compiler method-slot keys carry special variance and are not data fields.
+        // A user-defined field with such a name must never become a method proof.
+        if (name.startsWith("instance$") && name.contains("$arity")
+                && name.contains("$generics")) {
+            throw new IllegalArgumentException(
+                    "field name '" + name + "' is reserved for compiler method contracts");
+        }
+    }
+
     private Record classShape(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
         Record cached = classShapeCache.get(klass);
         if (cached != null) return cached;
         if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
         Map<String, Type> members = new LinkedHashMap<>();
+        Set<String> methodKeys = new LinkedHashSet<>();
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent != null) {
                 Map<String, Type> parentBindings = parentBindings(parentRef, klass, parent);
-                for (Map.Entry<String, Type> inherited : classShape(parent, stack).members().entrySet()) {
+                Record parentShape = classShape(parent, stack);
+                methodKeys.addAll(parentShape.methodKeys());
+                for (Map.Entry<String, Type> inherited : parentShape.members().entrySet()) {
                     mergeMember(members, inherited.getKey(), substituteGenerics(inherited.getValue(), parentBindings),
                             "multiple inheritance of " + klass.name());
                 }
@@ -5591,16 +5604,21 @@ public final class TypeChecker {
         }
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = new SelfType(nominalClassType(klass));
-        for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
+        for (Ast.FieldDecl field : klass.fields()) {
+            rejectUserMethodContractKey(field.name());
+            mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
+        }
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
+            String methodKey = methodContractKey(method.name(), method.arity(), method.genericParameters().size());
+            methodKeys.add(methodKey);
             mergeMember(members,
-                    methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
+                    methodKey,
                     callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
                     "class " + klass.name());
         }
         stack.remove(klass);
-        Record result = new Record(members);
+        Record result = new Record(members, false, methodKeys);
         classShapeCache.put(klass, result);
         return result;
     }
@@ -5608,11 +5626,14 @@ public final class TypeChecker {
     private Record publicClassShape(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
         if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
         Map<String, Type> members = new LinkedHashMap<>();
+        Set<String> methodKeys = new LinkedHashSet<>();
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent != null) {
                 Map<String, Type> parentBindings = parentBindings(parentRef, klass, parent);
-                for (Map.Entry<String, Type> inherited : publicClassShape(parent, stack).members().entrySet()) {
+                Record parentShape = publicClassShape(parent, stack);
+                methodKeys.addAll(parentShape.methodKeys());
+                for (Map.Entry<String, Type> inherited : parentShape.members().entrySet()) {
                     mergeMember(members, inherited.getKey(), substituteGenerics(inherited.getValue(), parentBindings),
                             "public inheritance of " + klass.name());
                 }
@@ -5621,23 +5642,27 @@ public final class TypeChecker {
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = new SelfType(nominalClassType(klass));
         for (Ast.FieldDecl field : klass.fields()) {
+            rejectUserMethodContractKey(field.name());
             if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         }
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
+                String methodKey = methodContractKey(method.name(), method.arity(), method.genericParameters().size());
+                methodKeys.add(methodKey);
                 mergeMember(members,
-                        methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
+                        methodKey,
                         callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
                         "class " + klass.name());
             }
         }
         stack.remove(klass);
-        return new Record(members);
+        return new Record(members, false, methodKeys);
     }
 
     private Record interfaceShape(Ast.InterfaceDecl iface, Set<String> generics, Set<Ast.InterfaceDecl> stack) {
         if (!stack.add(iface)) throw new IllegalArgumentException("interface inheritance cycle involving '" + iface.name() + "'");
         Map<String, Type> members = new LinkedHashMap<>();
+        Set<String> methodKeys = new LinkedHashSet<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
@@ -5653,7 +5678,9 @@ public final class TypeChecker {
             }
             Map<String, Type> parentBindings = genericBindings(parent.genericParameters(), parentType.arguments(),
                     "interface " + parent.name());
-            for (Map.Entry<String, Type> inherited : interfaceShape(parent, Set.copyOf(parent.genericParameters()), stack).members().entrySet()) {
+            Record parentShape = interfaceShape(parent, Set.copyOf(parent.genericParameters()), stack);
+            methodKeys.addAll(parentShape.methodKeys());
+            for (Map.Entry<String, Type> inherited : parentShape.members().entrySet()) {
                 mergeMember(members, inherited.getKey(), substituteGenerics(inherited.getValue(), parentBindings),
                         "interface inheritance of " + iface.name());
             }
@@ -5661,16 +5688,19 @@ public final class TypeChecker {
         Type interfaceSelf = new SelfType(nominalInterfaceType(iface));
         for (Ast.InterfaceMember member : iface.members()) {
             if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                String methodKey = methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size());
+                methodKeys.add(methodKey);
                 mergeMember(members,
-                        methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
+                        methodKey,
                         callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, false, generics, interfaceSelf),
                         "interface " + iface.name());
             } else if (member instanceof Ast.InterfaceFieldDecl field) {
+                rejectUserMethodContractKey(field.name());
                 mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
             }
         }
         stack.remove(iface);
-        return new Record(members);
+        return new Record(members, false, methodKeys);
     }
 
     private Named inferConstructedClassType(
