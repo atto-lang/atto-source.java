@@ -159,7 +159,12 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                if (check(CONST)) {
+                    validateOnlyVisibilityModifiers(modifiers, "file-level compile-time constants");
+                    rootDeclarations.add(parseModuleBinding(annotations, modifiers.visibility));
+                    continue;
+                }
+                throw error(previous(), "expected module, class, interface, trait, type, or const after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -336,7 +341,11 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            if (check(CONST)) {
+                validateOnlyVisibilityModifiers(modifiers, "module compile-time constants");
+                return parseModuleBinding(annotations, modifiers.visibility);
+            }
+            throw error(previous(), "expected class, interface, trait, type, or const after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -990,7 +999,31 @@ public final class Parser {
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
         consumeExpressionStatementTerminator(initializer, "module binding should end with ';'");
+        if (kind == Ast.BindingKind.CONST) {
+            initializer = lowerStaticSymbolIntrinsic(initializer);
+        }
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
+    }
+
+    /**
+     * Symbol.for("literal") is a whitelisted compile-time intrinsic only in
+     * file/module const declarations. Never evaluate arbitrary guest functions
+     * while parsing or linking a module.
+     */
+    private Ast.Expr lowerStaticSymbolIntrinsic(Ast.Expr expr) {
+        if (!(expr instanceof Ast.CallExpr call)
+                || !(call.callee() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr owner)
+                || !owner.name().equals("Symbol")
+                || !member.member().equals("for")) {
+            return expr;
+        }
+        if (call.typeArgumentsPresent() || call.arguments().size() != 1
+                || !(call.arguments().getFirst() instanceof Ast.LiteralExpr literal)
+                || !(literal.value() instanceof String name)) {
+            throw error(previous(), "file/module const Symbol.for requires exactly one constant string literal");
+        }
+        return new Ast.LiteralExpr(dev.oreslang.runtime.OresSymbol.process(name));
     }
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
