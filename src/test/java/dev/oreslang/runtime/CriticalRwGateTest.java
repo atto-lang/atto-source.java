@@ -434,6 +434,81 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void actorStopRevokesAlreadyGrantedRWWriterAndFacadeOwnership() throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        java.util.concurrent.CountDownLatch admitted = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<CriticalRwGate.Ticket> captured =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    var ticket = gate.newCriticalTicket();
+                    captured.set(ticket);
+                    assertTrue(ticket.enterAsync().isDone());
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    admitted.countDown();
+                }
+            });
+            actor.send("hold");
+            assertTrue(admitted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertTrue(gate.hasWriter());
+            assertEquals(1, gate.trackedTicketCount());
+            runtime.stop(actor);
+            assertFalse(gate.hasWriter(),
+                    "STOP must release a granted admission without explicit guest cleanup");
+            assertEquals(0, gate.trackedTicketCount(),
+                    "STOP must retire the facade wrapper as well as the core ticket");
+            assertFalse(captured.get().isHeld());
+            assertEquals(0, CriticalRwGate.waitingLogicalDomains());
+        }
+    }
+
+    @Test
+    void actorStopRetractsQueuedRWWaiterWithoutReleasingHostOwner() throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        var hostOwner = gate.newCriticalTicket();
+        assertTrue(hostOwner.enterAsync().isDone());
+        java.util.concurrent.CountDownLatch queued = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<OresFuture<Void>> future =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try {
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        var waiter = gate.newTicket(CriticalRwGate.Mode.READ);
+                        future.set(waiter.enterAsync());
+                    } catch (Throwable problem) {
+                        failure.set(problem);
+                    } finally {
+                        queued.countDown();
+                    }
+                });
+                actor.send("queue");
+                assertTrue(queued.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertNull(failure.get());
+                assertEquals(1, gate.queuedCount());
+                runtime.stop(actor);
+                assertEquals(0, gate.queuedCount());
+                assertTrue(hostOwner.isHeld(), "STOP must not revoke another owner's permit");
+                assertTrue(future.get().isDone());
+                assertEquals(1, gate.trackedTicketCount(),
+                        "only the independent host writer may remain tracked");
+                assertEquals(0, CriticalRwGate.waitingLogicalDomains());
+            }
+        } finally {
+            hostOwner.close();
+            gate.close();
+        }
+    }
+
+    @Test
     void simultaneousStopCancelAndReleaseCannotResurrectCriticalOwnership()
             throws Exception {
         for (int n = 0; n < 128; n++) {
