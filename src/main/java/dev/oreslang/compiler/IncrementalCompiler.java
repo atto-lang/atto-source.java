@@ -182,8 +182,12 @@ public final class IncrementalCompiler {
                             resolved = klass;
                             LinkedHashMap<String, Ast.TypeAliasDecl> moduleAliases = new LinkedHashMap<>();
                             for (Ast.Decl companion : module.declarations()) {
+                                // Private companion aliases are needed to resolve
+                                // the imported class's field signatures, but are
+                                // never added to the importer's name environment.
+                                // VisibilityPolicy gates the *class/module*
+                                // export; TypeChecker isolates this metadata.
                                 if (companion instanceof Ast.TypeAliasDecl alias
-                                        && VisibilityPolicy.exports(module, alias.visibility())
                                         && moduleAliases.putIfAbsent(alias.name(), alias) != null) {
                                     throw new IllegalArgumentException(
                                             "duplicate type alias in linked class module: " + alias.name());
