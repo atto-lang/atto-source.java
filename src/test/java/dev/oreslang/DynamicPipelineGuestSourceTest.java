@@ -71,6 +71,16 @@ final class DynamicPipelineGuestSourceTest {
                 failure.toString());
     }
 
+    @Test void typedResultCannotBeAssignedAsAnotherEnumCase() throws Exception {
+        String guest = source().replace(
+                "    await first.send(Signal.Data(5));",
+                "    let Signal.Data incorrect = await first.send<Signal.Result>(Signal.Data(5));");
+        assertNotEquals(source(), guest);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(guest)),
+                "the compiler must not confuse the declared reply case with the ingress case");
+    }
+
     @Test void opaqueTypedReplyCannotBeForged() {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
