@@ -830,7 +830,7 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, ActorStateAccessExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -881,6 +881,36 @@ public final class Ast {
                 throw new IllegalArgumentException("runtime operation cannot be blank");
             }
             arguments = List.copyOf(arguments);
+        }
+    }
+
+    /**
+     * A statically bound sealed actor-state operation, never a normal method
+     * call or user-created closure capability. Only the parser of
+     * `self.handle_state(critical-read/write |s| -> ...)` creates it.
+     * The compiler must reject it until an effect-checked state-loan
+     * lowering path proves acquisition, guest execution and cleanup.
+     */
+    public enum StateAccessMode { READ, WRITE }
+
+    public record ActorStateAccessExpr(StateAccessMode mode, LambdaExpr callback)
+            implements Expr {
+        public ActorStateAccessExpr {
+            if (mode == null || callback == null
+                    || callback.nonLexical()
+                    || callback.parameters().size() != 1) {
+                throw new IllegalArgumentException(
+                        "sealed actor state access needs one lexical callback parameter");
+            }
+            Param param = callback.parameters().getFirst();
+            if (!param.type().equals(TypeRef.inferred()) || param.mutable()) {
+                throw new IllegalArgumentException(
+                        "sealed actor state loans have a compiler-owned inferred type");
+            }
+            if (param.name().equals("self") || param.name().equals("state")) {
+                throw new IllegalArgumentException(
+                        "sealed actor state callback binding cannot shadow reserved names");
+            }
         }
     }
 
