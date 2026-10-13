@@ -64,7 +64,7 @@ final class NativeTraceStdlibTest {
             Files.writeString(entry, """
                     import module Trace from "std/trace";
                     pub routine main(): void {
-                      val buffer = new Trace.Buffer(2);
+                      val buffer = Trace.buffer(2);
                       stdio.println(buffer.record(4, 3, 123));
                       stdio.println(buffer.record(4, 4, 8));
                       stdio.println(buffer.record(4, 5, 9));
