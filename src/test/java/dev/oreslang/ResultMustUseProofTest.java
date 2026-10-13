@@ -138,6 +138,68 @@ final class ResultMustUseProofTest {
     }
 
     @Test
+    void functionParametersRequireHandling() {
+        rejects("""
+                fnc bad(Result<void, String> result): void {
+                  return;
+                }
+                """);
+        accepts("""
+                fnc good(Result<void, String> result): void {
+                  match result over
+                    on Ok() -> { stdio.println("ok"); }
+                    on Err(error) -> { stdio.println(error); }
+                  end
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void classMethodParametersRequireHandling() {
+        rejects("""
+                define class Handler as
+                  pub accept(Result<void, String> result): void {
+                    return;
+                  }
+                end
+                """);
+        accepts("""
+                define class Handler as
+                  pub accept(Result<void, String> result): void {
+                    match result over
+                      on Ok() -> { stdio.println("ok"); }
+                      on Err(error) -> { stdio.println(error); }
+                    end
+                    return;
+                  }
+                end
+                """);
+    }
+
+    @Test
+    void wildcardMatchIsNotAResultHandlingProof() {
+        rejects("""
+                fnc bad(): void {
+                  val Result<void, String> result = Ok();
+                  match result over
+                    on _ -> { stdio.println("discard"); }
+                  end
+                  return;
+                }
+                """);
+        rejects("""
+                fnc bad(Result<void, String> result): void {
+                  match result over
+                    on Ok() -> { stdio.println("ok"); }
+                    on _ -> { stdio.println("ignored error"); }
+                  end
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void everyBranchMayPropagateOrHandle() {
         accepts("""
                 fnc good(bool flag): Result<void, String> {
