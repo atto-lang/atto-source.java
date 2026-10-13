@@ -2169,7 +2169,8 @@ public final class TypeChecker {
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + functionName.name());
-                Ast.FunctionDecl target = findFunction(functionName.name(), arity);
+                Ast.FunctionDecl target = selectFunctionAtCall(
+                        functionName.name(), arity, call.arguments(), env, generics, self);
                 if (target != null) {
                     rejectImplicitClassCallable(functionName.name());
                     if (target.actorKind() != Ast.ActorKind.NONE
@@ -2207,9 +2208,9 @@ public final class TypeChecker {
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + namespace.name() + "." + qualifiedCall.member());
-                Ast.FunctionDecl target = findQualifiedFunction(
+                Ast.FunctionDecl target = selectFunctionAtCall(
                         namespace.name() + "." + qualifiedCall.member(),
-                        arity);
+                        arity, call.arguments(), env, generics, self);
                 if (target != null) {
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
@@ -8125,16 +8126,79 @@ public final class TypeChecker {
         return functions.containsKey(name);
     }
 
+    private Ast.FunctionDecl selectFunctionAtCall(
+            String name, int arity, List<Ast.Expr> arguments,
+            Env env, Set<String> generics, Type self) {
+        if (ambiguousFunctions.contains(name)) {
+            throw new IllegalArgumentException(
+                    "ambiguous function/routine name '" + name + "'; qualify it with its module");
+        }
+        Map<Integer, List<Ast.FunctionDecl>> families = enumFunctionFamilies.get(name);
+        List<Ast.FunctionDecl> candidates = families == null ? null : families.get(arity);
+        if (candidates == null) {
+            LinkedHashMap<Integer, Ast.FunctionDecl> byArity = functions.get(name);
+            return byArity == null ? null : byArity.get(arity);
+        }
+        if (arguments.size() != arity || arguments.stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
+            throw new IllegalArgumentException(
+                    "enum overload calls require a statically known direct argument list");
+        }
+        List<NominalEnumOverloads.Signature> signatures = candidates.stream()
+                .map(fn -> NominalEnumOverloads.signature(
+                        fn.name(), fn.parameters(), eligibleEnumOverloadSymbols))
+                .toList();
+        Set<Integer> needed = new HashSet<>();
+        for (int i = 0; i < signatures.size(); i++) {
+            for (int j = i + 1; j < signatures.size(); j++) {
+                for (int pos = 0; pos < arity; pos++) {
+                    if (!signatures.get(i).positions().get(pos)
+                            .equals(signatures.get(j).positions().get(pos))) needed.add(pos);
+                }
+            }
+        }
+        Map<Integer, String> proofs = new HashMap<>();
+        for (int pos : needed) {
+            Type actual = typeOf(arguments.get(pos), env, generics, self);
+            String symbol = NominalEnumOverloads.staticEnumArgumentSymbol(
+                    deref(actual), taggedMessages, eligibleEnumOverloadSymbols);
+            if (symbol == null) {
+                throw new IllegalArgumentException(
+                        "cannot select nominal enum overload of '" + name
+                                + "' at argument " + (pos + 1)
+                                + ": requires a proven static enum type; "
+                                + "Any, Unknown, unions and structural shapes cannot select overloads");
+            }
+            proofs.put(pos, symbol);
+        }
+        NominalEnumOverloads.Signature selected =
+                NominalEnumOverloads.select(signatures, proofs);
+        // The selector inspects only compiler-proven enum symbol IDs.
+        // Ordinary argument assignability runs once, AFTER selection.
+        for (int i = 0; i < signatures.size(); i++) {
+            if (signatures.get(i) == selected) return candidates.get(i);
+        }
+        throw new IllegalStateException("nominal enum overload selector lost declaration identity");
+    }
+
     private Ast.FunctionDecl findFunction(String name, int arity) {
         if (ambiguousFunctions.contains(name)) {
             throw new IllegalArgumentException(
                     "ambiguous function/routine name '" + name + "'; qualify it with its module");
+        }
+        if (enumFunctionFamilies.getOrDefault(name, Map.of()).containsKey(arity)) {
+            throw new IllegalArgumentException(
+                    "enum-overloaded callable '" + name
+                            + "' requires an explicitly compiler-bound call site");
         }
         LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(name);
         return family == null ? null : family.get(arity);
     }
 
     private Ast.FunctionDecl findSingleFunction(String name) {
+        if (enumFunctionFamilies.containsKey(name)) {
+            throw new IllegalArgumentException(
+                    "enum-overloaded function references require explicit signature specialization");
+        }
         if (ambiguousFunctions.contains(name)) {
             throw new IllegalArgumentException(
                     "ambiguous function/routine name '" + name + "'; qualify it with its module");
@@ -8143,11 +8207,20 @@ public final class TypeChecker {
     }
 
     private Ast.FunctionDecl findQualifiedFunction(String qualifiedName, int arity) {
+        if (enumFunctionFamilies.getOrDefault(qualifiedName, Map.of()).containsKey(arity)) {
+            throw new IllegalArgumentException(
+                    "enum-overloaded callable '" + qualifiedName
+                            + "' must be statically selected at its call site");
+        }
         LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(qualifiedName);
         return family == null ? null : family.get(arity);
     }
 
     private Ast.FunctionDecl findSingleQualifiedFunction(String qualifiedName) {
+        if (enumFunctionFamilies.containsKey(qualifiedName)) {
+            throw new IllegalArgumentException(
+                    "enum-overloaded function references require explicit signature specialization");
+        }
         return singleFunction(functions.get(qualifiedName), qualifiedName);
     }
 
