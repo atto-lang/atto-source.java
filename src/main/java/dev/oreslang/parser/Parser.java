@@ -996,12 +996,15 @@ public final class Parser {
                         + "retired tags cannot be reused");
             }
             if (!tags.add(tag)) throw error(start, "duplicate enum wire tag " + tag);
-            if (tag == Integer.MAX_VALUE && !check(END)) {
-                throw error(start, "cannot implicitly increment enum tag after INT32_MAX");
-            }
             nextTag = tag == Integer.MAX_VALUE ? tag : tag + 1;
             cases.add(new Ast.EnumCase(start.lexeme(), payload, tag));
             boolean separator = match(COMMA, SEMICOLON);
+            // A trailing delimiter is legal after the final max-width tag.
+            // Reject only when another case follows, not merely because the
+            // next token is the separator itself.
+            if (tag == Integer.MAX_VALUE && !check(END)) {
+                throw error(start, "cannot implicitly increment enum tag after INT32_MAX");
+            }
             if (!separator && !check(END) && peek().line() <= previous().line()) {
                 throw error(peek(), "enum cases require separate lines, commas or semicolons");
             }
