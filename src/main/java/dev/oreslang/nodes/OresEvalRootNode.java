@@ -1939,6 +1939,10 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation) {
             try {
+                if (stmt instanceof Ast.ExceptionalEffectStmt) {
+                    throw new SecurityException(
+                            "typed exceptional effect cannot resume before guest lowering");
+                }
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
                             task,
@@ -4951,6 +4955,12 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 ArrayDeque<Ast.Expr> deferred,
                 boolean inheritedTailBarrier) {
+            if (stmt instanceof Ast.ExceptionalEffectStmt) {
+                // Defense in depth: a deliberately forged/unchecked AST must
+                // never reinterpret typed throw/raise/panic as ordinary host
+                // exceptions, bypassing actor CONTROL or trace capture.
+                throw new SecurityException("typed exceptional effect cannot execute before guest lowering");
+            }
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();
             }

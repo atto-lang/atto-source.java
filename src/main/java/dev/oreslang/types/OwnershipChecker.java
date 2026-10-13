@@ -262,6 +262,13 @@ public final class OwnershipChecker {
     private boolean discardingSelectReturn;
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
+        if (stmt instanceof Ast.ExceptionalEffectStmt effect) {
+            // Even if a caller tries to invoke ownership analysis on a raw
+            // parsed AST, no effect may escape without type/effect admission.
+            checkExpr(effect.error(), scope, true);
+            throw error("typed exceptional effect '" + effect.kind().name().toLowerCase(java.util.Locale.ROOT)
+                    + "' is not yet enabled by guest exception/supervision lowering");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             checkBinding(binding, scope);
             return;
@@ -2218,6 +2225,8 @@ public final class OwnershipChecker {
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) blockLocals.add(binding.name());
                 }
+            } else if (stmt instanceof Ast.ExceptionalEffectStmt effect) {
+                scanExpr(effect.error(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.YieldStmt yielded) {

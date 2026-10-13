@@ -129,6 +129,11 @@ public final class ReturnCleanupChecker {
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) scope.define(binding.name());
                 }
+            } else if (stmt instanceof Ast.ExceptionalEffectStmt effect) {
+                // Inspect the operand's closures and borrow captures, but do
+                // not accidentally execute or classify an unlowered effect.
+                // The nominal checker owns the diagnostic for invalid types.
+                expression(effect.error(), scope, inDefer, state);
             } else if (stmt instanceof Ast.ReturnStmt ret) {
                 if (inFinally) {
                     throw new IllegalArgumentException(

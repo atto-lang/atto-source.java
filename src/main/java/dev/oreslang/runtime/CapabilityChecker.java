@@ -301,6 +301,14 @@ public final class CapabilityChecker {
 
     private void checkStatements(List<Ast.Stmt> statements, IsolatePolicy policy) {
         for (Ast.Stmt stmt : statements) {
+            if (stmt instanceof Ast.ExceptionalEffectStmt effect) {
+                // Capability checking must not silently ignore a new control
+                // operation; source exception effects are still fail-closed.
+                checkExpr(effect.error(), policy);
+                throw new SecurityException("typed exceptional effect '"
+                        + effect.kind().name().toLowerCase(java.util.Locale.ROOT)
+                        + "' requires compiler-verified guest Error and supervisor lowering");
+            }
             if (stmt instanceof Ast.BindingStmt s) {
                 checkType(s.declaredType(), policy);
                 checkExpr(s.initializer(), policy);
