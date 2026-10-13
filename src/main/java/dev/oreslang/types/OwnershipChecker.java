@@ -1864,10 +1864,17 @@ public final class OwnershipChecker {
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
                 if (field == null) throw error("unknown field '" + member.member() + "' on " + klass.name());
-                if (field.bindingKind() != Ast.BindingKind.LET
-                        && !(klass == initializingClass && member.receiver() instanceof Ast.NameExpr name
-                            && name.name().equals("self"))) {
-                    throw error("field '" + klass.name() + "." + member.member() + "' is immutable; declare the field with let to permit mutation");
+                // The historical constructor exception applies only to
+                // *uninitialized* legacy fields. A final/const/val field with
+                // a declaration initializer is sealed before the constructor
+                // body runs, even when the receiver is self.
+                boolean legacyConstructorFill = field.initializer() == null
+                        && klass == initializingClass
+                        && member.receiver() instanceof Ast.NameExpr name
+                        && name.name().equals("self");
+                if (field.bindingKind() != Ast.BindingKind.LET && !legacyConstructorFill) {
+                    throw error("field '" + klass.name() + "." + member.member()
+                            + "' is immutable; final fields cannot be assigned in constructors");
                 }
             }
             ensureMutableReceiver(member.receiver(), scope, "field '" + member.member() + "'");
