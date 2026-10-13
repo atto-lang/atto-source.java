@@ -72,10 +72,10 @@ class NativeHttpPooledActorTest {
             @Override public synchronized void write(byte[] bytes, int off, int length) {
                 super.write(bytes, off, length);
                 String value = toString(StandardCharsets.UTF_8);
-                int end = value.indexOf('\\n');
+                int end = value.indexOf('\n');
                 if (end >= 0 && !port.isDone())
                     port.complete(Integer.parseInt(value.substring(0, end).trim()));
-                if (value.contains("SATURATED\\n64\\n")) saturated.complete(null);
+                if (value.contains("SATURATED\n64\n")) saturated.complete(null);
             }
         };
         try (Context context = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)
@@ -113,9 +113,9 @@ class NativeHttpPooledActorTest {
             work.get(35, TimeUnit.SECONDS);
         }
         String result = output.toString(StandardCharsets.UTF_8);
-        assertTrue(result.contains("SATURATED\\n64\\n503\\nOVERLOADED\\n1\\n1"),
+        assertTrue(result.contains("SATURATED\n64\n503\nOVERLOADED\n1\n1"),
                 "the 65th exchange must fail without killing the worker: " + result);
-        assertTrue(result.contains("200\\nRECOVERED\\n1\\n1\\n0\\n0"),
+        assertTrue(result.contains("200\nRECOVERED\n1\n1\n0\n0"),
                 "deadline cleanup must free slots and allow healthy worker reuse: " + result);
     }
 
