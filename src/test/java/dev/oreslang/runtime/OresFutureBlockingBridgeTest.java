@@ -40,6 +40,81 @@ final class OresFutureBlockingBridgeTest {
     }
 
     @Test
+    void schedulerTerminalCallbackCannotParkCarrierOnAnotherFuture() throws Exception {
+        OresFuture<Void> gate = new OresFuture<>();
+        OresFuture<Integer> neverCompletes = new OresFuture<>();
+        CountDownLatch observed = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        try (var scheduler = new OresScheduler(1)) {
+            var task = scheduler.start(resume -> {
+                if (resume.initial()) return OresScheduler.await(gate);
+                return OresScheduler.done(91);
+            });
+            task.whenCompleteRuntime((value, error) -> {
+                try {
+                    assertNull(error);
+                    assertEquals(91, value);
+                    assertTrue(OresScheduler.isSchedulerCarrierThread(),
+                            "the completion callback runs on the scheduler carrier");
+                    assertThrows(IllegalStateException.class, neverCompletes::join);
+                    assertThrows(IllegalStateException.class, neverCompletes::get);
+                    assertThrows(IllegalStateException.class,
+                            () -> neverCompletes.get(5, TimeUnit.SECONDS));
+                    assertEquals(0, neverCompletes.pendingRuntimeWaiterCount());
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    observed.countDown();
+                }
+            });
+            assertTrue(gate.completeFromRuntime(null));
+            assertTrue(observed.await(5, TimeUnit.SECONDS),
+                    "terminal callback must make progress without parking a carrier");
+            assertNull(failure.get());
+            assertEquals(91, task.join());
+            assertEquals(27, scheduler.startSync(() -> 27).join(),
+                    "terminal callback cannot leave the scheduler lane stalled");
+        }
+        assertFalse(neverCompletes.isDone());
+    }
+
+    @Test
+    void completionRacingHostTimeoutNeverLeaksRegisteredWaiters() throws Exception {
+        for (int attempt = 0; attempt < 192; attempt++) {
+            OresFuture<Integer> contested = new OresFuture<>();
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+            Thread host = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    contested.get(1, TimeUnit.MILLISECONDS);
+                } catch (TimeoutException expected) {
+                    // The producer may finish before or after this timeout.
+                } catch (Throwable failure) {
+                    unexpected.set(failure);
+                }
+            });
+            Thread completer = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    contested.completeFromRuntime(29);
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                }
+            });
+            start.countDown();
+            host.join(5_000);
+            completer.join(5_000);
+            assertFalse(host.isAlive());
+            assertFalse(completer.isAlive());
+            assertNull(unexpected.get());
+            assertEquals(0, contested.pendingRuntimeWaiterCount(),
+                    "completion/timeout race must retire its host waiter");
+            assertEquals(29, contested.join());
+        }
+    }
+
+    @Test
     void repeatedHostTimeoutsDoNotRetainCallbacksOrCancelProducer() {
         OresFuture<Integer> pending = new OresFuture<>();
         for (int i = 0; i < 1024; i++) {
