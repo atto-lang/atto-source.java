@@ -203,6 +203,53 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void generatorCannotUseCooperateToEscapeALiveMutexGuard() {
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> run("""
+                        define class Counter as
+                          pub let int value = 0;
+                        end
+                        generator fnc bad(): int {
+                          val mutex = Mutex.new(new Counter());
+                          val guard = mutex.lock();
+                          rt cooperate;
+                          guard.release();
+                          yield 7;
+                          return;
+                        }
+                        pub routine main(): void {
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("MutexGuard"),
+                "generator must retain no-yield guard authority: " + failure.getMessage());
+    }
+
+    @Test
+    void generatorMayCooperateOnceItsGuardIsReleased() throws Exception {
+        assertEquals("7", run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                generator fnc values(): int {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  guard.value = 7;
+                  guard.release();
+                  rt cooperate;
+                  yield 7;
+                  return;
+                }
+                pub async routine main(): void {
+                  for const value of values() do
+                    stdio.stdout.write(value);
+                  done
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void explicitRtCooperateCannotSuspendALiveMutexGuard() {
         RuntimeException error = assertThrows(RuntimeException.class, () -> run("""
                 define class Counter as
