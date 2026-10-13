@@ -228,6 +228,22 @@ public final class ChannelRuntime {
         }
     }
 
+    /**
+     * Runtime-side descriptor protocol for the source-level Selectable<T> trait.
+     * One invocation reduces a source to one NEXT event operation. The method
+     * must be side-effect-free: no subscriptions, waiting, consumption, guest
+     * callbacks, or producer scheduling; only an approved SelectCase descriptor.
+     *
+     * <p>Java host callers are trusted; the Oreslang compiler must statically
+     * enforce pure/effect-safe descriptions before opening this adapter to
+     * guest-defined traits. The winner coordinator still only accepts the
+     * sealed channel/Future cases below.</p>
+     */
+    @FunctionalInterface
+    public interface Selectable<T> {
+        SelectCase selectNext();
+    }
+
     public sealed interface SelectCase permits ReadCase, WriteCase, FutureCase, DefaultCase { }
 
     public record ReadCase<T>(Channel<T> channel) implements SelectCase {
@@ -321,6 +337,33 @@ public final class ChannelRuntime {
                 copy.add(Objects.requireNonNull(selectCase));
             }
             return new SelectSet(copy);
+        }
+
+        /**
+         * Reduce heterogeneous trusted sources to exactly one operation each
+         * BEFORE acquiring the atomic coordinator. Describing a candidate
+         * must never await or consume its next event. A default is a select
+         * control arm, not a one-event Selectable source.
+         */
+        public static SelectSet fromSelectables(
+                Iterable<? extends Selectable<?>> selectables) {
+            Objects.requireNonNull(selectables, "selectables");
+            ArrayList<SelectCase> cases = new ArrayList<>();
+            for (Selectable<?> selectable : selectables) {
+                if (cases.size() >= MAX_SELECT_CASES) {
+                    throw new SelectAdmissionException(
+                            "selectable source quota exceeded: " + MAX_SELECT_CASES);
+                }
+                SelectCase operation = Objects.requireNonNull(
+                        Objects.requireNonNull(selectable, "selectable source").selectNext(),
+                        "selectNext must produce one operation");
+                if (operation instanceof DefaultCase) {
+                    throw new IllegalArgumentException(
+                            "Selectable<T> cannot reduce to a default arm");
+                }
+                cases.add(operation);
+            }
+            return new SelectSet(cases);
         }
 
         /**
