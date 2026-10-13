@@ -13,9 +13,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class DoSelectReturnScopeTest {
     @Test
-    void blockingDoSelectReturnIsArmLocalAndItsValueIsDiscarded() throws Exception {
+    void blockingDoSelectReturnsFromEnclosingCallable() throws Exception {
         String program = """
-                pub fnc main(): void {
+                pub fnc compute(): int {
                   val Channel<int> incoming = Channel.new<int>(1);
                   writech incoming, 7;
                   do select {
@@ -25,16 +25,19 @@ final class DoSelectReturnScopeTest {
                       return number * 2;
                     }
                   }
-                  stdio.stdout.write(":continued");
+                  stdio.stdout.write(":unreachable");
+                  return 99;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(compute());
                   return;
                 }
                 """;
 
         OresCompiler.AnalysisResult result =
                 OresCompiler.parseAndTypeCheckWithDiagnostics(program);
-        assertEquals(1, result.warnings().size(), result.warnings().toString());
-        assertTrue(result.warnings().getFirst().contains("W-SELECT-RETURN"));
-        assertEquals("selected:7:continued", run(program));
+        assertEquals(0, result.warnings().size(), result.warnings().toString());
+        assertEquals("selected:714", run(program));
     }
 
     @Test
@@ -57,7 +60,7 @@ final class DoSelectReturnScopeTest {
     }
 
     @Test
-    void bareReturnInDoSelectIsWarnedAndDoesNotEscapeCallable() throws Exception {
+    void bareReturnInDoSelectExitsEnclosingCallable() throws Exception {
         String program = """
                 pub fnc main(): void {
                   val Channel<int> incoming = Channel.new<int>(1);
@@ -73,8 +76,8 @@ final class DoSelectReturnScopeTest {
                 """;
         OresCompiler.AnalysisResult result =
                 OresCompiler.parseAndTypeCheckWithDiagnostics(program);
-        assertEquals(1, result.warnings().size());
-        assertEquals("still-here", run(program));
+        assertEquals(0, result.warnings().size());
+        assertEquals("", run(program));
     }
 
     private static String run(String program) throws Exception {

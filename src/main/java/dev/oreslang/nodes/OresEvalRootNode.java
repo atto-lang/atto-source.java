@@ -2456,8 +2456,9 @@ public final class OresEvalRootNode extends RootNode {
          * A selected branch is a source block, not an exception boundary. Run
          * it on the resumable source frame so RETURN/BREAK/CONTINUE propagate
          * as SourceFlow rather than escaping as host RuntimeExceptions.
-         * Explicit do-select suppresses only the arm-local RETURN; errors,
-         * cancellation and other failures still propagate.
+         * Blocking do-select is procedural: RETURN/BREAK/CONTINUE propagate
+         * through the original source frame, including on resumed selections.
+         * Detached legacy nb-select arms remain a separate continuation scope.
          */
         private void runSelectedArmSuspendable(
                 SourceTask task,
@@ -2476,11 +2477,7 @@ public final class OresEvalRootNode extends RootNode {
                     && arm.bindingName() != null) {
                 armEnv.define(arm.bindingName(), selected.value(), arm.bindingKind());
             }
-            runBlock(task, arm.body(), armEnv, (t, flow) ->
-                    continuation.accept(t,
-                            select.explicitDo() && flow.kind() == SourceFlowKind.RETURN
-                                    ? SourceFlow.normal()
-                                    : flow));
+            runBlock(task, arm.body(), armEnv, continuation);
         }
 
         private void runSelectSuspendable(
@@ -5385,19 +5382,9 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (!detached) {
-                if (selected.explicitDo()) {
-                    try {
-                        // Return values are discarded, so this arm must be a
-                        // tail-call barrier even when the caller is in tail
-                        // position. Otherwise 'return fn();' escapes as a
-                        // TailCallSignal and hijacks the enclosing callable.
-                        executeBlock(arm.body(), armEnv, true);
-                    } catch (ReturnSignal ignored) {
-                        // Do-select return is arm-local; expression evaluated, value discarded.
-                    }
-                } else {
-                    executeBlock(arm.body(), armEnv, tailBarrier);
-                }
+                // Procedural do-select has the same enclosing-callable control
+                // scope as do-match/do-switch; do not swallow ReturnSignal.
+                executeBlock(arm.body(), armEnv, tailBarrier);
                 return;
             }
 

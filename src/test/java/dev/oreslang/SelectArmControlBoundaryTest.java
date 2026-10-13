@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.compiler.OresCompiler;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -29,7 +30,7 @@ final class SelectArmControlBoundaryTest {
     }
 
     @Test
-    void doSelectCannotBreakEnclosingLoop() {
+    void doSelectCanBreakEnclosingLoop() throws Exception {
         String source = """
                 pub fnc main(): void {
                   loop {
@@ -39,15 +40,16 @@ final class SelectArmControlBoundaryTest {
                       }
                     }
                   }
+                  stdio.stdout.write("exited");
+                  return;
                 }
                 """;
-        var problem = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(problem.getMessage().contains("break"), problem::getMessage);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("exited", SelectNestedReturnContractTest.run(source));
     }
 
     @Test
-    void doSelectCannotContinueEnclosingLoop() {
+    void doSelectCanContinueEnclosingLoop() {
         String source = """
                 pub fnc main(): void {
                   loop {
@@ -59,9 +61,7 @@ final class SelectArmControlBoundaryTest {
                   }
                 }
                 """;
-        var problem = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(problem.getMessage().contains("continue"), problem::getMessage);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
     }
 
     @Test
