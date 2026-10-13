@@ -184,6 +184,102 @@ final class ImportInertConstantSyntaxTest {
     }
 
     @Test
+    void foldReferencesAcrossRootAndModuleWithoutGuestCode() {
+        Ast.Program program = Parser.parse("""
+                define pub const int base = 40;
+                define pub module Config as
+                    pub const int answer = base + 2;
+                    pub const int doubled = answer * 2;
+                    pub const Symbol status = Symbol.for("ready");
+                end
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+        Ast.ModuleDecl config = program.modules().stream()
+                .filter(module -> module.name().equals("Config")).findFirst().orElseThrow();
+        assertEquals(42L, ((Ast.LiteralExpr) ((Ast.FieldDecl) config.declarations().get(0))
+                .initializer()).value());
+        assertEquals(84L, ((Ast.LiteralExpr) ((Ast.FieldDecl) config.declarations().get(1))
+                .initializer()).value());
+        assertEquals(OresSymbol.process("ready"),
+                ((Ast.LiteralExpr) ((Ast.FieldDecl) config.declarations().get(2))
+                        .initializer()).value());
+    }
+
+    @Test
+    void foldQualifiedModuleConstantsAndRejectPrivateCrossModuleAccess() {
+        Ast.Program good = Parser.parse("""
+                define pub module A as
+                    pub const int publicNumber = 7;
+                end
+                define pub module B as
+                    pub const int doubled = A.publicNumber * 2;
+                end
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(good));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define pub module A as
+                    const int hidden = 7;
+                end
+                define pub module B as
+                    pub const int leaked = A.hidden;
+                end
+                """));
+    }
+
+    @Test
+    void rejectCyclicConstantDependenciesAcrossLegalSameFileModules() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                define pub module A as
+                    pub const int one = B.two + 1;
+                end
+                define pub module B as
+                    pub const int two = A.one + 1;
+                end
+                """));
+        assertTrue(failure.getMessage().contains("circular constant dependency"), failure::toString);
+    }
+
+    @Test
+    void constantEvaluationRejectsArithmeticOverflowAndRuntimeCalls() {
+        IllegalArgumentException overflow = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("define pub const int x = 9223372036854775807 + 1;"));
+        assertTrue(overflow.getMessage().contains("overflow"), overflow::toString);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("define pub const int x = expensive();"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("define pub const int x = 1 / 0;"));
+    }
+
+    @Test
+    void foldedPublicConstantDependencyChangesImporterAbi() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("constants.ores", """
+                define pub const int base = 40;
+                define pub module Config as
+                    pub const int answer = base + 2;
+                end
+                """);
+        sources.put("app.ores", """
+                import module Config from "./constants.ores";
+                pub fnc main(): void { return; }
+                """);
+        assertTrue(compiler.compile(sources).rebuilt("app.ores"));
+        assertTrue(compiler.compile(sources).reused("app.ores"));
+        sources.put("constants.ores", """
+                define pub const int base = 41;
+                define pub module Config as
+                    pub const int answer = base + 2;
+                end
+                """);
+        assertTrue(compiler.compile(sources).rebuilt("app.ores"),
+                "public inherited constant values must be rehashed and invalidate clients");
+    }
+
+    @Test
     void publicConstantValueChangesInvalidateImportersButPrivateChangesDoNot() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> sources = new LinkedHashMap<>();
