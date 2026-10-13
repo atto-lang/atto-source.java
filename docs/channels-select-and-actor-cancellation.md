@@ -161,11 +161,16 @@ internal/host channel handles.
 Erased/indirect invocations of the channel factory without an explicit
 `T` are rejected. An internal privileged `ChannelRuntime.Channel<T>`
 without a validator remains available for supervisor/actor envelopes; it is
-not a guest `Channel<T>`. The current guest seal checks the presence of
-validator/snapshot policies; a fully unforgeable context-specific host
-capability stamp remains a separate hardening item if malicious in-process
-Java callers are in the threat model. None of this permits leaking private
-repository source or using a public CI mirror for private code.
+not a guest `Channel<T>`. Guest-channel admission now requires more than the presence of
+validator/snapshot callbacks: it checks an opaque interpreter-owned seal
+and the exact OresContext identity. A host-created channel with no-op
+callbacks, or one originating from a different context, cannot enter
+guest readch/static or dynamic select operations. This protects the
+Oreslang/host boundary from accidental capability laundering. It is not
+a claim of protection against fully privileged Java reflection capable
+of accessing arbitrary private process state.
+None of this permits leaking private repository source or using a public
+CI mirror for private code.
 
 **Internal actor mailbox channels are not public generic channels.** They
 transport trusted runtime-only envelopes with scheduler and supervision
