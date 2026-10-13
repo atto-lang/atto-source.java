@@ -70,6 +70,9 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
+    /** Per-envelope identity; an actor's shared execution domain is NOT a
+     * message-lifetime token when multiple messages share one carrier batch. */
+    private static final ThreadLocal<Object> CURRENT_ACTOR_ENVELOPE = new ThreadLocal<>();
     /** Current actor-owned source task's logical quota, never a carrier's quota. */
     private static final ThreadLocal<UntrustedLogicalQuota> CURRENT_UNTRUSTED_QUOTA =
             new ThreadLocal<>();
@@ -1415,6 +1418,13 @@ public final class ActorRuntime implements AutoCloseable {
     java.util.function.Consumer<Runnable> captureCurrentActorTicketRelease(Object ownerDomain) {
         ActorCell<?> cell = currentActor.get();
         if (cell == null) return null;
+        // Scheduler task domains already identify one logical task across
+        // continuation/carrier migration. The actor-wide fallback domain does
+        // not: each mailbox envelope needs its own release authority.
+        boolean hasSchedulerTask = OresScheduler.currentTaskDomain() != null;
+        Object invocation = CURRENT_ACTOR_ENVELOPE.get();
+        if (invocation == null) invocation = CURRENT_ACTOR_EXECUTION.get();
+        final Object ownerInvocation = invocation;
         return close -> {
             boolean ownTurn;
             synchronized (cell.lifecycleLock) {
@@ -1424,7 +1434,11 @@ public final class ActorRuntime implements AutoCloseable {
                         && cell.carrierActive
                         && cell.carrierOwnerThread == Thread.currentThread()
                         && !cell.physicalExitCleanupActive
-                        && currentDomain == ownerDomain;
+                        && currentDomain == ownerDomain
+                        && (hasSchedulerTask
+                            || (CURRENT_ACTOR_ENVELOPE.get() == null
+                                ? CURRENT_ACTOR_EXECUTION.get()
+                                : CURRENT_ACTOR_ENVELOPE.get()) == ownerInvocation);
             }
             if (ownTurn) close.run();
             else cell.afterPhysicalCarrierExit(close);
@@ -7349,6 +7363,11 @@ public final class ActorRuntime implements AutoCloseable {
                     // selected envelope to a final resource for deterministic
                     // close/permit release across every dispatch path.
                     try (MessageEnvelope activeEnvelope = envelope) {
+                        // Pin one message/continuation incarnation. Without
+                        // this token a subsequent message in the same batch
+                        // could falsely release the previous message's grant.
+                        CURRENT_ACTOR_ENVELOPE.set(activeEnvelope);
+                        try {
                         /*
                          * Linearize queued-work start against stop/cancel.
                          * If cancellation acquired lifecycleLock first, this
@@ -7405,6 +7424,9 @@ public final class ActorRuntime implements AutoCloseable {
                             // object across turns.
                             validatePrivateBehaviorState(ref.id(), behavior);
                         }
+                        } finally {
+                            CURRENT_ACTOR_ENVELOPE.remove();
+                        }
                     }
                     processed++;
 
@@ -7447,6 +7469,7 @@ public final class ActorRuntime implements AutoCloseable {
                 } finally {
                     // endTurn itself is a fail-closed invariant check and may
                     // throw; never strand actor authority on a reused carrier.
+                    CURRENT_ACTOR_ENVELOPE.remove();
                     CURRENT_ACTOR_EXECUTION.remove();
                     currentActor.remove();
                 }
