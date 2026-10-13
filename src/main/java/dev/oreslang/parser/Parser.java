@@ -44,6 +44,12 @@ public final class Parser {
         // silently skipping their bodies would violate placement semantics.
         // A token preflight also covers paths not reached by the normal parser.
         for (Token token : tokens) {
+            if (token.type() == CRITICAL || token.type() == CRITICAL_READ
+                    || token.type() == CRITICAL_WRITE || token.type() == USING
+                    || token.type() == WITH || token.type() == OWNS || token.type() == OWNER) {
+                throw error(token, "reserved keyword '" + token.lexeme()
+                        + "' requires verified ownership/effect and scheduler lowering; unsupported on this backend revision");
+            }
             if (token.type() == GPU || token.type() == CPU || token.type() == QUANTUM) {
                 throw error(token, "execution domain '" + token.lexeme()
                         + "' requires typed effect/ownership checking and explicit backend lowering;"

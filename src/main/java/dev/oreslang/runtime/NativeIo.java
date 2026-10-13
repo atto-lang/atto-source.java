@@ -30,6 +30,7 @@ public final class NativeIo {
     private NativeIo() { }
 
     public static String readText(OresContext context, String rawPath) {
+        context.coreIoPolicy().requireLegacy("readText");
         Path path = canonicalExistingPath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), "fs.read_text");
         try {
@@ -40,6 +41,7 @@ public final class NativeIo {
     }
 
     public static boolean exists(OresContext context, String rawPath) {
+        context.coreIoPolicy().requireLegacy("exists");
         Path path = canonicalIfExisting(rawPath);
         context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), "fs.exists");
         return Files.exists(path);
@@ -50,6 +52,7 @@ public final class NativeIo {
      * walker: the guest checks each next component with is_symlink and is_dir.
      */
     public static List<String> listDir(OresContext context, String rawPath) {
+        context.coreIoPolicy().requireLegacy("listDir");
         Path lexical = Path.of(rawPath).toAbsolutePath().normalize();
         context.requirePermission(RuntimePermissions.Permission.READ, lexical.toString(), "fs.list_dir");
         if (Files.isSymbolicLink(lexical)) throw new SecurityException("fs.list_dir refuses symlink: " + lexical);
@@ -105,10 +108,12 @@ public final class NativeIo {
     }
 
     public static boolean isSymlink(OresContext context, String rawPath) {
+        context.coreIoPolicy().requireLegacy("isSymlink");
         return Files.isSymbolicLink(metadataTarget(context, rawPath, "fs.is_symlink"));
     }
 
     public static boolean isDir(OresContext context, String rawPath) {
+        context.coreIoPolicy().requireLegacy("isDir");
         return Files.isDirectory(metadataTarget(context, rawPath, "fs.is_dir"),
                 LinkOption.NOFOLLOW_LINKS);
     }
@@ -120,6 +125,7 @@ public final class NativeIo {
      * against the caller's WRITE grant before any mutation.
      */
     public static void writeTextAtomic(OresContext context, String rawPath, String value) {
+        context.coreIoPolicy().requireLegacy("writeTextAtomic");
         Path lexical = lexicalPath(rawPath);
         if (Files.isSymbolicLink(lexical)) {
             throw new SecurityException("fs.write_text_atomic refuses symlink: " + lexical);
@@ -156,6 +162,7 @@ public final class NativeIo {
     }
 
     public static void writeText(OresContext context, String rawPath, String value) {
+        context.coreIoPolicy().requireLegacy("writeText");
         Path path = canonicalWritePath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), "fs.write_text");
         try {
@@ -172,6 +179,7 @@ public final class NativeIo {
     }
 
     public static void appendText(OresContext context, String rawPath, String value) {
+        context.coreIoPolicy().requireLegacy("appendText");
         Path path = canonicalWritePath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), "fs.append_text");
         try {
@@ -188,6 +196,7 @@ public final class NativeIo {
     }
 
     public static void createDirectories(OresContext context, String rawPath) {
+        context.coreIoPolicy().requireLegacy("createDirectories");
         Path path = canonicalWritePath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), "fs.mkdir_all");
         try {
@@ -198,6 +207,7 @@ public final class NativeIo {
     }
 
     public static void remove(OresContext context, String rawPath) {
+        context.coreIoPolicy().requireLegacy("remove");
         Path path = canonicalExistingPath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), "fs.remove");
         try {
@@ -220,10 +230,12 @@ public final class NativeIo {
     }
 
     public static String httpGetText(OresContext context, String rawUri) {
+        context.coreIoPolicy().requireLegacy("httpGetText");
         return httpText(context, "GET", rawUri, null);
     }
 
     public static String httpPostText(OresContext context, String rawUri, String body) {
+        context.coreIoPolicy().requireLegacy("httpPostText");
         return httpText(context, "POST", rawUri, body);
     }
 
@@ -232,6 +244,7 @@ public final class NativeIo {
             String method,
             String rawUri,
             String body) {
+        context.coreIoPolicy().requireLegacy("http client");
         URI uri = checkedHttpUri(rawUri);
         String endpoint = networkEndpoint(uri);
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "http." + method.toLowerCase());
@@ -264,6 +277,7 @@ public final class NativeIo {
     }
 
     public static TcpConnection connect(OresContext context, String host, int port) {
+        context.coreIoPolicy().requireLegacy("connect");
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("network.connect host cannot be blank");
         }
@@ -302,6 +316,7 @@ public final class NativeIo {
         }
 
         public String readLine() {
+            context.coreIoPolicy().requireLegacy("socket.read_line");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
             try {
                 return reader.readLine();
@@ -311,6 +326,7 @@ public final class NativeIo {
         }
 
         public void writeText(String value) {
+            context.coreIoPolicy().requireLegacy("socket.write_text");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
             try {
                 writer.write(value);
@@ -322,6 +338,7 @@ public final class NativeIo {
 
         @Override
         public void close() {
+            context.coreIoPolicy().requireLegacy("socket.close");
             try {
                 socket.close();
                 context.nativeIo().unregister(socket);

@@ -77,6 +77,8 @@ public final class OresMain {
         String mode = NativeBuildMode.defaultExecutionMode();
         String platform = "server";
         PermissionCheckMode permissionCheckMode = PermissionCheckMode.RUNTIME;
+        dev.oreslang.runtime.CoreIoPolicy coreIoPolicy = dev.oreslang.runtime.CoreIoPolicy.LEGACY_BLOCKING;
+        boolean ioPolicySpecified = false;
         RuntimePermissions.Builder permissionBuilder = new RuntimePermissions.Builder();
         EnumSet<RuntimePermissions.Permission> touchedPermissions =
                 EnumSet.noneOf(RuntimePermissions.Permission.class);
@@ -96,6 +98,11 @@ public final class OresMain {
                 else if (arg.equals("--no-prompt")) {
                     // Oreslang permissions never prompt. This Deno-compatible
                     // spelling is accepted so automation can state that intent.
+                } else if (arg.startsWith("--core-io=")) {
+                    if (ioPolicySpecified) throw new IllegalArgumentException("duplicate --core-io policy");
+                    ioPolicySpecified = true;
+                    coreIoPolicy = dev.oreslang.runtime.CoreIoPolicy.fromApplicationArguments(
+                            new String[]{"--ores-core-io=" + arg.substring("--core-io=".length())});
                 } else if (arg.startsWith("--permission-check=")) {
                     permissionCheckMode = PermissionCheckMode.parse(
                             arg.substring("--permission-check=".length()));
@@ -256,7 +263,7 @@ public final class OresMain {
                 allowedHostClasses,
                 System.getenv(),
                 System.out,
-                System.err).exitStatus();
+                System.err, coreIoPolicy).exitStatus();
         return exitStatus;
     }
 
@@ -310,7 +317,7 @@ public final class OresMain {
     private static void printUsage() {
         System.err.println(
                 "usage: oreslang-compiler [--check|--build-analysis] "
-                        + "[--permission-check=runtime|compile] [--allow-all] "
+                        + "[--core-io=native-async-only|legacy-blocking] [--permission-check=runtime|compile] [--allow-all] "
                         + "[--allow-read[=PATH,...]] [--deny-read[=PATH,...]] "
                         + "[--allow-write[=PATH,...]] [--deny-write[=PATH,...]] "
                         + "[--allow-net[=HOST[:PORT],...]] [--deny-net[=HOST[:PORT],...]] "

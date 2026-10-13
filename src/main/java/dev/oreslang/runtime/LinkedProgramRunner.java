@@ -173,6 +173,16 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
+        return runWithExitStatus(entryFile, policy, permissions, permissionCheckMode,
+                executionProfile, allowedHostClasses, environment, out, err, CoreIoPolicy.LEGACY_BLOCKING);
+    }
+
+    public static RunResult runWithExitStatus(
+            Path entryFile, IsolatePolicy policy, RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode, ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses, Map<String, String> environment,
+            OutputStream out, OutputStream err, CoreIoPolicy coreIoPolicy) throws IOException {
+        java.util.Objects.requireNonNull(coreIoPolicy);
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -183,6 +193,7 @@ public final class LinkedProgramRunner {
         ensureJavaEntryContainsOres(entry, units);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
+            coreIoPolicy.requireLegacy("mixed Java source");
             policy.require(IsolatePolicy.Capability.JAVA_SOURCE_INTEROP, "mixed Java/Ores source islands");
             policy.require(IsolatePolicy.Capability.JAVA_INTEROP, "mixed Java/Ores object interop");
             if (policy.adversarial()) throw new SecurityException("mixed Java/Ores source islands are disabled for adversarial isolates");
@@ -213,6 +224,11 @@ public final class LinkedProgramRunner {
                         effectiveHostClasses,
                         permissions,
                         permissionCheckMode);
+                String[] baseArgs = policy.applicationArguments(executionProfile, permissions, permissionCheckMode);
+                String[] ioArgs = java.util.Arrays.copyOf(baseArgs, baseArgs.length + 1);
+                ioArgs[baseArgs.length] = "--ores-core-io=" + (coreIoPolicy == CoreIoPolicy.NATIVE_ASYNC_ONLY
+                        ? "native-async-only" : "legacy-blocking");
+                builder.arguments(OresLanguage.ID, ioArgs);
                 if (out != null) builder.out(forwardingStream(out));
                 if (err != null) builder.err(forwardingStream(err));
 

@@ -32,6 +32,8 @@ public final class Lexer {
         KEYWORDS.put("null", NULL); KEYWORDS.put("obj", OBJ); KEYWORDS.put("arr", ARR);
         // Accelerator/host execution domains are reserved even before backend lowering.
         // They must not be interpreted as ordinary CPU-side identifiers or calls.
+        KEYWORDS.put("critical", CRITICAL); KEYWORDS.put("using", USING);
+        KEYWORDS.put("with", WITH); KEYWORDS.put("owns", OWNS); KEYWORDS.put("owner", OWNER);
         KEYWORDS.put("gpu", GPU); KEYWORDS.put("cpu", CPU); KEYWORDS.put("quantum", QUANTUM);
     }
 
@@ -153,6 +155,17 @@ public final class Lexer {
     private void identifier() {
         while (isIdentPart(peek())) advance();
         String text = source.substring(start, current);
+        if (text.equals("critical")) {
+            for (String suffix : List.of("-read", "-write")) {
+                int end = current + suffix.length();
+                if (source.startsWith(suffix, current)
+                        && (end == source.length() || !isIdentPart(source.charAt(end)))) {
+                    while (current < end) advance();
+                    add(suffix.equals("-read") ? CRITICAL_READ : CRITICAL_WRITE);
+                    return;
+                }
+            }
+        }
         add(KEYWORDS.getOrDefault(text, IDENT));
     }
 

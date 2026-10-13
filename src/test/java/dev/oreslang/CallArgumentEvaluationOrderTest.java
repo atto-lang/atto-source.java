@@ -16,10 +16,10 @@ final class CallArgumentEvaluationOrderTest {
                 return self.value;
               }
             end
-            fnc consume(borrow mut Cell owner, int value) -> int {
+            fnc consume(borrow mut Cell resource, int value) -> int {
               return value;
             }
-            fnc consumeRead(borrow Cell owner, int value) -> int {
+            fnc consumeRead(borrow Cell resource, int value) -> int {
               return value;
             }
             """;

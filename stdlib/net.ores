@@ -1,0 +1,29 @@
+// Oreslang-owned TCP source facade over the minimal kernel readiness ABI.
+// Experimental loopback/supervisor-only initial slice; never Java HTTP.
+define module net_core as
+  pub fnc listen_loopback(int port, int backlog, int max_connections,
+                          int max_pending): NioTcpListener {
+    return network.listen_nonblocking("127.0.0.1", port, backlog,
+                                      max_connections, max_pending);
+  }
+
+  pub fnc accept(borrow NioTcpListener listener): Future<NioTcpConnection> {
+    return listener.accept_async();
+  }
+
+  pub fnc read(borrow NioTcpConnection connection, int maximum): Future<Array<int>> {
+    return connection.read_bytes_async(maximum);
+  }
+
+  pub fnc write(borrow NioTcpConnection connection, Array<int> bytes): Future<int> {
+    return connection.write_bytes_async(bytes);
+  }
+
+  pub fnc close_connection(NioTcpConnection connection): Future<void> {
+    return connection.close_async();
+  }
+
+  pub fnc close_listener(NioTcpListener listener): Future<void> {
+    return listener.close_async();
+  }
+end
