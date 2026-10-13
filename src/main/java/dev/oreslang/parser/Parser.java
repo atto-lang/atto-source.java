@@ -1008,7 +1008,7 @@ public final class Parser {
             // These names claim code generation, target selection or ABI effects.
             // Until a typed annotation registry and AOT lowering exist, retaining
             // them as inert metadata would silently change program semantics.
-            if (List.of("derive", "Derive", "repr", "Repr", "align", "Align",
+            if (List.of("derive", "Derive", "repr", "Repr", "align",
                     "cfg", "Cfg", "inline", "Inline", "expand", "GenerateBuilder",
                     "GenerateSchema", "GenerateClient", "ActorMessage",
                     "PipelineStage", "RequiresState").contains(name)) {
