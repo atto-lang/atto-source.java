@@ -14,6 +14,22 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Draft admission tests: negative types are proofs, not dynamic casts. */
 final class NegativeTypeAdmissionTest {
     @Test
+    void nestedCallableUncertaintyCannotProveComplementDisjointness() {
+        Types.Type unknownParameter = new Types.Function(
+                List.of(Types.Unknown.INSTANCE), Types.Primitive.INT);
+        Types.Type unknownResult = new Types.Function(
+                List.of(Types.Primitive.INT), Types.Unknown.INSTANCE);
+        for (Types.Type callable : List.of(unknownParameter, unknownResult)) {
+            assertFalse(Types.areProvablyDisjoint(Types.notOf(callable), callable));
+            assertFalse(Types.areProvablyDisjoint(
+                    Types.notOf(new Types.Borrow(callable, false)),
+                    new Types.Borrow(callable, false)));
+            assertFalse(Types.areProvablyDisjoint(
+                    Types.notOf(new Types.SelfType(callable)), new Types.SelfType(callable)));
+        }
+    }
+
+    @Test
     void parserDistinguishesUnaryTypeComplementFromBooleanValueNegation() {
         assertEquals(Ast.TypeRef.simple("string"),
                 Ast.TypeRef.complement(Ast.TypeRef.complement(Ast.TypeRef.simple("string"))));
