@@ -2644,7 +2644,8 @@ public final class OresEvalRootNode extends RootNode {
                                     t,
                                     SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                                || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                             continuation.accept(t, flow);
                         } else {
                             if (loop.update() == null) {
@@ -2703,7 +2704,8 @@ public final class OresEvalRootNode extends RootNode {
                                     t,
                                     SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                                || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
@@ -2817,7 +2819,8 @@ public final class OresEvalRootNode extends RootNode {
                 runBlock(t, body, iteration, (t2, flow) -> {
                     if (flow.kind() == SourceFlowKind.BREAK) {
                         finishAsyncForOf(t2, generator, SourceFlow.normal(), continuation);
-                    } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW) {
+                    } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                         finishAsyncForOf(t2, generator, flow, continuation);
                     } else {
                         runAsyncForOfIteration(t2, generator, env, body, bind, continuation);
@@ -2869,7 +2872,8 @@ public final class OresEvalRootNode extends RootNode {
                         if (flow.kind() == SourceFlowKind.BREAK) {
                             continuation.accept(t, SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                                || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
@@ -2938,7 +2942,8 @@ public final class OresEvalRootNode extends RootNode {
                         if (flow.kind() == SourceFlowKind.BREAK) {
                             continuation.accept(t, SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                                || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
