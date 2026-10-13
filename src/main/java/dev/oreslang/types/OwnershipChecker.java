@@ -3068,6 +3068,11 @@ public final class OwnershipChecker {
             CaptureSet captures = new CaptureSet();
             Set<String> locals = new HashSet<>();
             if (arm.bindingName() != null) locals.add(arm.bindingName());
+            // Winning readch projections are arm-local, not closure captures:
+            // the selector supplies them only after the channel read settles.
+            for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                if (!binding.isDiscard()) locals.add(binding.name());
+            }
             scanStatements(arm.body(), locals, outer, null, captures);
             perArm.add(captures);
 
