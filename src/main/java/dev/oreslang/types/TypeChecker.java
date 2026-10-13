@@ -4777,7 +4777,11 @@ public final class TypeChecker {
                 // capability, including readonly members inside an explicit
                 // struct. A named structural contract needs the same shape
                 // overlay when the subject is a record.
-                if (subject instanceof Record) bindingType = targetShape;
+                if (subject instanceof Record) {
+                    // Structural patterns produce a read-only view rather than
+                    // granting writes merely because the pattern spells {x: T}.
+                    bindingType = new Record(targetShape.members(), true);
+                }
                 bindingType = overlayReadonlyCapabilities(subject, bindingType);
                 bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
             }
@@ -4900,7 +4904,12 @@ public final class TypeChecker {
         if (subject instanceof SelfType selfType) {
             return structuralPatternMayMatch(selfType.bound(), targetShape);
         }
-        if (subject instanceof Record) return assignable(subject, targetShape);
+        // Pattern testing only reads the subject. A readonly input must not
+        // become unreachable because the pattern spelling denotes a mutable
+        // record; the binding retains the subject's readonly capability.
+        if (subject instanceof Record) {
+            return assignable(subject, new Record(targetShape.members(), true));
+        }
         if (subject instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
@@ -4944,7 +4953,11 @@ public final class TypeChecker {
             Type br = deref(resolve(b.target(), generics, self));
             Record earlierShape = structuralPatternShape(a.target(), ar, generics);
             Record laterShape = structuralPatternShape(b.target(), br, generics);
-            return structuralRecordAssignable(laterShape, earlierShape);
+            // Pattern subsumption compares readable shapes, not assignment
+            // capabilities. Both patterns are non-mutating predicates.
+            return structuralRecordAssignable(
+                    new Record(laterShape.members(), true),
+                    new Record(earlierShape.members(), true));
         }
         if (earlier instanceof Ast.StructuralPattern a && later instanceof Ast.TypePattern b) {
             Type ar = deref(resolve(a.target(), generics, self));
@@ -6256,11 +6269,10 @@ public final class TypeChecker {
         }
 
         Type concrete = resolve(param.type(), generics, self);
-        if (concrete instanceof Record) {
-            // Inline structural shapes are already the canonical read-only
-            // structural contract. They do not need a nominal class/interface
-            // lookup and may safely view readonly inferred records.
-            return concrete;
+        if (concrete instanceof Record record) {
+            // A structural parameter is an immutable borrowed view. Preserve
+            // that capability in the expected type, including for inline records.
+            return new Record(record.members(), true);
         }
         Ast.InterfaceDecl iface = findInterface(param.type().name());
         if (iface != null) {
@@ -6268,9 +6280,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("structural interface must resolve to a named type");
             }
             Type shape = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
-            return substituteGenerics(
+            Record specialized = (Record) substituteGenerics(
                     shape,
                     genericBindings(iface.genericParameters(), named.arguments(), "interface " + iface.name()));
+            return new Record(specialized.members(), true);
         }
 
         Ast.ClassDecl klass = findClass(param.type().name());
@@ -6284,7 +6297,8 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("structural class must resolve to a named type");
             }
             Type shape = publicClassShape(klass, new LinkedHashSet<>());
-            return substituteGenerics(shape, classGenericBindings(klass, named));
+            Record specialized = (Record) substituteGenerics(shape, classGenericBindings(klass, named));
+            return new Record(specialized.members(), true);
         }
 
         throw new IllegalArgumentException(
@@ -7412,9 +7426,18 @@ public final class TypeChecker {
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
             Type candidate = actual.members().get(required.getKey());
             if (candidate == null || !assignable(candidate, required.getValue())) return false;
-            // Writable structural slots must be invariant under both nominal
-            // inheritance and recursive generic-aware assignability.
-            if (!expected.readOnly() && !assignable(required.getValue(), candidate)) return false;
+            // Writable slots must be genuinely invariant. Two-way assignability
+            // is insufficient: Unknown, dynamic interop and permissive generic
+            // relations can pass both directions without equal representations.
+            // Compiler-owned callable selector slots are methods, not writable
+            // fields; they retain contravariant parameters/covariant returns.
+            boolean methodSlot = required.getKey().startsWith("instance$")
+                    && required.getKey().contains("$arity")
+                    && required.getKey().contains("$generics")
+                    && candidate instanceof Function && required.getValue() instanceof Function;
+            if (!expected.readOnly() && !methodSlot && !candidate.equals(required.getValue())) {
+                return false;
+            }
         }
         return true;
     }
