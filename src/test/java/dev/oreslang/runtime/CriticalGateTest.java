@@ -6,6 +6,67 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class CriticalGateTest {
     @Test
+    void domainClosePreservesErrorPriorityAfterEarlierObserverException() {
+        CriticalGate gate = new CriticalGate();
+        var owner = gate.newTicket();
+        var queued = gate.newTicket();
+        assertTrue(owner.enterAsync().isDone());
+        var pending = queued.enterAsync();
+        owner.onClose(() -> {
+            throw new IllegalStateException("first cleanup failed");
+        });
+        queued.onClose(() -> {
+            throw new AssertionError("fatal cleanup failed");
+        });
+        AssertionError fatal = assertThrows(AssertionError.class, gate::closeAll);
+        assertEquals("fatal cleanup failed", fatal.getMessage());
+        assertEquals(1, fatal.getSuppressed().length);
+        assertInstanceOf(IllegalStateException.class, fatal.getSuppressed()[0]);
+        assertTrue(pending.isDone());
+        assertFalse(gate.held());
+        assertEquals(0, gate.queuedCount());
+    }
+
+    @Test
+    void actorStopDrainsAllOwnedGatesEvenWhenCloseObserverThrowsError() throws Exception {
+        CriticalGate first = new CriticalGate();
+        CriticalGate second = new CriticalGate();
+        java.util.concurrent.CountDownLatch admitted = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> guestFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    var a = first.newTicket();
+                    assertTrue(a.enterAsync().isDone());
+                    a.onClose(() -> {
+                        throw new AssertionError("injected actor resource cleanup error");
+                    });
+                    var b = second.newTicket();
+                    assertTrue(b.enterAsync().isDone());
+                } catch (Throwable failure) {
+                    guestFailure.set(failure);
+                } finally {
+                    admitted.countDown();
+                }
+            });
+            actor.send("hold");
+            assertTrue(admitted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertNull(guestFailure.get());
+            assertTrue(first.held());
+            assertTrue(second.held());
+            runtime.stop(actor);
+            assertFalse(first.held());
+            assertFalse(second.held(),
+                    "Error in one resource callback must not skip later revocation");
+            assertEquals(0, runtime.trackedActorResourceCount(actor));
+            assertTrue(actor.done().isDone());
+            assertThrows(Throwable.class, () -> actor.done().join(),
+                    "cleanup Error must be an observable actor terminal failure");
+        }
+    }
+
+    @Test
     void throwingCloseObserverDoesNotStrandAlreadyGrantedSuccessor() {
         CriticalGate gate = new CriticalGate();
         var writer = gate.newTicket();
