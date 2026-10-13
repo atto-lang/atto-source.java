@@ -2191,9 +2191,10 @@ public final class OresEvalRootNode extends RootNode {
                         "unsupported suspendable statement "
                                 + stmt.getClass().getName());
             } catch (RuntimeException | Error failure) {
-                continuation.accept(
-                        task,
-                        SourceFlow.throwing(failure));
+                // Once downstream has received a flow, propagate its failure
+                // rather than delivering a second, synthetic THROW flow.
+                if (delivered.get()) throw failure;
+                continuation.accept(task, SourceFlow.throwing(failure));
             }
         }
 
