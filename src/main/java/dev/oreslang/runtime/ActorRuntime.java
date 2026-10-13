@@ -1389,7 +1389,7 @@ public final class ActorRuntime implements AutoCloseable {
                 stage.done().whenCompleteRuntime((ignored, failure) -> {
                     if (failure != null) {
                         physicalDone.failFromRuntime(OresFuture.unwrap(failure));
-                    } else if (route.phase().get() < 0) {
+                    } else if (route.phase().get() == -1) {
                         physicalDone.failFromRuntime(new IllegalStateException(
                                 "actor pipeline aborted before physical DONE"));
                     }
@@ -1476,6 +1476,16 @@ public final class ActorRuntime implements AutoCloseable {
         return -2 - expected;
     }
 
+    /**
+     * A provisional negative publication claim is NOT a failed route.
+     * Reconstruct the most recently committed phase when deciding whether
+     * a physically finalized actor has already published its outbound DATA.
+     * Only -1 is the terminal failure sentinel.
+     */
+    private static int committedPipelinePhase(int observed) {
+        return observed <= -2 ? -2 - observed : observed;
+    }
+
     private static void reservePipelinePublication(LinearPipeline route, int expected) {
         if (!route.phase().compareAndSet(expected, provisionalPipelinePhase(expected))) {
             throw new SecurityException(
@@ -1495,7 +1505,10 @@ public final class ActorRuntime implements AutoCloseable {
     private static void failPipeline(LinearPipeline route) {
         while (true) {
             int old = route.phase().get();
-            if (old == -1 || old == 2 * route.count()) return;
+            if (old == -1) return;
+            // Terminal source phase is not terminal *success*: every actor
+            // still must physically DONE without an error. Preserve failed
+            // finalization even after the typed reply was committed.
             if (route.phase().compareAndSet(old, -1)) return;
         }
     }
@@ -1526,12 +1539,13 @@ public final class ActorRuntime implements AutoCloseable {
         if (route == null) return;
         int position = route.indexOf(departed.ref.id());
         if (position < 0) throw new SecurityException("unknown pipeline member");
-        int phase = route.phase().get();
+        int observedPhase = route.phase().get();
+        int committedPhase = committedPipelinePhase(observedPhase);
         Throwable failure = departed.ref.terminationCause.get();
         boolean source = position == 0;
-        boolean premature = failure != null
-                || (source ? phase != 2 * route.count()
-                           : phase < 2 * route.count() - position);
+        boolean premature = failure != null || observedPhase == -1
+                || (source ? committedPhase != 2 * route.count()
+                           : committedPhase < 2 * route.count() - position);
         // Retire only this actor's routing fence. The source may reach
         // physical DONE before a downstream stage does; releasing sibling
         // registrations here would allow arbitrary host DATA to bypass the
@@ -1541,7 +1555,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (!premature || closed.get()) return;
         while (true) {
             int old = route.phase().get();
-            if (old == -1 || old == 2 * route.count()) return;
+            if (old == -1) return;
+            // A fatal actor can terminate after source result commitment
+            // but before the full physical-DONE barrier. Never treat phase
+            // 2*N alone as irrevocable success.
             if (route.phase().compareAndSet(old, -1)) break;
         }
         IllegalStateException aborted = new IllegalStateException(
