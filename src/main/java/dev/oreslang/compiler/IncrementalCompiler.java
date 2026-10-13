@@ -300,7 +300,8 @@ public final class IncrementalCompiler {
             return;
         }
         if (decl instanceof Ast.TypeAliasDecl alias) {
-            abi.append("type ").append(alias.name());
+            if (alias.visibility() != Ast.Visibility.PUBLIC) return;
+            abi.append("pub type ").append(alias.name());
             appendGenerics(abi, alias.genericParameters());
             abi.append('=').append(typeRef(alias.target())).append('\n');
             return;
