@@ -1,0 +1,13 @@
+// Native Image/AOT regression: legacy critical still means exclusive WRITE.
+// File-global and instance methods must enter their owning RW domains.
+pub critical fnc file_value(): int { return 23; }
+define class Foo as
+    pub critical answer(): int { return 11; }
+end
+pub fnc main(): void {
+    val foo = new Foo();
+    stdio.stdout.write(foo.answer());
+    stdio.stdout.write("|");
+    stdio.stdout.write(file_value());
+    return;
+}
