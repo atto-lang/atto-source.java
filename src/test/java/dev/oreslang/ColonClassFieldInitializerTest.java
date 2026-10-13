@@ -18,7 +18,7 @@ final class ColonClassFieldInitializerTest {
                     end
                     """.formatted(separator, separator));
             assertDoesNotThrow(() -> TypeChecker.check(program));
-            Ast.ClassDecl foo = (Ast.ClassDecl) program.declarations().getFirst();
+            Ast.ClassDecl foo = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
             assertEquals(Ast.BindingKind.VAL, foo.fields().get(0).bindingKind());
             assertEquals(Ast.BindingKind.LET, foo.fields().get(1).bindingKind());
         }
