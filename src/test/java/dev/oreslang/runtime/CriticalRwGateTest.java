@@ -266,6 +266,51 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void foreignHostCannotReleaseLiveSynchronousOwnerTicket() throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch leave = new CountDownLatch(1);
+        AtomicReference<CriticalRwGate.Ticket> active = new AtomicReference<>();
+        AtomicReference<Throwable> hostFailure = new AtomicReference<>();
+        Thread owner = Thread.ofPlatform().name("rw-host-owner").start(() -> {
+            var writer = gate.newCriticalTicket();
+            try {
+                writer.enterSync();
+                active.set(writer);
+                entered.countDown();
+                if (!leave.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("host guest turn did not finish");
+                }
+            } catch (Throwable failure) {
+                hostFailure.set(failure);
+            } finally {
+                writer.close();
+            }
+        });
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var writer = active.get();
+            var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+            reader.enterAsync();
+            assertFalse(reader.isHeld());
+            var failure = assertThrows(IllegalStateException.class, writer::close);
+            assertTrue(failure.getMessage().contains("foreign thread"));
+            assertTrue(writer.isHeld(), "external host close released live writer");
+            assertFalse(reader.isHeld(), "reader overlapped host-owned writer");
+            leave.countDown();
+            owner.join(TimeUnit.SECONDS.toMillis(5));
+            assertFalse(owner.isAlive());
+            assertNull(hostFailure.get());
+            assertTrue(reader.isHeld(), "reader must enter after owner exits");
+            reader.close();
+        } finally {
+            leave.countDown();
+            owner.join(TimeUnit.SECONDS.toMillis(5));
+            gate.close();
+        }
+    }
+
+    @Test
     void foreignCloseCannotReleaseRunningSchedulerWriterBeforeCarrierUnwind()
             throws Exception {
         CriticalRwGate gate = new CriticalRwGate();
