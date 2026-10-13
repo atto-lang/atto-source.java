@@ -7410,8 +7410,11 @@ public final class OresEvalRootNode extends RootNode {
                     } else if (field.initializer() != null) {
                         OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
                         Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
+                        // The object must remain unobservable while fields
+                        // are being initialized. Static analysis never binds
+                        // self in field initializer scope; the runtime must
+                        // enforce that same boundary for linked/unchecked code.
                         Env initializerEnv = new Env(null, false, fieldOwner);
-                        initializerEnv.define("self", object, Ast.BindingKind.VAL);
                         value = eval(field.initializer(), initializerEnv);
                     } else {
                         throw new IllegalArgumentException(
@@ -7479,10 +7482,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (field.initializer() == null) continue;
                 OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
                 Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
+                // Do not bind self. Constructor parameters are scalar-only,
+                // and the partly built instance is not an initializer value.
                 Env initializerEnv = new Env(
                         fieldOwner == klass ? scalarInitializerArgs : null,
-                        false, fieldOwner, object);
-                initializerEnv.define("self", object, Ast.BindingKind.VAL);
+                        false, fieldOwner, null);
                 fields.put(field.name(), eval(field.initializer(), initializerEnv));
             }
 
