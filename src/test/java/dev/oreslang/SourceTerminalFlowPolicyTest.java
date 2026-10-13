@@ -144,6 +144,23 @@ final class SourceTerminalFlowPolicyTest {
     }
 
     @Test
+    void thousandsOfCleanupFailuresCannotGrowTerminalSuppressionWithoutBound()
+            throws Exception {
+        var cancelled = new CancellationException("cancelled");
+        Object pending = throwing(cancelled);
+        for (int i = 0; i < 2_048; i++) {
+            pending = afterCleanup(pending, throwing(
+                    new IllegalStateException("defer failure " + i)));
+            assertEquals("TERMINAL", kind(pending));
+            assertSame(cancelled, failure(pending));
+        }
+        assertEquals(64, cancelled.getSuppressed().length,
+                "terminal exception must retain a bounded diagnostic sample");
+        assertEquals("defer failure 0", cancelled.getSuppressed()[0].getMessage());
+        assertEquals("defer failure 63", cancelled.getSuppressed()[63].getMessage());
+    }
+
+    @Test
     void ordinaryCleanupFailureOverridesOrdinaryGuestFailure() throws Exception {
         var ordinary = new IllegalArgumentException("guest failure");
         var cleanupFailure = new IllegalStateException("finally failed");
