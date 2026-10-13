@@ -18,7 +18,7 @@ pub fnc category(Error error): int {
 }
 ```
 
-The type `Error` is a nominal **abstract** Oreslang class, never Java `Throwable`. Its `code(): int` is a required abstract slot (code 0 is reserved for this root in the catalog, not produced by an instance). Nine families and `FileSystemError` are also abstract; every concrete leaf provides its own `code()` value. `FileSystemError` (3090) and `NetworkError` (4000) are descendants of `IOError`. The catalog has **88 concrete leaf classes and 11 abstract group/root classes**: **99 classes** total.
+The type `Error` is a nominal **concrete** Oreslang class, never Java `Throwable`. Its `code(): int` returns 0 for a directly constructed `new Error()`; no trace is captured at construction. Nine families and `FileSystemError` are also abstract; every concrete leaf provides its own `code()` value. `FileSystemError` (3090) and `NetworkError` (4000) are descendants of `IOError`. The catalog has **88 concrete leaf classes, 1 concrete root and 10 abstract grouping classes**: **99 classes** total.
 
 The machine-readable complete name/parent/code inventory is `contracts/v1/error-catalog.json`. Names and codes are permanently assigned. Deprecate old codes instead of changing their meaning; reserve new codes for new types. Never dispatch on code instead of guest nominal type metadata.
 
@@ -43,7 +43,7 @@ The machine-readable complete name/parent/code inventory is `contracts/v1/error-
 Multiple class inheritance is allowed in Oreslang, but `std/error` deliberately
 uses **at most one concrete/abstract class parent** per type. This prevents
 ambiguous inherited state, constructor paths and name-plus-arity method slots.
-The abstract root has a **pure virtual** `code(): int` slot; other abstract
+The concrete root supplies `code(): int` and inherited serializers; other abstract
 group classes implement their reserved codes, while the 88 leaf classes
 override `code()` with stable, unique core codes.
 
@@ -242,3 +242,7 @@ https://docs.rs/ractor/latest/ractor/errors/index.html
 - **No auto-merge** before the exact-commit CI test matrix: Maven parser/typechecker; import/runtime match; source-order and unreachable arms; optimizer/Native Image; LLVM/Clang ASan/UBSan guest tests; negative syntax/effect policy tests; catalog drift/collision/security tests.
 
 See `docs/EXCEPTION_EFFECT_ADMISSION.md`, `docs/TRAP.md`, `docs/PATTERN_MATCHING.md`.
+
+## Trace and serialization extension
+
+The concrete Error root implements Serializable with to_string(), to_json(), to_messagepack(), and to_proto_buf(). New Error() is trace-free, and explicit capture_stack() populates a bounded guest trace. Its inherited synthetic constructor fields configure full_trace, json_full, message, binary_full and stack; see docs/ERROR_SERIALIZATION_AND_TRACING.md for wire formats, compact JSON and binary output, trust-boundary redaction and the not-yet-enabled automatic throw-site capture. Current Java trace capture handles synchronous guest callable frames only; LLVM/async parity remains a release gate.
