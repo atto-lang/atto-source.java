@@ -1744,9 +1744,9 @@ public final class TypeChecker {
                                 arm.bindingKind());
                     }
                 }
-                if (selected.explicitDo()) {
-                    // Every do-select return is arm-local, including blocking do select.
-                    // A returned value is evaluated, discarded, and warned about.
+                if (selected.explicitDo() && selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    // Legacy detached do-nb-select remains arm-local; blocking
+                    // do-select returns from the enclosing callable.
                     checkIsolatedArmBlock(arm.body(), armEnv, generics,
                             Unknown.INSTANCE, self, true);
                 } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
