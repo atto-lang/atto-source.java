@@ -2201,7 +2201,11 @@ public final class TypeChecker {
                     if (argument instanceof Ast.SpreadExpr spread) {
                         requireSpreadable(typeOf(spread.expression(), env, generics, self), "stdio.stdout.log spread");
                     } else {
-                        typeOf(argument, env, generics, self);
+                        Type actual = typeOf(argument, env, generics, self);
+                        if (isMustUseVoidResult(actual) && !(argument instanceof Ast.NameExpr)) {
+                            throw new IllegalArgumentException(
+                                    "must-use Result<void,E> temporary cannot be discarded by stdout.log");
+                        }
                     }
                 }
                 return Primitive.VOID;
@@ -6856,9 +6860,19 @@ public final class TypeChecker {
             Env env,
             Set<String> generics,
             Type self) {
-        return argument.expression() == null
+        Type actual = argument.expression() == null
                 ? argument.staticType()
                 : typeOfAgainstExpected(argument.expression(), expected, env, generics, self);
+        // A freshly constructed Result<void,E> cannot be passed to an
+        // untyped/generic sink: the temporary has no must-use binding whose
+        // eventual handling can be verified. Named references may be inspected
+        // without consuming them; their original obligation remains active.
+        if (isMustUseVoidResult(actual) && !isMustUseVoidResult(expected)
+                && !(argument.expression() instanceof Ast.NameExpr)) {
+            throw new IllegalArgumentException(
+                    "must-use Result<void,E> temporary cannot escape through an untyped call argument");
+        }
+        return actual;
     }
 
     private Type checkGenericCallable(
