@@ -108,6 +108,25 @@ def cases(valid):
         item[field] = value
         yield name, item
 
+    # Ordinary regex $ accepts the position before a final newline.
+    # TypeSpec-derived and normative schemas must agree on true EOF.
+    for name, group, field, value in [
+        ("newline source SHA", None, "source_sha256", "1" * 64 + "\n"),
+        ("newline expansion SHA", None, "expanded_sha256", "2" * 64 + "\n"),
+        ("newline generated AST SHA", None, "generated_ast_sha256", "3" * 64 + "\n"),
+        ("newline binary SHA", "artifact", "file_sha256", "4" * 64 + "\n"),
+        ("newline compiler Git SHA", "compiler", "git_commit", "a" * 40 + "\n"),
+        ("newline Ed25519 signature", "signature", "value_base64", "A" * 86 + "==\n"),
+    ]:
+        item = copy.deepcopy(valid)
+        if group == "signature":
+            item["provenance"]["signature"][field] = value
+        elif group is None:
+            item[field] = value
+        else:
+            item[group][field] = value
+        yield name, item
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: test_typespec_parity.py <typespec-generated-output-directory>")
