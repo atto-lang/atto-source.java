@@ -28,6 +28,24 @@ class DiagnosticProof(unittest.TestCase):
                     run.validate_command(command)
         self.assertEqual(run.validate_command("compiler {source}"), ["compiler", "{source}"])
 
+    def test_required_graal_native_cases_cannot_run_without_guest_adapter(self):
+        import io
+        from contextlib import redirect_stderr
+        suite, _ = run.validate_suite()
+        self.assertTrue(run.requires_guest_runner(suite, "graal"))
+        self.assertFalse(run.requires_guest_runner(suite, "llvm"))
+        no_native = {"cases": [{"kind": "diagnostic", "backends": {"graal": "required"}}]}
+        self.assertFalse(run.requires_guest_runner(no_native, "graal"))
+        with patch.object(sys, "argv", [
+            "run.py", "--backend", "graal",
+            "--command", "python3 contracts/v1/java_probe.py {source}",
+            "--revision", "a" * 40
+        ]), redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as terminated:
+                run.main()
+        self.assertEqual(terminated.exception.code, 2)
+        self.assertIn("--run-command is mandatory", err.getvalue())
+
     def test_validates_strict_schema_fixture_inventory(self):
         suite, digest = run.validate_suite()
         self.assertGreaterEqual(len(suite["cases"]), 10)

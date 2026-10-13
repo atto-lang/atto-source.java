@@ -84,6 +84,12 @@ def validate_command(command):
         raise ValueError("compiler command must contain exactly one {source}")
     return argv
 
+def requires_guest_runner(suite, backend):
+    return backend == "graal" and any(
+        case["kind"] == "native_exit" and case["backends"]["graal"] == "required"
+        for case in suite["cases"]
+    )
+
 def check_diagnostic(returncode, stdout, stderr, category, backend):
     # A crash, missing compiler, signal or setup failure cannot satisfy a rejection.
     # A valid rejection must also identify the intended semantic error.
@@ -174,6 +180,8 @@ def main():
     if args.run_command and args.backend != "graal":
         p.error("--run-command is only applicable to the graal backend")
     run_argv = validate_command(args.run_command) if args.run_command else None
+    if requires_guest_runner(suite, args.backend) and run_argv is None:
+        p.error("--run-command is mandatory for required Graal native_exit cases")
     results = []
     for case in suite["cases"]:
         if case["backends"][args.backend] == "pending":
