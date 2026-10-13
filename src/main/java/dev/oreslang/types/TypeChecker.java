@@ -1388,6 +1388,14 @@ public final class TypeChecker {
 
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
+        // Runtime calls (including arbitrary supposedly-pure functions) must
+        // never be evaluated while importing/linking a compile-time constant.
+        // The recognized Symbol.for("literal") form is already folded by the
+        // parser; dynamic Symbol.for(name) intentionally remains disallowed.
+        if (field.bindingKind() == Ast.BindingKind.CONST && !constant(field.initializer())) {
+            throw new IllegalArgumentException("file/module const '" + field.name()
+                    + "' requires a compile-time constant expression; runtime calls are forbidden");
+        }
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
         requireMutableReferentCompatible(
                 actual,
