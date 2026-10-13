@@ -184,6 +184,26 @@ final class ActorTypedTerminalBoundaryTest {
     }
 
     @Test
+    void forgedSupervisorMetadataAndOversizeDiagnosticsFailClosed() {
+        var id = ActorRuntime.ActorId.create();
+        var terminal = ExceptionBoundaryPolicy.actorTerminal(PANIC);
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorRuntime.ActorFailureNotice(
+                        id, Optional.empty(), ActorRuntime.ActorKind.SHARED,
+                        terminal, Optional.empty(), "x".repeat(129)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorRuntime.ActorFailureNotice(
+                        id, Optional.empty(), ActorRuntime.ActorKind.SHARED,
+                        terminal, Optional.empty(), "bad\\nname"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ActorRuntime.ActorFailureNotice(
+                        id, Optional.empty(), ActorRuntime.ActorKind.SHARED,
+                        terminal, Optional.of(
+                                ExceptionBoundaryPolicy.taskOrRootTerminal(RETURN)),
+                        "java.lang.IllegalStateException"));
+    }
+
+    @Test
     void compilerEffectSignalRejectsOutOfRangeCodes() {
         assertThrows(IllegalArgumentException.class,
                 () -> ActorRuntime.GuestEffectSignal.throwing(-1));
