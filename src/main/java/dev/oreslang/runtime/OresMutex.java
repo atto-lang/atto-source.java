@@ -91,6 +91,11 @@ public final class OresMutex {
 
         @Override
         public boolean cancel(boolean mayInterruptIfRunning) {
+            // Preserve the pre-existing one-shot cancellation contract. A
+            // completed cancellation no longer retains revokeQueuedWaiter,
+            // and calling CompletableFuture.cancel again would otherwise
+            // report true for an already-cancelled result.
+            if (super.isDone()) return false;
             java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
             if (revoke != null && !revoke.getAsBoolean()) {
                 // Dequeue already won: an in-flight physical handoff is
