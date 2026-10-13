@@ -250,3 +250,7 @@ The concrete Error root implements Serializable with to_string(), to_json(), to_
 ## Exceptional effect payload type admission
 
 Every source `throw e`, `raise e`, and `panic e` must carry an owned nominal subclass of the canonical `std/error.Error` class (including the root itself). Nominal evidence must be verified by the compiler and cannot be satisfied by duck typing, `Any`/`Unknown`, copied code/name fields or an unrelated class named `Error`. The Java AST/type checker on PR #811 recognizes these statements and diagnoses invalid operands before failing closed for valid operands; guest exceptional effect execution is still not admitted. The actor supervisor CONTROL flow for unhandled failures remains a distinct, unforgeable runtime channel. Full contract: docs/EXCEPTION_EFFECT_ADMISSION.md.
+
+## Actor failure payloads must be data only
+
+An actor may hold functions or methods on a custom Error subclass. These must never be serialized or executed while notifying a supervisor. The new GuestErrorWireCodec.ErrorSnapshot and supervisorCompactSnapshot strictly marshal allowlisted primitive data without examining source object fields. It is a non-authoritative diagnostic; actor CONTROL must be emitted separately by the host runtime with authenticated actor ID and generation. Full details are restricted to trusted local diagnostics via explicit allowlisted message/String-frame copying, not general recursive serialization. See docs/ERROR_SERIALIZATION_AND_TRACING.md and supervision issue #641.

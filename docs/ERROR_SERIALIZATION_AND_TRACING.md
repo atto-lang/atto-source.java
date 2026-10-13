@@ -26,6 +26,59 @@ Code and name are diagnostics only, not authority for actor-origin failure type 
 
 Security: full disclosure is the default only for trusted local diagnostics. Remote actors, untrusted plug-ins, cross-tenant transport, public API responses and telemetry require an independently enforced disclosure policy. Current caller-controlled flags are NOT an authorization boundary. No host Java stack, raw Java Throwable, guest heap pointer, actor supervisor CONTROL envelope, executable closure or arbitrary object graph is serialized. Before released use, ensure data at rest and actor boundaries is redacted and that caller options cannot override enforced compact-mode rules.
 
+## Actor-to-supervisor transport: methods and closures are never data
+
+A live guest `Error` object may inherit `code()`, `to_json()`,
+`to_messagepack()`, `to_proto_buf()`, other user-defined methods,
+and subclass fields that reference callbacks, closures, actor handles,
+object graphs or cycles. **None may be marshalled or even invoked by the
+supervisor transport.** No `Object.toString()`, reflection, automatic
+guest serializer dispatch, method invocation or general-purpose object
+graph traversal is permitted while producing the control diagnostic.
+
+`GuestErrorWireCodec.ErrorSnapshot` is a JVM immutable, strictly typed
+data-only record (bounded name, integer code, String message and a copied
+list of String frames, plus the disclosure flag). Its output helpers create
+JSON, MessagePack and Protobuf without retaining the source Error or guest
+callables. There are deliberately two distinct factories:
+
+- `supervisorCompactSnapshot(trustedNominalName, trustedCatalogCode,
+  ignoredGuestFields)`: the **default** actor -> supervisor diagnostic.
+  It never inspects, enumerates or copies the field map. It always emits
+  only `schema/code/name`, regardless of `json_full`, `binary_full`
+  or `full_trace` choices made by guest code. Even self-referential,
+  cyclic and callback-containing subclass state cannot be traversed.
+- `trustedLocalSnapshot(trustedNominalName, trustedCatalogCode,
+  guestFields)`: intended only for explicitly authorized **local**
+  diagnostics. Reads exactly `message` and `stack`. Both must be
+  ordinary String or Array<String> data; any method/function/capability
+  in the trace is rejected, not stringified. Every frame is copied;
+  returned records cannot alias live actor-owned memory. All unrelated
+  subclass fields, functions and user-defined `to_json` overrides
+  are ignored, not visited.
+
+**Critical provenance rule:** name/code are display-only diagnostics and
+MUST come from verified nominal metadata in the compiler/runtime, not
+from serialized text, a guest's `code()` return value, or a caller-supplied
+string. The factory itself is **not the actor-supervisor CONTROL channel**
+and does not grant authority. Integration with runtime-owned non-forgeable
+CONTROL notices, actor generation and supervisor policy is a separate
+release gate. No guest can construct a supervisor notice by creating a
+well-formed error snapshot.
+
+All four local `Error.to_*` implementations also now require a constant
+non-negative numeric `code()` method body and read it without executing
+any guest method or getter. A subclass that computes `code()` or
+overrides it with side effects must fail closed at serialization until
+an explicitly declarative error code field/annotation and portable ABI
+are available. This rule is not permission to dispatch `code()` later
+during cross-actor supervision.
+
+Cross-tenant or external error rendering requires separately enforced
+redaction, quotas and authorization before details can leave the actor
+isolation boundary. Ordinary `to_json` return values are **not**
+safe CONTROL messages.
+
 ## Stack trace as a value
 
 std/tracing exports capture_trace_string(): String and capture_trace_frames(): Array<String>. Both snapshot only active Oreslang callable frames and never allocate Error. Current JVM runtime records synchronous guest call names using a bounded scope stack and owns the returned snapshot. It is independent of Throwable.getStackTrace, does not include Java carrier frames or raw guest receivers, and clears per-thread state when unwinding.
