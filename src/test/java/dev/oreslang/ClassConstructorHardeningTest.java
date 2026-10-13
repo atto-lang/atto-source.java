@@ -309,6 +309,25 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void constructorCannotCopyOrSharePartiallyInitializedSelf() {
+        for (String operation : java.util.List.of("copy", "share", "take")) {
+            String sourceText = """
+                    define class Unsafe as
+                      val int age;
+                      constructor(int age) {
+                        const leaked = rt %s self;
+                        self.age = age;
+                      }
+                    end
+                    """.formatted(operation);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(sourceText)));
+            assertTrue(error.getMessage().contains(
+                    "constructor cannot apply runtime operation to partially initialized self"));
+        }
+    }
+
+    @Test
     void constructorCannotCreateBorrowAliasToPartiallyInitializedSelf() {
         String unary = """
                 define class Unsafe as
