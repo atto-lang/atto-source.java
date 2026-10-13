@@ -379,6 +379,35 @@ public final class TypeChecker {
         }
 
         for (Ast.InterfaceMember member : contract.members()) {
+            if (member instanceof Ast.InterfaceFunctionDecl required) {
+                // Function types do not encode source parameter labels. Check
+                // them separately so a module contract cannot advertise a
+                // named call that the implementing function interprets using
+                // a different label layout.
+                Ast.FunctionDecl actualFunction = module.declarations().stream()
+                        .filter(decl -> decl instanceof Ast.FunctionDecl)
+                        .map(decl -> (Ast.FunctionDecl) decl)
+                        .filter(fn -> fn.visibility() == Ast.Visibility.PUBLIC
+                                && fn.actorKind() == Ast.ActorKind.NONE
+                                && fn.name().equals(required.name())
+                                && fn.parameters().size() == required.parameters().size())
+                        .findFirst().orElse(null);
+                if (actualFunction != null) {
+                    for (int parameter = 0; parameter < required.parameters().size(); parameter++) {
+                        String expectedLabel = required.parameters().get(parameter).name();
+                        String actualLabel = actualFunction.parameters().get(parameter).name();
+                        if (!expectedLabel.equals(actualLabel)) {
+                            throw new IllegalArgumentException(
+                                    "incompatible parameter label implementing module contract '"
+                                            + contract.name() + "' in module '" + module.name()
+                                            + "' function '" + required.name() + "' at parameter "
+                                            + (parameter + 1) + ": contract '" + expectedLabel
+                                            + "', implementation '" + actualLabel + "'");
+                        }
+                    }
+                }
+                continue;
+            }
             if (!(member instanceof Ast.InterfaceFieldDecl required)) continue;
             Ast.FieldDecl actual = actualFields.get(required.name());
             if (actual == null) {
