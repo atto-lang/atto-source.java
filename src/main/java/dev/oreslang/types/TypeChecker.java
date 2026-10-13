@@ -300,7 +300,11 @@ public final class TypeChecker {
             String category;
             if (decl instanceof Ast.FunctionDecl fn) {
                 name = fn.name();
-                category = fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "fnc";
+                // fnc and routine participate in the same name+arity family.
+                // Their callable-kind/effect distinction is not an overload
+                // discriminant. The earlier putFunctionSlot() check rejects
+                // duplicate arities, regardless of callable kind.
+                category = "callable";
             } else if (decl instanceof Ast.ClassDecl klass) {
                 name = klass.name();
                 category = "class";
