@@ -133,7 +133,7 @@ final class NamedArgumentsExecutionTest {
     void interfaceImplementationsMustPreserveParameterLabels() {
         String valid = """
                 define interface Api
-                  fnc pick(int amount): int;
+                  fnc pick(int amount) => int;
                 end
                 define class Worker implements Api as
                   pub pick(int amount): int { return amount; }
@@ -143,7 +143,7 @@ final class NamedArgumentsExecutionTest {
 
         String renamed = """
                 define interface Api
-                  fnc pick(int amount): int;
+                  fnc pick(int amount) => int;
                 end
                 define class Worker implements Api as
                   pub pick(int value): int { return value; }
@@ -154,6 +154,45 @@ final class NamedArgumentsExecutionTest {
         assertTrue(error.getMessage().contains("incompatible parameter label"));
         assertTrue(error.getMessage().contains("amount"));
         assertTrue(error.getMessage().contains("value"));
+    }
+
+    @Test
+    void inheritedInterfaceMethodLabelsAreStableAcrossOverridesAndDiamonds() {
+        String compatible = """
+                define interface Parent
+                  fnc pick(int amount) => int;
+                end
+                define interface Child extends Parent
+                  fnc pick(int amount) => int;
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(compatible)));
+
+        String renamed = """
+                define interface Parent
+                  fnc pick(int amount) => int;
+                end
+                define interface Child extends Parent
+                  fnc pick(int value) => int;
+                end
+                """;
+        IllegalArgumentException renameError = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(renamed)));
+        assertTrue(renameError.getMessage().contains("incompatible inherited interface parameter labels"));
+
+        String diamond = """
+                define interface Left
+                  fnc pick(int amount) => int;
+                end
+                define interface Right
+                  fnc pick(int value) => int;
+                end
+                define interface Combined extends Left, Right
+                end
+                """;
+        IllegalArgumentException diamondError = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(diamond)));
+        assertTrue(diamondError.getMessage().contains("incompatible inherited interface parameter labels"));
     }
 
     @Test
