@@ -7335,12 +7335,24 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void finishResourceRevocation(List<AutoCloseable> revoke) {
+            Error fatal = null;
             try {
                 for (AutoCloseable resource : revoke) {
                     try {
                         resource.close();
-                    } catch (Exception ignored) {
-                        // Continue draining other actor-owned capabilities.
+                    } catch (Exception cleanupFailure) {
+                        // Cleanup failure is not a successful graceful STOP.
+                        // Continue revoking unrelated capabilities before DONE.
+                        ref.terminationCause.compareAndSet(null, cleanupFailure);
+                    } catch (Error cleanupFailure) {
+                        // Never let an AssertionError or other JVM Error skip
+                        // the remaining grants while STOP publishes DONE.
+                        ref.terminationCause.compareAndSet(null, cleanupFailure);
+                        if (fatal == null) {
+                            fatal = cleanupFailure;
+                        } else if (fatal != cleanupFailure) {
+                            fatal.addSuppressed(cleanupFailure);
+                        }
                     }
                 }
             } finally {
@@ -7350,6 +7362,12 @@ public final class ActorRuntime implements AutoCloseable {
                     lifecycleLock.notifyAll();
                 }
             }
+            // Guest/internal assertion failures are actor-terminal, not a
+            // reason to crash the VM's carrier. Preserve only truly fatal
+            // VM/linkage/thread errors for propagation after full cleanup.
+            if (fatal instanceof VirtualMachineError vm) throw vm;
+            if (fatal instanceof ThreadDeath death) throw death;
+            if (fatal instanceof LinkageError linkage) throw linkage;
         }
 
         private void terminateTree(Throwable cause, boolean recordCause) {
