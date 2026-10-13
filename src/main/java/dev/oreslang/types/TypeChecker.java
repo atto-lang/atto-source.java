@@ -1815,6 +1815,16 @@ public final class TypeChecker {
             if (value instanceof Double) return Primitive.FLOAT;
             if (value instanceof Boolean) return Primitive.BOOL;
             if (value instanceof String s) return new StringLiteral(s);
+            if (value instanceof Ast.Symbol symbol) {
+                // Namespace visibility is checked at compile time; runtime
+                // actor mailbox admission repeats checks for nested values.
+                if (currentActorKind == Ast.ActorKind.UNTRUSTED
+                        && !dev.oreslang.runtime.OresSymbol.literal(symbol.name()).publicCore()) {
+                    throw new IllegalArgumentException(
+                            "untrusted actor cannot reference private Symbol #" + symbol.name());
+                }
+                return new Named("Symbol", List.of());
+            }
             if (value instanceof Ast.Imaginary) return Primitive.COMPLEX;
             return Unknown.INSTANCE;
         }
@@ -3212,6 +3222,11 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Symbol")) {
+                throw new IllegalArgumentException(
+                        "Symbol is an immutable value, not a class constructor; "
+                                + "use #name or trusted Symbol.process(name)");
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
                         "DynamicStruct has been removed; use infer struct{...}, "
@@ -7150,6 +7165,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Symbol" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Symbol is not generic");
+                }
+                yield new Named("Symbol", List.of());
+            }
             case "void" -> Primitive.VOID;
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
