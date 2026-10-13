@@ -159,20 +159,20 @@ def collect_source(root, trusted_root):
                 elif stat.S_ISREG(metadata.st_mode):
                     file_fd = os.open(name, file_flags, dir_fd=directory_fd)
                     try:
-                        with os.fdopen(file_fd, "rb") as stream:
-                            metadata = os.fstat(stream.fileno())
-                            if not stat.S_ISREG(metadata.st_mode):
-                                raise Denied("source file changed type during traversal")
-                            # A hardlink can point to bytes outside the approved
-                            # directory despite no symbolic link being present.
-                            if metadata.st_nlink != 1:
-                                raise Denied("hardlinked source files are not allowed")
-                            if metadata.st_size > MAX_SINGLE:
-                                raise Denied("file exceeds source mirror limit")
-                            data = stream.read(MAX_SINGLE + 1)
-                    finally:
-                        # os.fdopen() owns and closes file_fd on all exits.
-                        pass
+                        stream = os.fdopen(file_fd, "rb")
+                    except BaseException:
+                        os.close(file_fd)
+                        raise
+                    with stream:
+                        metadata = os.fstat(stream.fileno())
+                        if not stat.S_ISREG(metadata.st_mode):
+                            raise Denied("source file changed type during traversal")
+                        # A hardlink may refer to outside-checkout bytes.
+                        if metadata.st_nlink != 1:
+                            raise Denied("hardlinked source files are not allowed")
+                        if metadata.st_size > MAX_SINGLE:
+                            raise Denied("file exceeds source mirror limit")
+                        data = stream.read(MAX_SINGLE + 1)
                     if len(data) > MAX_SINGLE:
                         raise Denied("file exceeds source mirror limit")
                     total += len(data)
