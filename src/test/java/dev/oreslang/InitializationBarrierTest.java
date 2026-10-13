@@ -128,6 +128,72 @@ final class InitializationBarrierTest {
         assertTrue(moduleCall.getMessage().contains("cannot be called directly"));
     }
 
+
+    @Test
+    void publicInteropInvocationCannotRunAgainstOnlyLinkedOrFailedUnits() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, """
+                fnc init(): void {
+                  stdio.stdout.write("I");
+                  return;
+                }
+                pub fnc ping(): int { return 7; }
+                """, "interop-barrier.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            Value unit = context.parse(source);
+            unit.execute(OresEvalRootNode.LINK_ONLY_COMMAND);
+            assertEquals("", output.toString(StandardCharsets.UTF_8),
+                    "linking a module must not execute its init hook");
+
+            PolyglotException premature = assertThrows(
+                    PolyglotException.class,
+                    () -> unit.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "ping"));
+            assertTrue(premature.getMessage().contains(
+                    "public invocation cannot run before successful initialization"));
+
+            unit.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+            assertEquals("I", output.toString(StandardCharsets.UTF_8));
+            assertEquals(7, unit.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "ping").asInt());
+            unit.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+            assertEquals("I", output.toString(StandardCharsets.UTF_8),
+                    "a linked unit's init hook must run at most once");
+        }
+    }
+
+    @Test
+    void publicInteropInvocationCannotResurrectFailedInitialization() throws Exception {
+        Source source = Source.newBuilder(OresLanguage.ID, """
+                fnc init(): void {
+                  val values = arr[1];
+                  val impossible = values[9];
+                  return;
+                }
+                pub fnc ping(): int { return 7; }
+                """, "failed-interop-barrier.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .build()) {
+            Value unit = context.parse(source);
+            unit.execute(OresEvalRootNode.LINK_ONLY_COMMAND);
+            assertThrows(PolyglotException.class,
+                    () -> unit.execute(OresEvalRootNode.INIT_ONLY_COMMAND));
+            PolyglotException failure = assertThrows(
+                    PolyglotException.class,
+                    () -> unit.execute(OresEvalRootNode.INVOKE_PUBLIC_COMMAND, "ping"));
+            assertTrue(failure.getMessage().contains(
+                    "public invocation cannot run before successful initialization"));
+        }
+    }
+
     @Test
     void mainOnlyCommandCannotBypassInitializationBarrier() throws Exception {
         Source source = Source.newBuilder(OresLanguage.ID, """
