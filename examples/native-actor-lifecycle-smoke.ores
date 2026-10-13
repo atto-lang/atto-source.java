@@ -1,0 +1,44 @@
+// Native Image actor lifecycle parity smoke: READY -> send -> DONE.
+// This file must run as a compiled executable in both AOT and hybrid modes.
+define actor SharedWorker as
+  let int started;
+
+  on_start(): void {
+    self.started = 1;
+    return;
+  }
+
+  receive(ActorMail<String> mail): void {
+    if self.started != 1; do
+      return;
+    fi
+    if mail.value == "stop"; do
+      self.end();
+    fi
+    return;
+  }
+end
+
+define isoactor PrivateWorker as
+  receive(ActorMail<String> mail): void {
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val shared = spawn SharedWorker();
+  val privateWorker = spawn PrivateWorker();
+
+  await shared.get_ready();
+  await privateWorker.get_ready();
+
+  shared.send("stop");
+  privateWorker.send("stop");
+
+  await shared.get_done();
+  await privateWorker.get_done();
+
+  stdio.stdout.write("native-actors-done");
+  return;
+}
