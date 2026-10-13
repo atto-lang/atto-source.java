@@ -245,6 +245,27 @@ final class ImportInertConstantSyntaxTest {
     }
 
     @Test
+    void qualifiedPublicFieldWithinPrivateModuleCannotBeReexported() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                    define module Hidden as
+                        pub const int secret = 9;
+                    end
+                    define pub module Exposed as
+                        pub const int leaked = Hidden.secret;
+                    end
+                    """));
+        assertTrue(failure.getMessage().contains("private module"), failure::toString);
+    }
+
+    @Test
+    void unaryMinimumIntegerNegationIsDiagnosedRatherThanEscapingHostException() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("define pub const int overflow = -(-9223372036854775808);"));
+        assertTrue(failure.getMessage().contains("overflow"), failure::toString);
+    }
+
+    @Test
     void rejectCyclicConstantDependenciesAcrossLegalSameFileModules() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("""
