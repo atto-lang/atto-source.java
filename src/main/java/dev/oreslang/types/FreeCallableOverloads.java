@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.TaggedMessageCodec;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -42,7 +43,7 @@ public final class FreeCallableOverloads {
         return enumOwners.contains(type.name()) ? "e:" + type.name() : null;
     }
 
-    private static String staticTag(Types.Type type, Set<String> enumOwners) {
+    private static String staticTag(Types.Type type, Map<String, TaggedMessageContracts.EnumType> enums) {
         if (type instanceof Types.Primitive value) {
             return switch (value) {
                 case INT -> "p:int";
@@ -55,10 +56,21 @@ public final class FreeCallableOverloads {
         }
         if (type instanceof Types.StringLiteral) return "p:string";
         if (type instanceof Types.Named named && named.arguments().isEmpty()) {
-            if (enumOwners.contains(named.name())) return "e:" + named.name();
+            if (enums.containsKey(named.name())) return "e:" + named.name();
+            // A dotted nominal *is not* an enum merely because its prefix
+            // matches one. Require an exact registry case (no lookalike,
+            // fabricated variant, class or nested dotted type).
             int dot = named.name().indexOf('.');
-            if (dot > 0 && enumOwners.contains(named.name().substring(0, dot)))
-                return "e:" + named.name().substring(0, dot);
+            if (dot > 0 && dot == named.name().lastIndexOf('.')) {
+                TaggedMessageContracts.EnumType owner =
+                        enums.get(named.name().substring(0, dot));
+                if (owner != null) {
+                    String variant = named.name().substring(dot + 1);
+                    for (TaggedMessageContracts.Case entry : owner.cases()) {
+                        if (entry.name().equals(variant)) return "e:" + owner.name();
+                    }
+                }
+            }
         }
         // In particular Unknown, Generic, and Union do not select an overload.
         return null;
@@ -154,11 +166,12 @@ public final class FreeCallableOverloads {
     }
 
     public static Ast.FunctionDecl chooseStatic(List<Ast.FunctionDecl> candidates,
-            List<Types.Type> argumentTypes, Set<String> enumOwners, String display) {
+            List<Types.Type> argumentTypes,
+            Map<String, TaggedMessageContracts.EnumType> enums, String display) {
         if (candidates.size() == 1) return candidates.getFirst();
         List<String> tags = new ArrayList<>(argumentTypes.size());
-        for (Types.Type type : argumentTypes) tags.add(staticTag(type, enumOwners));
-        return choose(candidates, tags, enumOwners, display);
+        for (Types.Type type : argumentTypes) tags.add(staticTag(type, enums));
+        return choose(candidates, tags, enums.keySet(), display);
     }
 
     public static Ast.FunctionDecl chooseRuntime(List<Ast.FunctionDecl> candidates,
