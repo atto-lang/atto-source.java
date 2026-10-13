@@ -129,6 +129,22 @@ final class SealedActorStateTest {
                             state.critical(false, access -> access.read("items")));
                     assertEquals(900L, detached.getFirst());
 
+                    assertThrows(IllegalStateException.class,
+                            () -> state.critical(true, access -> {
+                                access.write("items", new java.util.ArrayList<>(
+                                        java.util.List.of(700L)));
+                                throw new IllegalStateException("fail after write");
+                            }));
+                    assertEquals(java.util.List.of(3L, 4L),
+                            state.critical(false, access -> access.read("items")));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> state.critical(true, access -> {
+                                access.write("items", new java.util.ArrayList<>(
+                                        java.util.List.of(800L)));
+                                return new Object(); // invalid returned reference
+                            }));
+                    assertEquals(java.util.List.of(3L, 4L),
+                            state.critical(false, access -> access.read("items")));
                     assertThrows(IllegalArgumentException.class,
                             () -> state.critical(false, access ->
                                     new java.util.ArrayList<>(java.util.List.of("not int"))));
