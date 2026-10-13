@@ -49,6 +49,30 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void emptyArrayAliasCannotResolveToConflictingElementTypes() {
+        reject("""
+                fnc bad(): void {
+                    val raw = [];
+                    val Array<int> ints = raw;
+                    val Array<string> words = raw;
+                    return;
+                }
+                """, "initializer for");
+    }
+
+    @Test
+    void solvedEmptyArrayCannotBeWrittenWithConflictingElementType() {
+        reject("""
+                fnc bad(): void {
+                    val raw = [];
+                    val Array<int> ints = raw;
+                    raw.add("bad");
+                    return;
+                }
+                """, "collection member argument");
+    }
+
+    @Test
     void sourceTopsAreNotTheInternalInferenceHole() {
         assertNotEquals(Types.Any.INSTANCE, Types.Unknown.INSTANCE);
         assertNotEquals(Types.UnknownValue.INSTANCE, Types.Unknown.INSTANCE);

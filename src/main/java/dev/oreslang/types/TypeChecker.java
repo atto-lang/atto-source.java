@@ -40,6 +40,8 @@ public final class TypeChecker {
             Ast.InterfaceFunctionDecl function) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
+    /** One solution per empty-array inference identity across the entire check. */
+    private final Map<Long, Type> emptyArraySolutions = new HashMap<>();
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
@@ -7526,22 +7528,34 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
-        // An empty array has no values that could violate an expected element
-        // contract. Resolve its isolated inference identity only when that
-        // context is fully known; do not let ordinary List<T> invariance become
-        // covariant and do not infer a type parameter from an empty literal.
-        if (actual instanceof ListType empty
-                && empty.element() instanceof Types.InferenceHole hole
-                && hole.origin() == Types.HoleOrigin.EMPTY_ARRAY
-                && expected instanceof ListType typed
-                && !containsUnknown(typed.element())
-                && !(typed.element() instanceof Generic)
-                && typed.element() != Primitive.VOID
-                && typed.element() != Primitive.NULL) {
-            return true;
+        // Contextual empty-array inference is a unification constraint, not
+        // an existential cast: once an empty literal is typed as Array<int>,
+        // every alias and subsequent list write must agree with int.
+        if (actual instanceof Types.InferenceHole hole) {
+            Type solved = emptyArraySolutions.get(hole.id());
+            return solved != null
+                    ? assignable(solved, expected)
+                    : actual.equals(expected);
         }
-        if (actual instanceof Types.InferenceHole || expected instanceof Types.InferenceHole) {
-            return actual.equals(expected);
+        if (expected instanceof Types.InferenceHole hole) {
+            Type solved = emptyArraySolutions.get(hole.id());
+            return solved != null
+                    ? assignable(actual, solved)
+                    : actual.equals(expected);
+        }
+        if (actual instanceof ListType sourceList && expected instanceof ListType targetList) {
+            if (sourceList.element() instanceof Types.InferenceHole hole
+                    && hole.origin() == Types.HoleOrigin.EMPTY_ARRAY
+                    && !emptyArraySolutions.containsKey(hole.id())) {
+                Type element = targetList.element();
+                // Do not bind a fresh hole to another unresolved or dependent
+                // generic; this cannot establish a unique concrete constraint.
+                if (containsUnknown(element) || element instanceof Generic
+                        || element == Primitive.VOID || element == Primitive.NULL) return false;
+                emptyArraySolutions.put(hole.id(), element);
+            }
+            return assignable(sourceList.element(), targetList.element())
+                    && assignable(targetList.element(), sourceList.element());
         }
         // A *value* with an unresolved internal type cannot prove a concrete
         // contract. The reverse legacy wildcard is retained temporarily for

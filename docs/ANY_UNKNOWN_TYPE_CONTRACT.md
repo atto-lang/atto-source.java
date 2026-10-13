@@ -94,6 +94,10 @@ instead of using the global compiler `Unknown.INSTANCE` wildcard. It is not
 assignable to ordinary types, other inference identities or `Any`.
 Only an expected `Array<T>` with a known element contract may resolve an
 empty array literal, since no existing element can contradict the type.
+Inference is **single-assignment by hole identity** within the compiler check:
+an alias of the same empty array cannot separately acquire `Array<int>`
+and `Array<string>`, and writes through an alias must agree with the solved
+element type. A dependent/unresolved type cannot itself solve a fresh hole.
 An empty array alone cannot infer an unconstrained `T` in a generic call;
 the other call arguments must supply a binding first.
 
