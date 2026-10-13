@@ -328,8 +328,8 @@ public final class OresEvalRootNode extends RootNode {
                     byArity.getOrDefault(fn.parameters().size(), List.of());
             List<Ast.FunctionDecl> candidates = new ArrayList<>(previous);
             candidates.add(fn);
-            dev.oreslang.types.FreeCallableOverloads.requireUnambiguous(
-                    candidates, messageTypes.enums().keySet(), key);
+            dev.oreslang.types.FreeCallableOverloads.requireAppendOnly(
+                    previous, fn, messageTypes.enums().keySet(), key);
             byArity.put(fn.parameters().size(), List.copyOf(candidates));
             functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>())
                     .putIfAbsent(fn.parameters().size(), fn);
