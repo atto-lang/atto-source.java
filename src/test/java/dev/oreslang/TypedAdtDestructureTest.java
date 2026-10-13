@@ -213,4 +213,27 @@ final class TypedAdtDestructureTest {
         assertTrue(text.contains("42"));
         assertTrue(text.contains("ok"));
     }
+    @Test
+    void duplicateTypedBindingsCannotShadowEachOtherInsideOnePattern() {
+        IllegalArgumentException duplicate = rejects("""
+                fnc bad(): void {
+                  const [int value, int value] = (1, 2);
+                  return;
+                }
+                """);
+        assertTrue(duplicate.getMessage().contains("duplicate binding"), duplicate.getMessage());
+    }
+
+    @Test
+    void borrowedAggregateCannotEscapeAsIndependentTypedLocals() {
+        rejects("""
+                fnc bad(): void {
+                  val values = (1, 2);
+                  const [int left, int right] = rt borrow values;
+                  stdio.println(left);
+                  return;
+                }
+                """);
+    }
+
 }
