@@ -2154,11 +2154,11 @@ public final class TypeChecker {
                         namespace.name() + "." + qualifiedCall.member(),
                         arity, call.arguments(), env, generics, self, call);
                 if (target != null) {
-                    if (target.visibility() != Ast.Visibility.PUBLIC
-                            && !namespace.name().equals(currentLexicalModule)) {
+                    if (target.visibility() != Ast.Visibility.PUBLIC) {
                         throw new IllegalArgumentException(
-                                "private module callable '" + namespace.name() + "."
-                                        + target.name() + "' is not visible to this module");
+                                "qualified module callable '" + namespace.name() + "."
+                                        + target.name() + "' must be public; use an unqualified"
+                                        + " local call for a private callable");
                     }
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
