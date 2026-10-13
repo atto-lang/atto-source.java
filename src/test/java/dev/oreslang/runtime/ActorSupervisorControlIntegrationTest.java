@@ -37,6 +37,8 @@ final class ActorSupervisorControlIntegrationTest {
         assertEquals(1, lane.pendingCount());
         assertEquals(9, lane.poll().orElseThrow().terminal().originCode());
         assertTrue(lane.poll().isEmpty());
+        assertThrows(IllegalStateException.class, lane::poll,
+                "single-flight CONTROL must reject an overlapping admission");
         lane.retry(first);
         assertEquals(9, lane.poll().orElseThrow().terminal().originCode());
         lane.ack(first);
@@ -54,7 +56,8 @@ final class ActorSupervisorControlIntegrationTest {
                         throw ActorRuntime.GuestEffectSignal.raising(711);
                     });
             child.send("panic");
-            assertTrue(child.awaitTermination(5, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> child.done().get(5, TimeUnit.SECONDS));
             var record = runtime.pollRootSupervisionControl().orElseThrow();
             assertEquals(child.id(), record.actor());
             assertEquals(PANIC, record.terminal().delivered());
@@ -107,7 +110,10 @@ final class ActorSupervisorControlIntegrationTest {
             assertTrue(spawned.await(5, TimeUnit.SECONDS));
             parent.send("ordinary"); // regular mailbox already contains work
             childRef.get().send("fail");
-            assertTrue(childRef.get().awaitTermination(5, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> childRef.get().done().get(5, TimeUnit.SECONDS));
+            // Child.done is settled only AFTER its parent CONTROL publication;
+            // awaitTermination alone could race with parent childFinalized().
             releaseParent.countDown();
             assertTrue(observed.await(5, TimeUnit.SECONDS));
             assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
@@ -132,7 +138,8 @@ final class ActorSupervisorControlIntegrationTest {
             parent.send("spawn");
             assertTrue(spawned.await(5, TimeUnit.SECONDS));
             assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
-            assertTrue(childRef.get().awaitTermination(5, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> childRef.get().done().get(5, TimeUnit.SECONDS));
             var root = runtime.pollRootSupervisionControl().orElseThrow();
             assertEquals(childRef.get().id(), root.actor());
             assertEquals(CANCEL, root.terminal().delivered());
@@ -157,8 +164,10 @@ final class ActorSupervisorControlIntegrationTest {
                     });
             parent.send("spawn");
             assertTrue(spawned.await(5, TimeUnit.SECONDS));
-            assertTrue(childRef.get().awaitTermination(5, TimeUnit.SECONDS));
-            assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> childRef.get().done().get(5, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> parent.done().get(5, TimeUnit.SECONDS));
             assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class,
                     parent.failure().orElseThrow());
             List<ActorRuntime.ActorFailureNotice> failures = new ArrayList<>();
