@@ -65,13 +65,13 @@ final class ChannelStreamingLanguageTest {
                 pub routine main(): void {
                   val Channel<int> output = Channel.new<int>(3);
                   for const value of values() {
-                    select {
+                    do select {
                       case writech output, value: {
                       }
                     }
                   }
                   for let i = 0; i < 3; i++ {
-                    select {
+                    do select {
                       case readch output: val value {
                         stdio.stdout.write(value);
                       }
@@ -181,7 +181,7 @@ final class ChannelStreamingLanguageTest {
                   val Channel<int> inbox = Channel.new<int>(1);
                   val Channel<int> replies = Channel.new<int>(1);
                   try writech inbox, 7;
-                  nb select {
+                  do nb select {
                     case readch inbox: val value {
                       nb writech replies, value * 10;
                       stdio.stdout.write(readch replies);
@@ -203,9 +203,9 @@ final class ChannelStreamingLanguageTest {
                   val Channel<int> inbox = Channel.new<int>(1);
                   val Channel<int> replies = Channel.new<int>(1);
                   writech inbox, 7;
-                  select {
+                  do select {
                     case readch inbox: val value {
-                      select {
+                      do select {
                         case writech replies, value * 10: {
                           stdio.stdout.write(readch replies);
                         }
