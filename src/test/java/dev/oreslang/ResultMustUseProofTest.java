@@ -231,6 +231,38 @@ final class ResultMustUseProofTest {
     }
 
     @Test
+    void nestedResultMustUseRequiresRecursiveProof() {
+        rejects("""
+                fnc bad(): void {
+                  val wrapped = Some(Ok());
+                  return;
+                }
+                """);
+        rejects("""
+                fnc bad(): void {
+                  Some(Ok());
+                  return;
+                }
+                """);
+        rejects("""
+                fnc bad(Option<Result<void, String>> wrapped): void {
+                  return;
+                }
+                """);
+        rejects("""
+                fnc bad(): Option<Result<void, String>> {
+                  return Some(Ok());
+                }
+                """);
+        rejects("""
+                fnc bad(): void {
+                  stdio.stdout.log(Some(Ok()));
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void everyBranchMayPropagateOrHandle() {
         accepts("""
                 fnc good(bool flag): Result<void, String> {
