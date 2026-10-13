@@ -32,9 +32,9 @@ final class StdErrorCatalogTest {
             + "  pub code\\(\\): int(?: \\{ return (\\d+); \\}|;)\\R"
             + "(?:  pub retry_hint\\(\\): bool \\{ return true; \\}\\R)?end$");
     private static final Pattern CATALOG_ENTRY = Pattern.compile(
-            "\\"name\\"\\s*:\\s*\\"(\\w+)\\"\\s*,\\s*\\"parent\\"\\s*:\\s*(null|\\"\\w+\\")"
-            + "\\s*,\\s*\\"code\\"\\s*:\\s*(\\d+)\\s*,\\s*\\"abstract\\"\\s*:\\s*(true|false)"
-            + "\\s*,\\s*\\"interfaces\\"\\s*:\\s*\\[([^\\]]*)\\]");
+            "\"name\"\\s*:\\s*\"(\\w+)\"\\s*,\\s*\"parent\"\\s*:\\s*(null|\"\\w+\")"
+            + "\\s*,\\s*\"code\"\\s*:\\s*(\\d+)\\s*,\\s*\"abstract\"\\s*:\\s*(true|false)"
+            + "\\s*,\\s*\"interfaces\"\\s*:\\s*\\[([^\\]]*)\\]");
 
     record Entry(String parent, int code, boolean abstractClass, String iface) { }
 
@@ -91,7 +91,7 @@ final class StdErrorCatalogTest {
         while (catalog.find()) {
             String parent = catalog.group(2);
             String interfaces = catalog.group(5).trim();
-            assertTrue(interfaces.isEmpty() || interfaces.matches("\\\"[A-Za-z][A-Za-z0-9]*\\\""), interfaces);
+            assertTrue(interfaces.isEmpty() || interfaces.matches("\"[A-Za-z][A-Za-z0-9]*\""), interfaces);
             String iface = interfaces.isEmpty() ? null : interfaces.substring(1, interfaces.length() - 1);
             assertNull(expected.put(catalog.group(1),
                     new Entry(parent.equals("null") ? null : parent.substring(1, parent.length() - 1),
