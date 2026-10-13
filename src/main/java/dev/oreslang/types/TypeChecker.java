@@ -4982,6 +4982,40 @@ public final class TypeChecker {
             }
             checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
 
+            // In a small finite ADT, *multiple* preceding unguarded arms
+            // can collectively make a later arm unreachable, even when no
+            // individual predecessor subsumes it. Guarded arms cannot be
+            // used in this proof: their conditions might be false at runtime.
+            if (i > 0) {
+                List<Object> witnesses = finiteAdtWitnesses(subject, generics, self, 0);
+                if (witnesses != null) {
+                    boolean acceptsAny = false;
+                    boolean coveredBefore = true;
+                    for (Object witness : witnesses) {
+                        if (!patternAcceptsFiniteWitness(
+                                arm.pattern(), witness, subject, generics, self)) continue;
+                        acceptsAny = true;
+                        boolean earlierCovers = false;
+                        for (int j = 0; j < i; j++) {
+                            Ast.MatchArm earlier = arms.get(j);
+                            if (earlier.guard() == null && patternAcceptsFiniteWitness(
+                                    earlier.pattern(), witness, subject, generics, self)) {
+                                earlierCovers = true;
+                                break;
+                            }
+                        }
+                        if (!earlierCovers) {
+                            coveredBefore = false;
+                            break;
+                        }
+                    }
+                    if (acceptsAny && coveredBefore) {
+                        throw new IllegalArgumentException("unreachable match arm " + (i + 1)
+                                + ": all its finite-domain values are covered by earlier unguarded arms");
+                    }
+                }
+            }
+
             // Match is ordered. Overlap is valid, but an earlier unguarded arm
             // that completely contains a later pattern makes that arm dead.
             for (int j = 0; j < i; j++) {
