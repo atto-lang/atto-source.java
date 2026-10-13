@@ -26,6 +26,7 @@ public final class SymbolPropertyKeyCodec {
     public static final int MAX_TEXT_KEY_BYTES = 16_384;
     public static final int MAX_SYMBOL_KEY_BYTES = 256;
     public static final int MAX_KEYS_PER_OBJECT = 4_096;
+    public static final long MAX_KEY_SET_WIRE_BYTES = 1_048_576L;
 
     private static final int HEADER_LENGTH = 6;
     private static final byte TEXT = 0;
@@ -71,7 +72,9 @@ public final class SymbolPropertyKeyCodec {
             throw new IllegalArgumentException("invalid tagged key length");
         }
 
-        ByteBuffer wire = ByteBuffer.wrap(input);
+        // Never decode directly from caller-owned mutable bytes: validation,
+        // length checks and UTF-8 decoding must see one consistent snapshot.
+        ByteBuffer wire = ByteBuffer.wrap(input.clone());
         if (wire.get() != (byte) 'O' || wire.get() != (byte) 'K'
                 || Byte.toUnsignedInt(wire.get()) != VERSION) {
             throw new IllegalArgumentException("invalid tagged key magic/version");
@@ -116,7 +119,7 @@ public final class SymbolPropertyKeyCodec {
      * scope and a trusted, immutable manifest snapshot; source code must not
      * construct its own authority scope.
      */
-    public static Object decodeForUntrusted(
+    static Object decodeForUntrusted(
             byte[] input,
             AdmissionScope receivingScope,
             java.util.Map<AdmissionScope, Set<OresSymbol>> scopedExports) {
@@ -140,20 +143,38 @@ public final class SymbolPropertyKeyCodec {
         return key;
     }
 
-    /** Reject duplicate logical keys after decoding, including NFC aliases. */
-    public static void requireDistinct(List<byte[]> encodedKeys) {
+    /**
+     * Decode once, reject duplicate logical keys and return immutable values.
+     * Callers must use the returned keys, never re-read the mutable source
+     * arrays after validation. Both per-entry and aggregate byte budgets apply.
+     */
+    public static List<Object> decodeDistinctKeys(List<byte[]> encodedKeys) {
         Objects.requireNonNull(encodedKeys, "encoded keys");
         if (encodedKeys.size() > MAX_KEYS_PER_OBJECT) {
             throw new IllegalArgumentException("too many tagged keys");
         }
         Set<Object> distinct = new HashSet<>();
+        java.util.ArrayList<Object> decoded = new java.util.ArrayList<>(encodedKeys.size());
+        long total = 0L;
         for (byte[] encoded : encodedKeys) {
+            Objects.requireNonNull(encoded, "tagged key entry");
+            total += encoded.length;
+            if (total > MAX_KEY_SET_WIRE_BYTES) {
+                throw new IllegalArgumentException("tagged key collection exceeds byte budget");
+            }
             Object key = decode(encoded);
             if (!distinct.add(key)) {
                 throw new IllegalArgumentException(
                         "duplicate tagged String or Symbol key");
             }
+            decoded.add(key);
         }
+        return List.copyOf(decoded);
+    }
+
+    /** Backward-compatible validation helper; prefer decodeDistinctKeys. */
+    public static void requireDistinct(List<byte[]> encodedKeys) {
+        decodeDistinctKeys(encodedKeys);
     }
 
     private static byte[] strictEncode(String text) {
