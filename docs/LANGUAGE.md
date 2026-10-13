@@ -388,9 +388,29 @@ Sequence destructuring requires a returned tuple or array/list. Finite tuples ar
 
 ## Assignment, equality, and identity
 
-Assignment remains an expression. `lhs = rhs` mutates `lhs` and evaluates to
-the assigned value, including inside call arguments and control-flow expressions.
-Oreslang does **not** interpret `name = value` inside a call as a named argument.
+For legacy compatibility, assignment is still an expression **outside Boolean
+control-flow predicates**: `lhs = rhs` mutates `lhs` and evaluates to the
+assigned value. Oreslang does **not** interpret `name = value` inside an ordinary
+call as a named argument.
+
+**Assignment is never a condition.** In `if`/`elif`, conventional `for`
+conditions, ternary predicates, and `match` guards, an assignment anywhere
+inside the predicate expression (including nested parentheses, calls, casts,
+and comparison operands) is a compile-time error. Write `x eq y` or `x == y`
+instead of `x = y`. A lambda used as a predicate argument is a separately
+checked callable, not an assignment expression; its own body retains the
+ordinary statement rules. Predicate operands must have type `bool`; `Option<T>`
+does not become truthy merely because it holds `Some(...)`.
+
+Removing assignment expressions from *all* source positions is a separate
+compatibility migration; the current compiler does **not** claim
+assignment-statement-only grammar everywhere.
+
+The proposed optional-binding syntax `if option as const value then` and
+`if option as let value then` must remain unadmitted until the ownership,
+definite-initialization, and backend lowering obligations in
+[the conditional binding/borrow contract](CONDITIONAL_BINDING_BORROW_CONTRACT.md)
+are implemented. Neither cast syntax nor implicit truthiness is a fallback.
 
 The canonical comparison operators deliberately separate value equality from identity:
 
