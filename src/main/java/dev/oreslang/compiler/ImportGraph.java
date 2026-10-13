@@ -133,6 +133,10 @@ final class ImportGraph {
                 continue;
             }
 
+            // An overloaded function family is one exported name, not one
+            // import candidate per arity. Different modules exporting the
+            // same name remain ambiguous.
+            boolean matchedFunctionFamily = false;
             for (Ast.Decl decl : module.declarations()) {
                 boolean matched = switch (kind) {
                     case FUNCTION -> decl instanceof Ast.FunctionDecl fn
@@ -172,7 +176,14 @@ final class ImportGraph {
                                     && klass.name().equals(name));
                     case MODULE -> false;
                 };
-                if (matched) matches++;
+                if (matched) {
+                    if (decl instanceof Ast.FunctionDecl
+                            && (kind == Ast.ImportKind.FUNCTION || kind == Ast.ImportKind.ALL)) {
+                        if (matchedFunctionFamily) continue;
+                        matchedFunctionFamily = true;
+                    }
+                    matches++;
+                }
             }
         }
         return matches;
