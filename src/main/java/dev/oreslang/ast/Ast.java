@@ -557,6 +557,13 @@ public final class Ast {
         public DestructureStmt {
             bindings = List.copyOf(bindings);
             validateRestBinding(bindings, "destructure");
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (DestructureBinding binding : bindings) {
+                if (!binding.isDiscard() && !names.add(binding.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate binding '" + binding.name() + "' in destructure pattern");
+                }
+            }
         }
         public DestructureStmt(List<DestructureBinding> bindings, Expr initializer) {
             this(DestructureKind.SEQUENCE, bindings, initializer);
