@@ -19,7 +19,8 @@ final class OreslangGrammarDriftTest {
             source namespace_decl import_decl import_spec import_kind import_names
             top_level_item annotated_module_decl module_member visibility callable_modifier method_modifier
             callable_decl callable_kind actor_callable_decl actor_decl actor_body actor_member
-            final_actor_field_decl actor_method_decl class_decl class_member constructor_decl field_decl method_decl
+            final_actor_field_decl actor_method_decl class_decl class_member constructor_decl field_decl
+            type_first_class_field_decl method_decl
             method_name callable_name method_head explicit_receiver static_function_decl contract_decl
             interface_decl interface_body interface_member type_decl annotation annotation_args
             annotation_arg return_spec type_return_spec generic_params param_list param
