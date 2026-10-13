@@ -73,6 +73,28 @@ final class TaggedEnumFrontendTest {
     }
 
     @Test
+    void qualifiedCasePatternsRetainEnumIdentity() {
+        Ast.Program parsed = Parser.parse("""
+                define enum Expr as
+                  Literal(int)
+                end
+
+                fnc classify(Expr value): int {
+                  match value over
+                    on Expr.Literal(n) -> { return n; }
+                    on _ -> { return 0; }
+                  end
+                }
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().get(1);
+        Ast.MatchStmt matched = (Ast.MatchStmt) fn.body().getFirst();
+        Ast.ConstructorPattern ctor = (Ast.ConstructorPattern)
+                matched.arms().getFirst().pattern();
+        assertEquals("Expr.Literal", ctor.constructor());
+    }
+
+    @Test
     void rejectsDuplicateConstructorsFieldsGenericsAndMixedPayloads() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define enum X as
