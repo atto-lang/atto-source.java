@@ -1489,7 +1489,12 @@ public final class OwnershipChecker {
                 }
                 if (method.explicitReceiverType() != null
                         && method.explicitReceiverType().isBorrow()
-                        && method.explicitReceiverType().mutableBorrow()) {
+                        && method.explicitReceiverType().mutableBorrow()
+                        && !(member.receiver() instanceof Ast.NewExpr)) {
+                    // A fresh new-expression is uniquely owned by this call.
+                    // checkExpr(receiver) above has already consumed constructor
+                    // arguments exactly once. Do not re-check or move them twice.
+                    // General field assignment to temporaries remains fail-closed.
                     ensureMutableReceiver(
                             member.receiver(),
                             scope,
