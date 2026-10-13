@@ -188,6 +188,12 @@ final class CriticalGateTest {
             assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
             assertNull(failure.get());
             assertEquals(1, runtime.trackedActorResourceCount(actor));
+            long deadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (!runtime.isActorPhysicalLaneQuiescent(actor)
+                    && System.nanoTime() < deadline) Thread.onSpinWait();
+            assertTrue(runtime.isActorPhysicalLaneQuiescent(actor),
+                    "this test verifies immediate close only after quiescence");
             gate.closeAll();
             assertFalse(gate.held());
             assertEquals(0, runtime.trackedActorResourceCount(actor),
