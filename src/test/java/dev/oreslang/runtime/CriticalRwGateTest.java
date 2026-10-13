@@ -208,7 +208,11 @@ final class CriticalRwGateTest {
 
             allowReturn.countDown();
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-            while (!task.isDone() && System.nanoTime() < deadline) Thread.yield();
+            while ((!task.isCancelled() || owning.get().isHeld() || !nextReader.isHeld())
+                    && System.nanoTime() < deadline) Thread.yield();
+            // Future settlement publishes the terminal bit BEFORE delivering
+            // runtime completion callbacks. Observe the actual ownership
+            // release, not merely task.isDone() in that intermediate window.
             assertTrue(task.isCancelled(), "pending cancellation must publish on carrier unwind");
             assertFalse(owning.get().isHeld(), "cancelled writer ticket was not cleaned up");
             assertTrue(nextReader.isHeld(), "reader did not enter after carrier exit");
