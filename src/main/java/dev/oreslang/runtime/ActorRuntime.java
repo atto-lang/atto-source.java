@@ -1167,6 +1167,14 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public interface ActorOwnedGuestState {
         ActorId ownerActorId();
+
+        /**
+         * Runtime-only, nonblocking capability revocation after the last actor
+         * carrier/guest turn has unwound and before owned memory is reclaimed.
+         * Implementations must not execute guest code, park a carrier, or
+         * publish a new actor continuation from this hook.
+         */
+        default void revokeRuntimeAdmissions() { }
     }
 
     /**
@@ -5921,7 +5929,23 @@ public final class ActorRuntime implements AutoCloseable {
             }
             drainMailboxReservations();
             staticSelectCursors.clear();
+            ActorOwnedGuestState expiredState = codeActorState;
             codeActorState = null;
+            // Finalization already proved activeTurns==0, !scheduled and
+            // !carrierActive. Revoke source-state gates only after all guest
+            // instructions have unwound, but BEFORE reclaiming its arena.
+            if (expiredState != null) {
+                try {
+                    expiredState.revokeRuntimeAdmissions();
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable revocationFailure) {
+                    ref.terminationCause.compareAndSet(null,
+                            new IllegalStateException(
+                                    "failed to revoke actor-owned runtime admissions",
+                                    revocationFailure));
+                }
+            }
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
             if (memorySlice != null) memorySlice.close();
