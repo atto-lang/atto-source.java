@@ -167,3 +167,21 @@ subtyping rules.
 Regression suite: `StructuralLoanLaunderingRegressionTest`.
 **Validation remains pending actual JDK/Maven execution**; CI job results
 with no executable steps are infrastructure failures, not green tests.
+
+### Borrow escape checks at unknown and actor calls
+
+The ownership pass now rejects borrowed values passed through unknown or
+dynamic call targets whose parameter lifetime contract is unavailable.
+This also guards `ActorRef.send` / `self.send` payloads from receiving a
+borrowed struct-view alias that looks structurally compatible with an
+owned record in the type checker. Known callables whose formals explicitly
+accept `&T` or `structural T` retain their borrow-aware call semantics.
+
+All borrowed-return and typed-binding paths enforce lifetime provenance.
+Generic borrowed aggregate destructuring remains intentionally unsupported
+until field-wise lifetime analysis exists. This is a conservative
+restriction, not a claim that field reads on borrowed records are unsafe.
+
+The new and expanded tests are static regression fixtures only. Run an
+actual exact-head build, ownership tests, actor send/receive execution,
+Graal Native Image and LLVM parity before promoting PR #850.
