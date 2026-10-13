@@ -6576,6 +6576,16 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof NativeHttp.Handler handler) {
                 return switch (name) {
                     case "isolated" -> handler.isolated();
+                    case "created" -> handler.created();
+                    case "reused" -> handler.reused();
+                    case "pooled" -> (Invokable) args -> {
+                        if (args.size() != 1) throw new IllegalArgumentException("pooled requires worker count");
+                        if (!(args.get(0) instanceof Number number) || !isIntegral(number))
+                            throw new IllegalArgumentException("pooled requires an integer worker count");
+                        long size = number.longValue();
+                        if (size < 1 || size > 4096) throw new IllegalArgumentException("HTTP pool size must be 1..4096");
+                        return handler.pooled((int) size);
+                    };
                     case "dispatch" -> (Invokable) args -> {
                         if (args.size() != 1 || !(args.get(0) instanceof NativeHttp.Exchange exchange))
                             throw new IllegalArgumentException("dispatch requires HTTP exchange");
