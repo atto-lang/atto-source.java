@@ -25,6 +25,10 @@ public final class CriticalGate {
     public static final int MAX_ACTIVE_READERS = MAX_WAITERS;
     private final ArrayDeque<Ticket> waiters = new ArrayDeque<>();
     private final IdentityHashMap<Ticket, Boolean> readers = new IdentityHashMap<>();
+    // Avoid O(n²) read admission: same-domain recursion checks should not
+    // scan every granted reader as cohort sizes grow.
+    // Every granted ticket has exactly one entry, removed on release/STOP.
+    private final IdentityHashMap<Object, Ticket> heldDomains = new IdentityHashMap<>();
     private Ticket owner;
     private boolean domainClosed;
     private CriticalRwGate rwFacade;
@@ -201,6 +205,7 @@ public final class CriticalGate {
                 } else if (mode == Mode.READ) {
                     readers.remove(this);
                 }
+                heldDomains.remove(logicalOwner, this);
                 if (waiters.remove(this)) {
                     WAITING_ON.remove(logicalOwner, CriticalGate.this);
                 }
@@ -223,11 +228,7 @@ public final class CriticalGate {
 
     /** Caller owns the monitor. */
     private boolean heldByDomain(Object domain) {
-        if (owner != null && owner.logicalOwner == domain) return true;
-        for (Ticket reader : readers.keySet()) {
-            if (reader.logicalOwner == domain) return true;
-        }
-        return false;
+        return heldDomains.containsKey(domain);
     }
 
     /** Caller owns the monitor. */
@@ -241,6 +242,9 @@ public final class CriticalGate {
                 throw new IllegalStateException("active critical readers full");
             }
             readers.put(ticket, Boolean.TRUE);
+        }
+        if (heldDomains.put(ticket.logicalOwner, ticket) != null) {
+            throw new IllegalStateException("duplicate logical critical owner domain");
         }
         ticket.granted = true;
     }
@@ -313,6 +317,7 @@ public final class CriticalGate {
             revoke.addAll(waiters);
             owner = null;
             readers.clear();
+            heldDomains.clear();
             waiters.clear();
             for (Ticket ticket : revoke) {
                 ticket.closed = true;
