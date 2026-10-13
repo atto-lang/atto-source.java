@@ -200,6 +200,37 @@ final class ResultMustUseProofTest {
     }
 
     @Test
+    void cannotDiscardUnboundResultThroughUntypedCall() {
+        rejects("""
+                fnc bad(): void {
+                  stdio.println(Ok());
+                  return;
+                }
+                """);
+        rejects("""
+                fnc bad(): void {
+                  stdio.stdout.log(Ok());
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void nonConsumingLoggingOfNamedResultStillRequiresHandling() {
+        accepts("""
+                fnc good(): void {
+                  val Result<void, String> result = Ok();
+                  stdio.println(result);
+                  match result over
+                    on Ok() -> { stdio.println("ok"); }
+                    on Err(error) -> { stdio.println(error); }
+                  end
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void everyBranchMayPropagateOrHandle() {
         accepts("""
                 fnc good(bool flag): Result<void, String> {
