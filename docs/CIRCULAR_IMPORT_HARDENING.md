@@ -53,6 +53,15 @@
   with deterministic ordering independent of source-map insertion order.
 - The file loader uses an iterative worklist and rejects symlink/hardlink
   aliases that would create multiple code-unit identities for one source.
+- Duplicate import aliases (wildcard/wildcard, wildcard/named and host/Ores)
+  are rejected before link or Java host lookup rather than using last-wins
+  namespace shadowing. The runtime repeats this validation for direct eval.
+- SCC ordering rejects edges targeting missing graph nodes rather than
+  silently ignoring unavailable dependencies.
+- Bare imports are checked against real configured source-root paths, blocking
+  symlink escapes while accepting explicitly configured symlink roots.
+- Named `import actor` selectors require `pub` on the target actor class,
+  including in an otherwise valid circular import graph.
 
 ## Important remaining gaps
 
@@ -64,16 +73,17 @@
    atomically as a group. A multi-unit cycle may have several READY members
    when a later member's init fails. The entry process aborts if its call
    fails, but group-wide rollback is not implemented.
-3. **Export visibility:** Actor and type-alias selectors still need a complete
-   `pub` migration. TypeAliasDecl currently has no visibility field.
-   Track in Java issue #859.
+3. **Export visibility:** Named actor selectors now check the target
+   actor's existing visibility bit. Modules and type aliases still require a
+   complete `pub` migration; TypeAliasDecl has no visibility bit. Track in
+   Java issue #859.
 4. **Native parity:** LLVM's frontend does not yet support multi-file import
    linking, and this PR does not claim native backend parity. Track in
    LLVM issue #341.
-5. **Remaining stress and resolution:** Validate the new deep-graph and
-   physical-file identity tests under CI; extend coverage to symlink escapes
-   from configured roots, mixed Java bridges, module field evaluation,
-   graph-changing incremental builds and scheduler-owned actor turns.
+5. **Remaining stress and resolution:** Validate the new deep-graph,
+   alias-collision, root-confinement and physical-file identity tests under CI;
+   extend coverage to mixed Java bridges, module field evaluation, graph-changing
+   incremental builds and scheduler-owned actor turns.
 
 All implementation claims above refer to source changes on a **draft PR**.
 GitHub Actions has not executed the branch's test suite successfully; no
