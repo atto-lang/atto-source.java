@@ -6,6 +6,35 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class CriticalGateTest {
     @Test
+    void directCoreDomainCloseDetachesActorResourceBeforeActorStops() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    assertTrue(gate.newTicket().enterAsync().isDone());
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    entered.countDown();
+                }
+            });
+            actor.send("hold");
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertEquals(1, runtime.trackedActorResourceCount(actor));
+            gate.closeAll();
+            assertFalse(gate.held());
+            assertEquals(0, runtime.trackedActorResourceCount(actor),
+                    "closing a domain must not retain actor-owned ticket callbacks");
+            runtime.stop(actor);
+            assertEquals(0, CriticalGate.waitingLogicalDomains());
+        }
+    }
+
+    @Test
     void duplicateActorAdmissionCannotDeregisterOriginalStopRevocation() throws Exception {
         CriticalGate gate = new CriticalGate();
         java.util.concurrent.CountDownLatch first = new java.util.concurrent.CountDownLatch(1);
