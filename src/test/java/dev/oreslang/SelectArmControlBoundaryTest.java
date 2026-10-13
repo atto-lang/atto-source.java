@@ -12,7 +12,7 @@ final class SelectArmControlBoundaryTest {
     void historicalSelectCanStillExitTheEnclosingCallable() throws Exception {
         String source = """
                 pub fnc compute(): int {
-                  select {
+                  do select {
                     default: {
                       return 7;
                     }
