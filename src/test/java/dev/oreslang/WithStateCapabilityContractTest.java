@@ -408,6 +408,40 @@ final class WithStateCapabilityContractTest {
         }
     }
 
+    @Test void nestedStateReferenceMutationsNeedElementOwnership() {
+        for (String callback : new String[] {
+            "self.handle_state(critical |s| -> { s.items[0] = foreign; return s.count; })",
+            "using state.write(critical |s| -> { s.items[0] = foreign; return s.count; })",
+            "self.handle_state(critical |s| -> { s.items[0] = 10; return s.count; })",
+            "using state.write(critical |s| -> { s.items[0] = 10; return s.count; })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; count: int = 0; } "
+                    + "set(): int with state.read, state.write { return "
+                    + callback + "; } end";
+            var denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(Parser.parse(source)), callback);
+            assertTrue(denied.getMessage().contains("nested reference write"),
+                    denied::getMessage);
+        }
+    }
+
+    @Test void matchingReferenceStateCannotBindAnUnprovenAlias() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { match s.items over on _ -> { return s.count; } end })",
+            "using state.read(|s| -> { match s.items over on _ -> { return s.count; } end })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; count: int = 0; } "
+                    + "get(): int with state.read { return "
+                    + callback + "; } end";
+            var denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(Parser.parse(source)), callback);
+            assertTrue(denied.getMessage().contains("reference match"),
+                    denied::getMessage);
+        }
+    }
+
     @Test void sealedCallbackEffectsFollowLoweringAndCannotBeForged() {
         Ast.Program p = Parser.parse(actor("with state.read",
                 "using state.read(|s| -> { return s.v; })"));
