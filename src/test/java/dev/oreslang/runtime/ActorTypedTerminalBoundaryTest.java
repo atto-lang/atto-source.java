@@ -184,6 +184,55 @@ final class ActorTypedTerminalBoundaryTest {
     }
 
     @Test
+    void cancellationOutranksGuestRaiseThatFinishesAfterCancel() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var entered = new java.util.concurrent.CountDownLatch(1);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        entered.countDown();
+                        assertTrue(release.await(5, TimeUnit.SECONDS));
+                        throw ActorRuntime.GuestEffectSignal.raising(300);
+                    });
+            actor.send("run");
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            try {
+                assertTrue(actor.cancel());
+            } finally {
+                release.countDown();
+            }
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            var notice = actor.terminalFailureNotice().orElseThrow();
+            assertEquals(CANCEL, notice.terminal().delivered());
+            assertEquals(CANCEL, notice.terminal().origin());
+            var displaced = notice.secondary().orElseThrow();
+            assertEquals(RAISE, displaced.origin());
+            assertEquals(300, displaced.originCode());
+        }
+    }
+
+    @Test
+    void fatalCleanupCannotBeDowngradedToGuestPanic() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        context.runtime().endCurrentActorWithCleanup(
+                                () -> { throw new LinkageError("cleanup fatal"); });
+                        throw ActorRuntime.GuestEffectSignal.panicking(72);
+                    });
+            actor.send("fatal-cleanup");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            var notice = actor.terminalFailureNotice().orElseThrow();
+            assertEquals(HOST_FATAL, notice.terminal().delivered());
+            assertEquals(HOST_FATAL, notice.terminal().origin());
+            var displaced = notice.secondary().orElseThrow();
+            assertEquals(PANIC, displaced.origin());
+            assertEquals(72, displaced.originCode());
+            assertInstanceOf(LinkageError.class, actor.failure().orElseThrow());
+        }
+    }
+
+    @Test
     void forgedSupervisorMetadataAndOversizeDiagnosticsFailClosed() {
         var id = ActorRuntime.ActorId.create();
         var terminal = ExceptionBoundaryPolicy.actorTerminal(PANIC);
