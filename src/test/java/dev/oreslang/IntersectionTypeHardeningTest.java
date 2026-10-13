@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.Types;
 import org.junit.jupiter.api.Test;
@@ -156,11 +157,16 @@ final class IntersectionTypeHardeningTest {
                 """
                 fnc consumeReverse({id: int} & {loan: &int} payload): void { return; }
                 """)) {
+            // Independently prove the ownership guard, rather than asserting that
+            // type checking must choose the same first diagnostic as ownership.
             IllegalArgumentException problem = assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(source)));
+                    () -> OwnershipChecker.check(Parser.parse(source)));
             assertTrue(problem.getMessage().contains("ownership-aware field projection")
                     || problem.getMessage().contains("borrowed or move-only"),
                     problem.getMessage());
+            // End-to-end compilation must still reject the unsafe source.
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
         }
     }
 
