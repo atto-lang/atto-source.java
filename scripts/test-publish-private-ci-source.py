@@ -206,6 +206,60 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_policy_symlink_swap_between_check_and_read_rejected(self):
+        outside = self.root / "outside-approved-policy"
+        outside.write_text("trusted/ci\n")
+        self.approval.write_text("# no approval\n")
+        original_read = Path.read_bytes
+        def malicious_read(path):
+            if path == self.approval:
+                saved = original_read(path)
+                path.unlink()
+                path.symlink_to(outside)
+                data = original_read(path)
+                path.unlink()
+                path.write_bytes(saved)
+                return data
+            return original_read(path)
+        with patch.object(Path, "read_bytes", malicious_read):
+            with self.assertRaises(pub.Denied):
+                self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_policy_parent_directory_swap_rejected(self):
+        outside = self.root / "external-approved-dir"
+        outside.mkdir()
+        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci\n")
+        self.approval.write_text("# no approval\n")
+        original_open = pub.os.open
+        replaced = [False]
+        def redirect(name, flags, *args, **kwargs):
+            if name == ".github" and kwargs.get("dir_fd") is not None and not replaced[0]:
+                replaced[0] = True
+                (self.root / ".github").rename(self.root / "old-policy-dir")
+                (self.root / ".github").symlink_to(outside, target_is_directory=True)
+            return original_open(name, flags, *args, **kwargs)
+        with patch.object(pub.os, "open", side_effect=redirect):
+            with self.assertRaises(pub.Denied):
+                self.publish()
+        self.assertTrue(replaced[0])
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_hardlinked_approval_policy_rejected(self):
+        outside = self.root / "outside-approved-policy"
+        outside.write_bytes(self.approval.read_bytes())
+        self.approval.unlink()
+        self.approval.hardlink_to(outside)
+        with self.assertRaisesRegex(pub.Denied, "single-link"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_oversized_approval_policy_rejected(self):
+        self.approval.write_text("#" + "x" * (16 * 1024 + 1))
+        with self.assertRaisesRegex(pub.Denied, "size limit"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
     def test_invalid_api_sha_rejects_without_commit(self):
         original = self.fake_api
         def bad(route, method="GET", payload=None):

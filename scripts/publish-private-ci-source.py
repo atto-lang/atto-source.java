@@ -84,16 +84,45 @@ def require_preflight(repository, root):
 
 
 def checked_policy_fingerprint(root, repository):
-    policy_dir = root / ".github"
-    policy = policy_dir / "private-ci-approved-repositories.txt"
-    if (not policy_dir.is_dir() or policy_dir.is_symlink()
-            or not policy.is_file() or policy.is_symlink()):
-        raise Denied("private CI approval policy missing or redirected")
+    """Read approval only through directory descriptors and O_NOFOLLOW.
+
+    A pathname symlink check followed by read_bytes() can be raced: the
+    unapproved file can briefly be replaced with an approved symlink.
+    """
+    if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
+            or not hasattr(os, "O_NONBLOCK")):
+        raise Denied("OS cannot safely read the destination approval policy")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    policy_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
-        contents = policy.read_bytes()
+        root_fd = os.open(root, directory_flags)
+        try:
+            policy_dir_fd = os.open(".github", directory_flags, dir_fd=root_fd)
+            try:
+                policy_fd = os.open("private-ci-approved-repositories.txt",
+                                    policy_flags, dir_fd=policy_dir_fd)
+                try:
+                    stream = os.fdopen(policy_fd, "rb")
+                except BaseException:
+                    os.close(policy_fd)
+                    raise
+                with stream:
+                    details = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+                        raise Denied("private CI approval policy is not a regular single-link file")
+                    contents = stream.read(16 * 1024 + 1)
+            finally:
+                os.close(policy_dir_fd)
+        finally:
+            os.close(root_fd)
+    except OSError as exc:
+        raise Denied("private CI approval policy cannot be opened safely") from exc
+    if len(contents) > 16 * 1024:
+        raise Denied("private CI approval policy exceeds size limit")
+    try:
         lines = contents.decode("utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as exc:
-        raise Denied("private CI approval policy cannot be read or decoded") from exc
+    except UnicodeDecodeError as exc:
+        raise Denied("private CI approval policy cannot be decoded") from exc
     approved = False
     for line in lines:
         if not line or line.startswith("#"):
@@ -105,7 +134,6 @@ def checked_policy_fingerprint(root, repository):
     if not approved:
         raise Denied("destination approval was revoked or absent")
     return hashlib.sha256(contents).digest()
-
 
 def collect_source(root, trusted_root):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
