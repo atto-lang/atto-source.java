@@ -69,15 +69,27 @@ final class SymbolMapGuestTest {
     }
 
     @Test
-    void guestStringAndSymbolKeysRequireExplicitUnionMap() {
-        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
-                fnc accept(): void {
+    void guestStringAndSymbolKeysRequireExplicitUnionMap() throws Exception {
+        String program = """
+                pub fnc main(): void {
                   val m: Map<String | Symbol, int> = new Map<String | Symbol, int>();
                   m["foo"] = 1;
                   m[#foo] = 2;
+                  stdio.stdout.write(m["foo"]);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(m[#foo]);
                   return;
                 }
-                """)));
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "symbol-union-map.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("1|2", output.toString(StandardCharsets.UTF_8));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse("""
                 fnc reject(): void {
                   val m: Map<String, int> = new Map<String, int>();
