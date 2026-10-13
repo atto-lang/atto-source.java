@@ -129,7 +129,7 @@ final class ImportGraph {
         int matches = 0;
         for (Ast.ModuleDecl module : program.modules()) {
             if (kind == Ast.ImportKind.MODULE) {
-                if (module.name().equals(name)) matches++;
+                if (module.name().equals(name) && module.visibility() == Ast.Visibility.PUBLIC) matches++;
                 continue;
             }
 
