@@ -112,6 +112,7 @@ public final class TypeChecker {
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorStream", "ActorUtils", "ActorId", "ActorKind",
+                "PipelinePlanner", "PipelinePlan", "PipelineController", "PipelineRunner",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
                 "self", "null"));
@@ -149,7 +150,7 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
-            if (module.name().equals("ActorUtils") || module.name().equals("ActorStream")) {
+            if (isReservedPipelineBuiltin(module.name())) {
                 throw new IllegalArgumentException(
                         "reserved actor pipeline namespace: " + module.name());
             }
@@ -158,7 +159,7 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
-                    if (klass.name().equals("ActorUtils") || klass.name().equals("ActorStream")) {
+                    if (isReservedPipelineBuiltin(klass.name())) {
                         throw new IllegalArgumentException(
                                 "reserved actor pipeline type/namespace: " + klass.name());
                     }
@@ -168,7 +169,7 @@ public final class TypeChecker {
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
-                    if (alias.name().equals("ActorStream") || alias.name().equals("ActorUtils")) {
+                    if (isReservedPipelineBuiltin(alias.name())) {
                         throw new IllegalArgumentException(
                                 "reserved actor pipeline alias: " + alias.name());
                     }
@@ -1737,6 +1738,44 @@ public final class TypeChecker {
         }
     }
 
+    private static boolean isReservedPipelineBuiltin(String name) {
+        return name.equals("ActorUtils") || name.equals("ActorStream")
+                || name.equals("PipelinePlanner") || name.equals("PipelinePlan")
+                || name.equals("PipelineController") || name.equals("PipelineRunner");
+    }
+
+    /** Only zero-capture, statically named actor spawn providers are
+     * currently AOT-safe. Dynamic calls or arbitrary closures cannot become
+     * actor-construction capabilities by laundering through a planner. */
+    private void checkStaticPipelineProvider(
+            Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (!(expr instanceof Ast.LambdaExpr lambda)
+                || !lambda.parameters().isEmpty()
+                || lambda.blockBody() != null
+                || !(lambda.expressionBody() instanceof Ast.RuntimeCallExpr spawn)
+                || !spawn.operation().equals("spawn")
+                || spawn.arguments().size() != 1
+                || !(spawn.arguments().getFirst() instanceof Ast.NewExpr created)
+                || !created.arguments().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "dynamic pipeline actor providers must be || -> spawn Actor() "
+                    + "with a statically known actor type and no captures");
+        }
+        Type actorRef = deref(typeOf(spawn, env, generics, self));
+        if (!(actorRef instanceof Named ref)
+                || !ref.name().equals("ActorRef")) {
+            throw new IllegalArgumentException("dynamic provider must spawn an actor");
+        }
+        Type mailbox = actorMailboxPayloadType(ref);
+        if (!(mailbox instanceof Named nominal) || !nominal.arguments().isEmpty()
+                || taggedMessages == null
+                || (!taggedMessages.patterns().containsKey(nominal.name())
+                    && !taggedMessages.enums().containsKey(nominal.name()))) {
+            throw new IllegalArgumentException(
+                    "dynamic actor providers require one statically checked closed nominal mail domain");
+        }
+    }
+
     private Type checkActorStreamStages(
             List<Ast.Expr> stages, Env env, Set<String> generics, Type self) {
         if (currentActorKind != Ast.ActorKind.NONE || stages.size() < 2 || stages.size() > 16) {
@@ -2091,6 +2130,60 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr member) {
+                Type receiverType = deref(typeOf(member.receiver(), env, generics, self));
+                if (receiverType instanceof Named target
+                        && Set.of("PipelinePlanner", "PipelineController",
+                                "PipelineRunner").contains(target.name())) {
+                    if (currentActorKind != Ast.ActorKind.NONE || call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "dynamic pipeline control requires trusted root and no generic calls");
+                    }
+                    int arity = call.arguments().size();
+                    return switch (target.name() + "." + member.member()) {
+                        case "PipelinePlanner.add", "PipelineController.replace" -> {
+                            if (arity != 2) throw new IllegalArgumentException(
+                                    member.member() + " expects stage name and static actor provider");
+                            requireAssignable(
+                                    typeOf(call.arguments().getFirst(), env, generics, self),
+                                    Primitive.STRING, "pipeline stage name");
+                            checkStaticPipelineProvider(call.arguments().get(1), env, generics, self);
+                            yield Primitive.VOID;
+                        }
+                        case "PipelinePlanner.build" -> {
+                            if (arity != 0) throw new IllegalArgumentException(
+                                    "PipelinePlanner.build takes no arguments");
+                            yield new Named("PipelinePlan", List.of());
+                        }
+                        case "PipelineController.start", "PipelineController.resume" -> {
+                            if (arity != 0) throw new IllegalArgumentException(
+                                    member.member() + " takes no arguments");
+                            yield new Named("PipelineRunner", List.of());
+                        }
+                        case "PipelineController.pause", "PipelineController.close",
+                                "PipelineRunner.get_done" -> {
+                            if (arity != 0) throw new IllegalArgumentException(
+                                    member.member() + " takes no arguments");
+                            yield new Named("Future", List.of(Primitive.VOID));
+                        }
+                        case "PipelineRunner.send" -> {
+                            if (arity != 1) throw new IllegalArgumentException(
+                                    "PipelineRunner.send expects one nominal message");
+                            Type payload = typeOf(call.arguments().getFirst(), env, generics, self);
+                            if (!(payload instanceof Named tagged)
+                                    || !tagged.arguments().isEmpty()
+                                    || taggedCaseOrNull(tagged.name()) == null) {
+                                throw new IllegalArgumentException(
+                                        "PipelineRunner.send requires one checked nominal enum variant");
+                            }
+                            requireSerializableActorMessageType(payload, "PipelineRunner.send");
+                            yield new Named("Future", List.of(Unknown.INSTANCE));
+                        }
+                        default -> throw new IllegalArgumentException(
+                                "unknown dynamic pipeline operation " + member.member());
+                    };
+                }
+            }
             if (call.callee() instanceof Ast.MemberExpr utility
                     && utility.receiver() instanceof Ast.NameExpr owner
                     && (owner.name().equals("$static$ActorUtils")
@@ -3346,6 +3439,30 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("PipelinePlanner")
+                    || created.type().name().equals("PipelineController")) {
+                if (currentActorKind != Ast.ActorKind.NONE ||
+                        created.type().inferArguments() ||
+                        !created.type().arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "dynamic pipeline constructors require trusted root and no generic arguments");
+                }
+                if (created.type().name().equals("PipelinePlanner")) {
+                    if (!created.arguments().isEmpty())
+                        throw new IllegalArgumentException(
+                                "PipelinePlanner constructor takes no arguments");
+                } else {
+                    if (created.arguments().size() != 1)
+                        throw new IllegalArgumentException(
+                                "PipelineController requires one PipelinePlan");
+                    Type arg = deref(typeOf(created.arguments().getFirst(), env, generics, self));
+                    if (!(arg instanceof Named named) || !named.name().equals("PipelinePlan")) {
+                        throw new IllegalArgumentException(
+                                "PipelineController constructor requires a PipelinePlan");
+                    }
+                }
+                return new Named(created.type().name(), List.of());
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
                         "DynamicStruct has been removed; use infer struct{...}, "
