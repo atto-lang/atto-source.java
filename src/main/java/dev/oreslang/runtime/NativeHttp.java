@@ -23,6 +23,32 @@ public final class NativeHttp implements AutoCloseable {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
     });
     private boolean closed;
+    // HTTP lifetime admission is deliberately stricter than the general
+    // actor message-mailbox quota. Every admitted exchange retains transport,
+    // deadline and response state until its own completion.
+    static final int MAX_POOLED_INFLIGHT_PER_WORKER = 64;
+
+    enum PoolAdmission { REGISTERED, FULL, WORKER_GONE }
+
+    /**
+     * Atomic per-worker reservation. computeIfPresent serializes additions
+     * and actor-death registry removal for the same actor identity.
+     * Only dispatchPooled adds; completion may remove concurrently.
+     */
+    static <K, V> PoolAdmission registerPoolAdmission(
+            ConcurrentHashMap<K, Set<V>> pendingByWorker,
+            K worker, V exchange, int capacity) {
+        if (capacity < 1) throw new IllegalArgumentException("invalid pool capacity");
+        final boolean[] added = {false};
+        Set<V> present = pendingByWorker.computeIfPresent(worker, (id, pending) -> {
+            if (pending.size() < capacity) {
+                added[0] = pending.add(exchange);
+            }
+            return pending;
+        });
+        if (present == null) return PoolAdmission.WORKER_GONE;
+        return added[0] ? PoolAdmission.REGISTERED : PoolAdmission.FULL;
+    }
 
     public NativeHttp(OresContext context) {
         this.context = Objects.requireNonNull(context);
@@ -92,9 +118,11 @@ public final class NativeHttp implements AutoCloseable {
         // One completion listener per worker, not one listener per request.
         // Completed exchanges are removed so a long-lived worker cannot retain
         // every historical HTTP request until its eventual termination.
-        private final Map<ActorRuntime.ActorRef<?>, Set<State>> inFlight = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<ActorRuntime.ActorRef<?>, Set<State>> inFlight =
+                new ConcurrentHashMap<>();
         private long nextSlot;
-        private final AtomicLong created = new AtomicLong(), reused = new AtomicLong();
+        private final AtomicLong created = new AtomicLong(), reused = new AtomicLong(),
+                rejected = new AtomicLong();
         private volatile Server server;
         private boolean stopped;
         private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind, int poolSize) {
@@ -105,6 +133,7 @@ public final class NativeHttp implements AutoCloseable {
         public boolean isolated() { return kind == ActorRuntime.ActorKind.PRIVATE; }
         public long workersCreated() { return created.get(); }
         public long workersReused() { return reused.get(); }
+        public long workersRejected() { return rejected.get(); }
         public int workersInflight() {
             int total = 0;
             for (Set<State> outstanding : inFlight.values()) total += outstanding.size();
@@ -122,7 +151,7 @@ public final class NativeHttp implements AutoCloseable {
                 exchange.state.abort(500);
                 throw new IllegalStateException("HTTP pool cannot be shared across listeners");
             }
-            int slot = (int) (nextSlot++ % poolSize);
+            int slot = (int) Math.floorMod(nextSlot++, (long) poolSize);
             ActorRuntime.ActorRef<Object> actor = workers.get(slot);
             boolean fresh = actor == null || !context.actors().isAlive(actor);
             try {
@@ -162,12 +191,18 @@ public final class NativeHttp implements AutoCloseable {
                     if (exchange.state.terminal)
                         throw new IllegalStateException("HTTP exchange expired during pooled dispatch");
                     exchange.state.poolHandler = this;
-                    boolean registered = inFlight.computeIfPresent(actor, (key, current) -> {
-                        current.add(exchange.state);
-                        return current;
-                    }) != null;
-                    if (!registered)
+                    PoolAdmission admission = registerPoolAdmission(inFlight, actor,
+                            exchange.state, MAX_POOLED_INFLIGHT_PER_WORKER);
+                    if (admission == PoolAdmission.WORKER_GONE)
                         throw new IllegalStateException("pooled actor terminated during dispatch");
+                    if (admission == PoolAdmission.FULL) {
+                        rejected.incrementAndGet();
+                        // The exchange was already moved; its one-shot token
+                        // and permit are revoked via the normal abort/release.
+                        // Never cancel a live worker because one route is full.
+                        exchange.state.abort(503);
+                        return;
+                    }
                 }
                 actor.send(token);
             } catch (RuntimeException failure) {
