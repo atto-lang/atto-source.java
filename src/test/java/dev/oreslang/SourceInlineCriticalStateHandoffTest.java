@@ -9,8 +9,8 @@ import org.junit.jupiter.api.Timeout;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Compiled guest-source handoff regression: a sealed state callback cannot
- * escape into the source-task scheduler's implicit loop safepoint.
+ * Guest-source handoff regression: inline sealed state callbacks in a bounded
+ * actor method cannot escape into implicit source-task loop safepoints.
  */
 @Timeout(30)
 final class SourceInlineCriticalStateHandoffTest {
@@ -20,18 +20,27 @@ final class SourceInlineCriticalStateHandoffTest {
                 define actor Worker as
                   state { count: int = 0; }
 
-                  receive(ActorMail<String> mail): void with state.read, state.write, suspend {
+                  tick(): void with state.read, state.write, suspend {
+                    for (let i = 0; i < 2048; i = i + 1) do
+                      self.handle_state(critical write |s| -> {
+                        s.count = s.count + 1;
+                      });
+                    done
+                    return;
+                  }
+
+                  snapshot(): int with state.read {
+                    return self.handle_state(|s| -> s.count);
+                  }
+
+                  receive(ActorMail<String> mail): void {
                     if mail.value == "first"; do
-                      for (let i = 0; i < 2048; i = i + 1) do
-                        self.handle_state(critical write |s| -> {
-                          s.count = s.count + 1;
-                        });
-                      done
-                      self.send(self.handle_state(|s| -> s.count));
+                      self.tick();
+                      self.send(self.snapshot());
                       return;
                     fi
                     if mail.value == "second"; do
-                      self.send(self.handle_state(|s| -> s.count) + 1);
+                      self.send(self.snapshot() + 1);
                       self.end();
                     fi
                     return;
