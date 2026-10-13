@@ -1580,6 +1580,87 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(12)
+    void blockedHandoffHostCallbackCannotParkReleasingOwner() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var ownerReady = new CountDownLatch(1);
+        var allowRelease = new CountDownLatch(1);
+        var waiterReady = new CountDownLatch(1);
+        var callbackEntered = new CountDownLatch(1);
+        var allowCallback = new CountDownLatch(1);
+        var ownerDone = new CountDownLatch(1);
+        var waiterDone = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+
+        Thread owner = Thread.ofPlatform().start(() -> {
+            try {
+                var guard = mutex.lock();
+                ownerReady.countDown();
+                if (!allowRelease.await(4, TimeUnit.SECONDS)) {
+                    throw new AssertionError("owner release never signalled");
+                }
+                guard.release(); // Must release in the same execution domain.
+            } catch (Throwable problem) {
+                failure.compareAndSet(null, problem);
+                ownerReady.countDown();
+            } finally {
+                ownerDone.countDown();
+            }
+        });
+        Thread waiter = null;
+        try {
+            assertTrue(ownerReady.await(2, TimeUnit.SECONDS));
+            assertNull(failure.get(), String.valueOf(failure.get()));
+            waiter = Thread.ofPlatform().start(() -> {
+                try {
+                    var pending = mutex.lockAsync();
+                    pending.whenComplete((guard, problem) -> {
+                        try {
+                            assertNull(problem);
+                            assertTrue(Thread.currentThread().getName()
+                                            .startsWith("ores-shared-mutex-notifications-"),
+                                    "host Future completion ran on releasing owner carrier");
+                            callbackEntered.countDown();
+                            assertTrue(allowCallback.await(4, TimeUnit.SECONDS),
+                                    "blocked host callback never released");
+                        } catch (Throwable callbackFailure) {
+                            failure.compareAndSet(null, callbackFailure);
+                            callbackEntered.countDown();
+                        }
+                    });
+                    waiterReady.countDown();
+                    var guard = pending.get(4, TimeUnit.SECONDS);
+                    assertTrue(allowCallback.await(4, TimeUnit.SECONDS));
+                    guard.release(); // Waiter must reclaim its own guard domain.
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                    waiterReady.countDown();
+                } finally {
+                    waiterDone.countDown();
+                }
+            });
+            assertTrue(waiterReady.await(2, TimeUnit.SECONDS));
+            assertNull(failure.get(), String.valueOf(failure.get()));
+            allowRelease.countDown();
+            assertTrue(callbackEntered.await(2, TimeUnit.SECONDS),
+                    "handoff callback was not reached");
+            assertTrue(ownerDone.await(2, TimeUnit.SECONDS),
+                    "releasing owner was parked inside foreign Future callback");
+        } finally {
+            allowRelease.countDown();
+            allowCallback.countDown();
+            owner.join(5_000);
+            if (waiter != null) waiter.join(5_000);
+        }
+        assertFalse(owner.isAlive());
+        assertTrue(waiterDone.await(1, TimeUnit.SECONDS));
+        assertNull(failure.get(), String.valueOf(failure.get()));
+        assertEquals(0, queuedAsyncReservations(mutex));
+        var after = mutex.lockFor(Duration.ofSeconds(1)).orElseThrow();
+        after.release();
+    }
+
+    @Test
     void zeroDurationLockForRemainsTryOnly() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
         var owner = mutex.lock();
