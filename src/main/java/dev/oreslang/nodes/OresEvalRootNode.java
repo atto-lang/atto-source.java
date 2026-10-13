@@ -5542,6 +5542,28 @@ public final class OresEvalRootNode extends RootNode {
                             namespace.kind(), methodCall.member(), args);
                 }
 
+                if (receiver instanceof PipelineRunner runner
+                        && methodCall.member().equals("send")
+                        && call.typeArgumentsPresent()) {
+                    if (args.size() != 1 || call.typeArguments().size() != 1
+                            || !call.typeArguments().getFirst().arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "PipelineRunner.send<ResultCase> requires one message and one nominal reply case");
+                    }
+                    String expectedCase = call.typeArguments().getFirst().name();
+                    // Do not trust a static type argument alone: the actual
+                    // source actor's compiler-validated backward envelope MUST
+                    // match the expected case before completing the guest Future.
+                    return invokableInvocation(ignored ->
+                            runner.send(args.getFirst()).thenApply(result -> {
+                                if (!(result instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue tagged)
+                                        || !tagged.qualifiedName().equals(expectedCase)) {
+                                    throw new SecurityException(
+                                            "unexpected typed pipeline reply; expected " + expectedCase);
+                                }
+                                return result;
+                            }), List.of());
+                }
                 Object callee = member(receiver, methodCall.member(), env);
                 if (!(callee instanceof Invokable invokable)) {
                     throw new IllegalArgumentException("value is not callable: " + callee);
