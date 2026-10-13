@@ -48,6 +48,7 @@ final class StdErrorCatalogTest {
         assertFalse(Pattern.compile("(?m)^\\s*import\\s").matcher(source).find());
         assertTrue(source.contains("pub define interface CodedError as"));
         assertTrue(source.contains("pub define interface RetryAdvisory extends CodedError as"));
+        assertTrue(source.contains("pub define interface ActorApiError extends CodedError as"));
         TypeChecker.check(Parser.parse(source));
 
         Map<String, Entry> parsed = new HashMap<>();
@@ -62,16 +63,17 @@ final class StdErrorCatalogTest {
             assertNull(parsed.put(name, new Entry(parent, code, abstractClass, iface)), name);
             assertTrue(codes.add(code), "duplicate error code " + code);
         }
-        assertEquals(84, parsed.size(), "every catalog type must have an executable Oreslang code method");
+        assertEquals(99, parsed.size(), "every catalog type must have an executable Oreslang code method");
         assertEquals(new Entry(null, 0, true, "CodedError"), parsed.get("Error"));
         assertEquals(new Entry("IOError", 3090, true, null), parsed.get("FileSystemError"));
         assertEquals(new Entry("IOError", 4000, true, null), parsed.get("NetworkError"));
-        assertEquals(10, parsed.values().stream().filter(Entry::abstractClass).count());
+        assertEquals(new Entry("Error", 9000, true, "ActorApiError"), parsed.get("ActorError"));
+        assertEquals(11, parsed.values().stream().filter(Entry::abstractClass).count());
         assertEquals(5, parsed.values().stream().filter(e -> "RetryAdvisory".equals(e.iface())).count());
         long leaves = parsed.keySet().stream().filter(name ->
                 parsed.keySet().stream().noneMatch(child -> name.equals(parsed.get(child).parent()))
                 ).count();
-        assertEquals(74, leaves);
+        assertEquals(88, leaves);
         for (String name : parsed.keySet()) {
             Set<String> visited = new HashSet<>();
             String current = name;
@@ -99,6 +101,24 @@ final class StdErrorCatalogTest {
                             Boolean.parseBoolean(catalog.group(4)), iface)));
         }
         assertEquals(parsed, expected, "manifest/source drift or malformed catalog record");
+        // Preserve legacy actor-adjacent core codes and subtype ancestry.
+        assertEquals(new Entry("StateError", 2012, false, "ActorApiError"), parsed.get("ProcessNotFoundError"));
+        assertEquals(new Entry("StateError", 2013, false, "ActorApiError"), parsed.get("MailboxFullError"));
+        assertEquals(new Entry("ActorError", 9001, false, null), parsed.get("ActorSpawnRejectedError"));
+        assertEquals(new Entry("ActorError", 9002, false, null), parsed.get("ActorInitializationError"));
+        assertEquals(new Entry("ActorError", 9003, false, null), parsed.get("ActorTerminatedError"));
+        assertEquals(new Entry("ActorError", 9004, false, null), parsed.get("ActorMailboxClosedError"));
+        assertEquals(new Entry("ActorError", 9005, false, null), parsed.get("ActorMessageRejectedError"));
+        assertEquals(new Entry("ActorError", 9006, false, null), parsed.get("ActorProtocolMismatchError"));
+        assertEquals(new Entry("ActorError", 9007, false, null), parsed.get("ActorAskTimeoutError"));
+        assertEquals(new Entry("ActorError", 9008, false, null), parsed.get("ActorReplyUnavailableError"));
+        assertEquals(new Entry("ActorError", 9009, false, null), parsed.get("ActorReferenceExpiredError"));
+        assertEquals(new Entry("ActorError", 9010, false, null), parsed.get("ActorNodeUnreachableError"));
+        assertEquals(new Entry("ActorError", 9011, false, null), parsed.get("ActorNameConflictError"));
+        assertEquals(new Entry("ActorError", 9012, false, null), parsed.get("ActorSpawnQuotaExceededError"));
+        assertEquals(new Entry("ActorError", 9013, false, null), parsed.get("ActorSupervisorUnavailableError"));
+        assertEquals(new Entry("ActorError", 9014, false, null), parsed.get("ActorOutputClosedError"));
+
         // Lock down established core error identities while extending the catalog.
         assertEquals(1006, parsed.get("CastError").code());
         assertEquals(2008, parsed.get("StaleHandleError").code());
@@ -257,6 +277,136 @@ final class StdErrorCatalogTest {
         assertEquals("6009|6010|6011|2009|2010|2011|2012|2013|8009|8010", out.toString(StandardCharsets.UTF_8));
     }
 
+
+    @Test
+    void actorApiErrorsHaveNominalCrossFamilyMatcherWithoutCollapsingSupervisorControl()
+            throws Exception {
+        Path entry = temp.resolve("actor-api-errors.ores");
+        Files.writeString(entry, """
+                import class Error from "std/error";
+                import class ActorError from "std/error";
+                import class StateError from "std/error";
+                import class ProcessNotFoundError from "std/error";
+                import class MailboxFullError from "std/error";
+                import interface ActorApiError from "std/error";
+                import class ActorSpawnRejectedError from "std/error";
+                import class ActorInitializationError from "std/error";
+                import class ActorTerminatedError from "std/error";
+                import class ActorMailboxClosedError from "std/error";
+                import class ActorMessageRejectedError from "std/error";
+                import class ActorProtocolMismatchError from "std/error";
+                import class ActorAskTimeoutError from "std/error";
+                import class ActorReplyUnavailableError from "std/error";
+                import class ActorReferenceExpiredError from "std/error";
+                import class ActorNodeUnreachableError from "std/error";
+                import class ActorNameConflictError from "std/error";
+                import class ActorSpawnQuotaExceededError from "std/error";
+                import class ActorSupervisorUnavailableError from "std/error";
+                import class ActorOutputClosedError from "std/error";
+
+                fnc classify(Error error): int {
+                  match error over
+                    on ActorSpawnRejectedError specific -> { return specific.code(); }
+                    on ActorInitializationError specific -> { return specific.code(); }
+                    on ActorTerminatedError specific -> { return specific.code(); }
+                    on ActorMailboxClosedError specific -> { return specific.code(); }
+                    on ActorMessageRejectedError specific -> { return specific.code(); }
+                    on ActorProtocolMismatchError specific -> { return specific.code(); }
+                    on ActorAskTimeoutError specific -> { return specific.code(); }
+                    on ActorReplyUnavailableError specific -> { return specific.code(); }
+                    on ActorReferenceExpiredError specific -> { return specific.code(); }
+                    on ActorNodeUnreachableError specific -> { return specific.code(); }
+                    on ActorNameConflictError specific -> { return specific.code(); }
+                    on ActorSpawnQuotaExceededError specific -> { return specific.code(); }
+                    on ActorSupervisorUnavailableError specific -> { return specific.code(); }
+                    on ActorOutputClosedError specific -> { return specific.code(); }
+                    on ActorError otherActor -> { return -90; }
+                    on ProcessNotFoundError missing -> { return missing.code(); }
+                    on MailboxFullError full -> { return full.code(); }
+                    on ActorApiError actorApi -> { return -80; }
+                    on Error other -> { return -1; }
+                  end
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(classify(new ActorSpawnRejectedError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorInitializationError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorTerminatedError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorMailboxClosedError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorMessageRejectedError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorProtocolMismatchError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorAskTimeoutError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorReplyUnavailableError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorReferenceExpiredError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorNodeUnreachableError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorNameConflictError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorSpawnQuotaExceededError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorSupervisorUnavailableError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ActorOutputClosedError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ProcessNotFoundError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new MailboxFullError()));
+                  return;
+                }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), output,
+                new ByteArrayOutputStream());
+        assertEquals("9001|9002|9003|9004|9005|9006|9007|9008|9009|9010|9011|9012|9013|9014|2012|2013",
+                output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void actorApiErrorInterfaceIsNominalAndCannotBeForgedByMethodShape() throws Exception {
+        Path entry = temp.resolve("actor-api-impostor.ores");
+        Files.writeString(entry, """
+                import class Error from "std/error";
+                import class ActorTerminatedError from "std/error";
+                import class MailboxFullError from "std/error";
+                import interface ActorApiError from "std/error";
+
+                define class Impostor extends Error as
+                  pub code(): int { return 99123; }
+                end
+
+                fnc check(Error failure): int {
+                  match failure over
+                    on ActorApiError actor -> { return actor.code(); }
+                    on Error other -> { return -1; }
+                  end
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(check(new ActorTerminatedError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(check(new MailboxFullError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(check(new Impostor()));
+                  return;
+                }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), output,
+                new ByteArrayOutputStream());
+        assertEquals("9003|2013|-1", output.toString(StandardCharsets.UTF_8));
+    }
+
     @Test
     void ancestorFirstMatchingIsRejectedRatherThanSilentlyShadowingLeaf() throws Exception {
         String source = CoreLibrarySources.source("std/error");
@@ -293,7 +443,7 @@ final class StdErrorCatalogTest {
     void abstractErrorCategoriesCannotBeConstructed() throws Exception {
         String source = CoreLibrarySources.source("std/error");
         for (String category : new String[]{"Error", "ArgumentError", "IOError",
-                "FileSystemError", "NetworkError", "TimingError"}) {
+                "FileSystemError", "NetworkError", "TimingError", "ActorError"}) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(source + "\nfnc bad(): void { val x = new "
                             + category + "(); return; }")));

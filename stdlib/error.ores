@@ -23,6 +23,11 @@ pub define interface RetryAdvisory extends CodedError as
   fnc retry_hint() => bool;
 end
 
+// Actor operation errors are ordinary guest-visible API results, NOT actor crashes
+// or supervisor CONTROL messages. Extend CodedError for nominal matching only.
+pub define interface ActorApiError extends CodedError as
+end
+
 pub define abstract class Error implements CodedError as
   pub code(): int;
 end
@@ -350,11 +355,11 @@ pub define class DeadlockDetectedError extends StateError as
   pub code(): int { return 2011; }
 end
 
-pub define class ProcessNotFoundError extends StateError as
+pub define class ProcessNotFoundError extends StateError implements ActorApiError as
   pub code(): int { return 2012; }
 end
 
-pub define class MailboxFullError extends StateError as
+pub define class MailboxFullError extends StateError implements ActorApiError as
   pub code(): int { return 2013; }
 end
 
@@ -364,4 +369,66 @@ end
 
 pub define class ResourceExhaustedError extends OperationError as
   pub code(): int { return 8010; }
+end
+
+// Actor-specific recoverable API errors. This family is NOT the CONTROL/PANIC envelope.
+
+pub define abstract class ActorError extends Error implements ActorApiError as
+  pub code(): int { return 9000; }
+end
+
+pub define class ActorSpawnRejectedError extends ActorError as
+  pub code(): int { return 9001; }
+end
+
+pub define class ActorInitializationError extends ActorError as
+  pub code(): int { return 9002; }
+end
+
+pub define class ActorTerminatedError extends ActorError as
+  pub code(): int { return 9003; }
+end
+
+pub define class ActorMailboxClosedError extends ActorError as
+  pub code(): int { return 9004; }
+end
+
+pub define class ActorMessageRejectedError extends ActorError as
+  pub code(): int { return 9005; }
+end
+
+pub define class ActorProtocolMismatchError extends ActorError as
+  pub code(): int { return 9006; }
+end
+
+pub define class ActorAskTimeoutError extends ActorError as
+  pub code(): int { return 9007; }
+end
+
+pub define class ActorReplyUnavailableError extends ActorError as
+  pub code(): int { return 9008; }
+end
+
+pub define class ActorReferenceExpiredError extends ActorError as
+  pub code(): int { return 9009; }
+end
+
+pub define class ActorNodeUnreachableError extends ActorError as
+  pub code(): int { return 9010; }
+end
+
+pub define class ActorNameConflictError extends ActorError as
+  pub code(): int { return 9011; }
+end
+
+pub define class ActorSpawnQuotaExceededError extends ActorError as
+  pub code(): int { return 9012; }
+end
+
+pub define class ActorSupervisorUnavailableError extends ActorError as
+  pub code(): int { return 9013; }
+end
+
+pub define class ActorOutputClosedError extends ActorError as
+  pub code(): int { return 9014; }
 end

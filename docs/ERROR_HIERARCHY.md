@@ -18,7 +18,7 @@ pub fnc category(Error error): int {
 }
 ```
 
-The type `Error` is a nominal **abstract** Oreslang class, never Java `Throwable`. Its `code(): int` is a required abstract slot (code 0 is reserved for this root in the catalog, not produced by an instance). Eight families and `FileSystemError` are also abstract; every concrete leaf provides its own `code()` value. `FileSystemError` (3090) and `NetworkError` (4000) are descendants of `IOError`. The catalog has **74 concrete leaf classes and 10 abstract group/root classes**: **84 classes** total.
+The type `Error` is a nominal **abstract** Oreslang class, never Java `Throwable`. Its `code(): int` is a required abstract slot (code 0 is reserved for this root in the catalog, not produced by an instance). Nine families and `FileSystemError` are also abstract; every concrete leaf provides its own `code()` value. `FileSystemError` (3090) and `NetworkError` (4000) are descendants of `IOError`. The catalog has **88 concrete leaf classes and 11 abstract group/root classes**: **99 classes** total.
 
 The machine-readable complete name/parent/code inventory is `contracts/v1/error-catalog.json`. Names and codes are permanently assigned. Deprecate old codes instead of changing their meaning; reserve new codes for new types. Never dispatch on code instead of guest nominal type metadata.
 
@@ -34,6 +34,7 @@ The machine-readable complete name/parent/code inventory is `contracts/v1/error-
 | DataError | 6000 | 6001–6011 | Parse, map keys, formatting, schemas |
 | SecurityError | 7000 | 7001–7008 | Authentication, capabilities, integrity |
 | OperationError | 8000 | 8001–8010 | Numeric, unsupported, bounded resource admission |
+| ActorError | 9000 | 9001–9014 | Actor API admission, routing, request/reply and lifecycle lookup (never CONTROL panic) |
 
 `FileSystemError` has code 3090 and parents the first six `IOError` leaves. `EndOfFileError` and `BrokenPipeError` are direct `IOError` children.
 
@@ -43,7 +44,7 @@ Multiple class inheritance is allowed in Oreslang, but `std/error` deliberately
 uses **at most one concrete/abstract class parent** per type. This prevents
 ambiguous inherited state, constructor paths and name-plus-arity method slots.
 The abstract root has a **pure virtual** `code(): int` slot; other abstract
-group classes implement their reserved codes, while the 74 leaf classes
+group classes implement their reserved codes, while the 88 leaf classes
 override `code()` with stable, unique core codes.
 
 `CodedError` is an exported interface with `fnc code() => int`.
@@ -116,6 +117,110 @@ Semantics and exclusions:
 - None of these new classes implements RetryAdvisory. PatternMatchFail/badmatch remain compile-time exhaustiveness failures under the Oreslang matching contract wherever proof is required.
 
 References: .NET KeyNotFoundException, FormatException and NotImplementedException; Java/Kotlin NoSuchElementException; Haskell Control.Exception; Erlang maps and process errors.
+
+
+## Actor-first error model and supervisor CONTROL separation
+
+Oreslang has **one general-purpose concurrency identity: the actor**.
+Therefore actor transport/admission and request/reply diagnostics are
+first-class stdlib errors, not borrowed Java exceptions.
+
+The nominal `abstract class ActorError extends Error implements ActorApiError`
+is reserved code **9000**. Its 14 concrete leaves are:
+
+| Guest type | Code | Source of design | Precise admission contract |
+| --- | ---: | --- | --- |
+| `ActorSpawnRejectedError` | 9001 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Spawn request rejected before actor identity is admitted |
+| `ActorInitializationError` | 9002 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Caller-facing readiness/startup result failure; supervisor still receives actual actor failure |
+| `ActorTerminatedError` | 9003 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | New actor operation targets an already-terminated actor; not a termination signal |
+| `ActorMailboxClosedError` | 9004 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Send attempts after the destination inbox has been sealed |
+| `ActorMessageRejectedError` | 9005 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Transport admission rejects payload ownership/sendability/capability |
+| `ActorProtocolMismatchError` | 9006 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Dynamically negotiated/remote actor message protocol mismatch, never compiler-accepted static mismatch |
+| `ActorAskTimeoutError` | 9007 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Request/reply deadline reached; remote side might have processed request |
+| `ActorReplyUnavailableError` | 9008 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Response channel or reply recipient becomes unavailable |
+| `ActorReferenceExpiredError` | 9009 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Generation-fenced stale actor reference, not authority to reuse identity |
+| `ActorNodeUnreachableError` | 9010 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Remote actor node unavailable; no implicit actor crash inference |
+| `ActorNameConflictError` | 9011 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Actor registry registration collides with a registered live identity |
+| `ActorSpawnQuotaExceededError` | 9012 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Guest actor-count or memory reservation for spawn denied, recoverable |
+| `ActorSupervisorUnavailableError` | 9013 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Ordinary supervisor API/registry lookup unavailable, not a supervisor-control panic |
+| `ActorOutputClosedError` | 9014 | Erlang/OTP, Akka/Pekko, Ractor or Actix error categories | Caller writes/subscribes to already-closed parent-facing actor output stream |
+
+These types are intended for **Result.Err**, rejected actor
+ready/done or ask futures, and other ordinary API/guest error values where
+the signature defines an error channel. Declaring a type **does not**
+automatically make the runtime convert a host exception into that type.
+No actor control effect lowering is implemented by this catalog.
+
+**Cross-family matching:** the nominal `ActorApiError extends CodedError`
+interface has no extra methods and is explicitly implemented by the
+abstract `ActorError`, plus the previously released
+`ProcessNotFoundError : StateError` (2012) and
+`MailboxFullError : StateError` (2013). Their existing class parents
+and codes are unchanged, so both match `ActorApiError` without being
+`ActorError` class descendants. An arbitrary `Error` with a matching
+`code()` method is not an `ActorApiError`. The interface is a **guest
+API failure** taxonomy, not a marker that an actor panicked.
+
+**CONTROL is not an Error subtype.** Runtime actor `panic`,
+escalated `raise`/`throw`, failure of `on_start`, unhandled
+`receive`, restart-intensity exhaustion, abnormal actor termination,
+structured/force-isolated cancellation, and VM-fatal conditions must follow
+the established actor lifecycle and supervisor CONTROL pipeline. Never
+offer these as ordinary catchable `ActorError` values inside the failed
+actor; a failed actor must not swallow its own panic. The supervisor should
+receive a typed, immutable control-envelope **reason** (proposed separately)
+with actor ID, generation, failure kind, supervision escalation policy,
+and bounded/redacted diagnostic metadata. Such an envelope is not
+`std/error`, not constructible as a normal guest class, and cannot be
+forged by user messages.
+
+Error distinctions that must remain sharp:
+
+- `ActorAskTimeoutError`: no reply by deadline; delivery or processing
+  may already have occurred. Do **not** blindly retry non-idempotent asks,
+  and never treat a timeout as proof the actor died. Use correlation tokens
+  or process aliases so late replies cannot be mistaken for new work.
+- `ActorMailboxClosedError` vs `MailboxFullError`: a sealed inbox
+  vs bounded admission rejection; neither implies that an earlier message
+  was not processed. `ActorTerminatedError` is a guest-facing follow-up
+  operation error, never a substitute for the supervisor's notice.
+- `ActorInitializationError`: a caller-facing startup/readiness
+  failure result; the actual actor failure STILL emits an independently
+  reliable supervisor notice. It may not disguise panic or actor cleanup.
+- `ActorProtocolMismatchError`: only runtime dynamic/remote protocol
+  negotiation. Statically invalid `ActorMail<T>` is a compiler error.
+  `ActorMessageRejectedError` is an explicit sendability/capability
+  admission failure, not a general `raise` signal.
+- `ActorNodeUnreachableError` vs `ActorReferenceExpiredError`:
+  unavailable routing does not prove actor death, and a stale actor
+  generation must never be silently retargeted to a replacement actor.
+- `ActorSpawnQuotaExceededError` is a bounded guest spawn-quota
+  rejection only. Fatal host OOM, forced cancellation or sandbox
+  enforcement must remain uncatchable.
+- `ActorSupervisorUnavailableError` is an ordinary lookup/management
+  API error; an actual supervisor crash or exceeded restart intensity
+  is propagated through the supervisor tree, not converted into this
+  error. `ActorOutputClosedError` is an outbound stream API error, not
+  permission to drop unsent outputs.
+
+Review sources and distinctions:
+
+- Erlang/OTP `gen_server:call`: `noproc`, `timeout`, `nodedown`;
+  Erlang supervisor restart-intensity escalation.
+- Scala Akka Typed / Apache Pekko: ask timeout vs actor lifecycle signals,
+  `Terminated`/death pact and supervision.
+- Actix `MailboxError`: `Closed`, `Timeout`.
+- Ractor `MessagingErr`, `SpawnErr`, `ActorErr`: process/messaging
+  failures, channel closure and typed message send mismatch.
+
+Full references:
+https://www.erlang.org/doc/apps/stdlib/gen_server.html
+https://www.erlang.org/doc/system/sup_princ.html
+https://doc.akka.io/libraries/akka-core/current/typed/interaction-patterns.html
+https://pekko.apache.org/docs/pekko/current/supervision-classic.html
+https://docs.rs/actix/latest/actix/enum.MailboxError.html
+https://docs.rs/ractor/latest/ractor/errors/enum.MessagingErr.html
+https://docs.rs/ractor/latest/ractor/errors/index.html
 
 ## Pattern-matching hardening
 

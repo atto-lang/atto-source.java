@@ -579,14 +579,18 @@
       "parent": "StateError",
       "code": 2012,
       "abstract": false,
-      "interfaces": []
+      "interfaces": [
+        "ActorApiError"
+      ]
     },
     {
       "name": "MailboxFullError",
       "parent": "StateError",
       "code": 2013,
       "abstract": false,
-      "interfaces": []
+      "interfaces": [
+        "ActorApiError"
+      ]
     },
     {
       "name": "NotImplementedError",
@@ -599,6 +603,113 @@
       "name": "ResourceExhaustedError",
       "parent": "OperationError",
       "code": 8010,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorError",
+      "parent": "Error",
+      "code": 9000,
+      "abstract": true,
+      "interfaces": [
+        "ActorApiError"
+      ]
+    },
+    {
+      "name": "ActorSpawnRejectedError",
+      "parent": "ActorError",
+      "code": 9001,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorInitializationError",
+      "parent": "ActorError",
+      "code": 9002,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorTerminatedError",
+      "parent": "ActorError",
+      "code": 9003,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorMailboxClosedError",
+      "parent": "ActorError",
+      "code": 9004,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorMessageRejectedError",
+      "parent": "ActorError",
+      "code": 9005,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorProtocolMismatchError",
+      "parent": "ActorError",
+      "code": 9006,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorAskTimeoutError",
+      "parent": "ActorError",
+      "code": 9007,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorReplyUnavailableError",
+      "parent": "ActorError",
+      "code": 9008,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorReferenceExpiredError",
+      "parent": "ActorError",
+      "code": 9009,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorNodeUnreachableError",
+      "parent": "ActorError",
+      "code": 9010,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorNameConflictError",
+      "parent": "ActorError",
+      "code": 9011,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorSpawnQuotaExceededError",
+      "parent": "ActorError",
+      "code": 9012,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorSupervisorUnavailableError",
+      "parent": "ActorError",
+      "code": 9013,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ActorOutputClosedError",
+      "parent": "ActorError",
+      "code": 9014,
       "abstract": false,
       "interfaces": []
     }
@@ -619,6 +730,13 @@
       "methods": [
         "retry_hint(): bool"
       ]
+    },
+    {
+      "name": "ActorApiError",
+      "parents": [
+        "CodedError"
+      ],
+      "methods": []
     }
   ]
 }
