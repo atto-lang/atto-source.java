@@ -112,7 +112,7 @@ public final class TypeChecker {
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorStream", "ActorUtils", "ActorId", "ActorKind",
-                "PipelinePlanner", "PipelinePlan", "PipelineController", "PipelineRunner", "PipelineDeliveryReceipt",
+                "PipelinePlanner", "PipelinePlan", "PipelineController", "PipelineRunner", "PipelineDeliveryReceipt", "PipelineTypedReply",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
                 "self", "null"));
@@ -1760,7 +1760,8 @@ public final class TypeChecker {
         return name.equals("ActorUtils") || name.equals("ActorStream")
                 || name.equals("PipelinePlanner") || name.equals("PipelinePlan")
                 || name.equals("PipelineController") || name.equals("PipelineRunner")
-                || name.equals("PipelineDeliveryReceipt");
+                || name.equals("PipelineDeliveryReceipt")
+                || name.equals("PipelineTypedReply");
     }
 
     /** Only zero-capture, statically named actor spawn providers are
@@ -2159,9 +2160,12 @@ public final class TypeChecker {
                 if (receiverType instanceof Named target
                         && Set.of("PipelinePlanner", "PipelineController",
                                 "PipelineRunner").contains(target.name())) {
-                    if (currentActorKind != Ast.ActorKind.NONE || call.typeArgumentsPresent()) {
+                    if (currentActorKind != Ast.ActorKind.NONE
+                            || (call.typeArgumentsPresent()
+                                && !(target.name().equals("PipelineRunner")
+                                     && member.member().equals("send")))) {
                         throw new IllegalArgumentException(
-                                "dynamic pipeline control requires trusted root and no generic calls");
+                                "dynamic pipeline control requires trusted root; only runner.send supports an expected reply type");
                     }
                     int arity = call.arguments().size();
                     return switch (target.name() + "." + member.member()) {
@@ -2201,12 +2205,45 @@ public final class TypeChecker {
                                         "PipelineRunner.send requires one checked nominal enum variant");
                             }
                             requireSerializableActorMessageType(payload, "PipelineRunner.send");
-                            // The first-class guest result is an opaque,
-                            // authenticated DELIVERY RECEIPT, not a typed
-                            // source-actor response. Never infer an arbitrary
-                            // payload from Future<Unknown>.
-                            yield new Named("Future", List.of(
-                                    new Named("PipelineDeliveryReceipt", List.of())));
+                            // A bare send has an opaque nominal result, NEVER
+                            // Future<Unknown> or a fabricated delivery receipt.
+                            // An explicit expected enum case carries a checked
+                            // return type AND is verified on the actual runtime
+                            // reply before the future may settle successfully.
+                            Type reply = new Named("PipelineTypedReply", List.of());
+                            if (call.typeArgumentsPresent()) {
+                                if (call.typeArguments().size() != 1
+                                        || !call.typeArguments().getFirst().arguments().isEmpty()) {
+                                    throw new IllegalArgumentException(
+                                            "PipelineRunner.send<ResultCase> expects one nominal result case");
+                                }
+                                String resultName = call.typeArguments().getFirst().name();
+                                var expected = taggedCaseOrNull(resultName);
+                                if (expected == null) {
+                                    throw new IllegalArgumentException(
+                                            "pipeline result must be a declared nominal enum case");
+                                }
+                                requireSerializableActorMessageType(
+                                        new Named(resultName, List.of()), "PipelineRunner typed result");
+                                // The two cases must be admissible in at least
+                                // one statically declared closed mailbox domain.
+                                // Runtime route binding enforces the concrete
+                                // exact compiler-owned domain fingerprint.
+                                boolean sharedDomain = taggedMessages.patterns().values()
+                                        .stream().anyMatch(domain ->
+                                            domain.cases().stream().anyMatch(candidate ->
+                                                    candidate.qualifiedName().equals(tagged.name()))
+                                            && domain.cases().stream().anyMatch(candidate ->
+                                                    candidate.qualifiedName().equals(resultName)));
+                                if (!sharedDomain && !tagged.name().equals(resultName)
+                                        && !tagged.name().substring(0, tagged.name().indexOf('.'))
+                                                .equals(expected.owner())) {
+                                    throw new IllegalArgumentException(
+                                            "pipeline outbound and result cases have no shared closed nominal domain");
+                                }
+                                reply = new Named(resultName, List.of());
+                            }
+                            yield new Named("Future", List.of(reply));
                         }
                         default -> throw new IllegalArgumentException(
                                 "unknown dynamic pipeline operation " + member.member());
@@ -3468,9 +3505,10 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
-            if (created.type().name().equals("PipelineDeliveryReceipt")) {
+            if (created.type().name().equals("PipelineDeliveryReceipt")
+                    || created.type().name().equals("PipelineTypedReply")) {
                 throw new IllegalArgumentException(
-                        "PipelineDeliveryReceipt can only be issued by the pipeline runtime");
+                        "pipeline return values can only be issued by the authenticated pipeline runtime");
             }
             if (created.type().name().equals("PipelinePlanner")
                     || created.type().name().equals("PipelineController")) {
