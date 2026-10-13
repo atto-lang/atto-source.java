@@ -5969,9 +5969,30 @@ public final class OresEvalRootNode extends RootNode {
                     || !object.fields.containsKey("binary_full")
                     || !object.fields.containsKey("stack"))
                 throw new IllegalArgumentException("error codec requires a guest std/error value");
-            Object codeValue = object.owner.invoke(object.owner.prepareBoundMethodInvocation(
-                    object, "code", List.of(), null));
-            if (!(codeValue instanceof Number code)) throw new IllegalStateException("error code() must return int");
+            // IMPORTANT: serialization must be non-executable. Even an
+            // explicitly invoked to_json() must never call a subclass code()
+            // override, getter or closure. Read the compiler-verified constant
+            // return from the nominal vtable instead of dispatching guest code.
+            // A computed/side-effecting code() cannot be marshalled safely.
+            Ast.ClassDecl canonicalBase = object.owner.findClass("Error");
+            if (canonicalBase == null
+                    || !object.owner.classIsA(object.klass, canonicalBase, new LinkedHashSet<>())) {
+                throw new IllegalArgumentException("error codec requires a nominal Error subclass");
+            }
+            Ast.MethodDecl codeMethod = object.owner.findMethod(
+                    object.klass, CallableSelector.instance("code", 0));
+            if (codeMethod == null || codeMethod.body().size() != 1
+                    || !(codeMethod.body().getFirst() instanceof Ast.ReturnStmt codeReturn)
+                    || !(codeReturn.value() instanceof Ast.LiteralExpr codeLiteral)
+                    || !(codeLiteral.value() instanceof Number number)) {
+                throw new IllegalArgumentException(
+                        "error serialization requires a constant integer code(); "
+                        + "guest methods cannot execute at a wire boundary");
+            }
+            int code = Math.toIntExact(number.longValue());
+            if (code < 0) {
+                throw new IllegalArgumentException("error wire code must be non-negative");
+            }
             Object fullTrace = object.fields.get("full_trace");
             Object jsonFull = object.fields.get("json_full");
             Object binaryFull = object.fields.get("binary_full");
@@ -5988,10 +6009,10 @@ public final class OresEvalRootNode extends RootNode {
             List<String> frames = (List<String>) frameList;
             List<String> shown = includeTrace ? frames : List.of();
             return switch (operation) {
-                case "error_to_string" -> GuestErrorWireCodec.text(object.klass.name(), code.intValue(), msg, shown);
-                case "error_to_json" -> GuestErrorWireCodec.json(object.klass.name(), code.intValue(), msg, shown, includeJson);
-                case "error_to_messagepack" -> GuestErrorWireCodec.messagePack(object.klass.name(), code.intValue(), msg, shown, includeBinary);
-                case "error_to_proto_buf" -> GuestErrorWireCodec.protoBuf(object.klass.name(), code.intValue(), msg, shown, includeBinary);
+                case "error_to_string" -> GuestErrorWireCodec.text(object.klass.name(), code, msg, shown);
+                case "error_to_json" -> GuestErrorWireCodec.json(object.klass.name(), code, msg, shown, includeJson);
+                case "error_to_messagepack" -> GuestErrorWireCodec.messagePack(object.klass.name(), code, msg, shown, includeBinary);
+                case "error_to_proto_buf" -> GuestErrorWireCodec.protoBuf(object.klass.name(), code, msg, shown, includeBinary);
                 default -> throw new IllegalArgumentException("unknown guest error encoding");
             };
         }
