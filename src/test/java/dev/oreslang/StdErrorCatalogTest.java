@@ -220,6 +220,31 @@ final class StdErrorCatalogTest {
     }
 
     @Test
+    void concreteSubclassesMustImplementAbstractCodeSlot() throws Exception {
+        String source = CoreLibrarySources.source("std/error");
+        for (String classBody : new String[]{
+                "define class MissingCode extends Error as end",
+                "define class WrongArity extends Error as pub code(int ignored): int { return ignored; } end"}) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source + "\n" + classBody)));
+            assertTrue(failure.getMessage().contains("unresolved abstract method 'code'"), failure::getMessage);
+        }
+    }
+
+    @Test
+    void retryAdvisoryRequiresMethodContractAndNeverUsesStructuralDuckTyping() throws Exception {
+        String source = CoreLibrarySources.source("std/error");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source + """
+                    
+                    define class MalformedHint extends Error implements RetryAdvisory as
+                      pub code(): int { return 9003; }
+                    end
+                    """)));
+        assertTrue(failure.getMessage().contains("does not implement interface"), failure::getMessage);
+    }
+
+    @Test
     void effectSyntaxRemainsFailClosedUntilGuestLoweringExists() {
         for (String keyword : new String[]{"throw", "raise", "panic", "recover"}) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
