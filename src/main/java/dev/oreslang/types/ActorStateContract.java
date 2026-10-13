@@ -228,11 +228,24 @@ public final class ActorStateContract {
                         "actor state-backed reference alias requires verified snapshot lowering");
             }
             if (node instanceof Ast.AssignExpr assignment
-                    && !referencesAccess(assignment.target(), activeAccess)
+                    && !isDirectStateFieldTarget(assignment.target(), activeAccess)
                     && containsReferenceBearingStateProjection(
                             assignment.value(), activeAccess, keys)) {
+                // Merely mentioning s somewhere in an indexed/derived target
+                // does not make the destination actor-owned.
                 throw new IllegalArgumentException(
                         "actor state-backed reference alias requires verified snapshot lowering");
+            }
+            if (node instanceof Ast.CallExpr call
+                    && (containsReferenceBearingStateProjection(
+                                call.callee(), activeAccess, keys)
+                        || containsReferenceBearingStateProjection(
+                                call.arguments(), activeAccess, keys))) {
+                // A guest/interop callee may retain its receiver or arguments,
+                // even if the callback's eventual result is a detached int.
+                // Only future no-escape/effect-proven calls may take live refs.
+                throw new IllegalArgumentException(
+                        "actor state-backed reference call requires verified no-escape lowering");
             }
         }
         // The state mode is a capability; using never upgrades read.
@@ -329,6 +342,13 @@ public final class ActorStateContract {
                 }
             }
         }
+    }
+
+    /** Only the actor's own direct state key is an authorized assignment sink. */
+    private static boolean isDirectStateFieldTarget(Object target, String access) {
+        return target instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr receiver
+                && receiver.name().equals(access);
     }
 
     /**
