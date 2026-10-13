@@ -1387,6 +1387,14 @@ public final class ActorRuntime implements AutoCloseable {
         return () -> cell.ownedResources.remove(resource);
     }
 
+    /** Package-private leak diagnostic for actor-owned runtime capabilities. */
+    int trackedActorResourceCount(ActorRef<?> ref) {
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) throw new IllegalArgumentException("foreign ActorRef");
+        ActorCell<?> cell = actors.get(ref.id());
+        return cell == null ? 0 : cell.ownedResources.size();
+    }
+
     /**
      * Gracefully terminate the actor whose source turn is currently executing.
      * This is the lowering target for actor-local `self.end()`; it carries no
