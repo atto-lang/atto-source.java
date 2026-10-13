@@ -9,6 +9,16 @@ by the state graph. The safety invariants forbid a private member or any member
 of a private named module from appearing in an external export set. The
 completion invariant requires the exported set to be *exactly* the allowed set.
 
+Run the dependency-free exhaustive state explorer (also part of the `visibility-proof` CI job):
+
+```sh
+python3 verification/visibility/check_model.py
+```
+
+It explores all 64 reachable abstract states and 192 scan transitions, then
+injects a deliberately faulty policy that drops the module visibility check.
+That mutation must produce a private-export counterexample.
+
 To run with the TLC model checker (install TLA+ tools separately):
 
 ```sh
