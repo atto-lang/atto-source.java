@@ -60,3 +60,30 @@ behavior.
 No passing Java/GraalVM or LLVM test run is claimed until an actual
 runner executes the exact PR head. All PRs remain drafts until full
 verification and ABI parity.
+
+
+## Additional hardening audit
+
+- An unbound module facade invocation cannot search overloaded candidates
+  and pick the only public method. The module dispatch path checks the
+  entire qualified name + arity family first, then fails closed.
+- Qualified namespace calls fail compile-time visibility checks before any
+  target binding; unqualified enum overloads also respect their declaring
+  module's private authority.
+- At execution, an allegedly compiler-bound direct target is verified
+  against the evaluator's indexed declaration identity, accessible name,
+  declaring code-unit/module and fixed non-spread arity. Module-qualified
+  targets must also have the exact expanded argument count.
+- The public `TreeShaker.shake` API is guarded, not just
+  `OresCompiler.compileForBuild`, so callers cannot bypass the AST-identity
+  invalidation gate.
+- Compiler proof work is bounded to **128 same-arity candidates** per
+  family and **64 parameters** per nominal signature. These are hard
+  compiler admission limits, not runtime candidate-search limits.
+  LLVM's C++ policy has an aligned draft follow-up PR #353.
+- Regression fixtures cover private module selection, an alias/unbound
+  module path, the direct optimizer API, and proof-complexity bounds.
+
+Verification caveat: GitHub Actions is currently failing before runner
+allocation, with zero executed steps and no usable compiler/test logs.
+These patches are committed but have not been established green.
