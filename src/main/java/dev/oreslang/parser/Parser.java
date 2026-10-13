@@ -547,6 +547,14 @@ public final class Parser {
                 fields.add(parseColonField(annotations, mods.visibility));
                 continue;
             }
+            // Type-first fields accept ':' canonically and '=' for compatibility.
+            // 'final' is contextual, so final(...) remains an ordinary method.
+            if ((isContextualIdentifier("final") && (checkNext(IDENT) || checkNext(MUT)))
+                    || looksLikeTypeFirstClassField()) {
+                validateClassFieldModifiers(mods);
+                fields.add(parseTypeFirstClassField(annotations, mods.visibility));
+                continue;
+            }
 
             boolean explicitFnc = match(FNC);
             boolean explicitMethod = matchExplicitMethodMarker();
@@ -908,6 +916,40 @@ public final class Parser {
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
     }
 
+    private boolean looksLikeTypeFirstClassField() {
+        int mark = current;
+        try {
+            match(MUT); // Explicit mutable referent is independent of finality.
+            parseTypeRef();
+            if (!check(IDENT)) return false;
+            advance();
+            return check(COLON) || check(EQUAL);
+        } catch (IllegalArgumentException ex) {
+            return false;
+        } finally {
+            current = mark;
+        }
+    }
+
+    private Ast.FieldDecl parseTypeFirstClassField(
+            List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectCallableStructuralAnnotation(annotations, "fields");
+        boolean isFinal = matchContextualIdentifier("final");
+        boolean mutableReferent = match(MUT);
+        Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
+        String name = consume(IDENT, "expected class field name after type").lexeme();
+        if (!match(COLON, EQUAL)) {
+            throw error(peek(), "class field initializer requires ':' or '='");
+        }
+        Ast.Expr initializer = parseExpression();
+        consumeExpressionClassFieldTerminator(initializer, "field declaration should end with ';'");
+        // Slot reassignment and mutation through its stored referent are
+        // separate capabilities. 'final' does NOT silently grant mutable
+        // referent access; only an explicit 'mut' modifier requests it.
+        Ast.BindingKind kind = isFinal ? Ast.BindingKind.VAL : Ast.BindingKind.LET;
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
+    }
+
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
         String name = consume(IDENT, "expected field name").lexeme();
@@ -1107,6 +1149,19 @@ public final class Parser {
         boolean untrustedSeen = false;
 
         while (true) {
+            // These spellings are recognized but deliberately unavailable
+            // until typed RW admission / actor pipeline source lowering is
+            // implemented. Never admit them as ordinary method names or
+            // silently degrade the read mode to an exclusive write gate.
+            if (isAdjacentCompoundKeyword("critical", "read")
+                    || isAdjacentCompoundKeyword("critical", "write")) {
+                throw error(peek(), "reader/writer critical declaration requires "
+                        + "checked protected-state effects and scheduler-owned RW permits");
+            }
+            if (isAdjacentCompoundKeyword("transform", "pipe")) {
+                throw error(peek(), "transform-pipe actor requires "
+                        + "typed pipeline role, forwarding and transport lowering");
+            }
             if (match(PUB)) {
                 if (visibilitySeen) throw error(previous(), "duplicate/conflicting visibility modifier");
                 visibilitySeen = true;
@@ -1397,6 +1452,14 @@ public final class Parser {
     }
 
     private Ast.TypeRef parseTypeAtom() {
+        if (match(BANG)) return Ast.TypeRef.complement(parseTypeAtom());
+        if (match(TRUE)) return Ast.TypeRef.boolLiteral(true);
+        if (match(FALSE)) return Ast.TypeRef.boolLiteral(false);
+        if ((check(STRUCT) || (check(IDENT) && peek().lexeme().equals("record")))
+                && checkNext(LBRACE)) {
+            advance(); // 'struct' and 'record' denote a structural shape in type position.
+            return parseTypeAtom(); // the existing '{field: Type}' parser owns the braces
+        }
         if (match(TYPE)) {
             Ast.TypeRef marked = parseTypeAtom();
             if (marked.name().startsWith("$")) {
@@ -2646,6 +2709,7 @@ public final class Parser {
         if (match(INT)) return new Ast.LiteralPattern(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
+        if (match(SYMBOL_LITERAL)) return new Ast.LiteralPattern(dev.oreslang.runtime.OresSymbol.process(previous().lexeme()));
         if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralPattern(Boolean.FALSE);
         if (check(IDENT) && peek().lexeme().equals("_")) {
@@ -3199,6 +3263,7 @@ public final class Parser {
             return new Ast.LiteralExpr(new Ast.Imaginary(Double.parseDouble(raw)));
         }
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
+        if (match(SYMBOL_LITERAL)) return new Ast.LiteralExpr(dev.oreslang.runtime.OresSymbol.process(previous().lexeme()));
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
@@ -3433,11 +3498,13 @@ public final class Parser {
     private boolean isNextContextualMemberLine() {
         if (current == 0 || previous().line() >= peek().line()) return false;
         if (check(FNC)) return true;
+        if (check(MUT)) return looksLikeTypeFirstClassField();
         if (!check(IDENT)) return false;
         String word = peek().lexeme();
-        return (word.equals("suspend") || word.equals("method")
+        return ((word.equals("suspend") || word.equals("method")
                 || word.equals("final") || word.equals("critical"))
-                && (checkNext(IDENT) || checkNext(FNC) || checkNext(LPAREN));
+                && (checkNext(IDENT) || checkNext(MUT) || checkNext(FNC) || checkNext(LPAREN)))
+                || looksLikeTypeFirstClassField();
     }
 
     private boolean hasAnnotation(List<Ast.Annotation> annotations, String name) {
@@ -3665,6 +3732,17 @@ public final class Parser {
         if (!checkNext(IDENT) && !checkNext(LBRACKET) && !checkNext(STATIC)) return false;
         advance();
         return true;
+    }
+
+    private boolean isAdjacentCompoundKeyword(String first, String second) {
+        if (current + 2 >= tokens.size()) return false;
+        Token left = tokens.get(current);
+        Token dash = tokens.get(current + 1);
+        Token right = tokens.get(current + 2);
+        return left.type() == IDENT && left.lexeme().equals(first)
+                && dash.type() == MINUS && right.type() == IDENT
+                && right.lexeme().equals(second)
+                && adjacent(left, dash) && adjacent(dash, right);
     }
 
     private boolean matchContextualShared() {
