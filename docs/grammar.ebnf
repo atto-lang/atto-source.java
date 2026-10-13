@@ -156,7 +156,7 @@ object_pattern  = "{" ( object_rest_item
    the inherited const/val/let or mut permission. Type-first and name-first
    annotations are equivalent after resolution. *)
 destructure_binding
-                = IDENT [ ":" type_ref ] | type_ref IDENT ;
+                = IDENT [ ":" type_ref [ "mut" ] ] | type_ref [ "mut" ] IDENT ;
 sequence_destructure_item
                 = [ binding_kind ] ( destructure_binding | "_" ) ;
 sequence_rest_item
