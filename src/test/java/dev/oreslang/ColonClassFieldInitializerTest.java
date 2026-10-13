@@ -143,4 +143,17 @@ final class ColonClassFieldInitializerTest {
                 end
                 """)));
     }
+
+    @Test
+    void rejectsDestructiveTakeFromFinalClassSlot() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  pub final int token: 42
+                end
+                fnc steal(): int {
+                  val Foo value = new Foo();
+                  return rt take(value.token);
+                }
+                """)));
+    }
 }
