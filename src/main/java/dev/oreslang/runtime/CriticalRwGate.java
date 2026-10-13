@@ -41,6 +41,8 @@ public final class CriticalRwGate implements AutoCloseable {
         private final CriticalGate.Ticket underlying;
         private boolean requested;
         private boolean closed;
+        /** Close request is not physical grant release for an active actor. */
+        private boolean closeRequested;
         private boolean completionAttached;
         private Object ownerDomain;
 
@@ -50,15 +52,16 @@ public final class CriticalRwGate implements AutoCloseable {
                     ? CriticalGate.Mode.READ : CriticalGate.Mode.WRITE);
             // A core ticket revoked by actor STOP must also retire this
             // facade's cross-gate owner registry and strongly held wrapper.
-            // close() is idempotent, so normal wrapper release is safe too.
-            this.underlying.onClose(this::close);
+            // The core ticket owns physical revocation. Retire the wrapper
+            // only from that callback, not from a premature foreign close.
+            this.underlying.onClose(this::retire);
         }
 
         public Mode mode() { return mode; }
 
         private void registerOwner(Object identity) {
             synchronized (this) {
-                if (requested || closed)
+                if (requested || closed || closeRequested)
                     throw new IllegalStateException("RW ticket already requested or closed");
                 synchronized (OWNER_LOCK) {
                     Ticket held = OWNERS.get(identity);
@@ -147,7 +150,8 @@ public final class CriticalRwGate implements AutoCloseable {
         public void releaseOnCompletion(OresFuture<?> completion) {
             Objects.requireNonNull(completion, "completion");
             synchronized (this) {
-                if (closed) throw new IllegalStateException("cannot bind a released RW ticket");
+                if (closed || closeRequested)
+                    throw new IllegalStateException("cannot bind a released RW ticket");
                 if (completionAttached)
                     throw new IllegalStateException("RW ticket completion already bound");
                 completionAttached = true;
@@ -160,14 +164,24 @@ public final class CriticalRwGate implements AutoCloseable {
         @Override
         public void close() {
             synchronized (this) {
+                if (closed || closeRequested) return;
+                closeRequested = true;
+            }
+            // The core schedules deferred physical revocation if a foreign
+            // completion/STOP races an active actor's granted critical scope.
+            // Keep global logical-owner and facade tracking until the core
+            // actually releases the grant.
+            underlying.close();
+        }
+
+        private void retire() {
+            synchronized (this) {
                 if (closed) return;
                 closed = true;
+                closeRequested = true;
             }
-            try { underlying.close(); }
-            finally {
-                unregisterOwner();
-                tickets.remove(this);
-            }
+            unregisterOwner();
+            tickets.remove(this);
         }
     }
 
