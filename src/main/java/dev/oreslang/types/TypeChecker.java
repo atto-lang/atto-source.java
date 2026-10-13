@@ -7444,6 +7444,13 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        // This checker expands unions before delegating to Types.isAssignable.
+        // Preserve the low-level no-forged-shape invariant *before* that
+        // expansion; otherwise Unknown can satisfy the nonrecord union arm
+        // and be admitted without any proof of the declared structural ABI.
+        if (actual == Unknown.INSTANCE && Types.containsRecordContract(expected)) {
+            return false;
+        }
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())
