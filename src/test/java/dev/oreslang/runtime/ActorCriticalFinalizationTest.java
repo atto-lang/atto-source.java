@@ -214,6 +214,88 @@ final class ActorCriticalFinalizationTest {
     }
 
     @Test
+    void gateCloseFromForeignHostDefersReleaseUntilActorFinalization()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch exitGuest = new CountDownLatch(1);
+        AtomicReference<VerifierState> stateRef = new AtomicReference<>();
+        AtomicReference<CriticalRwGate.Ticket> writerRef = new AtomicReference<>();
+        AtomicInteger revocations = new AtomicInteger();
+        Ast.Program program = Parser.parse("pub fnc main(): void { return; }");
+        try (SharedCodeImageStore images = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime()) {
+            SharedCodeImageStore.CodeImage image =
+                    images.publish("actor-rw-gate-shutdown-audit", program);
+            ActorRuntime.ActorCodeExecutor source = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() { return image; }
+
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String type, ActorRuntime.ActorContext<Object> context) {
+                    var state = new VerifierState(context.self().id(), revocations);
+                    stateRef.set(state);
+                    return state;
+                }
+
+                @Override public void receiveActor(
+                        String type,
+                        ActorRuntime.ActorOwnedGuestState raw,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) throws Exception {
+                    var state = (VerifierState) raw;
+                    var writer = state.gate.newCriticalTicket();
+                    writerRef.set(writer);
+                    writer.enterAsync();
+                    entered.countDown();
+                    try {
+                        if (!exitGuest.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("actor writer was not released by test");
+                        }
+                        assertTrue(writer.isHeld(),
+                                "gate shutdown released WRITE before actor guest unwind");
+                    } finally {
+                        writer.close();
+                    }
+                }
+            };
+            ActorRuntime.ActorRef<Object> actor =
+                    runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED,
+                            source, "GateShutdownVerifier");
+            try {
+                actor.send("work");
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var state = stateRef.get();
+                assertNotNull(state);
+                var writer = writerRef.get();
+                assertNotNull(writer);
+                var reader = state.gate.newTicket(CriticalRwGate.Mode.READ);
+                OresFuture<Void> waiting = reader.enterAsync();
+                assertFalse(waiting.isDone());
+
+                // This gate-wide shutdown must not revoke an active actor
+                // ticket merely because the gate itself became closed.
+                state.gate.close();
+                state.gate.close();
+                assertTrue(writer.isHeld());
+                assertTrue(waiting.isDone(), "pending admission was not revoked");
+                assertFalse(reader.isHeld());
+                assertEquals(0, revocations.get(),
+                        "actor state was finalized before the guest turn unwound");
+                assertThrows(IllegalStateException.class, state.gate::newCriticalTicket);
+
+                exitGuest.countDown();
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+                assertEquals(1, revocations.get(),
+                        "actor-owned gate was not revoked at finalization");
+                assertFalse(writer.isHeld());
+                assertFalse(reader.isHeld());
+                assertFalse(state.gate.hasWriter());
+            } finally {
+                exitGuest.countDown();
+            }
+        }
+    }
+
+    @Test
     void sourceActorStateRevokesOnlyInstanceGate() throws Exception {
         Class<?> objectClass = null;
         Class<?> sourceStateClass = null;
