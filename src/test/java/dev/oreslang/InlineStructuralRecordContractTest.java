@@ -117,6 +117,20 @@ final class InlineStructuralRecordContractTest {
     }
 
     @Test
+    void suspensionAndActorCannotHideReadonlyShapeViewsInsideContainers() {
+        IllegalArgumentException suspended = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                suspend fnc bad(List<record{foo: int}> values): void { return; }
+                """)));
+        assertTrue(suspended.getMessage().contains("outlive"), suspended.getMessage());
+        IllegalArgumentException actor = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                actor fnc bad(List<struct{foo: int}> values): void { return; }
+                """)));
+        assertTrue(actor.getMessage().contains("mailbox boundary"), actor.getMessage());
+    }
+
+    @Test
     void duplicateFieldNamesFailAtParseTime() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(record{foo: int, foo: string} v): void { return; }

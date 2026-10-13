@@ -99,3 +99,14 @@ copied/serialized for async or actor use.
 
 An eventual explicit owned/copy conversion may relax this restriction only
 with ownership, serialization, and cancellation-safe lifetime proof.
+
+### Nested borrowed structural views
+
+A readonly shape view nested inside `List<record{...}>`, a tuple, union,
+function signature, or named generic wrapper remains borrowed. It must not
+be passed to a suspending/async/generator function or actor message by hiding
+it under a container type. The compiler recursively inspects the carried
+type, with a cycle guard. This does not mean owned immutable structs are
+intrinsically unsendable; explicit ownership-safe copies need a separate
+contract. Mutable access checks on the *outer container* are separate from
+mutation of a readonly projected member.
