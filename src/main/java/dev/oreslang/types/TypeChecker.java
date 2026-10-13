@@ -40,6 +40,8 @@ public final class TypeChecker {
             Ast.InterfaceFunctionDecl function) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
+    /** One consistent solution per contextual inference identity across the entire check. */
+    private final Map<Long, Type> inferenceSolutions = new HashMap<>();
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
@@ -178,7 +180,7 @@ public final class TypeChecker {
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
-                "self", "null"));
+                "Any", "Unknown", "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
@@ -218,12 +220,24 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("Any") || klass.name().equals("Unknown")) {
+                        throw new IllegalArgumentException(
+                                "reserved type name '" + klass.name() + "' cannot be redeclared as a class");
+                    }
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    if (iface.name().equals("Any") || iface.name().equals("Unknown")) {
+                        throw new IllegalArgumentException(
+                                "reserved type name '" + iface.name() + "' cannot be redeclared as an interface/trait");
+                    }
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    if (alias.name().equals("Any") || alias.name().equals("Unknown")) {
+                        throw new IllegalArgumentException(
+                                "reserved type name '" + alias.name() + "' cannot be redeclared as a type alias");
+                    }
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
@@ -1506,6 +1520,7 @@ public final class TypeChecker {
                                 "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
                                 "int", "uint", "bigint", "f32", "f64", "float", "decimal",
                                 "complex64", "complex128", "complex", "bool", "Bool",
+                                "Any", "Unknown",
                                 "boolean", "string", "String", "void", "null", "self",
                                 "Tuple", "Array", "List", "Vector", "Slice",
                                 "FixedArray", "FixedList", "DynamicStruct", "Option",
@@ -1875,7 +1890,10 @@ public final class TypeChecker {
                 return new Named("$BooleanOps", List.of());
             }
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
-            if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
+            if (name.name().equals("None")) {
+                return new Named("Option",
+                        List.of(Types.newInferenceHole(Types.HoleOrigin.OPTION_NONE)));
+            }
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) {
                 rejectUnimportedModuleNamespace(name.name());
@@ -1918,15 +1936,49 @@ public final class TypeChecker {
                 targetType = binding.type();
                 where = name.name();
             } else if (assignment.target() instanceof Ast.MemberExpr member) {
+                if (startsAtReadonlyStructuralView(member.receiver(), env)) {
+                    throw new IllegalArgumentException(
+                            "cannot mutate a nested field through a readonly structural view");
+                }
                 targetType = memberType(member, env, generics, self, true);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
+                if (startsAtReadonlyStructuralView(indexed.receiver(), env)) {
+                    throw new IllegalArgumentException(
+                            "cannot mutate an indexed element through a readonly structural view");
+                }
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException(
+                else if (receiver instanceof Tuple tuple) {
+                    Long slot = constantTupleIndex(indexed.index());
+                    if (slot != null) {
+                        if (slot < 0 || slot >= tuple.elements().size()) {
+                            throw new IllegalArgumentException(
+                                    "tuple assignment index " + slot + " outside arity " + tuple.elements().size());
+                        }
+                        targetType = tuple.elements().get(slot.intValue());
+                    } else {
+                        if (tuple.elements().isEmpty()) {
+                            throw new IllegalArgumentException("cannot assign through an empty tuple");
+                        }
+                        Type first = tuple.elements().getFirst();
+                        // The index may select *any* slot. Allow a write only
+                        // when every potential slot has exactly the same
+                        // writable type/capability. A union of read types is
+                        // never a valid write target for heterogeneous slots.
+                        for (Type candidate : tuple.elements()) {
+                            if (!assignable(candidate, first) || !assignable(first, candidate)
+                                    || readonlyCapabilityErased(candidate, first)
+                                    || readonlyCapabilityErased(first, candidate)) {
+                                throw new IllegalArgumentException(
+                                        "dynamic tuple assignment requires homogeneous writable slot types");
+                            }
+                        }
+                        targetType = first;
+                    }
+                } else throw new IllegalArgumentException(
                         "indexed assignment requires an array/list or tuple; structs have a closed static field set");
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
@@ -1952,12 +2004,21 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> rightExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(leftExit, rightExit));
-            return commonType(left, right);
+            // Incompatible concrete branches have a genuine sum type, not
+            // the permissive internal inference sentinel. A branch whose
+            // type is still unresolved cannot supply a proven alternative.
+            if (containsUnknown(left) || containsUnknown(right)) {
+                throw new IllegalArgumentException(
+                        "conditional branches contain unresolved inference; "
+                                + "supply an explicit type or resolve the branch before joining");
+            }
+            return collectionElementJoin(left, right);
         }
         if (expr instanceof Ast.TypeTestExpr test) {
             requireRuntimeReifiableType(test.targetType(), "is");
             Type source = deref(typeOf(test.value(), env, generics, self));
             Type target = deref(resolve(test.targetType(), generics, self));
+            requireResolvedRuntimeReifiableType(target, "is");
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible type test: " + source + " cannot be " + target);
             }
@@ -1972,6 +2033,7 @@ public final class TypeChecker {
             requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
+            requireResolvedRuntimeReifiableType(target, "as");
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible cast: " + source + " cannot be cast to " + target);
             }
@@ -2382,14 +2444,21 @@ public final class TypeChecker {
                 Type value = widenCollectionElement(typeOf(call.arguments().getFirst(), env, generics, self));
                 return switch (name.name()) {
                     case "Some" -> new Named("Option", List.of(value));
-                    case "Ok" -> new Named("Result", List.of(value, Unknown.INSTANCE));
-                    case "Err" -> new Named("Result", List.of(Unknown.INSTANCE, value));
+                    case "Ok" -> new Named("Result", List.of(value,
+                            Types.newInferenceHole(Types.HoleOrigin.RESULT_OK_ERROR)));
+                    case "Err" -> new Named("Result", List.of(
+                            Types.newInferenceHole(Types.HoleOrigin.RESULT_ERR_OK), value));
                     default -> throw new IllegalStateException("unreachable sum constructor");
                 };
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 Type receiverValueType = receiver;
+                if (receiver == Types.Any.INSTANCE || receiver == Types.UnknownValue.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "cannot call member '" + member.member()
+                                    + "' on " + receiver + "; narrow or validate the value first");
+                }
                 receiver = receiverDispatchType(receiver);
 
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
@@ -2904,6 +2973,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
+            if (callee == Types.Any.INSTANCE || callee == Types.UnknownValue.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "cannot call " + callee + " as a function without validated callable type");
+            }
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
             List<ExpandedCallArgument> expanded =
                     expandFixedCallArguments(
@@ -2989,6 +3062,12 @@ public final class TypeChecker {
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            if (deref(receiver) == Types.Any.INSTANCE
+                    || deref(receiver) == Types.UnknownValue.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "cannot read member '" + member.member() + "' on " + receiver
+                                + "; narrow or validate the value first");
+            }
             Type sumReceiver = receiverDispatchType(deref(receiver));
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
@@ -3175,7 +3254,9 @@ public final class TypeChecker {
 
             if (receiver instanceof Record record) {
                 Type result = record.members().get(member.member());
-                if (result != null) return result;
+                if (result != null) {
+                    return record.readOnly() ? readonlyObservedRecord(result) : result;
+                }
 
                 String methodPrefix = CallableSelector.instance(member.member(), 0).mangledName().replace("$arity0", "$arity");
                 boolean structuralMethod = record.members().keySet().stream()
@@ -3230,10 +3311,15 @@ public final class TypeChecker {
                     if (member == null) {
                         throw new IllegalArgumentException("unknown object/map key '" + key.value() + "'");
                     }
-                    return member;
+                    return record.readOnly() ? readonlyObservedRecord(member) : member;
                 }
-                if (record.members().isEmpty()) return Unknown.INSTANCE;
-                return record.members().values().stream().reduce(Unknown.INSTANCE, this::commonType);
+                if (record.members().isEmpty()) {
+                    throw new IllegalArgumentException("cannot dynamically index an empty closed record");
+                }
+                List<Type> values = List.copyOf(record.members().values());
+                return Types.unionOf(record.readOnly()
+                        ? values.stream().map(this::readonlyObservedRecord).toList()
+                        : values);
             }
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
@@ -3246,7 +3332,10 @@ public final class TypeChecker {
                     }
                     return tuple.elements().get(constant.intValue());
                 }
-                return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                if (tuple.elements().isEmpty()) {
+                    throw new IllegalArgumentException("cannot dynamically index an empty tuple");
+                }
+                return Types.unionOf(tuple.elements());
             }
             throw new IllegalArgumentException(
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
@@ -3419,15 +3508,22 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.ListExpr list) {
-            if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
-            Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
+            if (list.elements().isEmpty()) {
+                return new ListType(Types.newInferenceHole(Types.HoleOrigin.EMPTY_ARRAY));
+            }
+            Type element = widenCollectionElement(requireKnownLiteralValue(
+                    typeOf(list.elements().getFirst(), env, generics, self), "array/list element"));
             for (int i = 1; i < list.elements().size(); i++) {
-                element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
+                element = collectionElementJoin(element, widenCollectionElement(requireKnownLiteralValue(
+                        typeOf(list.elements().get(i), env, generics, self), "array/list element")));
             }
             return new ListType(element);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            return new Tuple(tuple.elements().stream()
+                    .map(item -> requireKnownLiteralValue(
+                            typeOf(item, env, generics, self), "tuple element"))
+                    .toList());
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.explicitStruct()) {
@@ -3480,7 +3576,9 @@ public final class TypeChecker {
 
             Map<String, Type> members = new LinkedHashMap<>();
             for (Ast.ObjectField field : object.fields()) {
-                Type exactValueType = typeOf(field.value(), env, generics, self);
+                Type exactValueType = requireKnownLiteralValue(
+                        typeOf(field.value(), env, generics, self),
+                        "struct field '" + field.name() + "'");
                 if (members.putIfAbsent(
                         field.name(),
                         object.inferredStruct()
@@ -3549,6 +3647,11 @@ public final class TypeChecker {
         if (element == Primitive.VOID) {
             throw new IllegalArgumentException(
                     "Channel<void> cannot carry a value; use an explicit signal/unit type");
+        }
+        if (Types.containsOpaqueTop(element)) {
+            throw new IllegalArgumentException(
+                    where + " cannot conceal an Any/Unknown payload in a channel until "
+                            + "runtime ownership and callable validation are reified");
         }
         // Ordinary Channel<T> is an execution-domain-local capability, not a
         // mailbox. Owned function values and objects containing callables may
@@ -4465,6 +4568,50 @@ public final class TypeChecker {
         };
     }
 
+    /**
+     * Keep the non-owning structural parameter's root readonly capability
+     * attached to nested member/index lvalues. Otherwise p.inner.foo = ...
+     * could bypass the outer Record.readOnly() check by resolving p.inner as a
+     * fresh writable receiver. This guards rooted lvalues; explicit aliasing
+     * and nested nominal/collection capabilities still need reified borrow
+     * provenance (issue #853).
+     */
+    private boolean startsAtReadonlyStructuralView(Ast.Expr expr, Env env) {
+        if (expr instanceof Ast.NameExpr name) {
+            Env.Binding binding = env.lookup(name.name());
+            return binding != null
+                    && deref(binding.type()) instanceof Record record
+                    && record.readOnly();
+        }
+        if (expr instanceof Ast.MemberExpr member) {
+            return startsAtReadonlyStructuralView(member.receiver(), env);
+        }
+        if (expr instanceof Ast.IndexExpr indexed) {
+            return startsAtReadonlyStructuralView(indexed.receiver(), env);
+        }
+        return false;
+    }
+
+    /**
+     * A nested record obtained from a read-only view is still a borrowed
+     * read-only view, not an owned mutable record. Preserve that provenance
+     * when the value is stored in a local or forwarded to another function.
+     */
+    private Type readonlyObservedRecord(Type type) {
+        if (type instanceof Record record) {
+            Map<String, Type> members = new LinkedHashMap<>();
+            for (Map.Entry<String, Type> field : record.members().entrySet()) {
+                members.put(field.getKey(), readonlyObservedRecord(field.getValue()));
+            }
+            return new Record(members, true);
+        }
+        if (type instanceof Union union) {
+            return Types.unionOf(union.options().stream()
+                    .map(this::readonlyObservedRecord).toList());
+        }
+        return type;
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         return memberType(member, env, generics, self, false);
     }
@@ -4491,12 +4638,13 @@ public final class TypeChecker {
                 unwrapMutexGuard(deref(rawReceiver)));
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
-                    "cannot mutate a infer struct value; inferred structs are closed and readonly");
+                    "cannot mutate a readonly structural/inferred record view");
         }
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
-            return result;
+            return record.readOnly() && !writing
+                    ? readonlyObservedRecord(result) : result;
         }
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
@@ -4565,7 +4713,9 @@ public final class TypeChecker {
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
-        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
+        if (type == Unknown.INSTANCE || type == Types.Any.INSTANCE
+                || type == Types.UnknownValue.INSTANCE
+                || type instanceof Generic || type instanceof SelfType
                 || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
@@ -4658,7 +4808,10 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
+        if (type == Unknown.INSTANCE || type == Types.Any.INSTANCE
+                || type == Types.UnknownValue.INSTANCE
+                || type instanceof Types.InferenceHole
+                || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
         if (type instanceof StringLiteral) return true;
@@ -4754,6 +4907,7 @@ public final class TypeChecker {
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
             Type source = deref(typeOf(test.value(), sourceEnv, generics, self));
             Type target = deref(resolve(test.targetType(), generics, self));
+            requireResolvedRuntimeReifiableType(target, "is");
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible type refinement: " + source + " cannot be " + target);
             }
@@ -4844,6 +4998,7 @@ public final class TypeChecker {
         if (pattern instanceof Ast.TypePattern typed) {
             requireRuntimeReifiableType(typed.type(), "type pattern");
             Type target = deref(resolve(typed.type(), generics, self));
+            requireResolvedRuntimeReifiableType(target, "type pattern");
             if (!typesMayOverlap(subject, target)) {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
             }
@@ -4989,7 +5144,9 @@ public final class TypeChecker {
     }
 
     private boolean structuralPatternMayMatch(Type subject, Record targetShape) {
-        if (subject == Unknown.INSTANCE || subject instanceof Generic) return true;
+        if (subject == Unknown.INSTANCE || subject == Types.Any.INSTANCE
+                || subject == Types.UnknownValue.INSTANCE
+                || subject instanceof Generic) return true;
         if (subject instanceof Union union) {
             return union.options().stream()
                     .anyMatch(option -> structuralPatternMayMatch(option, targetShape));
@@ -5351,6 +5508,8 @@ public final class TypeChecker {
      */
     private boolean typesMayOverlap(Type a, Type b) {
         if (a == Unknown.INSTANCE || b == Unknown.INSTANCE
+                || a == Types.Any.INSTANCE || b == Types.Any.INSTANCE
+                || a == Types.UnknownValue.INSTANCE || b == Types.UnknownValue.INSTANCE
                 || a instanceof Generic || b instanceof Generic) return true;
         if (a instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(option, b));
         if (b instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(a, option));
@@ -5397,6 +5556,11 @@ public final class TypeChecker {
             for (Ast.TypeRef option : ref.arguments()) requireRuntimeReifiableType(option, operator);
             return;
         }
+        if (ref.name().equals("Any") || ref.name().equals("Unknown")) {
+            throw new IllegalArgumentException(
+                    operator + " cannot use " + ref.name()
+                            + " as a target: validate against a concrete runtime type");
+        }
         if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
                 || ref.name().equals("$infer$") || ref.name().equals("self")
                 || ref.name().equals("Fnc") || ref.name().equals("Function")) {
@@ -5408,6 +5572,43 @@ public final class TypeChecker {
                     operator + " cannot test parameterized type '" + ref
                             + "' until generic runtime type arguments are reified; match constructors/structure instead");
         }
+    }
+
+    /**
+     * Source spellings are not a sufficient runtime-test guard: a non-generic
+     * alias can expand to an erased constructed type (e.g. Array<int>).
+     * Validate the fully resolved, alias-expanded target before allowing
+     * is/as/type-pattern execution. OresEvalRootNode currently observes only
+     * the raw List/Option/Result kind, not guest generic arguments.
+     */
+    private void requireResolvedRuntimeReifiableType(Type type, String operator) {
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                requireResolvedRuntimeReifiableType(option, operator);
+            }
+            return;
+        }
+        if (type instanceof Primitive primitive
+                && primitive != Primitive.VOID && primitive != Primitive.NULL) return;
+        if (type instanceof Named named && named.arguments().isEmpty()) {
+            // A source name alone does not make a runtime type: reject
+            // unchecked/unknown nominal names that the guest runtime cannot
+            // possibly recognize.
+            if (findClass(named.name()) != null || findInterface(named.name()) != null
+                    || Set.of("Generator", "Iterator", "AsyncGenerator", "AsyncIterator",
+                              "IteratorResult", "Option", "Result", "Array", "List")
+                            .contains(named.name())) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    operator + " cannot test '" + named.name()
+                            + "': no verified Oreslang runtime type descriptor exists");
+        }
+        throw new IllegalArgumentException(
+                operator + " cannot test " + type
+                        + " without verified runtime type information; "
+                        + "parameterized types and generic parameters require reified witnesses, "
+                        + "while records and functions require explicit structural matching");
     }
 
     private Type resolveSharedGeneric(Type type, Map<String, Type> bindings) {
@@ -5516,8 +5717,7 @@ public final class TypeChecker {
             };
         }
         if (receiver instanceof Tuple tuple) {
-            Type element = tuple.elements().stream()
-                    .reduce(Unknown.INSTANCE, this::commonType);
+            Type element = Types.unionOf(tuple.elements());
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), element);
@@ -5595,11 +5795,7 @@ public final class TypeChecker {
         iterable = receiverDispatchType(iterable);
         if (iterable instanceof ListType list) return list.element();
         if (iterable instanceof Tuple tuple) {
-            Type result = Unknown.INSTANCE;
-            for (Type element : tuple.elements()) {
-                result = result == Unknown.INSTANCE ? element : commonType(result, element);
-            }
-            return result;
+            return Types.unionOf(tuple.elements());
         }
         if (iterable instanceof Named named) {
             if (named.name().equals("Iterator") && named.arguments().size() == 1) {
@@ -5700,6 +5896,22 @@ public final class TypeChecker {
         return null;
     }
 
+    /**
+     * A source expression with the legacy compiler inference sentinel has no
+     * established value type. Empty list/None/Ok/Err have recognized contextual
+     * inference paths; an *actual element or field* cannot hide this sentinel
+     * inside a record, tuple or nonempty array and subsequently impersonate a
+     * concrete generic argument through permissive nested assignability.
+     */
+    private Type requireKnownLiteralValue(Type type, String where) {
+        if (type == Unknown.INSTANCE) {
+            throw new IllegalArgumentException(
+                    where + " has an unresolved compiler-internal type; "
+                            + "declare a type or use an explicit validated conversion");
+        }
+        return type;
+    }
+
     private Type widenCollectionElement(Type type) {
         return type instanceof StringLiteral ? Primitive.STRING : type;
     }
@@ -5773,6 +5985,7 @@ public final class TypeChecker {
         if (value instanceof Primitive || value instanceof StringLiteral
                 || value instanceof ClassNamespace || value instanceof Generic
                 || value == Unknown.INSTANCE
+                || value == Types.Any.INSTANCE || value == Types.UnknownValue.INSTANCE
                 || valueSemanticAggregate
                 || valueSemanticNamed) {
             throw new IllegalArgumentException(
@@ -6475,11 +6688,11 @@ public final class TypeChecker {
         }
 
         Type concrete = resolve(param.type(), generics, self);
-        if (concrete instanceof Record) {
-            // Inline structural shapes are already the canonical read-only
-            // structural contract. They do not need a nominal class/interface
-            // lookup and may safely view readonly inferred records.
-            return concrete;
+        if (concrete instanceof Record record) {
+            // Structural parameters are observation-only borrowed views.
+            // Make that capability explicit in the type environment: merely
+            // declaring the parameter VAL does not prevent p.foo = value.
+            return new Record(record.members(), true);
         }
         Ast.InterfaceDecl iface = findInterface(param.type().name());
         if (iface != null) {
@@ -6487,9 +6700,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("structural interface must resolve to a named type");
             }
             Type shape = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
-            return substituteGenerics(
+            Record specialized = (Record) substituteGenerics(
                     shape,
                     genericBindings(iface.genericParameters(), named.arguments(), "interface " + iface.name()));
+            return new Record(specialized.members(), true);
         }
 
         Ast.ClassDecl klass = findClass(param.type().name());
@@ -6503,7 +6717,8 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("structural class must resolve to a named type");
             }
             Type shape = publicClassShape(klass, new LinkedHashSet<>());
-            return substituteGenerics(shape, classGenericBindings(klass, named));
+            Record specialized = (Record) substituteGenerics(shape, classGenericBindings(klass, named));
+            return new Record(specialized.members(), true);
         }
 
         throw new IllegalArgumentException(
@@ -6868,8 +7083,13 @@ public final class TypeChecker {
     }
 
     private void inferGenericBindings(Type pattern, Type actual, Map<String, Type> bindings, Set<String> fixedBindings, String label) {
-        if (containsUnknown(actual)) return;
+        if (actual == Unknown.INSTANCE || actual instanceof Types.InferenceHole) return;
+        // Recurse through known constructor payloads and infer from them;
+        // an unresolved complementary sum arm contributes no constraint.
         if (pattern instanceof Generic generic) {
+            // Do not bind T to an aggregate with unresolved element proofs.
+            // Other concrete sum-constructor positions recurse below.
+            if (containsUnknown(actual)) return;
             if (fixedBindings.contains(generic.name())) return;
             Type previous = bindings.putIfAbsent(generic.name(), actual);
             if (previous != null) {
@@ -6935,7 +7155,7 @@ public final class TypeChecker {
     }
 
     private boolean containsUnknown(Type type) {
-        if (type == Unknown.INSTANCE) return true;
+        if (type == Unknown.INSTANCE || type instanceof Types.InferenceHole) return true;
         if (type instanceof SelfType receiverSelf) return containsUnknown(receiverSelf.bound());
         if (type instanceof Borrow borrow) return containsUnknown(borrow.target());
         if (type instanceof ListType list) return containsUnknown(list.element());
@@ -7317,6 +7537,14 @@ public final class TypeChecker {
             }
             return new Record(members, ref.isReadonlyRecordType());
         }
+        // Language tops are reserved, not type variables or user aliases:
+        // aliases/inferred local names must not shadow the proof boundary.
+        if (ref.name().equals("Any") || ref.name().equals("Unknown")) {
+            if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                throw new IllegalArgumentException(ref.name() + " does not accept type arguments");
+            }
+            return ref.name().equals("Any") ? Types.Any.INSTANCE : Types.UnknownValue.INSTANCE;
+        }
         if (generics.contains(ref.name())) return new Generic(ref.name());
         Type scopedType = currentTypeScope == null ? null : currentTypeScope.lookupInferredType(ref.name());
         if (scopedType != null) {
@@ -7376,6 +7604,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Any", "Unknown" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(ref.name() + " does not accept type arguments");
+                }
+                yield ref.name().equals("Any") ? Types.Any.INSTANCE : Types.UnknownValue.INSTANCE;
+            }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");
@@ -7535,10 +7769,89 @@ public final class TypeChecker {
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
     }
 
+    private boolean bindContextualInference(
+            Types.InferenceHole hole,
+            Type expected,
+            Types.HoleOrigin requiredOrigin) {
+        if (hole.origin() != requiredOrigin || containsUnknown(expected)
+                || expected == Primitive.VOID || expected == Primitive.NULL) {
+            return false;
+        }
+        Type previous = inferenceSolutions.get(hole.id());
+        if (previous == null) {
+            inferenceSolutions.put(hole.id(), expected);
+            return true;
+        }
+        return assignable(previous, expected) && assignable(expected, previous);
+    }
+
     private boolean assignable(Type actual, Type expected) {
         // A negative constraint requires positive evidence that values are disjoint.
         // The generic/Unknown and dynamic compatibility paths below are not evidence.
         if (expected instanceof Types.Not) return Types.isAssignable(actual, expected);
+        // Contextual empty-array inference is a unification constraint, not
+        // an existential cast: once an empty literal is typed as Array<int>,
+        // every alias and subsequent list write must agree with int.
+        if (actual instanceof Types.InferenceHole hole) {
+            Type solved = inferenceSolutions.get(hole.id());
+            return solved != null
+                    ? assignable(solved, expected)
+                    : actual.equals(expected);
+        }
+        if (expected instanceof Types.InferenceHole hole) {
+            Type solved = inferenceSolutions.get(hole.id());
+            return solved != null
+                    ? assignable(actual, solved)
+                    : actual.equals(expected);
+        }
+        if (actual instanceof ListType sourceList && expected instanceof ListType targetList) {
+            if (sourceList.element() instanceof Types.InferenceHole hole
+                    && hole.origin() == Types.HoleOrigin.EMPTY_ARRAY
+                    && !inferenceSolutions.containsKey(hole.id())) {
+                Type element = targetList.element();
+                // Do not bind a fresh hole to another unresolved or dependent
+                // generic; this cannot establish a unique concrete constraint.
+                if (containsUnknown(element) || element instanceof Generic
+                        || element == Primitive.VOID || element == Primitive.NULL) return false;
+                inferenceSolutions.put(hole.id(), element);
+            }
+            return assignable(sourceList.element(), targetList.element())
+                    && assignable(targetList.element(), sourceList.element());
+        }
+        if (actual instanceof Named source && expected instanceof Named target
+                && source.name().equals(target.name())
+                && source.arguments().size() == target.arguments().size()) {
+            for (int i = 0; i < source.arguments().size(); i++) {
+                Type left = source.arguments().get(i);
+                Type right = target.arguments().get(i);
+                if (left instanceof Types.InferenceHole hole) {
+                    Types.HoleOrigin origin;
+                    if (source.name().equals("Option") && i == 0) {
+                        origin = Types.HoleOrigin.OPTION_NONE;
+                    } else if (source.name().equals("Result") && i == 1) {
+                        origin = Types.HoleOrigin.RESULT_OK_ERROR;
+                    } else if (source.name().equals("Result") && i == 0) {
+                        origin = Types.HoleOrigin.RESULT_ERR_OK;
+                    } else {
+                        return false;
+                    }
+                    if (!bindContextualInference(hole, right, origin)) return false;
+                } else if (!assignable(left, right) || !assignable(right, left)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        // Unresolved legacy values cannot prove concrete types. The old
+        // sentinel remains expected-only for unmigrated builtins/imports;
+        // None, Ok, Err and empty arrays use identified contextual holes.
+        if (actual == Unknown.INSTANCE && expected != Unknown.INSTANCE) return false;
+        // Safe source-level top types must not inherit the permissive internal
+        // Unknown inference-sentinel behavior.
+        if (actual == Types.Any.INSTANCE || actual == Types.UnknownValue.INSTANCE
+                || expected == Types.Any.INSTANCE || expected == Types.UnknownValue.INSTANCE) {
+            return Types.isAssignable(actual, expected);
+        }
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())
@@ -7638,9 +7951,16 @@ public final class TypeChecker {
     }
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {
+        // Readonly destinations are observation-only, and may use structural
+        // width/covariance. Mutable destinations require write-safe field
+        // types, regardless of field name. Instance method signature variance
+        // is already enforced recursively in assignable(Function, Function).
+        if (actual.readOnly() && !expected.readOnly()) return false;
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
             Type candidate = actual.members().get(required.getKey());
             if (candidate == null || !assignable(candidate, required.getValue())) return false;
+            if (!expected.readOnly()
+                    && !assignable(required.getValue(), candidate)) return false;
         }
         return true;
     }
@@ -7782,7 +8102,15 @@ public final class TypeChecker {
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
-        for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        for (String name : names) {
+            if (name.equals("Any") || name.equals("Unknown")) {
+                throw new IllegalArgumentException(
+                        "reserved type name '" + name + "' cannot be used as a generic parameter in " + owner);
+            }
+            if (!result.add(name)) {
+                throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+            }
+        }
         return result;
     }
 

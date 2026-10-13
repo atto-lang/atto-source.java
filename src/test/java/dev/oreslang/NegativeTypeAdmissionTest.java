@@ -14,6 +14,17 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Draft admission tests: negative types are proofs, not dynamic casts. */
 final class NegativeTypeAdmissionTest {
     @Test
+    void opaqueTopTypesCannotProveNegativeLiteralConstraints() {
+        for (Types.Type top : List.of(Types.Any.INSTANCE, Types.UnknownValue.INSTANCE,
+                Types.newInferenceHole(Types.HoleOrigin.EMPTY_ARRAY))) {
+            assertFalse(Types.areProvablyDisjoint(new Types.StringLiteral("text"), top));
+            assertFalse(Types.areProvablyDisjoint(new Types.BoolLiteral(true), top));
+            assertFalse(Types.areProvablyDisjoint(Types.notOf(top), top));
+        }
+        assertFalse(Types.isAssignable(Types.notOf(Types.Primitive.STRING), Types.Any.INSTANCE));
+    }
+
+    @Test
     void nestedCallableUncertaintyCannotProveComplementDisjointness() {
         Types.Type unknownParameter = new Types.Function(
                 List.of(Types.Unknown.INSTANCE), Types.Primitive.INT);

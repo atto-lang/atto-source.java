@@ -3,11 +3,13 @@ package dev.oreslang.types;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class Types {
     private Types() { }
+    private static final AtomicLong NEXT_HOLE_ID = new AtomicLong(1);
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Any, UnknownValue, Unknown, InferenceHole { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -37,9 +39,10 @@ public final class Types {
     public record ClassNamespace(String className) implements Type { }
 
     /**
-     * Closed structural record type. readOnly is a value capability, not a
-     * structural compatibility dimension: it prevents mutation from being
-     * regained through aliases while preserving ordinary shape matching.
+     * Closed structural record type. readOnly is a value capability that
+     * restricts both writes and assignability. Read-only target views support
+     * width/covariance; writable target members require invariant types so
+     * references cannot regain mutation authority through aliases.
      */
     public record Record(Map<String, Type> members, boolean readOnly) implements Type {
         public Record { members = Map.copyOf(members); }
@@ -109,6 +112,113 @@ public final class Types {
     }
 
     public enum Unknown implements Type { INSTANCE }
+    /**
+     * A statically known Oreslang value whose concrete type is hidden from the
+     * current scope. Any is NOT a dynamically unchecked operation permission.
+     * Values must be checked/narrowed before type-dependent access.
+     */
+    public enum Any implements Type {
+        INSTANCE;
+        @Override public String toString() { return "Any"; }
+    }
+
+    /**
+     * Source-level Unknown: a value without a verified Oreslang type contract.
+     * No implicit conversion into Any or a concrete type is permitted.
+     */
+    public enum UnknownValue implements Type {
+        INSTANCE;
+        @Override public String toString() { return "Unknown"; }
+    }
+
+    /**
+     * INTERNAL only: incomplete type information in inference and legacy
+     * builtins. Must never be exposed as the source-level Unknown type.
+     * TODO: replace permissive legacy sentinels with explicit inference holes.
+     */
+    public enum Unknown implements Type {
+        INSTANCE;
+        @Override public String toString() { return "<incomplete compiler inference>"; }
+    }
+
+    /**
+     * An identifiable unresolved compiler constraint, not an assignable value.
+     * The EMPTY_ARRAY origin can be satisfied by an explicitly known expected
+     * element type because the literal has no elements to contradict it.
+     * Other origins will be migrated separately from legacy Unknown.INSTANCE.
+     */
+    public enum HoleOrigin { EMPTY_ARRAY, OPTION_NONE, RESULT_OK_ERROR, RESULT_ERR_OK }
+
+    public record InferenceHole(long id, HoleOrigin origin) implements Type {
+        public InferenceHole {
+            if (id <= 0) throw new IllegalArgumentException("inference hole id must be positive");
+            Objects.requireNonNull(origin, "inference hole origin");
+        }
+        @Override public String toString() {
+            return "<unresolved " + origin + " #" + id + ">";
+        }
+    }
+
+    public static InferenceHole newInferenceHole(HoleOrigin origin) {
+        return new InferenceHole(NEXT_HOLE_ID.getAndIncrement(), origin);
+    }
+
+    /**
+     * Until the runtime carries full type/ownership witnesses, hiding borrowed,
+     * callable, receiver-polymorphic or unresolved values behind a top type
+     * would allow the compiler to lose enforcement evidence.
+     */
+    private static boolean safelyHideConcreteType(Type type) {
+        if (type == Primitive.VOID || type == Primitive.NULL
+                || type == Unknown.INSTANCE || type == UnknownValue.INSTANCE
+                || type instanceof Generic || type instanceof InferenceHole || type instanceof Not
+                || type instanceof Borrow
+                || type instanceof SelfType || type instanceof Function
+                || type instanceof ClassNamespace) return false;
+        if (type instanceof ListType list) return safelyHideConcreteType(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().allMatch(Types::safelyHideConcreteType);
+        if (type instanceof Union union) return union.options().stream().allMatch(Types::safelyHideConcreteType);
+        if (type instanceof Record record) return record.members().values().stream().allMatch(Types::safelyHideConcreteType);
+        if (type instanceof Named named) {
+            // These types carry execution-domain, external-resource, mutable
+            // synchronization or actor authority. A plain type-erased object
+            // wrapper cannot currently preserve their affine/capability proof.
+            // Only introduce universal boxing for them alongside reified
+            // ownership witnesses and a transport-aware runtime.
+            String leafName = named.name();
+            int qualifier = leafName.lastIndexOf('.');
+            if (qualifier >= 0) leafName = leafName.substring(qualifier + 1);
+            if (switch (leafName) {
+                case "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
+                     "Channel", "SelectCase", "SelectSet", "SelectResult",
+                     "Mutex", "MutexGuard", "SharedMutex", "Future",
+                     "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
+                     "TcpConnection", "HttpExchange", "HttpServer", "HttpHandler",
+                     "File", "Socket" -> true;
+                default -> false;
+            }) return false;
+            return named.arguments().stream().allMatch(Types::safelyHideConcreteType);
+        }
+        return true;
+    }
+
+    public static boolean containsOpaqueTop(Type type) {
+        if (type == Any.INSTANCE || type == UnknownValue.INSTANCE
+                || type instanceof InferenceHole) return true;
+        if (type instanceof Not not) return containsOpaqueTop(not.excluded());
+        if (type instanceof SelfType self) return containsOpaqueTop(self.bound());
+        if (type instanceof Borrow borrow) return containsOpaqueTop(borrow.target());
+        if (type instanceof ListType list) return containsOpaqueTop(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsOpaqueTop);
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsOpaqueTop);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsOpaqueTop);
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsOpaqueTop);
+        if (type instanceof Function fn) {
+            return fn.parameters().stream().anyMatch(Types::containsOpaqueTop)
+                    || containsOpaqueTop(fn.result());
+        }
+        return false;
+    }
 
     public static Type notOf(Type type) {
         Objects.requireNonNull(type, "type");
@@ -123,7 +233,10 @@ public final class Types {
      * absence is not proof: a narrowed/widened record view may hide fields.
      */
     public static boolean areProvablyDisjoint(Type first, Type second) {
-        if (first == Unknown.INSTANCE || second == Unknown.INSTANCE
+        if (first == Any.INSTANCE || second == Any.INSTANCE
+                || first == UnknownValue.INSTANCE || second == UnknownValue.INSTANCE
+                || first instanceof InferenceHole || second instanceof InferenceHole
+                || first == Unknown.INSTANCE || second == Unknown.INSTANCE
                 || first instanceof Generic || second instanceof Generic) return false;
         if (first.equals(second)) return false;
         if (first instanceof Union union) {
@@ -170,7 +283,8 @@ public final class Types {
     }
 
     private static boolean containsUncertainType(Type type) {
-        if (type == Unknown.INSTANCE || type instanceof Generic) return true;
+        if (type == Unknown.INSTANCE || type == Any.INSTANCE || type == UnknownValue.INSTANCE
+                || type instanceof InferenceHole || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Not not) return containsUncertainType(not.excluded());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUncertainType);
@@ -195,9 +309,23 @@ public final class Types {
         }
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
-        if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
-        if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
+        // Inference identities never act as untyped values or wildcard type
+        // witnesses. Contextual resolution is performed by the checker, not
+        // through this general assignability relation.
+        if (from instanceof InferenceHole || to instanceof InferenceHole) return false;
+        // Unknown is a safe, opaque destination; only an explicit runtime
+        // validation can establish the stronger Any/concrete invariant.
+        if (to == UnknownValue.INSTANCE) return safelyHideConcreteType(from);
+        if (from == UnknownValue.INSTANCE) return false;
+        if (to == Any.INSTANCE) return safelyHideConcreteType(from);
+        if (from == Any.INSTANCE) return false;
+        // Legacy unresolved inference is now expected-only. A value whose
+        // type is incomplete cannot prove an arbitrary concrete contract.
+        if (from == Unknown.INSTANCE) return false;
+        if (to == Unknown.INSTANCE) return true;
+        // Unbound generic parameters are rigid, not an implicit any.
+        if (to instanceof Generic || from instanceof Generic) return false;
         if (from instanceof SelfType source) {
             if (to instanceof SelfType target) {
                 return isAssignable(source.bound(), target.bound())
@@ -231,9 +359,15 @@ public final class Types {
         }
 
         if (from instanceof Record source && to instanceof Record target) {
+            // A readonly *view* may safely widen readable members, but an
+            // explicitly writable destination may not offer broader writes.
+            // In particular, {foo:int} must not become writable {foo:Any}.
+            if (source.readOnly() && !target.readOnly()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
                 if (actual == null || !isAssignable(actual, required.getValue())) return false;
+                if (!target.readOnly()
+                        && !isAssignable(required.getValue(), actual)) return false;
             }
             return true;
         }
@@ -294,6 +428,17 @@ public final class Types {
             } else if (!flattened.contains(type)) flattened.add(type);
         }
         if (flattened.isEmpty()) return Unknown.INSTANCE;
+        // Normalize only when every arm can safely widen to the top type.
+        // In this first-stage runtime, borrows/functions/unchecked capabilities
+        // deliberately are not implicit members of Any or source Unknown.
+        if (flattened.contains(UnknownValue.INSTANCE)
+                && flattened.stream().allMatch(type -> isAssignable(type, UnknownValue.INSTANCE))) {
+            return UnknownValue.INSTANCE;
+        }
+        if (flattened.contains(Any.INSTANCE)
+                && flattened.stream().allMatch(type -> isAssignable(type, Any.INSTANCE))) {
+            return Any.INSTANCE;
+        }
         if (flattened.size() == 1) return flattened.getFirst();
         flattened.sort(java.util.Comparator.comparing(Object::toString));
         return new Union(flattened);
