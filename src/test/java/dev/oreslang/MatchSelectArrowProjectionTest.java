@@ -170,6 +170,35 @@ final class MatchSelectArrowProjectionTest {
     }
 
     @Test
+    void typedSelectProjectionRequiresSlimArrowToSeparatePatternAndBody() {
+        IllegalArgumentException noArrow = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        fnc read(Channel<{x: int, y: int}> values): void {
+                          do select {
+                            when readch values: let {x,y} {
+                              stdio.println(x);
+                            }
+                          }
+                          return;
+                        }
+                        """));
+        assertTrue(noArrow.getMessage().contains("require '->'"), noArrow.getMessage());
+
+        IllegalArgumentException typed = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        fnc read(Channel<int> values): void {
+                          select {
+                            when readch values: int n {
+                              stdio.println(n);
+                            }
+                          }
+                          return;
+                        }
+                        """));
+        assertTrue(typed.getMessage().contains("require '->'"), typed.getMessage());
+    }
+
+    @Test
     void arrowDisambiguatesSelectRecordPatternFromBracedArmBody() {
         Ast.Program program = checked("""
                 fnc test(Channel<{x: int, y: string}> messages): void {
