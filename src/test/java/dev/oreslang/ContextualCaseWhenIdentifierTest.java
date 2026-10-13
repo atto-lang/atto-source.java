@@ -56,7 +56,7 @@ final class ContextualCaseWhenIdentifierTest {
                 }
 
                 fnc classify(int case, int when): void {
-                  switch case;
+                  do switch case;
                     case 1 -> {
                       stdio.println(when);
                     }
@@ -74,7 +74,7 @@ final class ContextualCaseWhenIdentifierTest {
     void matchGuardWhenRemainsContextualWithoutReservingTheIdentifier() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 fnc guarded(int when): void {
-                  match when;
+                  do match when;
                     1 when when eq 1 -> {
                       return;
                     }
