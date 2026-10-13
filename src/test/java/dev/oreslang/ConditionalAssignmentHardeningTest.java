@@ -91,13 +91,12 @@ final class ConditionalAssignmentHardeningTest {
     private static String ifSource(String condition) {
         return """
                 fnc probe(bool x, bool y): bool {
-                  if """ + condition + """
-                   then
+                  if %s then
                     return true;
                   else
                     return false;
                   fi
                 }
-                """;
+                """.formatted(condition);
     }
 }
