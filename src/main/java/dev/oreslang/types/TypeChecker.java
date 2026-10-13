@@ -655,6 +655,14 @@ public final class TypeChecker {
         currentMaySuspend = fn.async() || fn.suspends();
         try {
             checkBlock(fn.body(), env, generics, returns, null);
+            // A Result-valued argument remains a must-use obligation even
+            // when the function never binds it to a new local.
+            for (Ast.Param param : fn.parameters()) {
+                Env.Binding argument = env.lookup(param.name());
+                if (argument != null && isMustUseVoidResult(argument.type())) {
+                    ResultMustUseProof.requireHandled(fn.body(), param.name());
+                }
+            }
         } finally {
             currentActorKind = previousActorKind;
             currentGenerator = previousGenerator;
@@ -1253,6 +1261,14 @@ public final class TypeChecker {
             currentMaySuspend = method.async() || method.suspends();
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
+                if (!method.isAbstract()) {
+                    for (Ast.Param param : method.parameters()) {
+                        Env.Binding argument = env.lookup(param.name());
+                        if (argument != null && isMustUseVoidResult(argument.type())) {
+                            ResultMustUseProof.requireHandled(method.body(), param.name());
+                        }
+                    }
+                }
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
