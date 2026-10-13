@@ -4945,12 +4945,12 @@ public final class TypeChecker {
         if (earlier instanceof Ast.TypePattern a && later instanceof Ast.TypePattern b) {
             Type earlierType = deref(resolve(a.type(), generics, self));
             Type laterType = deref(resolve(b.type(), generics, self));
-            return assignable(laterType, earlierType);
+            return runtimeValueTypeCovered(laterType, earlierType, 0);
         }
         if (earlier instanceof Ast.TypePattern a && later instanceof Ast.LiteralPattern b) {
             Type earlierType = deref(resolve(a.type(), generics, self));
             Type literalType = typeOf(new Ast.LiteralExpr(b.value()), new Env(null), generics, self);
-            return assignable(literalType, earlierType);
+            return runtimeValueTypeCovered(literalType, earlierType, 0);
         }
 
         if (earlier instanceof Ast.StructuralPattern a && later instanceof Ast.StructuralPattern b) {
@@ -4958,13 +4958,14 @@ public final class TypeChecker {
             Type br = deref(resolve(b.target(), generics, self));
             Record earlierShape = structuralPatternShape(a.target(), ar, generics);
             Record laterShape = structuralPatternShape(b.target(), br, generics);
-            return structuralRecordAssignable(laterShape, earlierShape);
+            return runtimeRecordShapeCovered(laterShape, earlierShape);
         }
         if (earlier instanceof Ast.StructuralPattern a && later instanceof Ast.TypePattern b) {
             Type ar = deref(resolve(a.target(), generics, self));
             Record earlierShape = structuralPatternShape(a.target(), ar, generics);
             Type laterType = deref(resolve(b.type(), generics, self));
-            return assignable(laterType, earlierShape);
+            return laterType instanceof Record laterRecord
+                    && runtimeRecordShapeCovered(laterRecord, earlierShape);
         }
 
         if (earlier instanceof Ast.TuplePattern a && later instanceof Ast.TuplePattern b) {
