@@ -19,9 +19,12 @@ with a **private constructor**:
 
 A `ActorRef` retains at most **one** failure receipt for its generation.
 The first terminal cause wins under its `lifecycleLock`: publication uses
-atomic compare-and-set and never replaces an earlier notice. **Failures
-during final cleanup use the same publication routine**, rather than
-writing the terminal Throwable separately and omitting the notice.
+a **single atomic `TerminalFailure` value** holding both the host-only cause
+and a data-only receipt. A host observer cannot observe a terminal cause
+without the corresponding receipt; they are no longer two separately
+published atomic fields. **Failures during final cleanup use the same
+publication routine**, rather than writing the terminal Throwable separately
+and omitting the notice.
 Graceful termination publishes no failure receipt. A structured cancellation is not
 a catchable `std/error.Error`.
 
@@ -40,6 +43,14 @@ The host-only `failureNotice()` accessor offers durable per-ref observation
 without relying on user-mailbox capacity, but it does not itself deliver
 the event. Future delivery must be bounded, scheduler-controlled, fenced,
 and loss-aware when no supervisor is online.
+
+**Provenance limitation:** a descriptor returned by a public catalog
+lookup proves *membership in the built-in registry*, not that an arbitrary
+guest value has that type. Runtime serializers must additionally prove class
+ancestry from the sealed, linker-owned `@std/error.ores` code unit. A
+separately created Error-shaped class, even with a matching code/name, may
+never acquire supervisor authority. Authentic priority-CONTROL delivery
+remains unimplemented and must not treat a compact snapshot as a capability.
 
 ## CoreErrorDescriptors (runtime-owned v1 metadata)
 

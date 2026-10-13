@@ -107,6 +107,22 @@ runtime-to-supervisor CONTROL integration remains gated pending a
 trusted nominal metadata descriptor, actor-generation fencing,
 supervision provenance, and executable conformance tests.
 
+### Nominal serialization provenance and immutable input snapshots
+
+The Java evaluator now verifies Error ancestry through linked code-unit
+identities all the way back to the canonical packaged
+`CoreLibrarySources.unitId("std/error")`, rather than accepting any local
+class named `Error`. It recursively resolves explicitly imported parent
+classes, and rejects unrelated Error-shaped classes without calling
+any guest methods.
+
+The codec detaches frame arrays **before validating them**, eliminating
+the gap where a guest could mutate a live `ArrayList` between validation
+and copying. Trusted-local capture likewise snapshots its allowlisted
+source list first and rejects malformed/null frames before serialization.
+This does not authorize source guest effects, supervisor CONTROL delivery,
+or serialization of any arbitrary subclass fields.
+
 ## Stack trace as a value
 
 std/tracing exports capture_trace_string(): String and capture_trace_frames(): Array<String>. Both snapshot only active Oreslang callable frames and never allocate Error. Current JVM runtime records synchronous guest call names using a bounded scope stack and owns the returned snapshot. It is independent of Throwable.getStackTrace, does not include Java carrier frames or raw guest receivers, and clears per-thread state when unwinding.
