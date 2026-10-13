@@ -1444,6 +1444,21 @@ public final class TypeChecker {
         }
     }
 
+    /** Only owned nominal classes extending the actual std/error.Error may
+     * cross an exceptional control edge. A union is safe iff every case is
+     * independently a proven nominal Error subtype; Any, Unknown, borrows,
+     * records and shape-equivalent objects always fail closed. */
+    private boolean isProvablyOwnedErrorType(Type candidate, Named errorRoot) {
+        if (candidate instanceof Union union) {
+            return !union.options().isEmpty()
+                    && union.options().stream().allMatch(
+                            part -> isProvablyOwnedErrorType(part, errorRoot));
+        }
+        return candidate instanceof Named named
+                && findClass(named.name()) != null
+                && classTypeExtends(named, errorRoot, new LinkedHashSet<>());
+    }
+
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.ExceptionalEffectStmt effect) {
             String keyword = effect.kind().name().toLowerCase(java.util.Locale.ROOT);
@@ -1455,11 +1470,10 @@ public final class TypeChecker {
             // In particular, similarly shaped interfaces, Any/Unknown, dynamic
             // values and a forged local class named Error do not qualify.
             Ast.ClassDecl standardRoot = hasCanonicalStdErrorImport ? findClass("Error") : null;
-            if (!(operand instanceof Named nominal)
-                    || standardRoot == null
+            if (standardRoot == null
                     || !standardRoot.name().equals("Error")
                     || standardRoot.actorKind() != Ast.ActorKind.NONE
-                    || !classTypeExtends(nominal, nominalClassType(standardRoot), new LinkedHashSet<>())) {
+                    || !isProvablyOwnedErrorType(operand, nominalClassType(standardRoot))) {
                 throw new IllegalArgumentException(
                         "typed exceptional effect '" + keyword
                         + "' requires a nominal std/error.Error value or subclass; got " + operand
