@@ -210,8 +210,8 @@ final class ClassConstructorHardeningTest {
         // tests/fixtures/class-scalar-constructor-arithmetic-native.ores
         String sourceText = """
                 define class Pair as
-                  final int a: start + 1;
-                  final mut int b: start * 2;
+                  pub final int a: start + 1;
+                  pub final mut int b: start * 2;
                   constructor(int start) { return; }
                 end
                 pub fnc main(): int {
