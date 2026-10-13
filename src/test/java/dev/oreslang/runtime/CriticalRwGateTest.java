@@ -176,6 +176,50 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void cancellingExecutingTaskDoesNotReleaseCriticalWriteBeforeUnwind()
+            throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch allowReturn = new CountDownLatch(1);
+        AtomicReference<CriticalRwGate.Ticket> owning = new AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                var legacy = gate.newCriticalTicket();
+                owning.set(legacy);
+                legacy.enterAsync();
+                entered.countDown();
+                if (!allowReturn.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("test-owned carrier was not released");
+                }
+                return OresScheduler.done(7);
+            });
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            owning.get().releaseOnCompletion(task);
+            var nextReader = gate.newTicket(CriticalRwGate.Mode.READ);
+            OresFuture<Void> waiting = nextReader.enterAsync();
+            assertFalse(waiting.isDone());
+
+            // Cancellation is requested, but it cannot settle or revoke the
+            // writer until the running guest turn has completely unwound.
+            assertFalse(task.cancel(false), "active execution cannot be cancelled inline");
+            assertTrue(owning.get().isHeld(), "writer permit released during guest execution");
+            assertFalse(task.isDone(), "task completion published before carrier unwind");
+            assertFalse(nextReader.isHeld(), "reader overlapped live cancelled writer");
+
+            allowReturn.countDown();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!task.isDone() && System.nanoTime() < deadline) Thread.yield();
+            assertTrue(task.isCancelled(), "pending cancellation must publish on carrier unwind");
+            assertFalse(owning.get().isHeld(), "cancelled writer ticket was not cleaned up");
+            assertTrue(nextReader.isHeld(), "reader did not enter after carrier exit");
+            nextReader.close();
+        } finally {
+            allowReturn.countDown();
+            gate.close();
+        }
+    }
+
+    @Test
     void cancellingSchedulerTaskRevokesContendedRwAdmission() throws Exception {
         CriticalRwGate gate = new CriticalRwGate();
         var writer = gate.newTicket(CriticalRwGate.Mode.WRITE);
