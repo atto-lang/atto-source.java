@@ -233,3 +233,27 @@ not itself proof of a transport codec.
 Exact-head funded CI runs on the isolated mirror can validate compiler
 semantics, but they are not replacements for the complete JVM,
 GraalVM AOT/hybrid, and LLVM runtime-isolation suites.
+
+### Linked actor-capability imports are an explicit compiler proof
+
+An actor cannot access a sibling same-file class or actor merely because
+that declaration is visible in the file's ordinary lexical namespace.
+Conversely, an imported public actor class linked from a distinct source
+unit is **not** a same-file dependency. The type checker records that
+exception only after `checkTypesWithImportedClasses` verifies that the
+named class is public, uniquely imported and absent from the importing
+source unit. Writing an `import class` line without a validated linker
+signature does not grant actor access.
+
+The `ActorRef<T>` capability remains nominal and is validated against
+the known actor class. Trusted actors may receive a verified reference
+where their actor-kind policy allows it; untrusted actors remain denied.
+Private classes, unlinked names and same-file actor siblings cannot
+use this exception. Positive/negative regressions are in
+`CrossFileActorCapabilityHardeningTest`.
+
+The separate canonical tagged-value transport work is tracked in
+[Java issue #899](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/899).
+The compiler intentionally keeps `Option`/`Result` mailbox transport
+disabled until a trusted versioned actor codec is implemented and verified
+in JVM, GraalVM AOT/hybrid and LLVM.
