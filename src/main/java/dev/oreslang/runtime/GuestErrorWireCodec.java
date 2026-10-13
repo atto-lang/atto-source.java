@@ -22,9 +22,25 @@ public final class GuestErrorWireCodec {
                 || code < 0 || message == null || message.length() > MAX_MESSAGE
                 || frames == null || frames.size() > MAX_FRAMES)
             throw new IllegalArgumentException("invalid bounded guest error encoding");
+        validateUnicode(message);
         for (String frame : frames) {
             if (frame == null || frame.length() > MAX_FRAME_TEXT)
                 throw new IllegalArgumentException("invalid guest trace frame length");
+            validateUnicode(frame);
+        }
+    }
+
+    /** Reject unpaired UTF-16 surrogates instead of allowing JSON/binary divergence. */
+    private static void validateUnicode(String source) {
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            if (Character.isHighSurrogate(c)) {
+                if (i + 1 == source.length() || !Character.isLowSurrogate(source.charAt(i + 1)))
+                    throw new IllegalArgumentException("invalid UTF-16 in guest error");
+                i++;
+            } else if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException("invalid UTF-16 in guest error");
+            }
         }
     }
 
@@ -68,7 +84,11 @@ public final class GuestErrorWireCodec {
                 case '\t' -> result.append("\\t");
                 default -> {
                     if (c < 0x20)
-                        result.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c));
+                        result.append("\\u")
+                                .append(Character.forDigit((c >>> 12) & 15, 16))
+                                .append(Character.forDigit((c >>> 8) & 15, 16))
+                                .append(Character.forDigit((c >>> 4) & 15, 16))
+                                .append(Character.forDigit(c & 15, 16));
                     else result.append(c);
                 }
             }
