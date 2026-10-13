@@ -1823,7 +1823,20 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Stmt stmt,
                 Env env,
                 ArrayDeque<Ast.Expr> defers,
-                SourceFlowCont continuation) {
+                SourceFlowCont downstream) {
+            // A statement may finish synchronously or through a suspended
+            // continuation. Its downstream flow must be published only once.
+            // Otherwise a downstream failure thrown during delivery would
+            // enter this method's catch and replay completion as an error.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            SourceFlowCont continuation = (t, flow) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "source statement continuation attempted multiple deliveries");
+                }
+                downstream.accept(t, flow);
+            };
             try {
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
@@ -2936,19 +2949,45 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
-                SourceValueCont continuation) {
+                SourceValueCont downstream) {
+            // Most expressions are immediate. Keep their common path free of
+            // a per-expression atomic allocation and, crucially, never wrap
+            // downstream continuation delivery in an evaluation catch block.
+            boolean mightSuspend;
             try {
-                if (!expressionContainsPotentialSuspension(
+                mightSuspend = expressionContainsPotentialSuspension(
                         expr,
                         java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
-                    continuation.accept(
-                            task,
-                            eval(expr, env),
-                            null);
+                                new IdentityHashMap<>()));
+            } catch (RuntimeException | Error failure) {
+                downstream.accept(task, null, failure);
+                return;
+            }
+            if (!mightSuspend) {
+                Object immediate;
+                try {
+                    immediate = eval(expr, env);
+                } catch (RuntimeException | Error failure) {
+                    downstream.accept(task, null, failure);
                     return;
                 }
+                downstream.accept(task, immediate, null);
+                return;
+            }
 
+            // Suspended expressions may complete on a different carrier. A
+            // nested continuation is single-use: throwing *after* delivery
+            // must not cause the enclosing evaluator's catch to replay it.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            SourceValueCont continuation = (t, value, failure) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "source expression continuation attempted multiple deliveries");
+                }
+                downstream.accept(t, value, failure);
+            };
+            try {
                 if (expr instanceof Ast.AwaitExpr awaited) {
                     evalSuspendableExpr(
                             task,
@@ -2989,66 +3028,67 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                ChannelRuntime.SelectSet set;
+                                ChannelRuntime.SelectPolicy policy;
                                 try {
-                                    ChannelRuntime.SelectSet set =
-                                            asSelectSet(cases);
-                                    ChannelRuntime.SelectPolicy policy =
-                                            runtimeSelectPolicy(
-                                                    selected.policy());
-                                    if (selected.mode()
-                                            == Ast.WaitMode.IMMEDIATE) {
-                                        java.util.Optional<
-                                                ChannelRuntime.SelectResult> result =
-                                                set.trySelect(policy);
-                                        continuation.accept(
-                                                t,
-                                                result.isPresent()
-                                                        ? new OptionValue(
-                                                                true,
-                                                                result.get())
-                                                        : new OptionValue(
-                                                                false,
-                                                                null),
-                                                null);
-                                        return;
-                                    }
-                                    OresFuture<
-                                            ChannelRuntime.SelectResult> future =
-                                            set.selectAsync(policy);
-                                    if (selected.mode()
-                                            == Ast.WaitMode.NONBLOCKING) {
-                                        continuation.accept(
-                                                t,
-                                                wrapFutureSome(future),
-                                                null);
-                                        return;
-                                    }
-                                    if (future.isDone()) {
-                                        continuation.accept(
-                                                t,
-                                                new OptionValue(
-                                                        true,
-                                                        future.join()),
-                                                null);
-                                        return;
-                                    }
-                                    t.suspend(
-                                            future,
-                                            (t2, value, failure2) ->
-                                                    continuation.accept(
-                                                            t2,
-                                                            failure2 == null
-                                                                    ? new OptionValue(
-                                                                            true,
-                                                                            value)
-                                                                    : null,
-                                                            failure2));
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(
-                                            t,
-                                            null,
-                                            failure2);
+                                    set = asSelectSet(cases);
+                                    policy = runtimeSelectPolicy(selected.policy());
+                                } catch (RuntimeException | Error conversionFailure) {
+                                    continuation.accept(t, null, conversionFailure);
+                                    return;
                                 }
+                                if (selected.mode() == Ast.WaitMode.IMMEDIATE) {
+                                    OptionValue immediate;
+                                    try {
+                                        java.util.Optional<ChannelRuntime.SelectResult> result =
+                                                set.trySelect(policy);
+                                        immediate = result.isPresent()
+                                                ? new OptionValue(true, result.get())
+                                                : new OptionValue(false, null);
+                                    } catch (RuntimeException | Error selectionFailure) {
+                                        continuation.accept(t, null, selectionFailure);
+                                        return;
+                                    }
+                                    continuation.accept(t, immediate, null);
+                                    return;
+                                }
+                                OresFuture<ChannelRuntime.SelectResult> future;
+                                try {
+                                    future = set.selectAsync(policy);
+                                } catch (RuntimeException | Error registrationFailure) {
+                                    continuation.accept(t, null, registrationFailure);
+                                    return;
+                                }
+                                if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                                    Object wrapped;
+                                    try {
+                                        wrapped = wrapFutureSome(future);
+                                    } catch (RuntimeException | Error wrappingFailure) {
+                                        continuation.accept(t, null, wrappingFailure);
+                                        return;
+                                    }
+                                    continuation.accept(t, wrapped, null);
+                                    return;
+                                }
+                                if (future.isDone()) {
+                                    OptionValue settled;
+                                    try {
+                                        settled = new OptionValue(true, future.join());
+                                    } catch (RuntimeException | Error completionFailure) {
+                                        continuation.accept(t, null, completionFailure);
+                                        return;
+                                    }
+                                    continuation.accept(t, settled, null);
+                                    return;
+                                }
+                                t.suspend(future,
+                                        (t2, value, failure2) ->
+                                                continuation.accept(
+                                                        t2,
+                                                        failure2 == null
+                                                                ? new OptionValue(true, value)
+                                                                : null,
+                                                        failure2));
                             });
                     return;
                 }
@@ -3424,8 +3464,13 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
-                continuation.accept(task, eval(expr, env), null);
+                // Conservative fallback for an expression shape not lowered
+                // to a resumable case above. Keep any evaluation error separate
+                // from its single downstream completion.
+                Object fallback = eval(expr, env);
+                continuation.accept(task, fallback, null);
             } catch (RuntimeException | Error failure) {
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
@@ -3873,9 +3918,25 @@ public final class OresEvalRootNode extends RootNode {
                     && selfName.name().equals("self")
                     && env.lookup("self") instanceof OresObject actor
                     && actor.actorState != null) {
-                continuation.accept(task, null, new UnsupportedOperationException(
-                        "critical handle_state on a suspendable task requires "
-                        + "generation-fenced continuation lowering"));
+                // The *surrounding* source task may suspend on a later loop
+                // backedge, but a sealed handle_state invocation is atomic.
+                // Reuse the synchronous critical-state admission path rather
+                // than mistakenly rejecting an otherwise safe actor receive.
+                // This path validates lexical callback shape, rejects any
+                // nested potential suspension, and releases the state loan
+                // before resuming the outer source continuation.
+                Object value;
+                try {
+                    Invocation invocation = criticalStateInvocation(call, member, env);
+                    value = invoke(invocation);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
+                // Never invoke a continuation under the exception catch:
+                // if downstream propagation itself throws, retrying it would
+                // duplicate the continuation and potentially its side effects.
+                continuation.accept(task, value, null);
                 return;
             }
             if (call.callee() instanceof Ast.NameExpr name
@@ -3892,17 +3953,20 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Invocation invocation;
+                                boolean declaredFuture;
                                 try {
-                                    Invocation invocation =
-                                            functionInvocation(direct, values);
-                                    completeSourceInvocation(
-                                            t,
-                                            invocation,
-                                            invocationDeclaresAsync(invocation),
-                                            continuation);
+                                    invocation = functionInvocation(direct, values);
+                                    declaredFuture = invocationDeclaresAsync(invocation);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                // Preparation can fail under this catch, but a
+                                // downstream continuation must never be run
+                                // inside it or a throw would replay delivery.
+                                completeSourceInvocation(
+                                        t, invocation, declaredFuture, continuation);
                             });
                     return;
                 }
@@ -3927,24 +3991,22 @@ public final class OresEvalRootNode extends RootNode {
                                             continuation.accept(t2, null, failure2);
                                             return;
                                         }
+                                        Invocation invocation;
+                                        boolean declaredFuture;
                                         try {
-                                            Invocation invocation =
-                                                    prepareInvocationEvaluated(
-                                                            call,
-                                                            receiver,
-                                                            values,
-                                                            env);
-                                            boolean declaredFuture =
-                                                    invocationDeclaresAsync(
-                                                            invocation);
-                                            completeSourceInvocation(
-                                                    t2,
-                                                    invocation,
-                                                    declaredFuture,
-                                                    continuation);
+                                            invocation = prepareInvocationEvaluated(
+                                                    call, receiver, values, env);
+                                            declaredFuture = invocationDeclaresAsync(
+                                                    invocation);
                                         } catch (RuntimeException | Error failure3) {
                                             continuation.accept(t2, null, failure3);
+                                            return;
                                         }
+                                        // This covers both instance/static method
+                                        // and namespace calls; no caller catch
+                                        // may re-invoke a failed continuation.
+                                        completeSourceInvocation(
+                                                t2, invocation, declaredFuture, continuation);
                                     });
                         });
                 return;
@@ -3992,25 +4054,23 @@ public final class OresEvalRootNode extends RootNode {
                 Invocation invocation,
                 boolean declaredFuture,
                 SourceValueCont continuation) {
+            Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
-                }
+                result = invoke(invocation);
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
+                return;
+            }
+            // Continuation execution is *not* part of the invocation try.
+            // A failure in downstream continuation propagation must not call
+            // the same continuation again (and replay observable side effects).
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                task.suspend(
+                        future,
+                        (t, value, failure) ->
+                                continuation.accept(t, value, failure));
+            } else {
+                continuation.accept(task, result, null);
             }
         }
 
