@@ -110,6 +110,19 @@ final class DynamicPipelineGuestSourceTest {
                 "the compiler must not confuse the declared reply case with the ingress case");
     }
 
+    @Test void opaqueResultCannotExposeArbitraryMembersAsUnknown() throws Exception {
+        String baseline = source();
+        String guest = baseline.replace(
+                "    await first.send(Signal.Data(5));",
+                "    val opaque = await first.send(Signal.Data(5));\n"
+                        + "    val bypass = opaque.payload;");
+        assertNotEquals(baseline, guest);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(guest)));
+        assertTrue(error.toString().contains("opaque pipeline reply has no accessible members"),
+                error.toString());
+    }
+
     @Test void opaqueTypedReplyCannotBeForged() {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
