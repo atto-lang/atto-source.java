@@ -1,5 +1,7 @@
 package dev.oreslang.runtime.pipeline;
 
+import dev.oreslang.runtime.TaggedMessageCodec;
+
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -223,10 +225,15 @@ public final class PipelineController {
         } catch (RuntimeException | Error rejected) {
             return CompletableFuture.failedFuture(rejected);
         }
-        return submit(expectedGeneration, value);
+        return submit(expectedGeneration, value, expectedCase);
     }
 
     CompletionStage<Object> submit(long expectedGeneration, Object value) {
+        return submit(expectedGeneration, value, null);
+    }
+
+    private CompletionStage<Object> submit(
+            long expectedGeneration, Object value, String expectedCase) {
         Objects.requireNonNull(value, "pipeline message");
         Session selected;
         synchronized (gate) {
@@ -246,12 +253,23 @@ public final class PipelineController {
         }
         CompletableFuture<Object> result = new CompletableFuture<>();
         execution.whenComplete((answer, failure) -> {
+            // The public host runner must enforce the same final nominal
+            // result check as guest compilation. Mark the entire generation
+            // FAILED on a wrong result; do not return apparent host success
+            // or leave the controller RUNNING with physically retired actors.
+            Throwable outcomeFailure = failure;
+            if (outcomeFailure == null && expectedCase != null
+                    && (!(answer instanceof TaggedMessageCodec.TaggedValue tagged)
+                        || !tagged.qualifiedName().equals(expectedCase))) {
+                outcomeFailure = new SecurityException(
+                        "unexpected typed pipeline reply; expected " + expectedCase);
+            }
             Session toQuiesce = null;
             CompletableFuture<Void> observer = null;
             CompletableFuture<Void> failedPause = null;
             synchronized (gate) {
                 inFlight = false;
-                if (failure != null) {
+                if (outcomeFailure != null) {
                     state = State.FAILED;
                     if (closeRequested && pauseFuture != null
                             && !quiesceStarted) {
@@ -270,10 +288,10 @@ public final class PipelineController {
                 }
             }
             // No external continuations or completion callbacks under gate.
-            if (failedPause != null) failedPause.completeExceptionally(failure);
+            if (failedPause != null) failedPause.completeExceptionally(outcomeFailure);
             if (toQuiesce != null) beginQuiesce(toQuiesce, observer);
-            if (failure == null) result.complete(answer);
-            else result.completeExceptionally(failure);
+            if (outcomeFailure == null) result.complete(answer);
+            else result.completeExceptionally(outcomeFailure);
         });
         // Never hand out producer settlement authority: cancellation or
         // completion of the caller's observation cannot change real DATA.
