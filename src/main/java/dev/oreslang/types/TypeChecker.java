@@ -5521,7 +5521,25 @@ public final class TypeChecker {
                 || !(binary.left() instanceof Ast.NameExpr name)
                 || !(binary.right() instanceof Ast.LiteralExpr literal)
                 || !(literal.value() instanceof Number number)) return null;
-        double v = number.doubleValue();
+        // These range proofs use double endpoints. A wide integer (for
+        // example 2^53+1) must NOT be rounded to 2^53 here, since the two
+        // source comparisons may overlap even when their rounded bounds
+        // falsely appear adjacent/disjoint. Unknown number kinds also fail
+        // closed instead of permitting an approximate uniqueness proof.
+        final double v;
+        if (number instanceof Byte || number instanceof Short
+                || number instanceof Integer || number instanceof Long) {
+            long integer = number.longValue();
+            final long exactDoubleIntegerLimit = 9_007_199_254_740_992L;
+            if (integer < -exactDoubleIntegerLimit
+                    || integer > exactDoubleIntegerLimit) return null;
+            v = integer;
+        } else if (number instanceof Double || number instanceof Float) {
+            v = number.doubleValue();
+            if (!Double.isFinite(v)) return null;
+        } else {
+            return null;
+        }
         return switch (binary.operator()) {
             case "<" -> new GuardRange(name.name(), Double.NEGATIVE_INFINITY, false, v, false);
             case "<=" -> new GuardRange(name.name(), Double.NEGATIVE_INFINITY, false, v, true);
