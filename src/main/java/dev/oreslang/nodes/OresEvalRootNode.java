@@ -4075,6 +4075,19 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
+            if (receiver instanceof EnumNamespace enumNamespace) {
+                var enumCase = messageCase(enumNamespace.name() + "." + member.member());
+                if (enumCase == null) throw new IllegalArgumentException(
+                        "unknown enum case " + enumNamespace.name() + "." + member.member());
+                int expected = enumCase.sourcePayload() == null ? 0 : 1;
+                if (args.size() != expected) throw new IllegalArgumentException(
+                        "enum constructor " + enumCase.qualifiedName()
+                                + " expects " + expected + " argument(s)");
+                return invokableInvocation(
+                        ignored -> constructVariant(enumCase, expected == 0 ? null : args.getFirst()),
+                        args);
+            }
+
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
@@ -5527,8 +5540,12 @@ public final class OresEvalRootNode extends RootNode {
                     var enumCase = messageCase(enumNamespace.name() + "." + methodCall.member());
                     if (enumCase == null) throw new IllegalArgumentException(
                             "unknown enum case " + enumNamespace.name() + "." + methodCall.member());
+                    int expected = enumCase.sourcePayload() == null ? 0 : 1;
+                    if (args.size() != expected) throw new IllegalArgumentException(
+                            "enum constructor " + enumCase.qualifiedName()
+                                    + " expects " + expected + " argument(s)");
                     return invokableInvocation(
-                            ignored -> constructVariant(enumCase, args.isEmpty() ? null : args.getFirst()),
+                            ignored -> constructVariant(enumCase, expected == 0 ? null : args.getFirst()),
                             args);
                 }
                 Object callee = member(receiver, methodCall.member(), env);
