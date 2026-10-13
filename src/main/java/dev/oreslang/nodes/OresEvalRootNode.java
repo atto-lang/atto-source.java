@@ -4221,6 +4221,17 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
+            if (receiver instanceof ChannelFactory
+                    && member.member().equals("new")) {
+                if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+                    throw new IllegalArgumentException("Channel.new<T> requires an explicit payload type");
+                }
+                Ast.TypeRef payloadType = call.typeArguments().getFirst();
+                return invokableInvocation(
+                        ignored -> createGuestTypedChannel(args, payloadType),
+                        List.of());
+            }
+
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
@@ -5721,6 +5732,17 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
+
+                if (receiver instanceof ChannelFactory
+                        && methodCall.member().equals("new")) {
+                    if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+                        throw new IllegalArgumentException("Channel.new<T> requires an explicit payload type");
+                    }
+                    Ast.TypeRef payloadType = call.typeArguments().getFirst();
+                    return invokableInvocation(
+                            ignored -> createGuestTypedChannel(args, payloadType),
+                            List.of());
+                }
 
                 if (receiver instanceof OresObject object) {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
@@ -9139,17 +9161,27 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
+    private Object createGuestTypedChannel(
+            List<Object> args, Ast.TypeRef declaredPayloadType) {
+        requireOne(args, "Channel.new<T>");
+        if (!(args.getFirst() instanceof Number number)) {
+            throw new IllegalArgumentException("Channel.new<T> capacity must be an integer");
+        }
+        int capacity = Math.toIntExact(number.longValue());
+        // Retain the explicit compile-time type in this channel's sealed
+        // runtime validator. A host value must satisfy the exact declared
+        // shape before it can enter a buffer or a select registration.
+        return new ChannelRuntime.Channel<>(
+                capacity,
+                value -> requireChannelTypedDataValue(declaredPayloadType, value));
+    }
+
     private static final class ChannelFactory {
         private Object create(List<Object> args) {
-            requireOne(args, "Channel.new<T>");
-            if (!(args.getFirst() instanceof Number number)) {
-                throw new IllegalArgumentException("Channel.new<T> capacity must be an integer");
-            }
-            int capacity = Math.toIntExact(number.longValue());
-            // The guest surface always creates data-only channels. Trusted
-            // internal mailbox channels use their own privileged constructor.
-            return new ChannelRuntime.Channel<>(
-                    capacity, Evaluator::requireChannelDataValue);
+            // An indirect/erased factory invocation loses the declared T
+            // and must not create a channel without its payload descriptor.
+            throw new IllegalArgumentException(
+                    "Channel.new<T> requires a direct typed call; erased factory invocation is forbidden");
         }
     }
 
