@@ -851,6 +851,12 @@ final class ActorSendContractTest {
                             "direct host wait on a retirement callback must fail fast");
                     assertThrows(IllegalStateException.class, runtime::close,
                             "runtime close from an actor retirement callback must fail fast");
+                    assertThrows(IllegalStateException.class,
+                            () -> actor.getDone().get(5, TimeUnit.SECONDS),
+                            "pending DONE.get must never block its own retirement callback");
+                    assertThrows(IllegalStateException.class,
+                            () -> actor.getDone().join(),
+                            "pending DONE.join must never block its own retirement callback");
                 } catch (Throwable unexpected) {
                     callbackFailure.set(unexpected);
                 } finally {
