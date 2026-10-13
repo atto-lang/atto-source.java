@@ -997,6 +997,11 @@ public final class Parser {
         boolean untrustedSeen = false;
 
         while (true) {
+            // Legacy 'critical' is an executable WRITE mode. A contiguous
+            // 'critical-read' or 'critical-write' is NOT equivalent: until
+            // compiler-owned state effects and RW loan lowering are integrated,
+            // reject before consuming the 'critical' half as a WRITE modifier.
+            rejectUnloweredCriticalMode();
             if (match(PUB)) {
                 if (visibilitySeen) throw error(previous(), "duplicate/conflicting visibility modifier");
                 visibilitySeen = true;
@@ -2910,6 +2915,9 @@ public final class Parser {
     }
 
     private String consumeCallableName(String message) {
+        // Some grammar paths accept the callable name immediately after fnc.
+        // Reject the compound here too, not just in parseModifiers().
+        rejectUnloweredCriticalMode();
         Token token = peek();
         if (token.type() == IDENT
                 || isReservedCallableName(token.type())
@@ -3478,6 +3486,20 @@ public final class Parser {
 
     private boolean adjacent(Token left, Token right) {
         return left.line() == right.line() && right.column() == left.column() + left.lexeme().length();
+    }
+
+    private void rejectUnloweredCriticalMode() {
+        if (current + 2 >= tokens.size()) return;
+        Token first = tokens.get(current);
+        Token dash = tokens.get(current + 1);
+        Token last = tokens.get(current + 2);
+        if (first.type() == CRITICAL && dash.type() == MINUS
+                && last.type() == IDENT
+                && (last.lexeme().equals("read") || last.lexeme().equals("write"))
+                && adjacent(first, dash) && adjacent(dash, last)) {
+            throw error(first, "reader/writer critical declaration requires "
+                    + "checked protected-state effects and scheduler-owned RW permits");
+        }
     }
 
     private boolean checkAdjacentPair(Token.Type type) {
