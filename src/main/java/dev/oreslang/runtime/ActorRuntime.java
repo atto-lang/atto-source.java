@@ -1941,7 +1941,16 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorKind kind() { return kind; }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
-        public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
+        /**
+         * Trusted-host diagnostics only: a Throwable may retain arbitrary
+         * mutable guest-owned state via its cause/suppressed graph. Never
+         * expose that graph to another actor or a Mailman CONTROL callback.
+         * Use the bounded terminal notice for typed supervision metadata.
+         */
+        public Optional<Throwable> failure() {
+            requireSupervisorContext("read raw actor Throwable failure");
+            return Optional.ofNullable(terminationCause.get());
+        }
 
         /**
          * Host/supervisor-only typed terminal snapshot, available after
