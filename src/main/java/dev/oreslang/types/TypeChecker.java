@@ -7135,6 +7135,7 @@ public final class TypeChecker {
         if (ref.isRecordType()) {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Map.Entry<String, Ast.TypeRef> member : ref.recordMembers().entrySet()) {
+                rejectUserMethodContractKey(member.getKey());
                 members.put(member.getKey(), resolve(member.getValue(), generics, self, allowNullMarker));
             }
             return new Record(members, ref.isReadonlyRecordType());
