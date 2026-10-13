@@ -194,7 +194,7 @@ final class ActorTypedTerminalBoundaryTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new ActorRuntime.ActorFailureNotice(
                         id, Optional.empty(), ActorRuntime.ActorKind.SHARED,
-                        terminal, Optional.empty(), "bad\\nname"));
+                        terminal, Optional.empty(), "bad" + (char) 10 + "name"));
         assertThrows(IllegalArgumentException.class,
                 () -> new ActorRuntime.ActorFailureNotice(
                         id, Optional.empty(), ActorRuntime.ActorKind.SHARED,
