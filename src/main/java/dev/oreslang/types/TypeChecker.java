@@ -929,9 +929,15 @@ public final class TypeChecker {
                 || expr instanceof Ast.ChannelOpExpr
                 || expr instanceof Ast.DynamicSelectExpr
                 || expr instanceof Ast.AssignExpr) return true;
-        if (expr instanceof Ast.RuntimeCallExpr call) {
-            if (call.operation().equals("cooperate") || call.operation().equals("spawn")) return true;
-            return call.arguments().stream().anyMatch(this::fieldInitializerMaySuspend);
+        if (expr instanceof Ast.RuntimeCallExpr) {
+            // All runtime intrinsics carry semantics beyond an ordinary
+            // scalar expression. In particular rt fail may unwind after
+            // earlier fields have acquired resources, rt take can move
+            // storage, and borrow/share/copy need an initializer-specific
+            // lifetime or ownership proof. Such proofs and failure cleanup
+            // are not established here, so do not infer safety from the
+            // operands alone. This also rejects new intrinsics by default.
+            return true;
         }
         if (expr instanceof Ast.BinaryExpr op) {
             return fieldInitializerMaySuspend(op.left()) || fieldInitializerMaySuspend(op.right());
@@ -981,8 +987,13 @@ public final class TypeChecker {
         if (expr instanceof Ast.ObjectExpr object)
             return object.fields().stream().anyMatch(field ->
                     fieldInitializerMaySuspend(field.value()));
-        // Merely constructing a lambda does not execute its deferred body.
-        return false;
+        // These are the only effect-free leaf expressions. In particular a
+        // lambda is stored, not invoked, and the initializer environment has
+        // no self or reference-valued constructor arguments to capture.
+        // New expression AST variants are unsafe until reviewed explicitly.
+        return !(expr instanceof Ast.LiteralExpr
+                || expr instanceof Ast.NameExpr
+                || expr instanceof Ast.LambdaExpr);
     }
 
     /**
