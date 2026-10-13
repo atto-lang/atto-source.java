@@ -176,6 +176,11 @@ public final class ActorRuntimePipelineEngine implements PipelineController.Engi
         }
 
         @Override
+        public void requireExpectedReplyCase(String qualifiedCase) {
+            stream.requireExpectedReplyCase(qualifiedCase);
+        }
+
+        @Override
         public CompletionStage<Object> send(Object value) {
             if (ActorRuntime.inActorExecution()) {
                 return CompletableFuture.failedFuture(new SecurityException(
