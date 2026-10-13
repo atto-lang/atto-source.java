@@ -5,12 +5,13 @@ import java.util.Objects;
 /**
  * Pure terminal boundary policy. Ordinary call frames retain typed Throw/Raise;
  * only an actor, task, or root domain boundary promotes unhandled errors to
- * Panic. This does not enable guest exceptional syntax or wire the actor VM.
+ * Panic. ActorRuntime uses this helper to classify actor termination into
+ * immutable host-owned metadata; it does NOT enable guest exceptional source
+ * syntax or enqueue the parent supervisor's priority CONTROL turn.
  *
- * This pure policy retains only the effect class and unsigned 32-bit origin
- * code. A future integrated actor terminalization path must separately copy
- * bounded diagnostics into trusted host-owned storage before domain retirement.
- * A raw Throwable or guest reference must not cross actor supervision.
+ * The policy retains only the effect class and unsigned 32-bit origin code.
+ * ActorRuntime separately snapshots a bounded, sanitized diagnostic type.
+ * No raw Throwable or guest-owned reference may cross actor supervision.
  */
 public final class ExceptionBoundaryPolicy {
     private ExceptionBoundaryPolicy() { }
