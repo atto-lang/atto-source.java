@@ -78,17 +78,31 @@ public final class ChannelRuntime {
      */
     public static final class Channel<T> implements AutoCloseable {
         private final int capacity;
+        // Guest-created channels carry a data-only payload gate. Internal
+        // mailbox/control queues deliberately use the privileged default
+        // constructor and their separate envelope/capability policy.
+        private final java.util.function.Consumer<? super T> payloadValidator;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
         private boolean closed;
         private Throwable closeCause;
 
         public Channel(int capacity) {
+            this(capacity, null);
+        }
+
+        /**
+         * Create a channel whose writes are checked before any publication
+         * or select registration. A null validator is reserved for trusted
+         * runtime/internal envelope channels, not guest Channel.new<T>.
+         */
+        public Channel(int capacity, java.util.function.Consumer<? super T> payloadValidator) {
             if (capacity < 0) {
                 throw new IllegalArgumentException(
                         "channel capacity cannot be negative");
             }
             this.capacity = capacity;
+            this.payloadValidator = payloadValidator;
         }
 
         public int capacity() {
@@ -184,6 +198,9 @@ public final class ChannelRuntime {
             Objects.requireNonNull(
                     value,
                     "Oreslang channels cannot carry null; use Option<T>");
+            if (payloadValidator != null) {
+                payloadValidator.accept(value);
+            }
         }
 
         private ChannelClosedException closedFailure() {
@@ -230,9 +247,9 @@ public final class ChannelRuntime {
             implements SelectCase {
         public WriteCase {
             Objects.requireNonNull(channel, "channel");
-            Objects.requireNonNull(
-                    value,
-                    "Oreslang channels cannot carry null; use Option<T>");
+            // This runs at case construction, not after another arm wins:
+            // malformed data must never enqueue a waiting writer.
+            channel.requireValue(value);
         }
     }
 
