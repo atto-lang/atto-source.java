@@ -1616,16 +1616,25 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (call.callee() instanceof Ast.NameExpr name
                         && !functionNameBoundLocally(name.name())) {
-                    Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
-                    if (target != null) {
-                        // Creating a generator activation does not pull or await it.
-                        if (target.generator()) return false;
-                        return target.async() || target.suspends()
-                                || target.actorKind() != Ast.ActorKind.NONE
-                                || (!target.async()
-                                        && functionContainsPotentialSuspension(
-                                                target,
-                                                seen));
+                    List<Ast.FunctionDecl> candidates =
+                            nominalCandidates(name.name(), call.arguments().size());
+                    if (candidates != null && !candidates.isEmpty()) {
+                        // This check runs before argument evaluation and is not
+                        // allowed to assume the *first* arity slot is selected.
+                        // Every branch must be considered even when their
+                        // declaration-level async flags match.
+                        for (Ast.FunctionDecl target : candidates) {
+                            if (target.generator()) continue;
+                            if (target.async() || target.suspends()
+                                    || target.actorKind() != Ast.ActorKind.NONE)
+                                return true;
+                            Set<Object> branchSeen = java.util.Collections.newSetFromMap(
+                                    new IdentityHashMap<>());
+                            branchSeen.addAll(seen);
+                            if (functionContainsPotentialSuspension(target, branchSeen))
+                                return true;
+                        }
+                        return false;
                     }
                 }
                 return false;
