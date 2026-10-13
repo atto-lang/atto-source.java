@@ -652,4 +652,50 @@ final class ActorSendContractTest {
         }
     }
 
+    @Test
+    void successfulStartupReadyCallbacksRunOutsideActorLifecycleMonitor() throws Exception {
+        CountDownLatch initializerEntered = new CountDownLatch(1);
+        CountDownLatch releaseInitializer = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(() -> {
+                initializerEntered.countDown();
+                if (!releaseInitializer.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("startup release timed out");
+                }
+                return (message, context) -> { };
+            });
+            try {
+                assertTrue(initializerEntered.await(5, TimeUnit.SECONDS));
+                var actorsField = ActorRuntime.class.getDeclaredField("actors");
+                actorsField.setAccessible(true);
+                Object cell = ((java.util.Map<?, ?>) actorsField.get(runtime)).get(ref.id());
+                assertNotNull(cell);
+                var lockField = cell.getClass().getDeclaredField("lifecycleLock");
+                lockField.setAccessible(true);
+                Object monitor = lockField.get(cell);
+                AtomicInteger callbackCount = new AtomicInteger();
+                AtomicInteger callbackUnderLock = new AtomicInteger();
+                CountDownLatch readyObserved = new CountDownLatch(1);
+                ref.getReady().whenCompleteRuntime((value, failure) -> {
+                    if (Thread.holdsLock(monitor)) callbackUnderLock.incrementAndGet();
+                    callbackCount.incrementAndGet();
+                    readyObserved.countDown();
+                });
+                assertFalse(ref.getReady().isDone(), "factory is deliberately suspended");
+                releaseInitializer.countDown();
+                assertTrue(readyObserved.await(5, TimeUnit.SECONDS));
+                ref.getReady().get(5, TimeUnit.SECONDS);
+                assertEquals(1, callbackCount.get());
+                assertEquals(0, callbackUnderLock.get(),
+                        "READY must never invoke dependent Futures under lifecycleLock");
+                ref.stop();
+                ref.getDone().get(5, TimeUnit.SECONDS);
+            } finally {
+                releaseInitializer.countDown();
+            }
+        } finally {
+            releaseInitializer.countDown();
+        }
+    }
+
 }
