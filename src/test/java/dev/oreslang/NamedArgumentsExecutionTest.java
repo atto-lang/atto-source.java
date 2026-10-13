@@ -62,6 +62,27 @@ final class NamedArgumentsExecutionTest {
     }
 
     @Test
+    void awaitedNamedArgumentsPreserveLexicalEffectsAndFormalSlots() throws Exception {
+        assertEquals("AB6", run("""
+                async fnc first(): bool {
+                  stdio.stdout.write("A");
+                  return true;
+                }
+                async fnc second(): int {
+                  stdio.stdout.write("B");
+                  return 6;
+                }
+                fnc choose(int bar, bool enabled): int {
+                  return enabled ? bar : 0;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(
+                    choose(enabled: await first(), bar: await second()));
+                }
+                """));
+    }
+
+    @Test
     void moduleQualifiedCallsBindNamedArgumentsBeforeDispatch() throws Exception {
         assertEquals("6", run("""
                 define module math
