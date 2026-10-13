@@ -278,6 +278,60 @@ final class ActorTypedTerminalBoundaryTest {
     }
 
     @Test
+    void synchronousOneShotActorThrowIsNotConvertedToGracefulStop() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var spawned = new java.util.concurrent.atomic.AtomicReference<
+                    ActorRuntime.ActorRef<String>>();
+            var signal = assertThrows(ActorRuntime.GuestEffectSignal.class,
+                    () -> runtime.invoke(
+                            ActorRuntime.ActorKind.SHARED, "throw",
+                            (String message, ActorRuntime.ActorContext<String> context) -> {
+                                spawned.set(context.self());
+                                throw ActorRuntime.GuestEffectSignal.throwing(1001);
+                            }));
+            assertEquals(THROW, signal.effect());
+            assertTerminated(spawned.get(), THROW, 1001);
+        }
+    }
+
+    @Test
+    void immediateAsyncOneShotActorPanicReachesTerminalBoundary() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var spawned = new java.util.concurrent.atomic.AtomicReference<
+                    ActorRuntime.ActorRef<String>>();
+            OresFuture<Integer> future = runtime.invokeAsync(
+                    ActorRuntime.ActorKind.SHARED, "panic",
+                    (String message, ActorRuntime.ActorContext<String> context) -> {
+                        spawned.set(context.self());
+                        throw ActorRuntime.GuestEffectSignal.panicking(1002);
+                    });
+            var failed = assertThrows(java.util.concurrent.CompletionException.class,
+                    future::join);
+            assertInstanceOf(ActorRuntime.GuestEffectSignal.class, failed.getCause());
+            assertTerminated(spawned.get(), PANIC, 1002);
+        }
+    }
+
+    @Test
+    void asyncOneShotActorRaiseAfterFutureSuspensionMustPanic() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var spawned = new java.util.concurrent.atomic.AtomicReference<
+                    ActorRuntime.ActorRef<String>>();
+            OresFuture<Object> future = runtime.invokeAsync(
+                    ActorRuntime.ActorKind.SHARED, "raise-after-await",
+                    (String message, ActorRuntime.ActorContext<String> context) -> {
+                        spawned.set(context.self());
+                        return (Object) OresFuture.<Integer>failed(
+                                ActorRuntime.GuestEffectSignal.raising(1003));
+                    });
+            var failed = assertThrows(java.util.concurrent.CompletionException.class,
+                    future::join);
+            assertInstanceOf(ActorRuntime.GuestEffectSignal.class, failed.getCause());
+            assertTerminated(spawned.get(), RAISE, 1003);
+        }
+    }
+
+    @Test
     void compilerEffectSignalRejectsOutOfRangeCodes() {
         assertThrows(IllegalArgumentException.class,
                 () -> ActorRuntime.GuestEffectSignal.throwing(-1));
