@@ -464,6 +464,127 @@ final class PatternMatchingHardeningTest {
     }
 
     @Test
+    void finiteTupleConstructorMatrixAcceptsFullBooleanProduct() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc classify([bool, bool] pair): int {
+                  match pair over
+                    on (true, true) -> { return 1; }
+                    on (true, false) -> { return 2; }
+                    on (false, true) -> { return 3; }
+                    on (false, false) -> { return 4; }
+                  end
+                }
+                """)));
+
+        // Disjoint rows of the product matrix can each cover an entire column.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc classify([bool, bool] pair): int {
+                  match pair over
+                    on (true, _) -> { return 1; }
+                    on (false, _) -> { return 2; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
+    void finiteTupleConstructorMatrixRejectsMissingOrDeadCases() {
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc missing([bool, bool] pair): int {
+                          match pair over
+                            on (true, true) -> { return 1; }
+                            on (true, false) -> { return 2; }
+                            on (false, true) -> { return 3; }
+                          end
+                        }
+                        """)));
+        assertTrue(missing.getMessage().contains("non-exhaustive match"));
+
+        IllegalArgumentException dead = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc dead([bool, bool] pair): int {
+                          match pair over
+                            on (true, true) -> { return 1; }
+                            on (true, false) -> { return 2; }
+                            on (false, true) -> { return 3; }
+                            on (false, false) -> { return 4; }
+                            on _ -> { return -1; }
+                          end
+                        }
+                        """)));
+        assertTrue(dead.getMessage().contains("unreachable match arm"));
+    }
+
+    @Test
+    void finiteMatrixHandlesNestedOptionAndResultProducts() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc nested([Option<bool>, bool] pair): int {
+                  match pair over
+                    on (Some(true), true) -> { return 1; }
+                    on (Some(true), false) -> { return 2; }
+                    on (Some(false), true) -> { return 3; }
+                    on (Some(false), false) -> { return 4; }
+                    on (None, true) -> { return 5; }
+                    on (None, false) -> { return 6; }
+                  end
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc nested(Result<bool, Option<bool>> value): int {
+                  match value over
+                    on Ok(true) -> { return 1; }
+                    on Ok(false) -> { return 2; }
+                    on Err(Some(true)) -> { return 3; }
+                    on Err(Some(false)) -> { return 4; }
+                    on Err(None) -> { return 5; }
+                  end
+                }
+                """)));
+
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc missing([Option<bool>, bool] pair): int {
+                          match pair over
+                            on (Some(true), true) -> { return 1; }
+                            on (Some(true), false) -> { return 2; }
+                            on (Some(false), true) -> { return 3; }
+                            on (Some(false), false) -> { return 4; }
+                            on (None, true) -> { return 5; }
+                          end
+                        }
+                        """)));
+        assertTrue(missing.getMessage().contains("non-exhaustive match"));
+    }
+
+    @Test
+    void finiteTupleExhaustivenessFollowsAllBooleanMasks() {
+        String[] patterns = { "(true, true)", "(true, false)", "(false, true)", "(false, false)" };
+        for (int mask = 1; mask < (1 << patterns.length); mask++) {
+            StringBuilder text = new StringBuilder(
+                    "fnc classify([bool, bool] pair): int { match pair over\n");
+            for (int i = 0; i < patterns.length; i++) {
+                if ((mask & (1 << i)) != 0) {
+                    text.append(" on ").append(patterns[i]).append(" -> { return 1; }\n");
+                }
+            }
+            text.append(" end }");
+            final String source = text.toString();
+            assertDoesNotThrow(() -> Parser.parse(source), "generated matrix must parse");
+            if (mask == (1 << patterns.length) - 1) {
+                assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)),
+                        "all four Boolean pairs should be covered");
+            } else {
+                IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                        () -> TypeChecker.check(Parser.parse(source)),
+                        "incomplete Boolean pair matrix unexpectedly accepted mask=" + mask);
+                assertTrue(failure.getMessage().contains("non-exhaustive match"));
+            }
+        }
+    }
+
+    @Test
     void switchIsConstantDispatchAndRejectsDuplicateCases() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int value): int {
