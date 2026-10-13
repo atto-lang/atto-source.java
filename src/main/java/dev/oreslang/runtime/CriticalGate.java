@@ -76,6 +76,10 @@ public final class CriticalGate {
         private boolean closeListenerRegistered;
         /** Captured actor incarnation, not a JVM carrier/thread affinity. */
         private java.util.function.Consumer<Runnable> actorPhysicalExit;
+        /** Only the original actor incarnation and logical task can release inline. */
+        private java.util.function.Consumer<Runnable> actorTicketRelease;
+        /** One queued deferred physical release per admitted ticket. */
+        private boolean physicalReleaseQueued;
         // Only host/embedder synchronous callers may wait on a physical thread.
         // Per-ticket signaling avoids waking every queued host thread.
         private java.util.concurrent.CountDownLatch synchronousWaiter;
@@ -99,6 +103,8 @@ public final class CriticalGate {
             Object domain = OresScheduler.currentTaskDomain();
             if (domain == null) domain = ActorRuntime.currentActorExecutionDomain();
             if (domain == null) domain = synchronous ? Thread.currentThread() : this;
+            java.util.function.Consumer<Runnable> ticketRelease = actor == null
+                    ? null : actor.captureCurrentActorTicketRelease(domain);
             boolean completeNow = false;
             synchronized (COORDINATOR) {
                 if (closed || requested || domainClosed) {
@@ -107,6 +113,7 @@ public final class CriticalGate {
                 requested = true;
                 logicalOwner = domain;
                 actorPhysicalExit = physicalExit;
+                actorTicketRelease = ticketRelease;
                 if (heldByDomain(domain)) {
                     requested = false;
                     throw new IllegalStateException(
@@ -278,12 +285,27 @@ public final class CriticalGate {
         }
 
         private void closeTicket(boolean pendingOnly) {
-            java.util.List<Ticket> wake;
+            closeTicket(pendingOnly, false);
+        }
+
+        private void closeTicket(boolean pendingOnly, boolean afterPhysicalExit) {
+            java.util.List<Ticket> wake = java.util.List.of();
             java.util.concurrent.CountDownLatch cancelledWaiter = null;
-            Runnable removeActorTracking;
-            Runnable notifyWrapper;
+            Runnable removeActorTracking = () -> { };
+            Runnable notifyWrapper = () -> { };
+            java.util.function.Consumer<Runnable> release = null;
             synchronized (COORDINATOR) {
                 if (closed || (pendingOnly && granted)) return;
+                if (!pendingOnly && !afterPhysicalExit && granted
+                        && actorTicketRelease != null) {
+                    // Atomically reserve the one deferred release while the
+                    // grant is still visible. Concurrent STOP, completion,
+                    // explicit close, and whole-domain close cannot wake a
+                    // successor prematurely or enqueue duplicate callbacks.
+                    if (physicalReleaseQueued) return;
+                    physicalReleaseQueued = true;
+                    release = actorTicketRelease;
+                } else {
                 closed = true;
                 synchronousOwner = null;
                 cancelledWaiter = synchronousWaiter;
@@ -301,6 +323,11 @@ public final class CriticalGate {
                     WAITING_ON.remove(logicalOwner, CriticalGate.this);
                 }
                 wake = drainLocked();
+                }
+            }
+            if (release != null) {
+                release.accept(() -> closeTicket(false, true));
+                return;
             }
             Throwable cleanupFailure = null;
             try {
