@@ -52,6 +52,19 @@ public final class Ast {
             arguments = List.copyOf(arguments);
         }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
+        /** A complement in type position. The token '!' is not a value operator here. */
+        public static TypeRef complement(TypeRef excluded) {
+            return excluded.isComplement()
+                    ? excluded.arguments().getFirst()
+                    : new TypeRef("$not$", List.of(excluded), false);
+        }
+        public boolean isComplement() { return name.equals("$not$"); }
+        public TypeRef complementedType() {
+            if (!isComplement() || arguments.size() != 1) {
+                throw new IllegalStateException("malformed complement type");
+            }
+            return arguments.getFirst();
+        }
         public static TypeRef inferred() { return new TypeRef("$infer$", List.of(), false); }
         public static TypeRef borrowed(TypeRef target, boolean mutable) {
             return new TypeRef(mutable ? "$borrow_mut$" : "$borrow$", List.of(target), false);
@@ -198,6 +211,7 @@ public final class Ast {
             CallableKind kind,
             Visibility visibility,
             boolean async,
+            boolean suspends,
             boolean generator,
             boolean structural,
             boolean nonLexical,
@@ -208,6 +222,16 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body) implements Decl {
+        /** Preserve all existing AST construction sites without an explicit effect. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean generator, boolean structural, boolean nonLexical, boolean trapped,
+                            ActorKind actorKind, List<String> genericParameters,
+                            List<Param> parameters, TypeRef returnType,
+                            List<Annotation> annotations, List<Stmt> body) {
+            this(name, kind, visibility, async, false, generator, structural, nonLexical,
+                    trapped, actorKind, genericParameters, parameters, returnType, annotations, body);
+        }
+
         public FunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
@@ -400,6 +424,7 @@ public final class Ast {
             boolean isStatic,
             boolean isAbstract,
             boolean async,
+            boolean suspends,
             boolean structural,
             TypeRef explicitReceiverType,
             List<String> genericParameters,
@@ -407,6 +432,16 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body) {
+        /** Preserve all existing AST construction sites without an explicit effect. */
+        public MethodDecl(String name, Visibility visibility, boolean isStatic,
+                          boolean isAbstract, boolean async, boolean structural,
+                          TypeRef explicitReceiverType, List<String> genericParameters,
+                          List<Param> parameters, TypeRef returnType,
+                          List<Annotation> annotations, List<Stmt> body) {
+            this(name, visibility, isStatic, isAbstract, async, false, structural,
+                    explicitReceiverType, genericParameters, parameters, returnType, annotations, body);
+        }
+
         public MethodDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
@@ -452,8 +487,14 @@ public final class Ast {
         }
     }
 
-    public record TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) implements Decl {
+    public record TypeAliasDecl(
+            String name, Visibility visibility, List<String> genericParameters, TypeRef target) implements Decl {
         public TypeAliasDecl { genericParameters = List.copyOf(genericParameters); }
+
+        /** Existing AST producers without an explicit visibility are private by default. */
+        public TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) {
+            this(name, Visibility.PRIVATE, genericParameters, target);
+        }
     }
 
     public enum BindingKind { CONST, VAL, LET }
@@ -462,11 +503,34 @@ public final class Ast {
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
-    /** Binding rebinding and mutable access to the referent are independent capabilities. */
+    /**
+     * Binding rebinding and mutable access to the referent are independent capabilities.
+     * inferredTypeName is compiler-only metadata for the local type alias introduced
+     * by `const T value = infer<T> struct {...}` or `infer<T> tuple (...)`.
+     */
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer,
-                              boolean mutableReferent) implements Stmt {
+                              boolean mutableReferent, String inferredTypeName) implements Stmt {
         public BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) {
-            this(kind, declaredType, name, initializer, kind == BindingKind.VAL);
+            this(kind, declaredType, name, initializer, kind == BindingKind.VAL, null);
+        }
+        public BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer,
+                           boolean mutableReferent) {
+            this(kind, declaredType, name, initializer, mutableReferent, null);
+        }
+        public BindingStmt {
+            if (inferredTypeName != null) {
+                if (kind != BindingKind.CONST || mutableReferent) {
+                    throw new IllegalArgumentException("named inferred types require an immutable const binding");
+                }
+                if (declaredType == null || !declaredType.name().equals(inferredTypeName)
+                        || !declaredType.arguments().isEmpty() || declaredType.inferArguments()) {
+                    throw new IllegalArgumentException("named inferred type must match the declared binding type");
+                }
+                if (!(initializer instanceof ObjectExpr object && object.inferredStruct())
+                        && !(initializer instanceof TupleExpr)) {
+                    throw new IllegalArgumentException("named inferred type requires infer struct or tuple literal");
+                }
+            }
         }
     }
     public record DestructureBinding(
@@ -756,7 +820,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -819,6 +883,8 @@ public final class Ast {
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
+    /** Evaluate one expression into Option<T>; only ordinary guest failures become None. */
+    public record TrapExpr(Expr expression) implements Expr { }
 
     public record ChannelOpExpr(
             ChannelOperation operation,

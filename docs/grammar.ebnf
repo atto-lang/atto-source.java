@@ -37,8 +37,8 @@ module_member   = contract_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" | "nlex" | "structural" ;
-method_modifier   = "abstract" | "async" | "structural" ;
+callable_modifier = "abstract" | "async" | "suspend" | "suspends" | "nlex" | "structural" ;
+method_modifier   = "abstract" | "async" | "suspend" | "suspends" | "structural" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind callable_name [ generic_params ]
                   ( "(" [ param_list ] ")" return_spec block
@@ -57,10 +57,12 @@ actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
 actor_body      = "{" { actor_member } "}"
                 | { actor_member } "end" ;
 actor_member    = field_decl
+                | final_actor_field_decl
                 | actor_method_decl
                 | static_function_decl ;
+final_actor_field_decl = { annotation } visibility "final" IDENT ":" type_ref [ "=" expression ] stmt_terminator ;
 actor_method_decl
-                = { annotation } visibility { callable_modifier } [ "fnc" ] method_name [ generic_params ]
+                = { annotation } visibility { callable_modifier } [ "fnc" | "method" ] method_name [ generic_params ]
                   method_head return_spec block ;
 
 class_decl      = visibility "define" [ "abstract" ] "class" IDENT [ generic_params ]
@@ -69,6 +71,7 @@ class_decl      = visibility "define" [ "abstract" ] "class" IDENT [ generic_par
                   "as" { class_member } "end" ;
 
 class_member    = field_decl
+                | type_first_class_field_decl
                 | constructor_decl
                 | method_decl
                 | static_function_decl ;
@@ -81,8 +84,16 @@ field_decl      = { annotation } visibility
                   ( binding_kind type_ref IDENT [ "=" expression ]
                   | IDENT ":" type_ref [ "=" expression ] )
                   stmt_terminator ;
+type_first_class_field_decl
+                = { annotation } visibility [ "final" ] [ "mut" ] type_ref IDENT
+                  ( ":" | "=" ) expression stmt_terminator ;
+(* In class bodies, type-first field declarations canonically use ':' for
+   initializers; '=' is accepted for source compatibility. 'final' is contextual
+   and fixes the field slot without implying deep immutability. The formatter
+   rewrites only eligible field initializers, never assignment expressions,
+   map/struct entries, labels, return types, or named type annotations. *)
 
-method_decl     = { annotation } visibility { method_modifier } method_name [ generic_params ]
+method_decl     = { annotation } visibility { method_modifier } [ "fnc" | "method" ] method_name [ generic_params ]
                   method_head return_spec ( block | stmt_terminator ) ;
 method_name     = callable_name | "[" "Symbol" "." IDENT "]" ;
 callable_name   = IDENT | "loop" | "block" ;
@@ -125,11 +136,20 @@ param           = type_ref [ "mut" ] IDENT
                 | "@Structural" type_ref IDENT
                 | IDENT "structural" type_ref ;
 
-binding_decl    = { annotation } binding_kind
+binding_decl    = named_inferred_binding
+                | { annotation } binding_kind
                   ( IDENT ":" type_ref
                   | [ type_ref ] IDENT )
                   "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
+named_inferred_binding
+                = "const" IDENT IDENT "=" named_inferred_literal stmt_terminator ;
+named_inferred_literal
+                = "infer" "<" IDENT ">" (
+                    "struct" "{" [ struct_value_field { "," struct_value_field } ] "}"
+                  | "tuple" "(" expression { "," expression } ")" ) ;
+(* The first type IDENT of named_inferred_binding must equal the IDENT after infer<...>.
+   Named inference is currently a local immutable binding, not an arbitrary expression. *)
 
 destructure_stmt= [ binding_kind ] sequence_pattern "=" expression stmt_terminator
                 | [ binding_kind ] object_pattern "=" expression stmt_terminator ;
@@ -163,6 +183,7 @@ statement       = binding_decl
                 | select_stmt
                 | defer_stmt
                 | for_stmt
+                | while_stmt
                 | loop_stmt
                 | expression stmt_terminator ;
 
@@ -172,6 +193,7 @@ block_stmt      = "block" block ;
 break_stmt      = "break" stmt_terminator ;
 continue_stmt   = "continue" stmt_terminator ;
 loop_stmt       = "loop" block ;
+while_stmt      = "while" ( "(" condition ")" | condition ) [ ";" ] loop_body ;
 
 if_stmt         = "if" condition
                   ( block
@@ -216,6 +238,7 @@ select_arm      = select_arm_keyword "readch" expression ":"
                   [ binding_kind IDENT ] { statement }
                 | select_arm_keyword "writech" expression "," expression ":"
                   { statement } ;
+(* Static select arms cannot use nb/try modifiers on readch/writech; the enclosing select supplies wait mode. *)
 select_arm_keyword = "when" | "case" ; (* "when" is canonical; "case" is accepted for compatibility. *)
 (* "when" and "case" are contextual keywords: outside these grammar positions they are ordinary IDENT names. *)
 select_default  = "default" ":" { statement } ;
@@ -299,7 +322,8 @@ typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" lambda_body ;
 lambda_body     = block | expression ;
 
-tuple_literal   = "(" expression "," expression { "," expression } ")" ;
+tuple_literal   = "tuple" "(" [ argument_list ] ")"
+                | "(" expression "," expression { "," expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 inferred_struct_literal
@@ -462,6 +486,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Anonymous structs always have a closed compile-time-known field set.
      infer struct{...} is canonical; whitespace before the initializer is optional.
      Computed/backtick struct keys are rejected.
+   - Local const T value = infer<T> struct{...} binds a compiler-only inferred
+     type name T (a closed struct type, NOT structural{...}); const T value =
+     infer<T> tuple (...) does the same for a finite positional tuple.
+     Both T spellings must match. Nested lexical scopes can reuse the type but
+     cannot shadow or escape it. The type-name alias is erased at runtime.
+     The user-facing type T = struct{...} spelling and typed match<Input,Output>
+     remain separate design work; consult the named-inferred-types proposal.
    - DynamicStruct<T> and obj{...} are not language value forms. Open-ended
      keyed collections must use a dedicated collection abstraction rather than
      changing an anonymous struct's shape at runtime.
@@ -512,6 +543,12 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - nlex may qualify an actor fnc as an additional capture-free guarantee;
      actor classes and actor/class methods do not accept nlex.
    - fnc and routine declarations do not overload.
+   - Instance members may use legacy `fnc`, explicit `method`, or a bare name.
+     These all produce a receiver-bound instance method, never a first-class
+     callback. The formatter removes legacy `fnc`, preserves explicit
+     `method`, and never removes `fnc` from `static fnc`.
+   - `suspend` aliases `suspends` in modifier position. Actor state may
+     declare immutable `final name: Type` fields.
    - instance methods may overload only when arity differs. Instance, actor,
      nominal-interface, and structural-contract methods are direct-call-only and
      are never implicitly reified as bound method values; use an explicit lambda

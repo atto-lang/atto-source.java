@@ -499,7 +499,7 @@ define class Combined extends Cacheable, Serializable implements HasId, Named as
 end
 ```
 
-Parent order is never used to break a same-method-slot tie. If distinct parents contribute the same method name and caller-visible arity, the child must explicitly declare that slot; argument types, return types, and parent ordering never choose a winner. A true diamond that reaches the same original declaration through the same generic view is not ambiguous. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child **methods** may override inherited methods only with compatible contracts. Storage fields are not virtual slots: a field name must be unique across the effective inheritance graph, so child fields may not shadow inherited fields and two distinct parent fields may not collide. Reaching the same field declaration twice through a diamond is not a collision.
+Parent order is never used to break a same-method-slot tie. If distinct parents contribute the same method name and caller-visible arity, the child must explicitly declare that slot; argument types, return types, and parent ordering never choose a winner. A true diamond that reaches the same original declaration through the same generic view is not ambiguous. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child **methods** may override inherited methods only with compatible contracts. An overriding method or static function must remain `pub` if any inherited implementation of the same name + arity is `pub`; a `private` child declaration cannot silently hide an inherited public callable, even when it resolves a diamond conflict. Storage fields are not virtual slots: a field name must be unique across the effective inheritance graph, so child fields may not shadow inherited fields and two distinct parent fields may not collide. Reaching the same field declaration twice through a diamond is not a collision.
 
 `Object` and `List` are extensible base classes:
 
@@ -721,7 +721,7 @@ Owned sum values cannot hide lexical borrows until explicit lifetime parameters 
 
 Panics are distinct from ordinary recoverable errors. Normal `try/catch` does not swallow an unwrap panic, while lexical cleanup and `finally` still execute during unwind. Use `unwrap_safe()`, matching, or explicit variant inspection when absence/failure should remain data.
 
-`Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. `Option<void>` is invalid; use `void` when a function returns no value.
+`Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. Ordinary non-trapped functions return `void` when no value is produced. `Option<void>` is a valid compiler-produced completion marker for `trap` callables (and the proposed `trap expression` operator): `Some(void)` means the computation finished normally and `None` means an ordinary throw escaped. See [trap callable semantics](TRAP.md) and the [expression-trap/unwrap contract](TRAP_EXPRESSION_UNWRAP.md).
 
 ## Numbers
 
