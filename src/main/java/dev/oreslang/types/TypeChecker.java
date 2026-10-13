@@ -232,6 +232,10 @@ public final class TypeChecker {
                                 + "distinguishable by nominal enum identity");
             }
         }
+        if (signatures.size() >= NominalEnumOverloads.MAX_SAME_ARITY_CANDIDATES) {
+            throw new IllegalArgumentException("same-arity enum overload family exceeds "
+                    + NominalEnumOverloads.MAX_SAME_ARITY_CANDIDATES + " candidates");
+        }
         signatures.add(fn);
     }
 
