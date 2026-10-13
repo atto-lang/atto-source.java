@@ -330,6 +330,62 @@ final class ActorStateBoundaryKeywordTest {
     }
 
     @Test
+    void scalarLoanEffectSummarySeparatesReadsFromWrites() {
+        Ast.Program parsed = Parser.parse("""
+                define actor Counter as
+                    state { value: int = 0 }
+                    pub get(): int {
+                        return self.handle_state(critical-read |s| -> s.value);
+                    }
+                    pub increment(): int {
+                        return self.handle_state(critical-write |s| -> {
+                            s.value = s.value + 1;
+                            return s.value;
+                        });
+                    }
+                    pub set(): int {
+                        return self.handle_state(critical-write |s| -> {
+                            s.value = 7;
+                            return 1;
+                        });
+                    }
+                end
+                """);
+        Ast.ClassDecl actor = (Ast.ClassDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        for (int i = 0; i < 3; i++) {
+            Ast.ActorStateAccessExpr operation = (Ast.ActorStateAccessExpr)
+                    ((Ast.ReturnStmt) actor.methods().get(i).body().getFirst()).value();
+            var proven = dev.oreslang.types.ActorStateLoanShapeChecker.analyze(actor, operation);
+            assertEquals(i == 2 ? java.util.Set.of() : java.util.Set.of("value"),
+                    proven.reads());
+            assertEquals(i == 0 ? java.util.Set.of() : java.util.Set.of("value"),
+                    proven.writes());
+        }
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(parsed),
+                "an effect summary alone never authorizes runtime lowering");
+    }
+
+    @Test
+    void scalarShapeRejectsUnprovenFieldStorageEvenWhenUnused() {
+        Ast.Program program = Parser.parse("""
+                define actor Counter as
+                    state { value: int = 0; unsafe: Object = 0 }
+                    pub get(): int {
+                        return self.handle_state(critical-read |s| -> s.value);
+                    }
+                end
+                """);
+        Ast.ClassDecl actor = (Ast.ClassDecl)
+                program.modules().getFirst().declarations().getFirst();
+        Ast.ActorStateAccessExpr operation = (Ast.ActorStateAccessExpr)
+                ((Ast.ReturnStmt) actor.methods().getFirst().body().getFirst()).value();
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.ActorStateLoanShapeChecker.analyze(actor, operation));
+        assertTrue(error.getMessage().contains("proven Copy scalar"), error.getMessage());
+    }
+
+    @Test
     void scalarStateLoanProofRejectsEffectfulActorInitialization() {
         for (String initializer : List.of("load_secret()", "external")) {
             Ast.Program program = Parser.parse(
