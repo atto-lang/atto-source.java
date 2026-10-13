@@ -100,4 +100,64 @@ final class SealedActorStateTest {
             assertThrows(IllegalStateException.class, () -> state.get().critical(s -> s.read("count")));
         }
     }
+    @Test void flatIntegerListsAreDetachedAtEveryActorStateBoundary() throws Exception {
+        var failure = new AtomicReference<Throwable>();
+        var finished = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var worker = runtime.<String>spawnShared(() -> (mail, ctx) -> {
+                try {
+                    var source = new java.util.ArrayList<Long>(java.util.List.of(1L, 2L));
+                    var state = new SealedActorState(ctx.self().id(),
+                            Map.of("items", "List[int]"), Map.of("items", source));
+                    source.set(0, 800L); // Constructor must not retain host list.
+                    @SuppressWarnings("unchecked")
+                    var detached = (java.util.ArrayList<Long>) state.critical(
+                            false, access -> access.read("items"));
+                    assertEquals(java.util.List.of(1L, 2L), detached);
+                    detached.set(0, 900L);
+                    assertEquals(java.util.List.of(1L, 2L),
+                            state.critical(false, access -> access.read("items")));
+
+                    var replacement = new java.util.ArrayList<Long>(
+                            java.util.List.of(3L, 4L));
+                    state.critical(true, access -> {
+                        access.write("items", replacement);
+                        return null;
+                    });
+                    replacement.set(0, 999L);
+                    assertEquals(java.util.List.of(3L, 4L),
+                            state.critical(false, access -> access.read("items")));
+                    assertEquals(900L, detached.getFirst());
+
+                    assertThrows(IllegalArgumentException.class,
+                            () -> state.critical(false, access ->
+                                    new java.util.ArrayList<>(java.util.List.of("not int"))));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> state.critical(true, access -> {
+                                access.write("items", new java.util.ArrayList<>(
+                                        java.util.List.of(java.util.List.of(9L))));
+                                return null;
+                            }));
+                    assertEquals(java.util.List.of(3L, 4L),
+                            state.critical(false, access -> access.read("items")));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> state.critical(false, access ->
+                                    new java.util.ArrayList<>(java.util.Collections.nCopies(
+                                            4097, 1L))));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> state.critical(false, access ->
+                                    new java.util.LinkedList<>(java.util.List.of(1L))));
+                    state.retireFromRuntime(ctx.self().id());
+                    finished.countDown();
+                } catch (Throwable error) {
+                    failure.set(error);
+                    finished.countDown();
+                }
+            });
+            worker.send("verify");
+            assertTrue(finished.await(15, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+        }
+    }
+
 }
