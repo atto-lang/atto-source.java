@@ -28,7 +28,7 @@ final class OreslangGrammarDriftTest {
             statement return_stmt defer_stmt block_stmt break_stmt continue_stmt
             loop_stmt while_stmt if_stmt conditional_branch deprecated_if_do condition condition_and
             match_stmt match_arm pattern switch_stmt switch_case switch_default
-            try_stmt select_stmt select_wait_mode select_policy select_arm select_arm_keyword
+            try_stmt select_stmt select_wait_mode select_policy select_arm select_read_binding select_arm_keyword
             select_default for_stmt c_for_head for_init for_update for_of_head
             for_of_binding for_of_pattern for_of_destructure_item for_of_rest_item loop_body expression
             assignment conditional logic_or equality comparison additive
