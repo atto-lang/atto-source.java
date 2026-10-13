@@ -1835,8 +1835,14 @@ public final class Parser {
                     operation = Ast.ChannelOperation.READ;
                 }
 
-                // Canonical when-branches use ->; brace-only legacy form is
-                // still accepted. The arrow is syntax, never a new channel read.
+                // New typed and destructured read bindings require an
+                // explicit boundary: otherwise '{...}' can be mistaken for
+                // either a record pattern or the following statement body.
+                // The old simple-name/no-binding braced form remains legal.
+                if ((bindingType != null || destructureKind != null) && !check(ARROW)) {
+                    throw error(peek(),
+                            "typed/destructured select read arms require '->' before the body");
+                }
                 match(ARROW);
                 if (!check(LBRACE)) {
                     throw error(peek(), "select arm requires '-> { ... }' or legacy '{ ... }'");
