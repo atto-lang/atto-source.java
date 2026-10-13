@@ -225,6 +225,145 @@ final class ActorGroupMultiMembershipTest {
     }
 
     @Test
+    void creatorCannotEvadeGroupOwnershipQuotaByLeavingMembership() throws Exception {
+        IsolatePolicy base = IsolatePolicy.developer();
+        IsolatePolicy twoGroups = new IsolatePolicy(
+                base.capabilities(), base.maxHeapBytes(), 2, base.maxWallTime());
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch completed = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> creator = runtime.spawnShared(
+                    twoGroups, () -> (message, context) -> {
+                        try {
+                            ActorRuntime.ActorGroup first = context.runtime().createActorGroup();
+                            ActorRuntime.ActorGroup second = context.runtime().createActorGroup();
+                            first.leaveCurrent();
+                            second.leaveCurrent();
+                            // Creation quota is structural: leaving cooperation
+                            // membership must never confer extra creator rights.
+                            assertThrows(IllegalStateException.class,
+                                    context.runtime()::createActorGroup);
+                            first.close();
+                            ActorRuntime.ActorGroup replacement =
+                                    context.runtime().createActorGroup();
+                            assertEquals(2, context.runtime().actorGroupCount());
+                            replacement.close();
+                            second.close();
+                        } catch (Throwable problem) {
+                            failure.set(problem);
+                        } finally {
+                            completed.countDown();
+                        }
+                    });
+            creator.send(1);
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            creator.stop();
+            assertTrue(creator.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorGroupCount());
+        }
+    }
+
+    @Test
+    void actorWithoutSpawnAuthorityCannotCreateGroupsThroughAnyRuntimeCall() throws Exception {
+        IsolatePolicy deniedPolicy = IsolatePolicy.developer()
+                .withoutCapabilities(IsolatePolicy.Capability.ACTOR_SPAWN);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch completed = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnShared(
+                    deniedPolicy, () -> (message, context) -> {
+                        try {
+                            SecurityException denied = assertThrows(
+                                    SecurityException.class,
+                                    context.runtime()::createActorGroup);
+                            assertTrue(denied.getMessage().contains("ACTOR_SPAWN"));
+                        } catch (Throwable problem) {
+                            failure.set(problem);
+                        } finally {
+                            completed.countDown();
+                        }
+                    });
+            actor.send(1);
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorGroupCount());
+            // The host/supervisor control path retains explicit authority.
+            ActorRuntime.ActorGroup hostGroup = runtime.createActorGroup();
+            hostGroup.close();
+        }
+    }
+
+    @Test
+    void permitRotationVsJoinHasOneAdmissionOrderingAndNoPostRotationReuse() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup room = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> connection =
+                    runtime.spawnSharedTrusted(factory -> (message, actor) -> { });
+            ActorRuntime.ActorGroupJoinCapability initial = room.joinCapability();
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorGroupJoinCapability> rotated =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread rotator = new Thread(() -> {
+                try {
+                    start.await();
+                    rotated.set(room.rotateJoinCapability());
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            Thread joiner = new Thread(() -> {
+                try {
+                    start.await();
+                    // Either admission wins before rotation, or stale
+                    // capability rejection wins after rotation. Never allow
+                    // a partially updated membership index in either case.
+                    room.join(connection, initial);
+                } catch (SecurityException expectedIfRotationWon) {
+                    // Expected when rotation linearizes first.
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            rotator.start();
+            joiner.start();
+            start.countDown();
+            rotator.join(5_000);
+            joiner.join(5_000);
+            assertFalse(rotator.isAlive(), "rotator deadlocked");
+            assertFalse(joiner.isAlive(), "joiner deadlocked");
+            assertNull(failure.get());
+            assertNotNull(rotated.get());
+            assertThrows(SecurityException.class,
+                    () -> room.join(connection, initial),
+                    "stale permits cannot be accepted even for idempotent joins");
+            room.join(connection, rotated.get());
+            assertEquals(1, room.memberCount());
+            connection.stop();
+            assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, room.memberCount());
+        }
+    }
+
+    @Test
+    void foreignRuntimeCannotAdmitItsActorsWithAnotherRuntimesPermit() throws Exception {
+        try (ActorRuntime one = new ActorRuntime();
+             ActorRuntime two = new ActorRuntime()) {
+            ActorRuntime.ActorGroup room = one.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = room.joinCapability();
+            ActorRuntime.ActorRef<Integer> foreign =
+                    two.spawnSharedTrusted(factory -> (message, actor) -> { });
+            assertThrows(IllegalArgumentException.class, () -> room.join(foreign, join));
+            assertEquals(0, room.memberCount());
+            foreign.stop();
+            assertTrue(foreign.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void concurrentRoomJoinsCannotExceedActorMembershipQuota() throws Exception {
         IsolatePolicy base = IsolatePolicy.developer();
         IsolatePolicy twoRooms = new IsolatePolicy(
@@ -269,6 +408,328 @@ final class ActorGroupMultiMembershipTest {
             connection.stop();
             assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(0, a.memberCount() + b.memberCount() + c.memberCount());
+        }
+    }
+    @Test
+    void rotatedPermitCannotJoinEvenWhileAnotherRoomRemainsAvailable() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup roomA = runtime.createActorGroup();
+            ActorRuntime.ActorGroup roomB = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability stale = roomA.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability replacement = roomA.rotateJoinCapability();
+            ActorRuntime.ActorGroupJoinCapability joinB = roomB.joinCapability();
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Throwable> problem = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(
+                    factory -> (message, ctx) -> {
+                        try {
+                            assertThrows(SecurityException.class, stale::join,
+                                    "rotated permit must not admit a new member");
+                            assertThrows(SecurityException.class, roomA::memberCount,
+                                    "nonmember may not inspect group membership");
+                            replacement.join();
+                            joinB.join();
+                            assertTrue(roomA.contains(ctx.self()));
+                            assertTrue(roomB.contains(ctx.self()));
+                            roomA.leaveCurrent();
+                            assertThrows(SecurityException.class, stale::join,
+                                    "revoked authority cannot bypass membership revocation");
+                            assertThrows(SecurityException.class, roomA::memberCount,
+                                    "leaving A must revoke A's observer authority");
+                            assertTrue(roomB.contains(ctx.self()));
+                        } catch (Throwable failure) {
+                            problem.set(failure);
+                        } finally {
+                            done.countDown();
+                        }
+                    });
+            actor.send(1);
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertNull(problem.get());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, roomA.memberCount());
+            assertEquals(0, roomB.memberCount());
+        }
+    }
+
+
+    @Test
+    void closingOneRoomRacingAdmissionCannotResurrectItOrRevokeAnotherRoom()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup stableRoom = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> connection =
+                    runtime.spawnSharedTrusted(factory -> (message, context) -> { });
+            stableRoom.join(connection, stableRoom.joinCapability());
+            for (int round = 0; round < 64; round++) {
+                ActorRuntime.ActorGroup closingRoom = runtime.createActorGroup();
+                ActorRuntime.ActorGroupJoinCapability permit = closingRoom.joinCapability();
+                CountDownLatch release = new CountDownLatch(1);
+                AtomicReference<Throwable> unexpected = new AtomicReference<>();
+                Thread joiner = new Thread(() -> {
+                    try {
+                        release.await();
+                        closingRoom.join(connection, permit);
+                    } catch (SecurityException | IllegalStateException expected) {
+                        // Either close revoked admission first, or join won.
+                    } catch (Throwable error) {
+                        unexpected.compareAndSet(null, error);
+                    }
+                });
+                Thread closer = new Thread(() -> {
+                    try {
+                        release.await();
+                        closingRoom.close();
+                    } catch (Throwable error) {
+                        unexpected.compareAndSet(null, error);
+                    }
+                });
+                joiner.start();
+                closer.start();
+                release.countDown();
+                joiner.join(5_000);
+                closer.join(5_000);
+                assertFalse(joiner.isAlive(), "joiner deadlocked with close");
+                assertFalse(closer.isAlive(), "closer deadlocked with join");
+                assertNull(unexpected.get(), "unexpected concurrent group admission failure");
+                assertTrue(closingRoom.closed(), "concurrently closed room reopened");
+                assertEquals(0, closingRoom.memberCount(), "closed room retained membership");
+                assertThrows(IllegalStateException.class,
+                        () -> closingRoom.join(connection, permit),
+                        "closed room admitted a stale permit");
+                assertTrue(stableRoom.contains(connection),
+                        "closing unrelated room revoked healthy membership");
+                assertTrue(connection.isAlive(), "cooperation room closed the socket owner");
+            }
+            stableRoom.close();
+            connection.stop();
+            assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void multiRoomMembershipNeverRunsOneActorOnTwoCarriers() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup roomA = runtime.createActorGroup();
+            ActorRuntime.ActorGroup roomB = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability joinA = roomA.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability joinB = roomB.joinCapability();
+
+            CountDownLatch firstTurnEntered = new CountDownLatch(1);
+            CountDownLatch secondTurnEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirstTurn = new CountDownLatch(1);
+            CountDownLatch bothTurnsFinished = new CountDownLatch(2);
+            java.util.concurrent.atomic.AtomicInteger activeTurns =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger peakConcurrentTurns =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<Integer> connection = runtime.spawnSharedTrusted(
+                    factory -> (message, context) -> {
+                        int nowActive = activeTurns.incrementAndGet();
+                        peakConcurrentTurns.accumulateAndGet(nowActive, Math::max);
+                        try {
+                            if (message == 1) {
+                                joinA.join();
+                                joinB.join();
+                                assertTrue(roomA.contains(context.self()));
+                                assertTrue(roomB.contains(context.self()));
+                                firstTurnEntered.countDown();
+                                if (!releaseFirstTurn.await(5, TimeUnit.SECONDS)) {
+                                    throw new AssertionError("first actor turn was not released");
+                                }
+                            } else {
+                                secondTurnEntered.countDown();
+                                assertEquals(2, message.intValue());
+                                assertTrue(roomA.contains(context.self()));
+                                assertTrue(roomB.contains(context.self()));
+                            }
+                        } catch (Throwable failure) {
+                            unexpected.compareAndSet(null, failure);
+                        } finally {
+                            activeTurns.decrementAndGet();
+                            bothTurnsFinished.countDown();
+                        }
+                    });
+
+            try {
+                connection.send(1);
+                assertTrue(firstTurnEntered.await(5, TimeUnit.SECONDS),
+                        "first turn never acquired the actor execution lane");
+                // The actor participates in two cooperation groups, but neither
+                // group owns another execution lane. The second message must
+                // not run concurrently while the first turn remains active.
+                connection.send(2);
+                assertFalse(secondTurnEntered.await(100, TimeUnit.MILLISECONDS),
+                        "second turn started before the first turn released its execution lane");
+            } finally {
+                releaseFirstTurn.countDown();
+            }
+            assertTrue(bothTurnsFinished.await(5, TimeUnit.SECONDS),
+                    "both actor messages did not complete");
+            assertNull(unexpected.get());
+            assertEquals(1, peakConcurrentTurns.get(),
+                    "a multi-room actor ran concurrently on two carriers");
+            assertEquals(0, activeTurns.get());
+            assertEquals(1, roomA.memberCount());
+            assertEquals(1, roomB.memberCount());
+
+            connection.stop();
+            assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, roomA.memberCount());
+            assertEquals(0, roomB.memberCount());
+        }
+    }
+
+    @Test
+    void concurrentHostProducersPreserveMultiRoomActorTurnSerialityAndExactlyOnceDelivery()
+            throws Exception {
+        final int producers = 4;
+        final int messagesPerProducer = 16;
+        final int total = producers * messagesPerProducer;
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup roomA = runtime.createActorGroup();
+            ActorRuntime.ActorGroup roomB = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability joinA = roomA.joinCapability();
+            ActorRuntime.ActorGroupJoinCapability joinB = roomB.joinCapability();
+
+            CountDownLatch joined = new CountDownLatch(1);
+            CountDownLatch startProducers = new CountDownLatch(1);
+            CountDownLatch delivered = new CountDownLatch(total);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicInteger activeTurns =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger peakTurns =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            java.util.Set<Integer> received =
+                    java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+            ActorRuntime.ActorRef<Integer> connection = runtime.spawnSharedTrusted(
+                    factory -> (message, actor) -> {
+                        int active = activeTurns.incrementAndGet();
+                        peakTurns.accumulateAndGet(active, Math::max);
+                        try {
+                            if (message == 0) {
+                                joinA.join();
+                                joinB.join();
+                                joined.countDown();
+                            } else {
+                                assertTrue(roomA.contains(actor.self()));
+                                assertTrue(roomB.contains(actor.self()));
+                                assertTrue(received.add(message),
+                                        "actor must consume each producer ticket once");
+                                Thread.yield();
+                            }
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            activeTurns.decrementAndGet();
+                            if (message != 0) delivered.countDown();
+                        }
+                    });
+
+            connection.send(0);
+            assertTrue(joined.await(5, TimeUnit.SECONDS));
+            java.util.List<Thread> senders = new java.util.ArrayList<>();
+            for (int producer = 0; producer < producers; producer++) {
+                final int number = producer;
+                Thread sender = new Thread(() -> {
+                    try {
+                        if (!startProducers.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("producer start timed out");
+                        }
+                        for (int ticket = 1; ticket <= messagesPerProducer; ticket++) {
+                            connection.send(number * messagesPerProducer + ticket);
+                        }
+                    } catch (Throwable problem) {
+                        failure.compareAndSet(null, problem);
+                    }
+                }, "actor-group-producer-" + producer);
+                senders.add(sender);
+                sender.start();
+            }
+            try {
+                startProducers.countDown();
+                for (Thread sender : senders) {
+                    sender.join(5_000);
+                    assertFalse(sender.isAlive(), "a concurrent message producer deadlocked");
+                }
+                assertTrue(delivered.await(5, TimeUnit.SECONDS),
+                        "actor did not consume every concurrently enqueued message");
+                assertNull(failure.get());
+                assertEquals(total, received.size(),
+                        "multi-room actor lost or duplicated a producer ticket");
+                assertEquals(1, peakTurns.get(),
+                        "two carriers simultaneously ran the same multi-room actor");
+                assertEquals(0, activeTurns.get());
+                assertEquals(1, roomA.memberCount());
+                assertEquals(1, roomB.memberCount());
+            } finally {
+                connection.stop();
+                assertTrue(connection.awaitTermination(5, TimeUnit.SECONDS));
+            }
+            assertEquals(0, roomA.memberCount());
+            assertEquals(0, roomB.memberCount());
+        }
+    }
+
+    @Test
+    void creatorShutdownDuringGroupCreationAlwaysReclaimsOwnedGroup()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            for (int round = 0; round < 24; round++) {
+                CountDownLatch actorEntered = new CountDownLatch(1);
+                CountDownLatch releaseCreation = new CountDownLatch(1);
+                AtomicReference<Throwable> unexpected = new AtomicReference<>();
+                ActorRuntime.ActorRef<Integer> creator = runtime.spawnSharedTrusted(
+                        factory -> (message, actor) -> {
+                            actorEntered.countDown();
+                            try {
+                                if (!releaseCreation.await(5, TimeUnit.SECONDS)) {
+                                    throw new AssertionError("creator creation barrier timed out");
+                                }
+                                // stop() can race any point between creator
+                                // registration and group publication.
+                                try {
+                                    runtime.createActorGroup();
+                                } catch (IllegalStateException alreadyStopping) {
+                                    // Only creator retirement is expected. Never
+                                    // silently swallow quota or runtime defects.
+                                    String message = alreadyStopping.getMessage();
+                                    if (!"current actor is no longer registered".equals(message)
+                                            && !"group creator is no longer alive".equals(message)
+                                            && !"group creator stopped during creation".equals(message)) {
+                                        throw alreadyStopping;
+                                    }
+                                }
+                            } catch (Throwable failure) {
+                                unexpected.compareAndSet(null, failure);
+                            }
+                        });
+                creator.send(1);
+                assertTrue(actorEntered.await(5, TimeUnit.SECONDS),
+                        "creator did not enter its actor turn");
+                AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+                Thread terminator = new Thread(() -> {
+                    try {
+                        creator.stop();
+                    } catch (Throwable failure) {
+                        stopFailure.set(failure);
+                    }
+                });
+                terminator.start();
+                releaseCreation.countDown();
+                terminator.join(5_000);
+                assertFalse(terminator.isAlive(), "creator stop deadlocked group publication");
+                assertNull(stopFailure.get());
+                assertTrue(creator.awaitTermination(5, TimeUnit.SECONDS),
+                        "creator retirement blocked by ActorGroup close");
+                assertNull(unexpected.get());
+                assertEquals(0, runtime.actorGroupCount(),
+                        "creator's structural ActorGroups escaped termination cleanup");
+            }
         }
     }
 }

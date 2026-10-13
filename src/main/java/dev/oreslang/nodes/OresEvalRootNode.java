@@ -5961,6 +5961,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
+                if (name.name().equals("ActorGroup")) return new ActorGroupFactory(context);
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
@@ -6798,6 +6799,56 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof MutexFactory factory) {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
+            }
+            if (receiver instanceof ActorGroupFactory factory) {
+                if (!name.equals("new")) throw new IllegalArgumentException(
+                        "unknown ActorGroup factory member " + name);
+                return (Invokable) args -> {
+                    requireZero(args, "ActorGroup.new");
+                    factory.context().requireCapability(
+                            IsolatePolicy.Capability.ACTOR_SPAWN, "ActorGroup.new");
+                    return factory.context().actors().createActorGroup();
+                };
+            }
+            if (receiver instanceof ActorRuntime.ActorGroup group) {
+                return switch (name) {
+                    case "join_capability" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.join_capability");
+                        return group.joinCapability();
+                    };
+                    case "rotate_join_capability" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.rotate_join_capability");
+                        return group.rotateJoinCapability();
+                    };
+                    case "leave" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.leave");
+                        group.leaveCurrent();
+                        return null;
+                    };
+                    case "member_count" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.member_count");
+                        return (long) group.memberCount();
+                    };
+                    case "is_closed" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.is_closed");
+                        return group.closed();
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.close");
+                        group.close();
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorGroup operation " + name);
+                };
+            }
+            if (receiver instanceof ActorRuntime.ActorGroupJoinCapability permit) {
+                if (!name.equals("join")) throw new IllegalArgumentException(
+                        "unknown ActorGroupJoinCapability operation " + name);
+                return (Invokable) args -> {
+                    requireZero(args, "ActorGroupJoinCapability.join");
+                    return permit.join();
+                };
             }
             if (receiver instanceof ActorRuntime.ActorRef<?> actorRef) {
                 @SuppressWarnings("unchecked")
@@ -9089,6 +9140,9 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
+    /** No Java host interop or reflection is exposed to Oreslang guest code. */
+    private record ActorGroupFactory(OresContext context) { }
+
     private static final class ChannelFactory {
         private Object create(List<Object> args) {
             requireOne(args, "Channel.new<T>");

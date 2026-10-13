@@ -88,7 +88,12 @@ across rooms; duplicate joins are idempotent and leave, group close and actor
 retirement reclaim slots. `managedWorkers` remains a separate, exclusive
 lifecycle registry. `ActorGroupMultiMembershipTest` covers two-room
 participation, private zero-copy restrictions, room leave/closure and quota
-reclamation. This is a host runtime API, not yet full source-language lowering.
+reclamation. The first Java/Graal source methods are now typed and lowered
+(`ActorGroup.new()`, scoped `join_capability()` / `join()`,
+`leave()`, `member_count()`, `close()`), as described in
+`docs/ACTOR_GROUP_SOURCE_API.md`. Scoped permit transfer to a separately
+spawned actor, complete supervisor syntax and cross-backend language parity
+are still explicitly unsupported.
 
 LLVM: `NativeActorMembershipRegistry.hpp` now implements a distinct,
 per-runtime, bounded *host-side* cooperation registry with revocable join
