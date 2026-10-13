@@ -451,6 +451,10 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher) {
+        // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
+        // admission gate: the underlying JVM and direct-buffer cleaner still GC.
+        ActorHeapAdmission.requireSupportedJvmMode(
+                System.getProperty("ores.runtime.gc.mode", "hybrid"));
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
@@ -4071,16 +4075,62 @@ public final class ActorRuntime implements AutoCloseable {
                                     "cannot spawn a child from a stopping or force-fenced actor "
                                             + parent.ref.id());
                         }
-                        parent.children.add(cell);
-                        linkedToParent = true;
-                        actors.put(id, cell);
+                        // A nested spawn inherits its parent's structured
+                        // lifecycle group. The spawn lineage is not a new
+                        // supervisor or a new group. Event-bus membership
+                        // remains opt-in and is never inherited here.
+                        ActorGroupId inheritedId = parent.managedByGroup.get();
+                        ActorGroup inherited = inheritedId == null
+                                ? null : actorGroups.get(inheritedId);
+                        if (inheritedId != null && inherited == null) {
+                            throw new IllegalStateException(
+                                    "parent's lifecycle ActorGroup no longer exists");
+                        }
+                        if (inherited != null) {
+                            // Publish ownership, lineage and actor identity
+                            // atomically against group close/worker transfer.
+                            synchronized (inherited.authorityLock) {
+                                inherited.requireOpen();
+                                if (!inheritedId.equals(parent.managedByGroup.get())) {
+                                    throw new IllegalStateException(
+                                            "parent's lifecycle ActorGroup changed during spawn");
+                                }
+                                if (inherited.managedWorkers.size() >= inherited.memberLimit) {
+                                    throw new IllegalStateException(
+                                            "ActorGroup managed worker limit exceeded: maximum "
+                                                    + inherited.memberLimit);
+                                }
+                                cell.managedByGroup.set(inheritedId);
+                                inherited.managedWorkers.put(id, ref);
+                                parent.children.add(cell);
+                                linkedToParent = true;
+                                actors.put(id, cell);
+                            }
+                        } else {
+                            parent.children.add(cell);
+                            linkedToParent = true;
+                            actors.put(id, cell);
+                        }
                     }
                 } else {
                     actors.put(id, cell);
                 }
                 return ref;
             } catch (RuntimeException | Error failure) {
+                // Roll back every registry when spawn admission fails. In
+                // particular, never strand an inherited group ownership ref.
+                if (cell != null) actors.remove(cell.ref.id(), cell);
                 if (linkedToParent && cell != null) parent.children.remove(cell);
+                if (cell != null) {
+                    ActorGroupId inheritedId = cell.managedByGroup.get();
+                    ActorGroup inherited = inheritedId == null
+                            ? null : actorGroups.get(inheritedId);
+                    if (inherited != null) {
+                        synchronized (inherited.authorityLock) {
+                            inherited.managedWorkers.remove(cell.ref.id(), cell.ref);
+                        }
+                    }
+                }
                 actorCount.decrementAndGet();
                 throw failure;
             }
@@ -5548,6 +5598,10 @@ public final class ActorRuntime implements AutoCloseable {
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
         requireGraphDepth(depth);
+        if (value instanceof OresSymbol symbol && !symbol.publicToUntrustedCoreV1()) {
+            // Check every nested key and value before admitting untrusted mailbox data.
+            throw new SecurityException("Symbol is not visible to untrusted actor");
+        }
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
@@ -6095,6 +6149,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
+        if (value instanceof OresSymbol symbol) return 56L + symbol.name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         return -1L;
@@ -6146,6 +6201,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
+        if (value instanceof OresSymbol symbol) return 56L + symbol.name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
@@ -6190,7 +6246,8 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private static boolean isScalar(Object value) {
-        return value == null || value instanceof String || value instanceof Boolean || value instanceof Character
+        return value == null || value instanceof String || value instanceof OresSymbol
+                || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
