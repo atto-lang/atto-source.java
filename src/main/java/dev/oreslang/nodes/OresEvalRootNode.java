@@ -25,6 +25,7 @@ import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.GuestTraceCapture;
 import dev.oreslang.runtime.GuestErrorWireCodec;
+import dev.oreslang.stdlib.CoreLibrarySources;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
@@ -5961,6 +5962,30 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
+        /**
+         * Prove class ancestry from the compiler-linked core std/error unit,
+         * never from a guest class that happens to be named "Error" or exposes
+         * a code()/Serializable-looking structural shape. Traverse explicit
+         * imports across linked code units without evaluating guest code.
+         * Every recursive step uses the owning evaluator's identity.
+         */
+        private boolean isCanonicalGuestError(Ast.ClassDecl klass, Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) return false;
+            if (codeUnitId.equals(CoreLibrarySources.unitId("std/error"))
+                    && klass == findClass("Error")) return true;
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl local = findClass(parentRef.name());
+                if (local != null && isCanonicalGuestError(local, seen)) return true;
+                ImportedBinding imported = namedImports.get(parentRef.name());
+                if (imported == null
+                        || imported.declaration().kind() != Ast.ImportKind.CLASS) continue;
+                Evaluator linked = importedTarget(imported.declaration());
+                Ast.ClassDecl ancestor = linked.findClass(imported.sourceName());
+                if (ancestor != null && linked.isCanonicalGuestError(ancestor, seen)) return true;
+            }
+            return false;
+        }
+
         private Object serializeGuestError(String operation, Object value) {
             if (!(value instanceof OresObject object)
                     || !object.fields.containsKey("full_trace")
@@ -5974,10 +5999,11 @@ public final class OresEvalRootNode extends RootNode {
             // override, getter or closure. Read the compiler-verified constant
             // return from the nominal vtable instead of dispatching guest code.
             // A computed/side-effecting code() cannot be marshalled safely.
-            Ast.ClassDecl canonicalBase = object.owner.findClass("Error");
-            if (canonicalBase == null
-                    || !object.owner.classIsA(object.klass, canonicalBase, new LinkedHashSet<>())) {
-                throw new IllegalArgumentException("error codec requires a nominal Error subclass");
+            Set<Ast.ClassDecl> seen =
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+            if (!object.owner.isCanonicalGuestError(object.klass, seen)) {
+                throw new IllegalArgumentException(
+                        "error codec requires a compiler-linked std/error.Error descendant");
             }
             Ast.MethodDecl codeMethod = object.owner.findMethod(
                     object.klass, CallableSelector.instance("code", 0));

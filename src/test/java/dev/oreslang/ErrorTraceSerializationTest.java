@@ -228,6 +228,34 @@ final class ErrorTraceSerializationTest {
     }
 
     @Test
+    void localErrorLookalikeCannotForgeStdErrorIdentityAtWireBoundary() throws Exception {
+        Path entry = temp.resolve("forged-error.ores");
+        Files.writeString(entry, """
+                define class Error as
+                  pub val bool full_trace: true
+                  pub val bool json_full: true
+                  pub val String message: "secrets"
+                  pub val bool binary_full: true
+                  pub let Array<String> stack: []
+                  pub code(): int { return 9007; }
+                  pub to_json(): String { return rt error_to_json(self); }
+                end
+
+                pub routine main(): void {
+                  val e = new Error();
+                  stdio.stdout.write(e.to_json());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        assertThrows(Exception.class, () -> LinkedProgramRunner.run(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), output, new ByteArrayOutputStream()));
+        assertEquals("", output.toString(StandardCharsets.UTF_8),
+                "a local impostor must not serialize as the canonical std/error class");
+    }
+
+    @Test
     void guestErrorCodecCannotExecuteOverriddenCodeMethod() throws Exception {
         Path entry = temp.resolve("untrusted-error-code.ores");
         Files.writeString(entry, """
