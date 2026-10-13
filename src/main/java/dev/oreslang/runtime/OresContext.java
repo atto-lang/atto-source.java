@@ -38,6 +38,10 @@ public final class OresContext implements AutoCloseable {
             new java.util.HashSet<>();
     private final Object nioLifecycle = new Object();
     private boolean nioContextClosed;
+    // Each listener owns a platform reactor thread. Budget the entire context,
+    // including listeners currently in the process of being created.
+    private static final int MAX_NIO_LISTENERS_PER_CONTEXT = 16;
+    private int nioOpening;
 
     /** Require BOTH active owner-context identity and NETWORK authority. */
     public void requireNioOwner(NativeNioFutureReactor listener, String operation) {
@@ -64,21 +68,35 @@ public final class OresContext implements AutoCloseable {
         synchronized (nioLifecycle) {
             if (nioContextClosed)
                 throw new IllegalStateException("cannot create TCP listener in closed context");
+            if (nioListeners.size() + nioOpening >= MAX_NIO_LISTENERS_PER_CONTEXT)
+                throw new RejectedExecutionException("TCP listener capacity exhausted");
+            ++nioOpening;
         }
+        NativeNioFutureReactor reactor;
         try {
-            NativeNioFutureReactor reactor = NativeNioFutureReactor.loopback(
+            reactor = NativeNioFutureReactor.loopback(
                     port, backlog, maxConnections, maxPending);
-            synchronized (nioLifecycle) {
-                if (nioContextClosed) {
-                    reactor.close();
-                    throw new IllegalStateException("TCP context closed during listener admission");
-                }
-                nioListeners.add(reactor);
-            }
-            return reactor;
         } catch (java.io.IOException failure) {
+            synchronized (nioLifecycle) { --nioOpening; }
             throw new IllegalStateException("nonblocking TCP listen failed", failure);
+        } catch (RuntimeException | Error failure) {
+            synchronized (nioLifecycle) { --nioOpening; }
+            throw failure;
         }
+        synchronized (nioLifecycle) {
+            --nioOpening;
+            if (nioContextClosed) {
+                reactor.close();
+                throw new IllegalStateException("TCP context closed during listener admission");
+            }
+            nioListeners.add(reactor);
+        }
+        // Source close_async is one-shot. Reap the owner registry only after
+        // the reactor has released sockets and its selector.
+        reactor.onTerminated(() -> {
+            synchronized (nioLifecycle) { nioListeners.remove(reactor); }
+        });
+        return reactor;
     }
     public AsyncNativeIo nativeIo() { return nativeIo; }
     private final NativeHttp http = new NativeHttp(this);

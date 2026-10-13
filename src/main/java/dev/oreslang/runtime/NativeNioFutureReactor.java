@@ -429,6 +429,10 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         }
     }
 
+    void onTerminated(Runnable callback) {
+        terminated.whenCompleteRuntime((ignored, failure) -> callback.run());
+    }
+
     public OresFuture<Void> closeAsync() {
         close();
         return terminated;

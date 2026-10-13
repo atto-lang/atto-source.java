@@ -44,6 +44,31 @@ final class NativeNetStdlibTest {
         }
     }
 
+    @Test void contextEnforcesAggregateReactorBudget() throws Exception {
+        Path entry = Files.createTempFile("ores-net-listener-quota-", ".ores");
+        try {
+            StringBuilder source = new StringBuilder("""
+                    import module net_core from "std/net";
+                    pub async routine main(): void {
+                    """);
+            for (int i = 0; i < 17; i++) {
+                source.append("  val NioTcpListener l").append(i)
+                        .append(" = net_core.listen_loopback(0, 8, 1, 4);\n");
+            }
+            source.append("  return;\n}\n");
+            Files.writeString(entry, source.toString());
+            RuntimeException rejection = assertThrows(RuntimeException.class, () ->
+                    LinkedProgramRunner.run(entry,
+                            IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK),
+                            ExecutionProfile.serverJit(),
+                            new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+            assertTrue(rejection.toString().contains("TCP listener capacity exhausted"),
+                    () -> "expected admission limit rather than unbounded reactor threads: " + rejection);
+        } finally {
+            Files.deleteIfExists(entry);
+        }
+    }
+
     @Test void realGuestAcceptReadWriteThroughNonblockingKernel() throws Exception {
         Path entry = Files.createTempFile("ores-net-guest-", ".ores");
         ExecutorService runner = Executors.newFixedThreadPool(2);

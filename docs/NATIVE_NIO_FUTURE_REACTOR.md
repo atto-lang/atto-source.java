@@ -8,8 +8,8 @@ The first compiled Oreslang guest integration is verified: a `.ores` TCP server 
 
 ## Current proof
 - TCP accept/read/write use nonblocking channels; ready-with-no-data does not occupy guest carriers and stalled reads do not block other connections.
-- Fixed limits: maximum live connections, maximum pending futures/commands, per-call 64KiB byte cap, at most one read and one write pending per connection.
-- Single owner reactor serializes socket readiness, registration, and close. Caller-owned mutable write arrays are snapshotted before enqueue.
+- Fixed limits: maximum live connections, maximum pending futures/commands, per-call 64KiB byte cap, at most one read and one write pending per connection. Context-wide limit of **16** reactor listeners (including in-progress opens) bounds platform thread growth; registry entries are removed only when close settles.
+- Single owner reactor serializes socket readiness, registration, and close. Caller-owned mutable write arrays are snapshotted before enqueue. Every admitted operation is registered by Future identity and force-failed on abnormal selector termination, even when its queued command never reaches kernel registration.
 - `OresFuture` completions only transition future state and its runtime subscription layer; no Oreslang guest code runs from socket callbacks.
 - Context-level `close()` only wakes the selector, never waits on it. Outstanding reads, writes, accepts are failed on shutdown and pending counters reclaimed. Explicit `Connection.closeAsync()` enqueues closure on the owner reactor. Admission and command enqueue are atomic against shutdown; 40 concurrent close/admission iterations verify no stranded futures or counter leaks. An operation releases admission before publishing its future's settled state.
 - Optional numeric measurements: peak future occupancy, max host command queue delay, outstanding futures. No blocking logging or synchronous output.
