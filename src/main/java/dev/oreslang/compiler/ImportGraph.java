@@ -132,6 +132,10 @@ final class ImportGraph {
                 if (module.name().equals(name) && module.visibility() == Ast.Visibility.PUBLIC) matches++;
                 continue;
             }
+            // An exported member of a private named module is not a file export.
+            // Root-level declarations retain their own independent pub flags.
+            if (!module.name().equals(Parser.ROOT_MODULE)
+                    && module.visibility() != Ast.Visibility.PUBLIC) continue;
 
             for (Ast.Decl decl : module.declarations()) {
                 boolean matched = switch (kind) {
