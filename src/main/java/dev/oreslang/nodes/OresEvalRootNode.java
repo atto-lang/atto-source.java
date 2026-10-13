@@ -2769,16 +2769,30 @@ public final class OresEvalRootNode extends RootNode {
                 java.util.Iterator<?> items,
                 int index,
                 SourceFlowCont continuation) {
-            if (!items.hasNext()) {
+            // Iterator operations can fail on a later carrier, after the
+            // original caller's exception scope has already unwound. Report
+            // the failure through the enclosing close/cleanup continuation.
+            boolean available;
+            Object item;
+            try {
+                available = items.hasNext();
+                item = available ? items.next() : null;
+            } catch (RuntimeException | Error iteratorFailure) {
+                continuation.accept(task, SourceFlow.throwing(iteratorFailure));
+                return;
+            }
+            if (!available) {
                 continuation.accept(task, SourceFlow.normal());
                 return;
             }
 
             Env iteration = new Env(env);
-            iteration.define(
-                    loop.bindingName(),
-                    items.next(),
-                    loop.bindingKind());
+            try {
+                iteration.define(loop.bindingName(), item, loop.bindingKind());
+            } catch (RuntimeException | Error bindingFailure) {
+                continuation.accept(task, SourceFlow.throwing(bindingFailure));
+                return;
+            }
 
             runBlock(
                     task,
@@ -2814,12 +2828,19 @@ public final class OresEvalRootNode extends RootNode {
                 java.util.Iterator<?> items,
                 int index,
                 SourceFlowCont continuation) {
-            if (!items.hasNext()) {
+            boolean available;
+            List<?> parts;
+            try {
+                available = items.hasNext();
+                parts = available ? asSequence(items.next()) : null;
+            } catch (RuntimeException | Error iteratorFailure) {
+                continuation.accept(task, SourceFlow.throwing(iteratorFailure));
+                return;
+            }
+            if (!available) {
                 continuation.accept(task, SourceFlow.normal());
                 return;
             }
-
-            List<?> parts = asSequence(items.next());
             if (parts.size() != loop.bindings().size()) {
                 continuation.accept(
                         task,
@@ -2830,14 +2851,16 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Env iteration = new Env(env);
-            for (int i = 0; i < parts.size(); i++) {
-                Ast.DestructureBinding binding = loop.bindings().get(i);
-                if (!binding.isDiscard()) {
-                    iteration.define(
-                            binding.name(),
-                            parts.get(i),
-                            binding.kind());
+            try {
+                for (int i = 0; i < parts.size(); i++) {
+                    Ast.DestructureBinding binding = loop.bindings().get(i);
+                    if (!binding.isDiscard()) {
+                        iteration.define(binding.name(), parts.get(i), binding.kind());
+                    }
                 }
+            } catch (RuntimeException | Error bindingFailure) {
+                continuation.accept(task, SourceFlow.throwing(bindingFailure));
+                return;
             }
 
             runBlock(
