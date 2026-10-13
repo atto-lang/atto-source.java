@@ -108,6 +108,36 @@ final class CanonicalClassFieldDeclarationTest {
     }
 
     @Test
+    void finalMutAllowsOwnedDeepMutationButNeverSlotRebinding() {
+        String declarations = """
+                define class Counter as
+                  pub let int count = 0;
+                  pub increment(mut self)(): int {
+                    self.count = self.count + 1;
+                    return self.count;
+                  }
+                end
+                define class Holder as
+                  pub final mut Counter counter: new Counter();
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(declarations + """
+                fnc good(): int {
+                  val Holder holder = new Holder();
+                  return holder.counter.increment();
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(declarations + """
+                fnc bad(): int {
+                  val Holder holder = new Holder();
+                  holder.counter = new Counter();
+                  return 0;
+                }
+                """)));
+    }
+
+    @Test
     void duplicateMutFieldQualifierIsRejected() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> parseClass("final mut mut int bad: 1;"));
