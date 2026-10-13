@@ -2588,8 +2588,14 @@ public final class OresEvalRootNode extends RootNode {
                             if (loop.update() == null) {
                                 t.scheduleLoopContinuation(
                                         loopEnv,
-                                        (resumed, ignored, failure) -> runForIteration(
-                                                resumed, loop, loopEnv, continuation));
+                                        (resumed, ignored, failure) -> {
+                                            if (failure != null) {
+                                                continuation.accept(
+                                                        resumed, SourceFlow.throwing(failure));
+                                                return;
+                                            }
+                                            runForIteration(resumed, loop, loopEnv, continuation);
+                                        });
                             } else {
                                 evalSuspendableExpr(
                                         t,
@@ -2604,8 +2610,15 @@ public final class OresEvalRootNode extends RootNode {
                                             } else {
                                                 t2.scheduleLoopContinuation(
                                                         loopEnv,
-                                                        (resumed, ignoredResumeValue, failure2) -> runForIteration(
-                                                                resumed, loop, loopEnv, continuation));
+                                                        (resumed, ignoredResumeValue, failure2) -> {
+                                                            if (failure2 != null) {
+                                                                continuation.accept(resumed,
+                                                                        SourceFlow.throwing(failure2));
+                                                                return;
+                                                            }
+                                                            runForIteration(
+                                                                    resumed, loop, loopEnv, continuation);
+                                                        });
                                             }
                                         });
                             }
@@ -2633,8 +2646,14 @@ public final class OresEvalRootNode extends RootNode {
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runLoopSuspendable(
-                                            resumed, loop, env, continuation));
+                                    (resumed, ignored, failure) -> {
+                                        if (failure != null) {
+                                            continuation.accept(
+                                                    resumed, SourceFlow.throwing(failure));
+                                            return;
+                                        }
+                                        runLoopSuspendable(resumed, loop, env, continuation);
+                                    });
                         }
                     });
         }
@@ -2774,8 +2793,16 @@ public final class OresEvalRootNode extends RootNode {
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runForOfIteration(
-                                            resumed, loop, env, items, index + 1, continuation));
+                                    (resumed, ignored, failure) -> {
+                                        if (failure != null) {
+                                            // The enclosing continuation closes the iterable.
+                                            continuation.accept(
+                                                    resumed, SourceFlow.throwing(failure));
+                                            return;
+                                        }
+                                        runForOfIteration(
+                                                resumed, loop, env, items, index + 1, continuation);
+                                    });
                         }
                     });
         }
@@ -2826,8 +2853,16 @@ public final class OresEvalRootNode extends RootNode {
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runForOfDestructureIteration(
-                                            resumed, loop, env, items, index + 1, continuation));
+                                    (resumed, ignored, failure) -> {
+                                        if (failure != null) {
+                                            // The enclosing continuation closes the iterable.
+                                            continuation.accept(
+                                                    resumed, SourceFlow.throwing(failure));
+                                            return;
+                                        }
+                                        runForOfDestructureIteration(
+                                                resumed, loop, env, items, index + 1, continuation);
+                                    });
                         }
                     });
         }
