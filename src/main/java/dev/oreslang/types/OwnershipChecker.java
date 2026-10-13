@@ -798,6 +798,13 @@ public final class OwnershipChecker {
             }
             return new ValueInfo(state.type, state.kind, provenance, transferredBorrowLease);
         }
+        if (expr instanceof Ast.TrapExpr trapped) {
+            ValueInfo value = checkExpr(trapped.expression(), scope, true);
+            if (isBorrowValue(value) || containsMutexGuardType(value.type))
+                throw error("trap cannot package a borrow or MutexGuard without proven scoped lifetime");
+            Ast.TypeRef option = new Ast.TypeRef("Option", List.of(value.type), false);
+            return new ValueInfo(option, kindOfType(option), null);
+        }
         if (expr instanceof Ast.UnaryExpr unary) {
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
                 boolean mutable = unary.operator().equals("&mut");
@@ -2302,7 +2309,8 @@ public final class OwnershipChecker {
         } else if (expr instanceof Ast.BinaryExpr e) {
             scanExpr(e.left(), locals, outer, recursiveBinding, captures, false);
             scanExpr(e.right(), locals, outer, recursiveBinding, captures, false);
-        } else if (expr instanceof Ast.UnaryExpr e) scanExpr(e.operand(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.TrapExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.UnaryExpr e) scanExpr(e.operand(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ConditionalExpr e) {
             scanExpr(e.condition(), locals, outer, recursiveBinding, captures, false);
             scanExpr(e.whenTrue(), locals, outer, recursiveBinding, captures, false);
@@ -2723,6 +2731,12 @@ public final class OwnershipChecker {
             return state == null ? Ast.TypeRef.inferred() : state.type;
         }
         if (expr instanceof Ast.NewExpr created) return created.type();
+        if (expr instanceof Ast.TrapExpr trapped) {
+            // Preserve the Option wrapper during generic call inference, even
+            // when the operand is a local or literal rather than a CallExpr.
+            return new Ast.TypeRef("Option", List.of(
+                    syntacticType(trapped.expression(), scope)), false);
+        }
         if (expr instanceof Ast.UnaryExpr unary) {
             Ast.TypeRef operand = syntacticType(unary.operand(), scope);
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
