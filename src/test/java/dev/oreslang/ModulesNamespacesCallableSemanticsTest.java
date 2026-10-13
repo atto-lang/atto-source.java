@@ -116,6 +116,37 @@ final class ModulesNamespacesCallableSemanticsTest {
     }
 
     @Test
+    void moduleContractCallableParameterLabelsCannotDrift() {
+        String compatible = """
+                define contract Api as
+                  fnc pick(int amount, bool enabled) => int;
+                end
+                define module impl conforms Api as
+                  pub fnc pick(int amount, bool enabled): int {
+                    return enabled ? amount : 0;
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(compatible)));
+
+        String drifted = """
+                define contract Api as
+                  fnc pick(int amount, bool enabled) => int;
+                end
+                define module impl conforms Api as
+                  pub fnc pick(int value, bool enabled): int {
+                    return enabled ? value : 0;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(drifted)));
+        assertTrue(error.getMessage().contains("incompatible parameter label"));
+        assertTrue(error.getMessage().contains("amount"));
+        assertTrue(error.getMessage().contains("value"));
+    }
+
+    @Test
     void moduleContractsCannotBeUsedAsTypeInterfacesOrTraits() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define contract MathApi as
