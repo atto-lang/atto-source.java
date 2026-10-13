@@ -1,6 +1,6 @@
 # Oreslang-owned nonblocking TCP/HTTP and tracing: migration contract
 
-Status: design plus **implemented source-level Trace timing primitive**, NOT an implemented TCP listener, HTTP parser, asynchronous trace collector, LLVM backend, or production-performance result.
+Status: design plus **implemented source-level Trace timing primitive and a deliberately restricted bodyless HTTP/1.1 request-head parser**. NOT an implemented TCP listener, production HTTP parser, asynchronous trace collector, LLVM backend, or performance result.
 
 ## Finding: current async facade is not a nonblocking networking implementation
 
@@ -68,3 +68,18 @@ For automatic all-function tracing, add a compiler-verified `@trace` or build-ti
 6. Only then retire `NativeHttp` after compatibility/ownership/security checks; fail closed on unsupported native backend paths rather than secretly falling back to JDK `HttpServer`.
 
 This document is a migration contract, not a claim that blocking host I/O or Java HTTP handling has already been removed.
+
+
+## Proof-of-concept Oreslang HTTP wire parser
+
+`stdlib/http_wire.ores` is packaged native Oreslang code. It accepts only complete,
+externally byte-bounded, already-decoded HTTP/1.1 GET/HEAD request heads, requires
+exactly one canonical `Host: ` line, and optionally a canonical `Connection:`
+directive. All other headers (including `Content-Length` and
+`Transfer-Encoding`), bodies, HTTP/1.0, upgrades and variants fail closed.
+This intentionally **cannot replace** a production HTTP implementation.
+The precise supported format is designed only to prove that protocol parsing
+can run in Oreslang with no host HTTP dependency. Safe production parsing
+needs bounded raw byte buffers, strict ASCII token processing, complete
+case-insensitive header logic, unambiguous HTTP framing, incremental partial
+reads, and verified decoding before widening supported requests.
