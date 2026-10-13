@@ -81,6 +81,39 @@ final class CriticalGateReaderCohortTest {
         assertEquals(0, gate.activeReaderCount());
     }
 
+    @Test void readerCohortOwnerIdentityReleasesAndReacquiresWithoutScan() {
+        var gate = new CriticalGate();
+        var cohort = new java.util.ArrayList<CriticalGate.Ticket>();
+        for (int n = 0; n < 1024; n++) {
+            var reader = gate.newTicket(CriticalGate.Mode.READ);
+            assertTrue(reader.enterAsync().isDone());
+            cohort.add(reader);
+        }
+        assertEquals(1024, gate.activeReaderCount());
+
+        try (var scheduler = new OresScheduler(1)) {
+            scheduler.startSync(() -> {
+                var owned = gate.newTicket(CriticalGate.Mode.READ);
+                assertTrue(owned.enterAsync().isDone());
+                var recursive = gate.newTicket(CriticalGate.Mode.READ);
+                assertThrows(IllegalStateException.class, recursive::enterAsync,
+                        "same-domain recursive access must fail even in a large reader cohort");
+                owned.close();
+
+                var reacquired = gate.newTicket(CriticalGate.Mode.READ);
+                assertTrue(reacquired.enterAsync().isDone(),
+                        "closing a reader must release its logical ownership identity");
+                reacquired.close();
+                recursive.close();
+                return null;
+            }).join();
+        }
+        for (var reader : cohort) reader.close();
+        assertEquals(0, gate.activeReaderCount());
+        assertEquals(0, gate.queuedCount());
+        assertFalse(gate.held());
+    }
+
     @Test void recursiveReaderUpgradeFailsClosed() {
         var domain = new CriticalGate();
         try (var scheduler = new OresScheduler(1)) {
