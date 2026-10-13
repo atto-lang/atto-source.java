@@ -352,6 +352,21 @@ public final class OresEvalRootNode extends RootNode {
             return candidates.getFirst();
         }
 
+        private void authenticateOverloadEnumArguments(List<?> values) {
+            for (Object value : values) {
+                if (!(value instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue tagged))
+                    continue;
+                dev.oreslang.types.TaggedMessageContracts.Case source =
+                        messageCase(tagged.enumName() + "." + tagged.variant());
+                if (source == null || source.tag() != tagged.tag()) {
+                    throw new IllegalArgumentException(
+                            "forged or stale nominal enum overload argument");
+                }
+                dev.oreslang.types.NominalEnumValueGuards.requirePayload(
+                        messageTypes, source, tagged.payload());
+            }
+        }
+
         /** Preserve the frontend's selected identity, never choose anew at runtime. */
         private Ast.FunctionDecl selectFunctionForCall(
                 Ast.CallExpr site, String name, int arity, List<?> values) {
@@ -367,6 +382,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "nominal overload '" + name + "' has no trusted static call-site binding");
             }
+            authenticateOverloadEnumArguments(values);
             Ast.FunctionDecl runtimeMatch =
                     dev.oreslang.types.FreeCallableOverloads.chooseRuntime(
                             candidates, values, messageTypes.enums().keySet(), name);
