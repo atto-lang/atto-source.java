@@ -1422,7 +1422,12 @@ public final class Parser {
                 while (!checkSelectArmKeyword() && !check(DEFAULT) && !check(RBRACE) && !check(EOF)) {
                     body.add(parseStatement());
                 }
-                if (discardResult) lowerDiscardedArmReturns(body, "do select");
+                if (discardResult) {
+                    if (mode == Ast.WaitMode.NONBLOCKING)
+                        lowerDiscardedArmReturns(body, "legacy detached do nb select");
+                    else
+                        rejectUnloweredSelectReturns(body);
+                }
                 arms.add(new Ast.SelectArm(
                         operation,
                         channel,
@@ -1439,7 +1444,12 @@ public final class Parser {
                 while (!checkSelectArmKeyword() && !check(DEFAULT) && !check(RBRACE) && !check(EOF)) {
                     body.add(parseStatement());
                 }
-                if (discardResult) lowerDiscardedArmReturns(body, "do select");
+                if (discardResult) {
+                    if (mode == Ast.WaitMode.NONBLOCKING)
+                        lowerDiscardedArmReturns(body, "legacy detached do nb select");
+                    else
+                        rejectUnloweredSelectReturns(body);
+                }
                 arms.add(new Ast.SelectArm(
                         Ast.ChannelOperation.DEFAULT,
                         null,
@@ -1458,10 +1468,23 @@ public final class Parser {
     }
 
     /**
-     * SELECT-specific compatibility lowering: select callbacks discard their
-     * terminal arm return. NEVER use this for do match/do switch, whose
-     * ReturnStmt must escape the enclosing callable. The distinct match/switch
-     * return destinations are part of the four-form language contract.
+     * Until this older branch integrates #886's FUNCTION_RETURN propagation,
+     * block any return in blocking/probe do-select. In particular, never
+     * rewrite ReturnStmt to ExprStmt: that silently changes program behavior.
+     */
+    private void rejectUnloweredSelectReturns(List<Ast.Stmt> body) {
+        for (Ast.Stmt statement : body) {
+            if (containsNestedReturn(statement)) {
+                throw error(previous(), "blocking do select arm return requires procedural "
+                        + "FUNCTION_RETURN lowering from PR #886; refusing to discard return");
+            }
+        }
+    }
+
+    /**
+     * Legacy detached NONBLOCKING select callbacks have an independent
+     * lifetime: only they may lower terminal return values to discarded
+     * expressions while a dedicated Future<void> contract is pending.
      */
     private void lowerDiscardedArmReturns(List<Ast.Stmt> body, String construct) {
         if (body.isEmpty()) return;
