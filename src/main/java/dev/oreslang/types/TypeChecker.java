@@ -1853,6 +1853,11 @@ public final class TypeChecker {
                 Type actual = deref(typeOf(cast.value(), env, generics, self));
                 requireAssignable(actual, resolve(variant.sourcePayload(), generics, self),
                         "payload for " + variant.qualifiedName());
+                if (cast.value() instanceof Ast.LiteralExpr literal
+                        && EXACT_WIDTH_ENUM_SCALARS.contains(variant.sourcePayload().name())) {
+                    NominalEnumValueGuards.requireValue(
+                            taggedMessages, variant.sourcePayload(), literal.value());
+                }
                 return new Named(variant.qualifiedName(), List.of());
             }
             requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
@@ -4627,6 +4632,33 @@ public final class TypeChecker {
                 : new TaggedMessageContracts.Domain(named.name(), List.of(singleton));
     }
 
+    private static final Set<String> EXACT_WIDTH_ENUM_SCALARS = Set.of(
+            "i8", "i16", "i32", "u8", "u16", "u32", "u64", "uint");
+
+    /**
+     * Check payload literal patterns against the *source* integer width.
+     * The normalized type IR currently erases signedness and size. Without
+     * this fence, e.g. on Status.Byte(256) could appear reachable for u8.
+     */
+    private void validateEnumLiteralPattern(Ast.Pattern pattern, Ast.TypeRef expected) {
+        if (expected == null || pattern == null) return;
+        if (pattern instanceof Ast.LiteralPattern literal
+                && EXACT_WIDTH_ENUM_SCALARS.contains(expected.name())) {
+            NominalEnumValueGuards.requireValue(taggedMessages, expected, literal.value());
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            if (!(expected.isTupleType() || expected.name().equals("Tuple"))) return;
+            List<Ast.TypeRef> slots = expected.arguments().size() == 1
+                    && expected.arguments().getFirst().isSequenceShape()
+                    ? expected.arguments().getFirst().arguments() : expected.arguments();
+            if (slots.size() != tuple.elements().size()) return;
+            for (int i = 0; i < slots.size(); i++) {
+                validateEnumLiteralPattern(tuple.elements().get(i), slots.get(i));
+            }
+        }
+    }
+
     private boolean constructorCoversPayload(
             Ast.ConstructorPattern pattern, Type payload,
             Set<String> generics, Type self) {
@@ -5140,6 +5172,8 @@ public final class TypeChecker {
                             + " payload pattern(s), got " + constructor.arguments().size());
                 }
                 if (arity == 1) {
+                    validateEnumLiteralPattern(
+                            constructor.arguments().getFirst(), variant.sourcePayload());
                     checkPattern(constructor.arguments().getFirst(),
                             deref(resolve(variant.sourcePayload(), generics, self)),
                             bindings, generics, self);
