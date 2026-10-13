@@ -39,21 +39,21 @@
         },
         "git_commit": {
           "type": "string",
-          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?(?![\\s\\S])"
         }
       }
     },
     "source_sha256": {
       "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
     },
     "expanded_sha256": {
       "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
     },
     "generated_ast_sha256": {
       "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
     },
     "artifact": {
       "type": "object",
@@ -68,7 +68,7 @@
       "properties": {
         "file_sha256": {
           "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
         },
         "size_bytes": {
           "type": "integer",
@@ -151,7 +151,7 @@
             },
             "value_base64": {
               "type": "string",
-              "pattern": "^[A-Za-z0-9+/]{85}[AQgw]==$"
+              "pattern": "^[A-Za-z0-9+/]{85}[AQgw]==(?![\\s\\S])"
             }
           }
         }
