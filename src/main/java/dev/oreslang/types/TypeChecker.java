@@ -2164,6 +2164,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    validateActorCallPayloads(target, call.arguments(), env, generics, self, label);
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
@@ -2202,6 +2203,7 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    validateActorCallPayloads(target, call.arguments(), env, generics, self, label);
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
@@ -6634,6 +6636,39 @@ public final class TypeChecker {
     }
 
     private record ExpandedCallArgument(Ast.Expr expression, Type staticType) { }
+
+    /**
+     * A safe declared record *shape* does not prove that the runtime payload
+     * actually has transportable storage. A nominal class may satisfy the
+     * readonly field contract but remains a mutable identity-bearing
+     * OresObject, which the actor mailbox serializer rejects.
+     *
+     * Check the original static argument type, including tuple spreads,
+     * after ordinary structural/generic call compatibility succeeds.
+     */
+    private void validateActorCallPayloads(
+            Ast.FunctionDecl target,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            String label) {
+        if (target.actorKind() == Ast.ActorKind.NONE) return;
+        List<ExpandedCallArgument> actuals = expandFixedCallArguments(
+                arguments, env, callerGenerics, callerSelf, label);
+        if (actuals.size() != target.parameters().size()) {
+            throw new IllegalArgumentException(label + " actor payload arity mismatch");
+        }
+        Set<String> declarationGenerics = Set.copyOf(target.genericParameters());
+        for (int i = 0; i < actuals.size(); i++) {
+            Type parameter = resolveParam(target.parameters().get(i), declarationGenerics, null);
+            Type actual = expandedCallArgumentType(
+                    actuals.get(i), parameter, env, callerGenerics, callerSelf);
+            validateActorCallableBoundaryType(
+                    actual, target.actorKind(), false,
+                    "actual argument " + (i + 1) + " of " + label);
+        }
+    }
 
     private List<ExpandedCallArgument> expandFixedCallArguments(
             List<Ast.Expr> arguments,
