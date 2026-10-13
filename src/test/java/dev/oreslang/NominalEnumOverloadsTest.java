@@ -134,14 +134,20 @@ final class NominalEnumOverloadsTest {
     }
 
     @Test
-    void productionCompilerContinuesRejectingSameArityWhileRuntimeSelectorIsArityOnly() {
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+    void directEnumFncsAdmitOnlyPairwiseDistinctNominalSignatures() {
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(ENUMS + """
+                fnc go(Color c): int { return 1; }
+                fnc go(Mode m): int { return 2; }
+                """)));
+        IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse(ENUMS + """
                         fnc go(Color c): int { return 1; }
                         fnc go(Mode m): int { return 2; }
+                        fnc go(Color again): int { return 3; }
                         """)));
-        assertTrue(failure.getMessage().contains("arity"),
-                failure.getMessage());
+        assertTrue(duplicate.getMessage().contains("arity")
+                || duplicate.getMessage().contains("pairwise"),
+                duplicate.getMessage());
     }
 
     @Test
