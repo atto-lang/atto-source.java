@@ -33,6 +33,22 @@ class DiagnosticProof(unittest.TestCase):
         self.assertGreaterEqual(len(suite["cases"]), 10)
         self.assertEqual(len(digest), 64)
 
+    def test_all_defer_and_finally_snapshots_have_explicit_backend_gates(self):
+        suite, _ = run.validate_suite()
+        cases = {case["id"]: case for case in suite["cases"]}
+        for name, expected_exit in (
+            ("native.defer-lifo-cfg", 111),
+            ("native.defer-field-return", 222),
+            ("native.try-finally-return-snapshot", 246),
+        ):
+            with self.subTest(name=name):
+                case = cases[name]
+                self.assertEqual(case["kind"], "native_exit")
+                self.assertEqual(case["expected_exit"], expected_exit)
+                self.assertEqual(case["backends"]["graal"], "required")
+                self.assertEqual(case["backends"]["llvm"], "pending")
+                self.assertTrue(case["pending_reason"])
+
     def test_mutating_fixture_or_schema_changes_suite_identity(self):
         import shutil
         import tempfile
