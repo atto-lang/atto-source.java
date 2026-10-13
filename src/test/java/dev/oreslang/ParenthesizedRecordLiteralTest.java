@@ -90,6 +90,51 @@ final class ParenthesizedRecordLiteralTest {
     }
 
     @Test
+    void recordCannotSmuggleAFunctionScopedBorrowIntoOwnedProduct() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                            const int v = 42;
+                            const r = (value: rt borrow v);
+                            return;
+                        }
+                        """)));
+    }
+
+    @Test
+    void recordAndTupleArgumentFormsNeverImplicitlyExpand() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc add(int a, int b): int { return a + b; }
+                        pub routine main(): void {
+                            stdio.stdout.write(add((19, 23)));
+                            return;
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc add(int a, int b): int { return a + b; }
+                        pub routine main(): void {
+                            stdio.stdout.write(add((a: 19, b: 23)));
+                            return;
+                        }
+                        """)));
+    }
+
+    @Test
+    void spreadOfRuntimeMapIsNotAcceptedAsAClosedProduct() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc add(int a, int b): int { return a + b; }
+                        pub routine main(): void {
+                            const values = [19, 23];
+                            stdio.stdout.write(add(...values));
+                            return;
+                        }
+                        """)));
+    }
+
+    @Test
     void ordinaryUnlabeledTupleStillHasPositionalSemantics() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc add(int a, int b): int { return a + b; }
