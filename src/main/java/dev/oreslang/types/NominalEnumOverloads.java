@@ -120,7 +120,14 @@ public final class NominalEnumOverloads {
             if (enumSymbol != null) {
                 positions.add(new Position(Kind.ENUM, enumSymbol));
             } else if (SCALARS.contains(type.name())) {
-                positions.add(new Position(Kind.PRIMITIVE, type.name()));
+                // Spellings accepted by the parser must not create different
+                // overload ABI slots for the SAME primitive.
+                String id = switch (type.name()) {
+                    case "String" -> "string";
+                    case "boolean" -> "bool";
+                    default -> type.name();
+                };
+                positions.add(new Position(Kind.PRIMITIVE, id));
             } else {
                 throw new IllegalArgumentException(
                         "parameter '" + type.name()
@@ -175,6 +182,32 @@ public final class NominalEnumOverloads {
                     throw new IllegalArgumentException(
                             "ambiguous or ineligible same-arity overload family");
                 }
+            }
+        }
+        // Require a complete compiler-proven enum type for *every* position
+        // that distinguishes any two candidates. Selecting from just one
+        // supplied enum ID could bind the wrong target when other positions
+        // are still Unknown, union-typed, or erased by interop.
+        Set<Integer> discriminators = new java.util.HashSet<>();
+        for (int i = 0; i < candidates.size(); i++) {
+            for (int j = i + 1; j < candidates.size(); j++) {
+                Signature left = candidates.get(i);
+                Signature right = candidates.get(j);
+                for (int p = 0; p < arity; p++) {
+                    if (!left.positions().get(p).equals(right.positions().get(p))) {
+                        discriminators.add(p);
+                    }
+                }
+            }
+        }
+        if (!provenEnumAtPosition.keySet().equals(discriminators)) {
+            throw new IllegalArgumentException(
+                    "incomplete or extraneous static nominal enum overload proof; "
+                            + "all discriminator positions require a resolved enum identity");
+        }
+        for (Map.Entry<Integer, String> proof : provenEnumAtPosition.entrySet()) {
+            if (proof.getValue() == null || proof.getValue().isBlank()) {
+                throw new IllegalArgumentException("missing nominal enum symbol proof");
             }
         }
         List<Signature> matches = new ArrayList<>();
