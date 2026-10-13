@@ -6058,6 +6058,19 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("rt cooperate takes no arguments");
                     }
                     if (activeGeneratorEmitter.get() != null) {
+                        // Legacy generator execution is a virtual-thread
+                        // compatibility bridge, not a SourceTask continuation.
+                        // It must never bypass the language's no-yield guard
+                        // rule just because the source evaluator runs directly.
+                        if (env.hasLiveMutexGuards()) {
+                            throw new IllegalStateException(
+                                    "cannot rt cooperate while holding a live MutexGuard");
+                        }
+                        if (ActorRuntime.currentActorKind()
+                                == ActorRuntime.ActorKind.UNTRUSTED) {
+                            throw new SecurityException(
+                                    "rt cooperate is disabled for untrusted actors until continuation quotas persist across handoffs");
+                        }
                         AsyncRuntime.cooperateCurrentCarrier();
                         return null;
                     }
