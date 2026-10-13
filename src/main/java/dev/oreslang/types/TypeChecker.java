@@ -300,7 +300,10 @@ public final class TypeChecker {
             String category;
             if (decl instanceof Ast.FunctionDecl fn) {
                 name = fn.name();
-                category = fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "fnc";
+                // FNC and ROUTINE share the same name+arity callable family.
+                // Their kinds affect whether a value can be reified, not the slot key.
+                // putFunctionSlot has already rejected any duplicate arity.
+                category = "callable";
             } else if (decl instanceof Ast.ClassDecl klass) {
                 name = klass.name();
                 category = "class";
@@ -1952,6 +1955,13 @@ public final class TypeChecker {
             return cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Named("Option", List.of(narrowed))
                     : narrowed;
+        }
+        if (expr instanceof Ast.TrapExpr trapped) {
+            Type inner = typeOf(trapped.expression(), env, generics, self);
+            if (inner instanceof Borrow)
+                throw new IllegalArgumentException(
+                        "trap cannot wrap a borrowed value without a proven Option loan lifetime");
+            return new Named("Option", List.of(inner));
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
@@ -6395,6 +6405,8 @@ public final class TypeChecker {
         } else if (expression instanceof Ast.BinaryExpr binary) {
             rejectStaticClassGenericReferences(binary.left(), classGenerics, klass, method);
             rejectStaticClassGenericReferences(binary.right(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.TrapExpr trapped) {
+            rejectStaticClassGenericReferences(trapped.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.UnaryExpr unary) {
             rejectStaticClassGenericReferences(unary.operand(), classGenerics, klass, method);
         } else if (expression instanceof Ast.ConditionalExpr conditional) {

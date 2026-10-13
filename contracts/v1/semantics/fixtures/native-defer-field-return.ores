@@ -11,5 +11,12 @@ pub fnc main(): int {
   let mut Counter c = new Counter();
   val first: int = mutate(rt borrow mut c, 0);
   val second: int = mutate(rt borrow mut c, 1);
-  return first * 100 + second + c.value;
+  // Preserve the exact return-value and LIFO-mutation oracle without
+  // encoding 222 in an OS process exit status (suite limit: 0..125).
+  if (first eq 1) {
+    if (second eq 11) {
+      if (c.value eq 111) { return 42; } fi
+    } fi
+  } fi
+  return 1;
 }
