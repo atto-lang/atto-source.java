@@ -309,6 +309,7 @@ primary         = literal
                 | "new" type_ref "(" [ argument_list ] ")"
                 | lambda
                 | tuple_literal
+                | parenthesized_record_literal
                 | array_literal
                 | legacy_array_literal
                 | inferred_struct_literal
@@ -324,6 +325,11 @@ lambda_body     = block | expression ;
 
 tuple_literal   = "tuple" "(" [ argument_list ] ")"
                 | "(" expression "," expression { "," expression } ")" ;
+(* Parenthesized record literals are immutable first-class values. This grammar
+   does not imply support for spreading them as named call arguments yet. *)
+parenthesized_record_literal
+                = "(" IDENT ":" expression
+                  { "," IDENT ":" expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 inferred_struct_literal
