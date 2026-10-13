@@ -443,3 +443,26 @@ Native Image AOT/hybrid CI. Source-org GitHub Actions report failure
 without available steps. The Java changes above are committed but **not
 yet empirically verified** by successful latest-head CI. Do not infer
 Java correctness from LLVM native contract CI.
+
+## Result-finalizer carrier isolation audit (2026-10-13)
+
+`ActorStream.completedReply()` previously composed `thenApply` directly
+against `physicalDone`; a caller observing early could trigger nominal
+MessagePack decoding inside the last actor's physical-finalizer callback.
+The API now **requires** an explicit trusted CONTROL `Executor`, and
+uses `thenApplyAsync` only after whole-route physical DONE. Decoder entry
+also rejects execution on an Oreslang actor carrier or guest actor turn.
+`ActorRuntimePipelineEngine.BoundSession.send` delegates to the new
+controlled observer; callers cannot accidentally invoke its old implicit
+inline-decoding API. Integration tests now inject a genuinely dispatched
+control executor rather than `Runnable::run`.
+
+The owner still copies encoded reply bytes on the authenticated source
+receive turn and retains them until physical DONE. Each observer then
+decodes its own fresh clone on CONTROL, without exposing shared mutable
+guest graphs or blocking finalization. Direct/inline executors are not
+acceptable as production CONTROL implementations.
+
+**Verification:** Java/GraalVM latest-head source tests and Native Image
+AOT/hybrid remain unverified (source-org Actions have no executed steps).
+Native LLVM contract success is not evidence for this Java change.
