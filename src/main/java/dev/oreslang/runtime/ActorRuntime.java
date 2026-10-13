@@ -1482,7 +1482,7 @@ public final class ActorRuntime implements AutoCloseable {
      * a physically finalized actor has already published its outbound DATA.
      * Only -1 is the terminal failure sentinel.
      */
-    private static int committedPipelinePhase(int observed) {
+    static int committedPipelinePhase(int observed) {
         return observed <= -2 ? -2 - observed : observed;
     }
 
