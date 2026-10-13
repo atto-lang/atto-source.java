@@ -883,7 +883,8 @@ public final class OresEvalRootNode extends RootNode {
                 Throwable cause = OresFuture.unwrap(
                         Objects.requireNonNull(failure, "failure"));
                 if (cause instanceof Error
-                        || cause instanceof java.util.concurrent.CancellationException) {
+                        || cause instanceof java.util.concurrent.CancellationException
+                        || cause instanceof ActorRuntime.UntrustedActorQuotaExceededException) {
                     return new SourceFlow(SourceFlowKind.TERMINAL, null, cause);
                 }
                 return new SourceFlow(SourceFlowKind.THROW, null, cause);
@@ -1117,10 +1118,13 @@ public final class OresEvalRootNode extends RootNode {
                         try {
                             context.schedulerSafepoint();
                         } catch (ActorRuntime.ActorCancellationSignal
+                                 | ActorRuntime.UntrustedActorQuotaExceededException
                                  | java.util.concurrent.CancellationException terminal) {
-                            // The trampoline has a heap-owned continuation
-                            // for this backedge. Feed the signal into it rather
-                            // than abandoning its enclosing finally/defer scopes.
+                            // Cancellation and UNTRUSTED quota exhaustion
+                            // are terminal control-plane events, not guest
+                            // catchable exceptions. The trampoline has a
+                            // heap-owned continuation: send the event through
+                            // lexical cleanup without replaying an iteration.
                             next.accept(this, null, terminal);
                             return;
                         }
