@@ -260,6 +260,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_repeated_failed_reads_do_not_leak_descriptors(self):
+        import os
+        if not Path("/proc/self/fd").is_dir():
+            self.skipTest("requires Linux /proc/self/fd")
+        bad = self.source / "nested"
+        bad.mkdir()
+        (bad / "escape").symlink_to(self.root)
+        before = len(os.listdir("/proc/self/fd"))
+        for _ in range(200):
+            with self.assertRaises(pub.Denied):
+                pub.collect_source(self.source, self.root)
+        after = len(os.listdir("/proc/self/fd"))
+        self.assertLessEqual(after, before + 2)
+
     def test_invalid_api_sha_rejects_without_commit(self):
         original = self.fake_api
         def bad(route, method="GET", payload=None):
