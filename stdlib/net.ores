@@ -11,6 +11,24 @@ define module net_core as
     return listener.accept_async();
   }
 
+  // Task-safe scalar ticket API: host socket handles never enter async tasks.
+  // Tokens are revocable, context-scoped and explicitly NOT actor grants.
+  pub fnc accept_token(borrow NioTcpListener listener): Future<String> {
+    return listener.accept_token_async();
+  }
+
+  pub fnc read_token(String token, int maximum): Future<Array<int>> {
+    return network.read_token_async(token, maximum);
+  }
+
+  pub fnc write_token(String token, Array<int> bytes): Future<int> {
+    return network.write_token_async(token, bytes);
+  }
+
+  pub fnc close_token(String token): Future<void> {
+    return network.close_token_async(token);
+  }
+
   pub fnc read(borrow NioTcpConnection connection, int maximum): Future<Array<int>> {
     return connection.read_bytes_async(maximum);
   }

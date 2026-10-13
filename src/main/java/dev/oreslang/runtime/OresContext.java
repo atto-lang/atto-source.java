@@ -42,6 +42,77 @@ public final class OresContext implements AutoCloseable {
     // including listeners currently in the process of being created.
     private static final int MAX_NIO_LISTENERS_PER_CONTEXT = 16;
     private int nioOpening;
+    // Task-safe opaque identifiers; socket objects never cross async/actor
+    // task boundaries. A per-context secret makes valid tokens unguessable.
+    private final String nioTokenNonce = UUID.randomUUID().toString();
+    private long nioTokenSerial;
+    private static final int MAX_NIO_TOKENS_PER_CONTEXT = 20000;
+    private final java.util.Map<String, NativeNioFutureReactor.Connection> nioTokenOwners =
+            new java.util.HashMap<>();
+
+    public OresFuture<String> acceptNioToken(NativeNioFutureReactor listener) {
+        if (ActorRuntime.inActorExecution())
+            throw new SecurityException("NIO listener remains supervisor-only");
+        requireNioOwner(listener, "net.accept_token");
+        OresFuture<NativeNioFutureReactor.Connection> raw = listener.acceptAsync();
+        OresFuture<String> tokenFuture = new OresFuture<>(() -> raw.cancel(false), () -> { });
+        raw.whenCompleteRuntime((connection, failure) -> {
+            if (failure != null) {
+                tokenFuture.failFromRuntime(failure);
+                return;
+            }
+            String token = null;
+            synchronized (nioLifecycle) {
+                if (!nioContextClosed && nioListeners.contains(listener)
+                        && nioTokenOwners.size() < MAX_NIO_TOKENS_PER_CONTEXT) {
+                    token = nioTokenNonce + "/" + ++nioTokenSerial;
+                    nioTokenOwners.put(token, connection);
+                }
+            }
+            if (token == null) {
+                connection.closeAsync();
+                tokenFuture.failFromRuntime(new RejectedExecutionException(
+                        "NIO token admission closed or exhausted"));
+            } else if (!tokenFuture.completeFromRuntime(token)) {
+                synchronized (nioLifecycle) { nioTokenOwners.remove(token); }
+                connection.closeAsync();
+            }
+        });
+        return tokenFuture;
+    }
+
+    private NativeNioFutureReactor.Connection requireNioToken(String token, String action) {
+        if (ActorRuntime.inActorExecution())
+            throw new SecurityException("NIO actor socket grant not implemented: " + action);
+        requireCapability(IsolatePolicy.Capability.NETWORK, action);
+        synchronized (nioLifecycle) {
+            NativeNioFutureReactor.Connection connection = nioTokenOwners.get(token);
+            if (nioContextClosed || connection == null
+                    || !nioListeners.contains(connection.ownerReactor()))
+                throw new SecurityException("invalid or revoked context-local TCP token: " + action);
+            return connection;
+        }
+    }
+
+    public OresFuture<java.util.List<Long>> readNioToken(String token, int count) {
+        return requireNioToken(token, "net.read_token").readBytesAsync(count);
+    }
+
+    public OresFuture<Integer> writeNioToken(String token, java.util.List<?> bytes) {
+        return requireNioToken(token, "net.write_token").writeBytesAsync(bytes);
+    }
+
+    public OresFuture<Void> closeNioToken(String token) {
+        NativeNioFutureReactor.Connection connection =
+                requireNioToken(token, "net.close_token");
+        synchronized (nioLifecycle) {
+            // Only the first caller may revoke/close; a stale task cannot reuse.
+            if (nioTokenOwners.remove(token) != connection)
+                throw new SecurityException("TCP token was concurrently revoked");
+        }
+        return connection.closeAsync();
+    }
+
 
     /** Require BOTH active owner-context identity and NETWORK authority. */
     public void requireNioOwner(NativeNioFutureReactor listener, String operation) {
@@ -94,7 +165,11 @@ public final class OresContext implements AutoCloseable {
         // Source close_async is one-shot. Reap the owner registry only after
         // the reactor has released sockets and its selector.
         reactor.onTerminated(() -> {
-            synchronized (nioLifecycle) { nioListeners.remove(reactor); }
+            synchronized (nioLifecycle) {
+                nioListeners.remove(reactor);
+                nioTokenOwners.entrySet().removeIf(
+                        entry -> entry.getValue().ownerReactor() == reactor);
+            }
         });
         return reactor;
     }
@@ -497,6 +572,7 @@ public final class OresContext implements AutoCloseable {
             nioContextClosed = true;
             closingNio = java.util.Set.copyOf(nioListeners);
             nioListeners.clear();
+            nioTokenOwners.clear();
         }
         for (NativeNioFutureReactor reactor : closingNio) reactor.close();
         nativeIo.close();

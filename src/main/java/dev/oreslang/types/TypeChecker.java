@@ -4329,11 +4329,25 @@ public final class TypeChecker {
                     return new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT,
                             Primitive.INT, Primitive.INT), new Named("NioTcpListener", List.of()));
                 }
+                if (name.equals("read_token_async")) {
+                    return new Function(List.of(Primitive.STRING, Primitive.INT),
+                            new ListType(Primitive.INT));
+                }
+                if (name.equals("write_token_async")) {
+                    return new Function(List.of(Primitive.STRING, new ListType(Primitive.INT)), Primitive.INT);
+                }
+                if (name.equals("close_token_async")) {
+                    return new Function(List.of(Primitive.STRING), Primitive.VOID);
+                }
                 if (!name.equals("connect_async")) return null;
                 result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
             }
             case "NioTcpListener" -> {
                 switch (name) {
+                    case "accept_token_async" -> {
+                        result = Primitive.STRING;
+                        parameters = List.of();
+                    }
                     case "accept_async" -> {
                         result = new Named("NioTcpConnection", List.of());
                         parameters = List.of();

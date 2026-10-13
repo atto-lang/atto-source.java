@@ -6308,6 +6308,24 @@ public final class OresEvalRootNode extends RootNode {
                                 ((Number) args.get(3)).intValue(),
                                 ((Number) args.get(4)).intValue());
                     };
+                    case "read_token_async" -> (Invokable) args -> {
+                        requireTwo(args, "network.read_token_async");
+                        String token = requireString(args.get(0), "token");
+                        if (!(args.get(1) instanceof Number size))
+                            throw new IllegalArgumentException("read size must be an integer");
+                        return context.readNioToken(token, size.intValue());
+                    };
+                    case "write_token_async" -> (Invokable) args -> {
+                        requireTwo(args, "network.write_token_async");
+                        String token = requireString(args.get(0), "token");
+                        if (!(args.get(1) instanceof java.util.List<?> bytes))
+                            throw new IllegalArgumentException("token write requires Array<int>");
+                        return context.writeNioToken(token, bytes);
+                    };
+                    case "close_token_async" -> (Invokable) args -> {
+                        requireOne(args, "network.close_token_async");
+                        return context.closeNioToken(requireString(args.getFirst(), "token"));
+                    };
                     case "connect" -> (Invokable) network::connect;
                     case "connect_async" -> (Invokable) args -> {
                         requireTwo(args, "network.connect_async");
@@ -6326,6 +6344,11 @@ public final class OresEvalRootNode extends RootNode {
                 context.requireNioOwner(listener, "net.listener." + name);
                 return switch (name) {
                     case "port" -> (long) listener.localPort();
+                    case "accept_token_async" -> (Invokable) args -> {
+                        requireZero(args, "NioTcpListener.accept_token_async");
+                        context.requireNioOwner(listener, "net.accept_token");
+                        return context.acceptNioToken(listener);
+                    };
                     case "accept_async" -> (Invokable) args -> {
                         requireZero(args, "NioTcpListener.accept_async");
                         if (ActorRuntime.inActorExecution())
