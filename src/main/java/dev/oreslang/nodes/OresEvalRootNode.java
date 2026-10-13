@@ -2762,7 +2762,8 @@ public final class OresEvalRootNode extends RootNode {
                 closeIterable(values);
                 return null;
             }), (t, ignored, failure) -> continuation.accept(t,
-                    failure == null ? flow : SourceFlow.throwing(failure)));
+                    SourceFlow.afterCleanup(flow,
+                            failure == null ? SourceFlow.normal() : SourceFlow.throwing(failure))));
         }
 
         private void finishAsyncForOf(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,
@@ -2772,7 +2773,8 @@ public final class OresEvalRootNode extends RootNode {
                 generator.close();
                 return null;
             }), (t, ignored, failure) -> continuation.accept(t,
-                    failure == null ? flow : SourceFlow.throwing(failure)));
+                    SourceFlow.afterCleanup(flow,
+                            failure == null ? SourceFlow.normal() : SourceFlow.throwing(failure))));
         }
 
         private void runAsyncForOfIteration(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,
