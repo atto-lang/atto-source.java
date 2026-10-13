@@ -4515,14 +4515,6 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null) return OresFuture.failed(terminated(ref));
-        // The current mailbox envelope cannot finish until this actor turn
-        // unwinds. Waiting for its own processed barrier would self-deadlock.
-        // An actor may request gracefulStop() instead: that seals admission
-        // and asynchronously stops it after its current message completes.
-        if (currentActor.get() == cell && cell.activeMail != null) {
-            return OresFuture.failed(new IllegalStateException(
-                    "an actor cannot drain its own active mailbox turn"));
-        }
         return cell.drainAcceptedMessages();
     }
 
@@ -6262,6 +6254,14 @@ public final class ActorRuntime implements AutoCloseable {
                 final long target = nextUserMessageSequence - 1L;
                 if (lastProcessedUserMessageSequence >= target)
                     return OresFuture.completed(null);
+                // Do this inside the admission monitor. Checking only for an
+                // active mail outside this lock races concurrent senders and
+                // misses factory/startup turns with accepted, unprocessed mail.
+                // The actor cannot complete its own pending drain until it
+                // yields the single-writer execution lease.
+                if (!shutdownBarrier && currentActor.get() == this)
+                    return OresFuture.failed(new IllegalStateException(
+                            "an actor cannot drain its own active mailbox turn"));
                 // Public observers are bounded independently of mailbox slots:
                 // a stalled actor must not permit unlimited host-side Futures.
                 // gracefulStop reserves at most one extra waiter and cannot be
