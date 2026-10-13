@@ -200,10 +200,10 @@ final class TypedOverloadResolverTest {
         assertEquals(fnc.symbolId(), routine.symbolId());
 
         Ast.ClassDecl klass = (Ast.ClassDecl) decls.get(2);
-        Signature instance = Signature.ofMethod("__root__.Worker",
-                klass.methods().get(0), Map.of());
-        Signature statik = Signature.ofMethod("__root__.Worker",
-                klass.methods().get(1), Map.of());
+        Signature instance = Signature.ofMethod("__root__",
+                klass, klass.methods().get(0), Map.of());
+        Signature statik = Signature.ofMethod("__root__",
+                klass, klass.methods().get(1), Map.of());
         assertEquals(Domain.INSTANCE, instance.domain());
         assertEquals(Domain.STATIC, statik.domain());
         assertNotEquals(instance.symbolId(), statik.symbolId());
@@ -220,6 +220,60 @@ final class TypedOverloadResolverTest {
                 parsed.modules().getFirst().declarations().getFirst();
         assertThrows(IllegalArgumentException.class, () ->
                 Signature.ofFunction("__root__", fn, Map.of()));
+    }
+
+    @Test
+    void genericDeclaringClassCannotImpersonateAnEnumSignature() {
+        var parsed = dev.oreslang.parser.Parser.parse("""
+                define class GenericBox<T> as
+                  pub accept(T payload): int { return 1; }
+                end
+
+                define class Unrelated as
+                  pub accept(int payload): int { return 2; }
+                end
+                """);
+        Ast.ClassDecl generic = (Ast.ClassDecl)
+                parsed.modules().getFirst().declarations().get(0);
+        Ast.ClassDecl unrelated = (Ast.ClassDecl)
+                parsed.modules().getFirst().declarations().get(1);
+        // Even a malicious/incorrect lexical map cannot reinterpret a class
+        // generic parameter T as a concrete enum without class substitution.
+        assertThrows(IllegalArgumentException.class, () ->
+                Signature.ofMethod("__root__", generic,
+                        generic.methods().getFirst(), Map.of("T", "__root__.T")));
+        assertThrows(IllegalArgumentException.class, () ->
+                Signature.ofMethod("__root__", unrelated,
+                        generic.methods().getFirst(), Map.of("T", "__root__.T")));
+    }
+
+    @Test
+    void malformedUtf16CannotCollideUnderUtf8SymbolEncoding() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new Signature(Domain.MODULE, "module.\\uD800", List.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Signature(Domain.MODULE, "module.\\uD801", List.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeKey.nominalEnum("module.\\uDFFF"));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeKey.nominalEnum("module.\\uD800"));
+        // A valid surrogate *pair* is preserved; no blanket non-ASCII ban.
+        String valid = "module." + Character.toString(0x1F980);
+        assertNotNull(new Signature(Domain.MODULE, valid, List.of()).symbolId());
+    }
+
+    @Test
+    void ambiguityDiagnosticsAreOrderIndependent() {
+        Candidate<String> left = candidate("left", primitive("int"), primitive("float"));
+        Candidate<String> right = candidate("right", primitive("float"), primitive("int"));
+        List<TypeKey> arguments = List.of(primitive("int"), primitive("int"));
+        String a = assertThrows(IllegalArgumentException.class, () ->
+                TypedOverloadResolver.select(Domain.MODULE, "library.pick",
+                        arguments, List.of(left, right))).getMessage();
+        String b = assertThrows(IllegalArgumentException.class, () ->
+                TypedOverloadResolver.select(Domain.MODULE, "library.pick",
+                        arguments, List.of(right, left))).getMessage();
+        assertEquals(a, b);
     }
 
     @Test
