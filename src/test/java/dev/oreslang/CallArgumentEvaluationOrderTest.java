@@ -61,6 +61,27 @@ final class CallArgumentEvaluationOrderTest {
     }
 
     @Test
+    void reorderedNamedMutableBorrowChecksInLexicalSourceOrder() {
+        var accepted = Parser.parse(HEAD + """
+                fnc good(): int {
+                  val Cell q = new Cell();
+                  return consume(value: q.value, owner: rt borrow mut q);
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(accepted));
+        assertDoesNotThrow(() -> OwnershipChecker.check(accepted));
+
+        var rejected = Parser.parse(HEAD + """
+                fnc bad(): int {
+                  val Cell q = new Cell();
+                  return consume(owner: rt borrow mut q, value: q.value);
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(rejected),
+                "an earlier exclusive named argument loan must block later owner reads");
+    }
+
+    @Test
     void anUnrelatedLaterArgumentRemainsLegal() {
         var program = Parser.parse(HEAD + """
                 fnc good(): int {
