@@ -18,13 +18,24 @@ import java.util.Set;
  * suspension, actor send or loop is permitted in this first subset.
  */
 public final class ActorStateLoanShapeChecker {
-    private static final Set<String> COPY_SCALARS =
-            Set.of("int", "uint", "bool", "float", "decimal");
-    private static final Set<String> PURE_BINARY =
-            Set.of("+", "-", "*", "/", "%", "==", "!=", "eq", "neq",
-                    "<", "<=", ">", ">=", "&&", "||", "&", "|", "^");
-    private static final Set<String> PURE_UNARY =
-            Set.of("+", "-", "!", "~");
+    // The first *typed* proof deliberately handles only int/bool. Other
+    // scalars may be Copy, but require a separate verified conversion,
+    // overflow and numeric promotion contract before lowering is enabled.
+    private static final Set<String> PROVEN_SCALARS = Set.of("int", "bool");
+    private static final Set<String> INT_ARITHMETIC = Set.of("+", "-", "*", "&", "|", "^");
+    private static final Set<String> EQUALITY = Set.of("==", "!=", "eq", "neq");
+    private static final Set<String> INT_COMPARISON = Set.of("<", "<=", ">", ">=");
+    private static final Set<String> BOOL_LOGICAL = Set.of("&&", "||");
+
+    private enum Scalar { INT, BOOL }
+
+    private static Scalar scalarType(Ast.TypeRef ref) {
+        if (ref == null || !PROVEN_SCALARS.contains(ref.name())
+                || ref.inferArguments() || !ref.arguments().isEmpty()) {
+            throw invalid("unproven Copy scalar type: " + ref);
+        }
+        return ref.name().equals("int") ? Scalar.INT : Scalar.BOOL;
+    }
 
     private ActorStateLoanShapeChecker() { }
 
@@ -49,8 +60,9 @@ public final class ActorStateLoanShapeChecker {
         }
         Map<String, Ast.TypeRef> fields = new HashMap<>();
         for (Ast.FieldDecl field : actor.actorState().fields()) {
-            if (field.type() == null || !COPY_SCALARS.contains(field.type().name())
-                    || !field.type().arguments().isEmpty() || field.type().inferArguments()) {
+            try {
+                scalarType(field.type());
+            } catch (IllegalArgumentException error) {
                 throw invalid("sealed state field requires a proven Copy scalar: " + field.name());
             }
             if (fields.putIfAbsent(field.name(), field.type()) != null) {
@@ -62,7 +74,10 @@ public final class ActorStateLoanShapeChecker {
             // The first scalar-only proof cannot inherit a closure, actor
             // message, native call, reference or other effect from actor
             // construction. There is no callback state loan at this point.
-            validateValue(field.initializer(), "", Map.of(), new HashSet<>());
+            Scalar valueType = validateValue(field.initializer(), "", Map.of(), new HashSet<>());
+            if (valueType != scalarType(field.type())) {
+                throw invalid("sealed state initializer has incompatible scalar type: " + field.name());
+            }
         }
         String loan = access.callback().parameters().getFirst().name();
         Ast.LambdaExpr callback = access.callback();
@@ -92,7 +107,10 @@ public final class ActorStateLoanShapeChecker {
                 }
                 checkScalar(member.member(), fields);
                 writes.add(member.member());
-                validateValue(assign.value(), loan, fields, reads);
+                Scalar assigned = validateValue(assign.value(), loan, fields, reads);
+                if (assigned != scalarType(fields.get(member.member()))) {
+                    throw invalid("state write has incompatible scalar type: " + member.member());
+                }
             } else if (access.mode() == Ast.StateAccessMode.READ
                     && statement instanceof Ast.ExprStmt) {
                 throw invalid("critical-read is read-only; mutation and side effects are forbidden");
@@ -103,32 +121,47 @@ public final class ActorStateLoanShapeChecker {
         return new LoanEffects(reads, writes);
     }
 
-    private static void validateValue(Ast.Expr expression, String loan,
-                                      Map<String, Ast.TypeRef> fields,
-                                      Set<String> reads) {
+    private static Scalar validateValue(Ast.Expr expression, String loan,
+                                        Map<String, Ast.TypeRef> fields,
+                                        Set<String> reads) {
         if (expression instanceof Ast.LiteralExpr literal) {
-            if (!(literal.value() instanceof Number) && !(literal.value() instanceof Boolean)) {
-                throw invalid("state callback literal must be a Copy scalar");
+            if (literal.value() instanceof Long || literal.value() instanceof Integer) {
+                return Scalar.INT;
             }
-            return;
+            if (literal.value() instanceof Boolean) return Scalar.BOOL;
+            throw invalid("state callback literal lacks a proven scalar type");
         }
         if (expression instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr root
                 && root.name().equals(loan)) {
             checkScalar(member.member(), fields);
             reads.add(member.member());
-            return;
+            return scalarType(fields.get(member.member()));
         }
-        if (expression instanceof Ast.BinaryExpr binary
-                && PURE_BINARY.contains(binary.operator())) {
-            validateValue(binary.left(), loan, fields, reads);
-            validateValue(binary.right(), loan, fields, reads);
-            return;
+        if (expression instanceof Ast.BinaryExpr binary) {
+            String op = binary.operator();
+            // Always descend into both operands, even for unsupported ops:
+            // no nested call, capture or state-capability escape can hide.
+            Scalar lhs = validateValue(binary.left(), loan, fields, reads);
+            Scalar rhs = validateValue(binary.right(), loan, fields, reads);
+            if (lhs != rhs) throw invalid("state expression has mixed scalar operand types");
+            if (lhs == Scalar.INT && INT_ARITHMETIC.contains(op)) return Scalar.INT;
+            if (EQUALITY.contains(op)) return Scalar.BOOL;
+            if (lhs == Scalar.INT && INT_COMPARISON.contains(op)) return Scalar.BOOL;
+            if (lhs == Scalar.BOOL && BOOL_LOGICAL.contains(op)) return Scalar.BOOL;
+            // Division/modulo can trap at runtime; lifting them requires a
+            // proven abnormal-exit cleanup path and typed numeric semantics.
+            throw invalid("unproven state callback binary operator: " + op);
         }
-        if (expression instanceof Ast.UnaryExpr unary
-                && PURE_UNARY.contains(unary.operator())) {
-            validateValue(unary.operand(), loan, fields, reads);
-            return;
+        if (expression instanceof Ast.UnaryExpr unary) {
+            Scalar operand = validateValue(unary.operand(), loan, fields, reads);
+            if (operand == Scalar.INT && Set.of("+", "-", "~").contains(unary.operator())) {
+                return Scalar.INT;
+            }
+            if (operand == Scalar.BOOL && unary.operator().equals("!")) {
+                return Scalar.BOOL;
+            }
+            throw invalid("unproven state callback unary operator: " + unary.operator());
         }
         if (expression instanceof Ast.NameExpr name && name.name().equals(loan)) {
             throw invalid("state loan cannot escape the lexical callback");
@@ -146,10 +179,7 @@ public final class ActorStateLoanShapeChecker {
     private static void checkScalar(String name, Map<String, Ast.TypeRef> fields) {
         Ast.TypeRef type = fields.get(name);
         if (type == null) throw invalid("unknown sealed actor state field: " + name);
-        if (!COPY_SCALARS.contains(type.name()) || !type.arguments().isEmpty()
-                || type.inferArguments()) {
-            throw invalid("non-Copy state field requires ownership and escape analysis: " + name);
-        }
+        scalarType(type);
     }
 
     private static IllegalArgumentException invalid(String reason) {
