@@ -6311,6 +6311,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "workers_reused" -> handler.workersReused();
                     case "workers_alive" -> (long) handler.workersAlive();
                     case "workers_inflight" -> (long) handler.workersInflight();
+                    case "workers_rejected" -> handler.workersRejected();
                     case "dispatch" -> (Invokable) args -> {
                         if (args.size() != 1 || !(args.get(0) instanceof NativeHttp.Exchange exchange))
                             throw new IllegalArgumentException("dispatch requires HTTP exchange");
