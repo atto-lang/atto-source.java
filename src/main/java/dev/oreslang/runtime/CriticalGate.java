@@ -71,23 +71,16 @@ public final class CriticalGate {
 
         private OresFuture<Void> request(boolean synchronous) {
             ActorRuntime actor = ActorRuntime.currentActorRuntime();
-            // Register before admission, so STOP races with both queued and
-            // already-granted tickets and no actor can acquire after STOP.
-            Runnable revokeRegistration = actor == null
-                    ? () -> { }
-                    : actor.trackCurrentActorResource(this);
             Object domain = OresScheduler.currentTaskDomain();
             if (domain == null) domain = ActorRuntime.currentActorExecutionDomain();
             if (domain == null) domain = synchronous ? Thread.currentThread() : this;
             boolean completeNow = false;
-            try {
             synchronized (COORDINATOR) {
                 if (closed || requested || domainClosed) {
                     throw new IllegalStateException("critical ticket already used or released");
                 }
                 requested = true;
                 logicalOwner = domain;
-                deregisterActorResource = revokeRegistration;
                 if (heldByDomain(domain)) {
                     requested = false;
                     throw new IllegalStateException(
@@ -123,9 +116,23 @@ public final class CriticalGate {
                     waiters.addLast(this);
                 }
             }
-            } catch (RuntimeException | Error failure) {
-                revokeRegistration.run();
-                throw failure;
+            // First finish admission metadata under COORDINATOR; only then
+            // register actor ownership. A duplicate request must never remove
+            // the existing admission's STOP registration.
+            if (actor != null) {
+                final Runnable registration;
+                try {
+                    registration = actor.trackCurrentActorResource(this);
+                } catch (RuntimeException | Error failure) {
+                    close(); // retract an admission racing actor STOP
+                    throw failure;
+                }
+                boolean wasClosed;
+                synchronized (COORDINATOR) {
+                    wasClosed = closed;
+                    if (!wasClosed) deregisterActorResource = registration;
+                }
+                if (wasClosed) registration.run();
             }
             // Completing the Future may notify runtime callbacks; always do so
             // after releasing the metadata coordinator.
