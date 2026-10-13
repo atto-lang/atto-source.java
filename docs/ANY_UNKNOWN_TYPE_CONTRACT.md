@@ -87,6 +87,21 @@ capability; otherwise they fail at compile time. A constant tuple index checks
 bounds and uses the exact slot type. Dynamic indexing into an empty closed
 tuple/record is rejected.
 
+## Conditional joins and nested structural record aliases
+
+A conditional with distinct known branch types now joins to their explicit
+sum/union type. It no longer collapses to the internal inference wildcard.
+If a branch still contains an unresolved inference hole, the conditional
+requires explicit resolution rather than manufacturing a concrete result.
+Nested record fields read through a readonly structural view are themselves
+readonly, including when assigned to a local variable; extracting
+`val inner = p.inner` cannot restore a writable `inner.foo`.
+
+This is an incremental capability fix, not a general transitive borrow system:
+mutable collections and nominal reference values still require first-class
+view/borrow provenance before they can safely be exposed through a readonly
+structural contract.
+
 ## Source-level aggregate inference hygiene
 
 A nonempty array, tuple or inferred record cannot embed a bare compiler

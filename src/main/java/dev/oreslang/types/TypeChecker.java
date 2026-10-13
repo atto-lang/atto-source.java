@@ -1972,7 +1972,15 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> rightExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(leftExit, rightExit));
-            return commonType(left, right);
+            // Incompatible concrete branches have a genuine sum type, not
+            // the permissive internal inference sentinel. A branch whose
+            // type is still unresolved cannot supply a proven alternative.
+            if (containsUnknown(left) || containsUnknown(right)) {
+                throw new IllegalArgumentException(
+                        "conditional branches contain unresolved inference; "
+                                + "supply an explicit type or resolve the branch before joining");
+            }
+            return collectionElementJoin(left, right);
         }
         if (expr instanceof Ast.TypeTestExpr test) {
             requireRuntimeReifiableType(test.targetType(), "is");
@@ -3199,7 +3207,9 @@ public final class TypeChecker {
 
             if (receiver instanceof Record record) {
                 Type result = record.members().get(member.member());
-                if (result != null) return result;
+                if (result != null) {
+                    return record.readOnly() ? readonlyObservedRecord(result) : result;
+                }
 
                 String methodPrefix = CallableSelector.instance(member.member(), 0).mangledName().replace("$arity0", "$arity");
                 boolean structuralMethod = record.members().keySet().stream()
@@ -3254,12 +3264,15 @@ public final class TypeChecker {
                     if (member == null) {
                         throw new IllegalArgumentException("unknown object/map key '" + key.value() + "'");
                     }
-                    return member;
+                    return record.readOnly() ? readonlyObservedRecord(member) : member;
                 }
                 if (record.members().isEmpty()) {
                     throw new IllegalArgumentException("cannot dynamically index an empty closed record");
                 }
-                return Types.unionOf(List.copyOf(record.members().values()));
+                List<Type> values = List.copyOf(record.members().values());
+                return Types.unionOf(record.readOnly()
+                        ? values.stream().map(this::readonlyObservedRecord).toList()
+                        : values);
             }
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
@@ -4511,6 +4524,26 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * A nested record obtained from a read-only view is still a borrowed
+     * read-only view, not an owned mutable record. Preserve that provenance
+     * when the value is stored in a local or forwarded to another function.
+     */
+    private Type readonlyObservedRecord(Type type) {
+        if (type instanceof Record record) {
+            Map<String, Type> members = new LinkedHashMap<>();
+            for (Map.Entry<String, Type> field : record.members().entrySet()) {
+                members.put(field.getKey(), readonlyObservedRecord(field.getValue()));
+            }
+            return new Record(members, true);
+        }
+        if (type instanceof Union union) {
+            return Types.unionOf(union.options().stream()
+                    .map(this::readonlyObservedRecord).toList());
+        }
+        return type;
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         return memberType(member, env, generics, self, false);
     }
@@ -4542,7 +4575,8 @@ public final class TypeChecker {
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
-            return result;
+            return record.readOnly() && !writing
+                    ? readonlyObservedRecord(result) : result;
         }
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());

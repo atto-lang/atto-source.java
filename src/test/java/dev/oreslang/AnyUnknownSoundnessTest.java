@@ -206,6 +206,36 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void readonlyNestedRecordAliasesCannotRestoreMutation() {
+        reject("""
+                define module app
+                  define interface Nested
+                    inner: {foo: int};
+                  end
+                  fnc bad(structural Nested p): void {
+                    val alias = p.inner;
+                    alias.foo = 7;
+                    return;
+                  }
+                end
+                """, "readonly structural/inferred record view");
+    }
+
+    @Test
+    void conditionalJoinsKeepSumTypesInsteadOfUnknownWildcard() {
+        accept("""
+                fnc choose(bool flag): int | string {
+                  return flag ? 7 : "seven";
+                }
+                """);
+        reject("""
+                fnc bad(bool flag): int {
+                  return flag ? 7 : "seven";
+                }
+                """, "return value");
+    }
+
+    @Test
     void directInternalInferenceHoleDoesNotImpersonateKnownValue() {
         // Unknown stdlib attributes currently produce a legacy inference
         // sentinel; they cannot be silently returned as a proven int.
