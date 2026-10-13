@@ -340,6 +340,13 @@ public final class OresMutex {
         // notification carrier could execute arbitrary host callback work.
         private static final int MAX_ASYNC_NOTIFICATIONS = 32_768;
         private static final AtomicInteger ASYNC_NOTIFICATIONS = new AtomicInteger();
+        // Actor execution domains must not individually monopolize all of
+        // the process-wide callback backlog. This does NOT provide isolation
+        // across multiple actors belonging to one tenant; a tenant-aware
+        // scheduler is a separate runtime policy.
+        private static final int MAX_DOMAIN_ASYNC_NOTIFICATIONS = 1_024;
+        private static final ConcurrentHashMap<Object, Integer> DOMAIN_ASYNC_NOTIFICATIONS =
+                new ConcurrentHashMap<>();
         // A timed waiter reserves a *separate* notification slot for its whole
         // lifetime. Its ordinary waiter quota can settle before public
         // completion, so it cannot bound the notification backlog by itself.
@@ -578,6 +585,30 @@ public final class OresMutex {
         private boolean reserveAsyncWaiter(int limit) {
             return reserveWaiter(asyncWaiters, limit);
         }
+        // ConcurrentHashMap.compute serializes reserve/release operations
+        // for the same semantic execution domain. Removing the entry at zero
+        // avoids retaining an ActorId or host Thread after all requests end.
+        private static boolean reserveDomainNotification(Object domain) {
+            AtomicBoolean admitted = new AtomicBoolean();
+            DOMAIN_ASYNC_NOTIFICATIONS.compute(domain, (ignored, current) -> {
+                int count = current == null ? 0 : current;
+                if (count >= MAX_DOMAIN_ASYNC_NOTIFICATIONS) return current;
+                admitted.set(true);
+                return count + 1;
+            });
+            return admitted.get();
+        }
+
+        private static void releaseDomainNotification(Object domain) {
+            DOMAIN_ASYNC_NOTIFICATIONS.compute(domain, (ignored, current) -> {
+                if (current == null || current <= 0) {
+                    throw new IllegalStateException(
+                            "SharedMutex execution-domain notification admission underflow");
+                }
+                return current == 1 ? null : current - 1;
+            });
+        }
+
 
         private static void releaseWaiter(AtomicInteger counter, String scope) {
             int remaining = counter.decrementAndGet();
@@ -816,6 +847,15 @@ public final class OresMutex {
                         "SharedMutex async-notification capacity exceeded: "
                                 + MAX_ASYNC_NOTIFICATIONS));
             }
+            if (!reserveDomainNotification(ownerDomain)) {
+                releaseWaiter(ASYNC_NOTIFICATIONS, "async-notification");
+                releaseGlobalAsyncWaiter();
+                releaseAsyncWaiter();
+                releaseDomain(ownerDomain);
+                return failedGuardFuture(new RejectedExecutionException(
+                        "SharedMutex execution-domain async-notification capacity exceeded: "
+                                + MAX_DOMAIN_ASYNC_NOTIFICATIONS));
+            }
 
             boolean enforceOwnerDomain = ActorRuntime.inActorExecution();
             GuardFuture<T> future = new GuardFuture<>();
@@ -829,6 +869,7 @@ public final class OresMutex {
                 // Defensive one-shot fallback for unexpected completion paths.
                 // Normal publication always settles admission first.
                 settleWaiterAdmission(waiter);
+                releaseDomainNotification(ownerDomain);
                 releaseWaiter(ASYNC_NOTIFICATIONS, "async-notification");
             });
 
