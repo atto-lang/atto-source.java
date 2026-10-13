@@ -176,6 +176,20 @@ public final class TypeChecker {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.ClassDecl klass
                         && klass.actorState() != null) {
+                    // Verify the initial conservative shape even though the
+                    // backend remains unavailable. All other/unrecognized
+                    // statements still fail closed via the unconditional gate.
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        for (Ast.Stmt statement : method.body()) {
+                            if (statement instanceof Ast.ReturnStmt ret
+                                    && ret.value() instanceof Ast.ActorStateAccessExpr access) {
+                                ActorStateLoanShapeChecker.validate(klass, access);
+                            } else if (statement instanceof Ast.ExprStmt expr
+                                    && expr.expression() instanceof Ast.ActorStateAccessExpr access) {
+                                ActorStateLoanShapeChecker.validate(klass, access);
+                            }
+                        }
+                    }
                     throw new IllegalArgumentException(
                             "sealed actor state AST is recognized but execution requires "
                             + "compiler-enforced handle_state effects, ownership "
@@ -1870,7 +1884,10 @@ public final class TypeChecker {
         // A syntactically recognized read/write operation is NOT an
         // ordinary callable: until the compiler proves callback loans,
         // effects and scheduler dispatch, it must never acquire a type.
-        if (expr instanceof Ast.ActorStateAccessExpr) {
+        if (expr instanceof Ast.ActorStateAccessExpr access) {
+            if (currentClassOwner != null && currentClassOwner.actorState() != null) {
+                ActorStateLoanShapeChecker.validate(currentClassOwner, access);
+            }
             throw new IllegalArgumentException(
                     "sealed actor handle_state critical-read/write lowering is disabled "
                             + "until ownership/effects and scheduler cleanup are verified");
