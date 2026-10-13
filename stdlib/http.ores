@@ -54,9 +54,9 @@ define module http_wire as
 
     let int pos = 0;
     let bool head_only = false;
-    if byte_equal(rt borrow bytes, 0, rt borrow arr[71, 69, 84, 32]); then
+    if byte_equal(bytes, 0, rt borrow arr[71, 69, 84, 32]); then
       pos = 4;
-    elif byte_equal(rt borrow bytes, 0, rt borrow arr[72, 69, 65, 68, 32]); then
+    elif byte_equal(bytes, 0, rt borrow arr[72, 69, 65, 68, 32]); then
       pos = 5;
       head_only = true;
     else
@@ -72,15 +72,15 @@ define module http_wire as
       return new Head(400, head_end, 0, false, head_only);
     fi
     // SP HTTP/1.1 CRLF: exact framing, with no extra spaces/tokens.
-    if !byte_equal(rt borrow bytes, pos, rt borrow arr[32,72,84,84,80,47,49,46,49,13,10]); then
+    if !byte_equal(bytes, pos, rt borrow arr[32,72,84,84,80,47,49,46,49,13,10]); then
       return new Head(400, head_end, 0, false, head_only);
     fi
     let int route = 0;
-    if target_size == 7 && byte_equal(rt borrow bytes, target_start, rt borrow arr[47,115,104,97,114,101,100]); then
+    if target_size == 7 && byte_equal(bytes, target_start, rt borrow arr[47,115,104,97,114,101,100]); then
       route = 1;
-    elif target_size == 9 && byte_equal(rt borrow bytes, target_start, rt borrow arr[47,105,115,111,108,97,116,101,100]); then
+    elif target_size == 9 && byte_equal(bytes, target_start, rt borrow arr[47,105,115,111,108,97,116,101,100]); then
       route = 2;
-    elif target_size == 7 && byte_equal(rt borrow bytes, target_start, rt borrow arr[47,95,95,115,116,111,112]); then
+    elif target_size == 7 && byte_equal(bytes, target_start, rt borrow arr[47,95,95,115,116,111,112]); then
       route = 3;
     else
       // Only origin form is accepted; invalid targets never reach routing.
@@ -103,7 +103,7 @@ define module http_wire as
         return new Head(400, head_end, 0, false, head_only);
       fi
       val int line_size = pos - line_start;
-      if line_size >= 7 && byte_equal(rt borrow bytes, line_start, rt borrow arr[72,111,115,116,58,32]); then
+      if line_size >= 7 && byte_equal(bytes, line_start, rt borrow arr[72,111,115,116,58,32]); then
         if host_seen || line_size == 6 || line_size > 261; then
           return new Head(400, head_end, 0, false, head_only);
         fi
@@ -114,11 +114,11 @@ define module http_wire as
             return new Head(400, head_end, 0, false, head_only);
           fi
         }
-      elif line_size == 17 && byte_equal(rt borrow bytes, line_start, rt borrow arr[67,111,110,110,101,99,116,105,111,110,58,32,99,108,111,115,101]); then
+      elif line_size == 17 && byte_equal(bytes, line_start, rt borrow arr[67,111,110,110,101,99,116,105,111,110,58,32,99,108,111,115,101]); then
         if connection_seen; then return new Head(400, head_end, 0, false, head_only); fi
         connection_seen = true;
         keep_alive = false;
-      elif line_size == 22 && byte_equal(rt borrow bytes, line_start, rt borrow arr[67,111,110,110,101,99,116,105,111,110,58,32,107,101,101,112,45,97,108,105,118,101]); then
+      elif line_size == 22 && byte_equal(bytes, line_start, rt borrow arr[67,111,110,110,101,99,116,105,111,110,58,32,107,101,101,112,45,97,108,105,118,101]); then
         if connection_seen; then return new Head(400, head_end, 0, false, head_only); fi
         connection_seen = true;
       else
