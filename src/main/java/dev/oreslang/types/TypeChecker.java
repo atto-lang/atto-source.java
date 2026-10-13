@@ -2173,6 +2173,14 @@ public final class TypeChecker {
                         functionName.name(), arity, call.arguments(), env, generics, self);
                 if (target != null) {
                     rejectImplicitClassCallable(functionName.name());
+                    String ownerModule = unqualifiedFunctionOwners.get(functionName.name());
+                    if (enumFunctionFamilies.containsKey(functionName.name())
+                            && target.visibility() != Ast.Visibility.PUBLIC
+                            && !java.util.Objects.equals(ownerModule, currentLexicalModule)) {
+                        throw new IllegalArgumentException(
+                                "nominal enum overload '" + functionName.name()
+                                        + "' is private to module " + ownerModule);
+                    }
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
