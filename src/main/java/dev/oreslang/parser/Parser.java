@@ -3026,9 +3026,16 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
-                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
-                consume(RPAREN, "expected ')' after arguments");
-                expr = new Ast.CallExpr(expr, args);
+                if (expr instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.NameExpr receiver
+                        && receiver.name().equals("self")
+                        && member.member().equals("handle_state")) {
+                    expr = parseSealedActorStateAccess();
+                } else {
+                    List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+                    consume(RPAREN, "expected ')' after arguments");
+                    expr = new Ast.CallExpr(expr, args);
+                }
             } else if (match(DOT)) {
                 String member = consumeMemberName();
                 if (insideActorClass && member.equals("state")
@@ -3043,6 +3050,36 @@ public final class Parser {
             } else break;
         }
         return expr;
+    }
+
+    private Ast.ActorStateAccessExpr parseSealedActorStateAccess() {
+        if (!insideActorClass) {
+            throw error(previous(),
+                    "sealed handle_state is only valid inside an actor method");
+        }
+        Ast.StateAccessMode mode;
+        if (match(CRITICAL_READ)) {
+            mode = Ast.StateAccessMode.READ;
+        } else if (match(CRITICAL_WRITE)) {
+            mode = Ast.StateAccessMode.WRITE;
+        } else {
+            throw error(peek(),
+                    "sealed handle_state requires critical-read or critical-write callback");
+        }
+        if (!check(PIPE)) {
+            throw error(peek(), "sealed state access requires a lexical |s| -> callback");
+        }
+        Ast.LambdaExpr callback = parsePipeLambda(false);
+        if (callback.parameters().size() != 1) {
+            throw error(previous(), "sealed state callback requires exactly one state binding");
+        }
+        Ast.Param binding = callback.parameters().getFirst();
+        if (!binding.type().equals(Ast.TypeRef.inferred()) || binding.mutable()
+                || binding.name().equals("self") || binding.name().equals("state")) {
+            throw error(previous(), "sealed state callback requires an untyped non-reserved binding");
+        }
+        consume(RPAREN, "expected ')' after sealed state callback");
+        return new Ast.ActorStateAccessExpr(mode, callback);
     }
 
     private List<Ast.TypeRef> parseCallTypeArguments() {
