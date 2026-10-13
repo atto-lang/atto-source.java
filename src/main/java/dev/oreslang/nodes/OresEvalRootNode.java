@@ -5927,6 +5927,14 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
+                if (literal.value() instanceof Ast.Symbol symbol) {
+                    dev.oreslang.runtime.OresSymbol value = dev.oreslang.runtime.OresSymbol.literal(symbol.name());
+                    IsolatePolicy policy = ActorRuntime.currentActorPolicy();
+                    if (policy != null && policy.adversarial() && !value.publicCore()) {
+                        throw new SecurityException("untrusted actor cannot construct private Symbol " + value);
+                    }
+                    return value;
+                }
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
@@ -7909,7 +7917,15 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
             if (pattern instanceof Ast.LiteralPattern literal) {
-                return valueEquals(literal.value(), value);
+                Object expected = literal.value() instanceof Ast.Symbol symbol
+                        ? dev.oreslang.runtime.OresSymbol.literal(symbol.name())
+                        : literal.value();
+                IsolatePolicy policy = ActorRuntime.currentActorPolicy();
+                if (expected instanceof dev.oreslang.runtime.OresSymbol symbolic
+                        && policy != null && policy.adversarial() && !symbolic.publicCore()) {
+                    throw new SecurityException("untrusted actor cannot match private Symbol " + symbolic);
+                }
+                return valueEquals(expected, value);
             }
             if (pattern instanceof Ast.TypePattern typed) {
                 if (!oresTypeMatches(value, typed.type())) return false;
@@ -8135,6 +8151,7 @@ public final class OresEvalRootNode extends RootNode {
                     || name.equals("decimal")) return value instanceof Float || value instanceof Double;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
+            if (name.equals("Symbol")) return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
@@ -8375,6 +8392,7 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Character
                     || value instanceof Enum<?>
                     || value instanceof java.util.UUID
+                    || value instanceof dev.oreslang.runtime.OresSymbol
                     || value instanceof OptionUnwrapError;
         }
 
