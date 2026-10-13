@@ -108,6 +108,28 @@ final class ActorFailureNoticeTest {
         }
     }
 
+
+    @Test
+    void hostNeverObservesTerminalCauseWithoutItsReceipt() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            for (int attempt = 0; attempt < 40; attempt++) {
+                ActorRuntime.ActorRef<String> actor = runtime.spawnShared(
+                        () -> { throw new IllegalStateException("failed on start"); });
+                var ready = actor.ready();
+                long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (actor.failure().isEmpty() && System.nanoTime() < until) {
+                    Thread.onSpinWait();
+                }
+                assertTrue(actor.failure().isPresent(), "startup failure did not arrive");
+                assertTrue(actor.failureNotice().isPresent(),
+                        "terminal Throwable and data-only receipt must publish atomically");
+                assertThrows(ExecutionException.class,
+                        () -> ready.get(5, TimeUnit.SECONDS));
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            }
+        }
+    }
+
     @Test
     void actorIncarnationIsFencedByMonotonicRuntimeGeneration() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {

@@ -317,6 +317,19 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * One atomic terminal publication: host observers cannot see a terminal
+     * cause without its corresponding immutable supervisor diagnostic receipt.
+     * The Throwable is retained ONLY for host readiness/done compatibility;
+     * it is never a member of ActorFailureNotice or serialized guest data.
+     */
+    private record TerminalFailure(Throwable cause, ActorFailureNotice notice) {
+        private TerminalFailure {
+            Objects.requireNonNull(cause, "terminal cause");
+            Objects.requireNonNull(notice, "terminal receipt");
+        }
+    }
+
+    /**
      * Immutable, runtime-constructed, single-generation diagnostic receipt.
      * This is NOT an ordinary actor message or a public CONTROL constructor.
      * Typed guest errors may later attach a compiler-authenticated data-only
@@ -1830,8 +1843,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final long generation;
-        private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
-        private final AtomicReference<ActorFailureNotice> terminationNotice = new AtomicReference<>();
+        private final AtomicReference<TerminalFailure> terminalFailure = new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
         private final OresFuture<Void> readyFuture =
@@ -1862,7 +1874,11 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorKind kind() { return kind; }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
-        public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
+        private Throwable terminalCause() {
+            TerminalFailure terminal = terminalFailure.get();
+            return terminal == null ? null : terminal.cause();
+        }
+        public Optional<Throwable> failure() { return Optional.ofNullable(terminalCause()); }
 
         /**
          * Host/supervisor-only immutable terminal data. No Throwable,
@@ -1871,7 +1887,8 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public Optional<ActorFailureNotice> failureNotice() {
             requireSupervisorContext("inspect actor supervisor failure notice");
-            return Optional.ofNullable(terminationNotice.get());
+            TerminalFailure terminal = terminalFailure.get();
+            return terminal == null ? Optional.empty() : Optional.of(terminal.notice());
         }
 
         /**
@@ -4200,7 +4217,7 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 send(ref, message);
             } catch (ActorTerminatedException terminatedBeforeDelivery) {
-                Throwable startupFailure = ref.terminationCause.get();
+                Throwable startupFailure = ref.terminalCause();
                 if (startupFailure instanceof RuntimeException runtime) throw runtime;
                 if (startupFailure instanceof Error error) throw error;
                 if (startupFailure != null) throw new RuntimeException(startupFailure);
@@ -4376,7 +4393,7 @@ public final class ActorRuntime implements AutoCloseable {
                 return;
             }
 
-            Throwable termination = ref.terminationCause.get();
+            Throwable termination = ref.terminalCause();
             if (termination instanceof CancellationException) {
                 completion.cancel(false);
             } else if (termination != null) {
@@ -4776,7 +4793,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private ActorTerminatedException terminated(ActorRef<?> ref) {
-        return new ActorTerminatedException(ref.id(), ref.kind(), ref.terminationCause.get());
+        return new ActorTerminatedException(ref.id(), ref.kind(), ref.terminalCause());
     }
 
     @SuppressWarnings("unchecked")
@@ -6775,7 +6792,7 @@ public final class ActorRuntime implements AutoCloseable {
             drainMailboxReservations();
             staticSelectCursors.clear();
             codeActorState = null;
-            Throwable terminalOutput = ref.terminationCause.get();
+            Throwable terminalOutput = ref.terminalCause();
             outputStream.close(terminalOutput);
             if (memorySlice != null) memorySlice.close();
             try {
@@ -6788,7 +6805,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
-            Throwable terminal = ref.terminationCause.get();
+            Throwable terminal = ref.terminalCause();
             if (!ref.readyFuture.isDone()) {
                 // Preserve the initializer failure as the direct cause of
                 // readiness rejection. Only a graceful stop-before-ready has
@@ -7325,15 +7342,16 @@ public final class ActorRuntime implements AutoCloseable {
         private void recordFirstTerminalCause(Throwable cause) {
             Objects.requireNonNull(cause, "terminal cause");
             synchronized (lifecycleLock) {
-                if (ref.terminationCause.compareAndSet(null, cause)) {
-                    ActorFailureCategory category =
-                            cause instanceof ActorCancelledException
-                                    ? ActorFailureCategory.STRUCTURED_CANCELLATION
-                                    : ActorFailureCategory.HOST_FAILURE;
-                    ref.terminationNotice.compareAndSet(null,
-                            new ActorFailureNotice(ref.id(), ref.generation,
-                                    kind, category, Optional.empty()));
-                }
+                ActorFailureCategory category =
+                        cause instanceof ActorCancelledException
+                                ? ActorFailureCategory.STRUCTURED_CANCELLATION
+                                : ActorFailureCategory.HOST_FAILURE;
+                // One atomic store publishes cause and receipt together.
+                // No supervisor observer can read a half-published pair.
+                ref.terminalFailure.compareAndSet(null,
+                        new TerminalFailure(cause,
+                                new ActorFailureNotice(ref.id(), ref.generation,
+                                        kind, category, Optional.empty())));
             }
         }
 
