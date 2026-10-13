@@ -53,6 +53,9 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.TypeAliasDecl, String> typeAliasOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
+    /** Compiler-selected direct declarations, keyed by AST object identity. */
+    private final IdentityHashMap<Ast.CallExpr, Ast.FunctionDecl> boundDirectCalls =
+            new IdentityHashMap<>();
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -103,7 +106,21 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings);
+        // Publication happens only after full static admission succeeds.
+        // An AST identity key prevents equal-looking calls in separate
+        // modules from sharing another call site's resolved declaration.
+        Ast.Program bound = new Ast.Program(
+                program.namespace(), program.imports(), program.modules(),
+                checker.boundDirectCalls);
+        return new TypeCheckResult(bound, checker.warnings);
+    }
+
+    private void bindDirectCall(Ast.CallExpr call, Ast.FunctionDecl target) {
+        Ast.FunctionDecl previous = boundDirectCalls.putIfAbsent(call, target);
+        if (previous != null && previous != target) {
+            throw new IllegalArgumentException(
+                    "one call expression resolved to different function declarations");
+        }
     }
 
     private void validateImports(Ast.Program program) {
@@ -2133,6 +2150,7 @@ public final class TypeChecker {
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                    bindDirectCall(call, target);
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -2171,6 +2189,7 @@ public final class TypeChecker {
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                    bindDirectCall(call, target);
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
