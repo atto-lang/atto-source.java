@@ -81,6 +81,96 @@ final class CircularImportInitializationTest {
         assertTrue(groups.getFirst().contains(b.toAbsolutePath().normalize().toString().replace('\\', '/')));
     }
 
+
+    @Test
+    void threeFileCycleResolvesBeforeAnyCrossFileInvocation() throws Exception {
+        Path a = tempDir.resolve("a.ores");
+        Path b = tempDir.resolve("b.ores");
+        Path c = tempDir.resolve("c.ores");
+
+        Files.writeString(a, """
+                import fnc b_value from "./b.ores";
+                pub fnc a_value(): void {
+                  stdio.stdout.write("A");
+                  return;
+                }
+                pub routine main(): void {
+                  b_value();
+                  return;
+                }
+                """);
+        Files.writeString(b, """
+                import fnc c_value from "./c.ores";
+                pub fnc b_value(): void {
+                  c_value();
+                  return;
+                }
+                """);
+        Files.writeString(c, """
+                import fnc a_value from "./a.ores";
+                pub fnc c_value(): void {
+                  a_value();
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        var build = LinkedProgramRunner.run(
+                a, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                output, new ByteArrayOutputStream());
+
+        assertEquals("A", output.toString(StandardCharsets.UTF_8));
+        assertEquals(1, build.initializationGroups().size());
+        assertEquals(3, build.initializationGroups().getFirst().size());
+    }
+
+    @Test
+    void importedOverloadFamilyInCycleIsOneExportedSymbol() throws Exception {
+        Path a = tempDir.resolve("a.ores");
+        Path b = tempDir.resolve("b.ores");
+
+        Files.writeString(a, """
+                import fnc b_value from "./b.ores";
+                pub fnc a_value(): String { return "A"; }
+                pub routine main(): void {
+                  stdio.stdout.write(b_value());
+                  stdio.stdout.write(b_value(7));
+                  return;
+                }
+                """);
+        Files.writeString(b, """
+                import fnc a_value from "./a.ores";
+                pub fnc b_value(): String { return "B"; }
+                pub fnc b_value(int ignored): String { return "C"; }
+                """);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                a, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                output, new ByteArrayOutputStream());
+        assertEquals("BC", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void cyclesDoNotMakePrivateNamesImportable() throws Exception {
+        Path a = tempDir.resolve("a.ores");
+        Path b = tempDir.resolve("b.ores");
+        Files.writeString(a, """
+                import fnc hidden from "./b.ores";
+                pub fnc a_value(): String { return "A"; }
+                pub routine main(): void { return; }
+                """);
+        Files.writeString(b, """
+                import fnc a_value from "./a.ores";
+                fnc hidden(): String { return a_value(); }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(a));
+        assertTrue(failure.getMessage().contains("does not match an exported declaration"));
+    }
+
     @Test
     void initHookHasAClosedLifecycleSignature() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
