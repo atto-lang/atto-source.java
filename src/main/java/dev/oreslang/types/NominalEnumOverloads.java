@@ -82,7 +82,11 @@ public final class NominalEnumOverloads {
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.EnumDecl enumeration)
                         || !eligibleDiscriminator(enumeration)) continue;
-                String symbol = module.name() + "::" + enumeration.name();
+                // Namespace is part of nominal identity. Cross-code-unit imports
+                // need a linker-assigned symbol ID before overloads can be enabled.
+                String prefix = program.namespace() == null || program.namespace().isBlank()
+                        ? "" : program.namespace() + "::";
+                String symbol = prefix + module.name() + "::" + enumeration.name();
                 String previous = names.putIfAbsent(enumeration.name(), symbol);
                 if (previous != null && !previous.equals(symbol)) {
                     ambiguous.add(enumeration.name());
