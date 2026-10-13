@@ -30,5 +30,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Assert private CI guard fail-closed behavior
         run: |
+          set -euo pipefail
+          bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
+          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
           bash scripts/test-private-ci-destination.sh
-          python3 scripts/test-publish-private-ci-source.py
+          for attempt in 1 2 3; do
+            echo "Private publisher adversarial pass ${attempt}/3"
+            python3 scripts/test-publish-private-ci-source.py
+          done
