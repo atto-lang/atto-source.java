@@ -773,6 +773,16 @@ final class OresSchedulerQuiescenceTest {
         } finally {
             scheduler.close();
         }
+        // The onQuiescent callback decrements 'retired' before its caller
+        // publishes the deadlineQuiescenceRetired flag and releases the
+        // reservation. Awaiting that callback is not a slot-release barrier.
+        // Preserve the exact global capacity assertion after a bounded
+        // handoff window: a real leaked reservation still fails this test.
+        long slotReleaseDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (OresScheduler.availableWallDeadlineAdmissions() != before
+                && System.nanoTime() < slotReleaseDeadline) {
+            Thread.sleep(1);
+        }
         assertEquals(before, OresScheduler.availableWallDeadlineAdmissions(),
                 "all deadline reservations must be released across races");
     }
