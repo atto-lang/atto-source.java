@@ -5556,7 +5556,7 @@ public final class OresEvalRootNode extends RootNode {
                     // source actor's compiler-validated backward envelope MUST
                     // match the expected case before completing the guest Future.
                     return invokableInvocation(ignored ->
-                            runner.send(args.getFirst()).thenApply(result -> {
+                            runner.sendExpected(args.getFirst(), expectedCase).thenApply(result -> {
                                 if (!(result instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue tagged)
                                         || !tagged.qualifiedName().equals(expectedCase)) {
                                     throw new SecurityException(
