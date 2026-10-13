@@ -22,6 +22,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.source = self.root / "source"
         self.source.mkdir()
+        (self.root / ".github").mkdir()
+        self.approval = self.root / ".github" / "private-ci-approved-repositories.txt"
+        self.approval.write_text("trusted/ci\n")
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
@@ -77,6 +80,26 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
                          ["repos/trusted/ci/git/blobs"])
+
+    def test_mid_transfer_policy_revocation_aborts_without_new_branch(self):
+        original = self.fake_api
+        def revoke_after_blob(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs":
+                self.approval.write_text("# approval revoked\\n")
+            return result
+        with patch.object(pub, "gh_api", side_effect=revoke_after_blob):
+            with self.assertRaisesRegex(pub.Denied, "approval policy changed"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        writes = [r for m, r, _ in self.route_calls if m == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
+    def test_symlinked_approval_policy_fails_before_upload(self):
+        self.approval.unlink()
+        self.approval.symlink_to(self.source / "hello.ores")
+        with self.assertRaisesRegex(pub.Denied, "approval policy"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_wrong_repo_and_invalid_branch_rejected_before_preflight(self):
         for repo, branch in [("public/test;evil", "ci/oreslang-test"),
