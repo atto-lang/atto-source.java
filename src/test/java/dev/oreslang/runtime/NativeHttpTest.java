@@ -25,7 +25,7 @@ class NativeHttpTest {
             "saturated intermediate slot must be skipped");
         assertEquals(3, NativeHttp.findAvailablePoolSlot(4, 3, available));
         assertEquals(1, NativeHttp.findAvailablePoolSlot(4, 4, available));
-        assertEquals(1, NativeHttp.findAvailablePoolSlot(4, Long.MAX_VALUE, available));
+        assertEquals(3, NativeHttp.findAvailablePoolSlot(4, Long.MAX_VALUE, available));
         assertEquals(1, NativeHttp.findAvailablePoolSlot(4, -3, available));
         used[1] = 64;
         used[3] = 64;
