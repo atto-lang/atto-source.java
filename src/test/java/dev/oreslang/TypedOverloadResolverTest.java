@@ -250,13 +250,13 @@ final class TypedOverloadResolverTest {
     @Test
     void malformedUtf16CannotCollideUnderUtf8SymbolEncoding() {
         assertThrows(IllegalArgumentException.class, () ->
-                new Signature(Domain.MODULE, "module.\\uD800", List.of()));
+                new Signature(Domain.MODULE, "module." + Character.toString((char) 0xD800), List.of()));
         assertThrows(IllegalArgumentException.class, () ->
-                new Signature(Domain.MODULE, "module.\\uD801", List.of()));
+                new Signature(Domain.MODULE, "module." + Character.toString((char) 0xD801), List.of()));
         assertThrows(IllegalArgumentException.class, () ->
-                TypeKey.nominalEnum("module.\\uDFFF"));
+                TypeKey.nominalEnum("module." + Character.toString((char) 0xDFFF)));
         assertThrows(IllegalArgumentException.class, () ->
-                TypeKey.nominalEnum("module.\\uD800"));
+                TypeKey.nominalEnum("module." + Character.toString((char) 0xD800)));
         // A valid surrogate *pair* is preserved; no blanket non-ASCII ban.
         String valid = "module." + Character.toString(0x1F980);
         assertNotNull(new Signature(Domain.MODULE, valid, List.of()).symbolId());
