@@ -6237,7 +6237,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (call.callee() instanceof Ast.MemberExpr factory
                         && factory.receiver() instanceof Ast.NameExpr ns
                         && ns.name().equals("Symbol")
-                        && env.lookup("Symbol") == Env.MISSING) {
+                        && env.lookup("Symbol") == Env.MISSING
+                        && findClass("Symbol") == null
+                        && !modules.containsKey("Symbol")) {
                     if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
                         throw new IllegalArgumentException("Symbol factory requires exactly one String");
                     }
