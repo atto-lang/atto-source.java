@@ -1906,11 +1906,18 @@ public final class TypeChecker {
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
-                requireAssignable(index, Primitive.INT, "array/list index");
-                if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException(
-                        "indexed assignment requires an array/list or tuple; structs have a closed static field set");
+                if (receiver instanceof Named named
+                        && named.name().equals("Map") && named.arguments().size() == 2
+                        && findClass("Map") == null) {
+                    requireAssignable(index, named.arguments().get(0), "Map key");
+                    targetType = named.arguments().get(1);
+                } else {
+                    requireAssignable(index, Primitive.INT, "array/list index");
+                    if (receiver instanceof ListType list) targetType = list.element();
+                    else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                    else throw new IllegalArgumentException(
+                            "indexed assignment requires a mutable Map, array/list or tuple; structs remain closed");
+                }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
@@ -3212,6 +3219,11 @@ public final class TypeChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
             Type index = typeOf(indexed.index(), env, generics, self);
+            if (receiver instanceof Named named && named.name().equals("Map")
+                    && named.arguments().size() == 2 && findClass("Map") == null) {
+                requireAssignable(index, named.arguments().get(0), "Map key");
+                return named.arguments().get(1);
+            }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "object/map key");
                 if (index instanceof StringLiteral key) {
@@ -3241,6 +3253,12 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Map") && findClass("Map") == null) {
+                if (!created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Map<K,V> constructor takes no arguments");
+                }
+                return resolve(created.type(), generics, self);
+            }
             if (created.type().name().equals("Symbol")) {
                 throw new IllegalArgumentException(
                         "Symbol is an immutable value, not a class constructor; "
@@ -7184,6 +7202,33 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Map" -> {
+                Ast.ClassDecl userMap = findClass("Map");
+                if (userMap != null) {
+                    validateGenericArity(ref, userMap.genericParameters(), "class Map");
+                    yield new Named(qualifiedClassName(userMap),
+                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                }
+                if (ref.inferArguments() || ref.arguments().size() != 2) {
+                    throw new IllegalArgumentException("Map<K,V> requires exactly two type arguments");
+                }
+                Type key = resolve(ref.arguments().get(0), generics, self);
+                Type value = resolve(ref.arguments().get(1), generics, self);
+                boolean keyAllowed = key == Primitive.STRING
+                        || key instanceof Named named && named.name().equals("Symbol")
+                                && named.arguments().isEmpty()
+                        || key instanceof Union union && union.options().size() == 2
+                                && union.options().contains(Primitive.STRING)
+                                && union.options().contains(new Named("Symbol", List.of()));
+                if (!keyAllowed) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> currently supports only String, Symbol, or String | Symbol keys");
+                }
+                if (value == Primitive.VOID || value == Primitive.NULL) {
+                    throw new IllegalArgumentException("Map values cannot have type void or null");
+                }
+                yield new Named("Map", List.of(key, value));
+            }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol is not generic");
