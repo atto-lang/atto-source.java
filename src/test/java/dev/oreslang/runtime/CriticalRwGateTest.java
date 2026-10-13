@@ -118,6 +118,31 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void cancelledAdmissionReclaimsFacadeWrapperWithoutRevokingActiveWriter() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var writer = gate.newCriticalTicket();
+        assertTrue(writer.enterAsync().isDone());
+        for (int n = 0; n < 1024; n++) {
+            var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+            var waiting = reader.enterAsync();
+            assertFalse(waiting.isDone());
+            assertEquals(2, gate.trackedTicketCount());
+            assertTrue(waiting.cancel(false));
+            assertTrue(waiting.isCancelled());
+            assertEquals(1, gate.trackedTicketCount(),
+                    "cancelled admission wrapper must not remain retained");
+            assertEquals(0, gate.queuedCount());
+            assertTrue(writer.isHeld(),
+                    "denied reader must not release the legitimate writer");
+        }
+        writer.close();
+        assertEquals(0, gate.trackedTicketCount());
+        assertEquals(0, gate.queuedCount());
+        assertFalse(gate.hasWriter());
+        gate.close();
+    }
+
+    @Test
     void cancellingWaiterRetractsItsSlotAndCannotResurrectAfterHandoff() {
         CriticalRwGate gate = new CriticalRwGate();
         var current = gate.newTicket(CriticalRwGate.Mode.WRITE);
