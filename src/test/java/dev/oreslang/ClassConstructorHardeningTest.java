@@ -105,6 +105,59 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void synthesizedConstructorCannotReplaceInitializedFinalSlot() throws Exception {
+        String bad = """
+                define class Fixed as
+                  final int answer: 42;
+                end
+                pub routine main(): void {
+                  val value = new Fixed(7);
+                  return;
+                }
+                """;
+        IllegalArgumentException typeFailure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(bad)));
+        assertTrue(typeFailure.getMessage().contains(
+                "positional construction cannot override initialized final class field"));
+
+        PolyglotException runtimeFailure = assertThrows(PolyglotException.class,
+                () -> run(bad));
+        assertTrue(runtimeFailure.getMessage().contains(
+                "positional construction cannot override initialized final class field"));
+
+        String okay = """
+                define class Fixed as
+                  final int answer: 42;
+                  pub get(): int {
+                    return self.answer;
+                  }
+                end
+                pub routine main(): void {
+                  val value = new Fixed();
+                  stdio.stdout.write(value.get());
+                  return;
+                }
+                """;
+        assertEquals("42", run(okay));
+    }
+
+    @Test
+    void synthesizedConstructorCannotReplaceInitializedLegacyValSlot() {
+        IllegalArgumentException typeFailure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                    define class Fixed as
+                      val int answer = 42;
+                    end
+                    pub fnc main(): int {
+                      val Fixed value = new Fixed(7);
+                      return 0;
+                    }
+                    """)));
+        assertTrue(typeFailure.getMessage().contains(
+                "positional construction cannot override initialized final class field"));
+    }
+
+    @Test
     void parserRejectsJavaStyleDuplicateNestedAndTypedConstructors() {
         IllegalArgumentException javaStyle = assertThrows(
                 IllegalArgumentException.class,
