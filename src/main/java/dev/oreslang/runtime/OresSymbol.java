@@ -67,6 +67,7 @@ public final class OresSymbol {
             }
             int codepoint = value.codePointAt(i);
             if (codepoint < 0x20 || (codepoint >= 0x7f && codepoint <= 0x9f)
+                    || Character.getType(codepoint) == Character.FORMAT
                     || codepoint == 0x061c || codepoint == 0x200e || codepoint == 0x200f
                     || (codepoint >= 0x202a && codepoint <= 0x202e)
                     || (codepoint >= 0x2066 && codepoint <= 0x2069)) {
