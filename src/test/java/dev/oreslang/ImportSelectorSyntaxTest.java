@@ -91,8 +91,8 @@ final class ImportSelectorSyntaxTest {
                   fnc value() => int;
                 }
 
-                pub type Identifier = int;
-                pub type OtherIdentifier = int;
+                type Identifier = int;
+                type OtherIdentifier = int;
                 """);
 
         Files.writeString(main, """
@@ -107,6 +107,42 @@ final class ImportSelectorSyntaxTest {
                 """);
 
         LinkedProgramRunner.validate(main);
+    }
+
+    @Test
+    void privateActorCannotBeImportedEvenThroughCircularReferences() throws Exception {
+        Path a = temp.resolve("actor-a.ores");
+        Path b = temp.resolve("actor-b.ores");
+        Files.writeString(a, """
+                import actor Worker from "./actor-b.ores";
+                pub fnc a_value(): int { return 7; }
+                pub routine main(): void { return; }
+                """);
+        Files.writeString(b, """
+                import fnc a_value from "./actor-a.ores";
+                shared actor Worker {
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> LinkedProgramRunner.validate(a));
+        assertTrue(failure.getMessage().contains("does not match an exported declaration"),
+                failure.getMessage());
+
+        Files.writeString(b, """
+                import fnc a_value from "./actor-a.ores";
+                pub shared actor Worker {
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                }
+                """);
+        LinkedProgramRunner.validate(a);
     }
 
     @Test
@@ -163,7 +199,7 @@ final class ImportSelectorSyntaxTest {
     void classAndActorSelectorsDoNotAliasEachOther() throws Exception {
         Path child = temp.resolve("actors.ores");
         Files.writeString(child, """
-                pub shared actor Worker {
+                shared actor Worker {
                   pub fnc value(): int { return 1; }
                 }
 
@@ -193,7 +229,7 @@ final class ImportSelectorSyntaxTest {
         Path main = temp.resolve("main.ores");
 
         Files.writeString(child, """
-                pub shared actor Worker {
+                shared actor Worker {
                   pub fnc value(): int { return 1; }
                 }
                 """);
