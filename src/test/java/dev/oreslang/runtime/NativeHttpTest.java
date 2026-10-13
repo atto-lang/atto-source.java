@@ -16,6 +16,28 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void capacityAwarePoolSelectionSkipsFullSlotsAndRotatesFairly() {
+        int[] used = {64, 7, 64, 0};
+        var available = (java.util.function.IntPredicate) slot -> used[slot] < 64;
+        assertEquals(1, NativeHttp.findAvailablePoolSlot(4, 0, available),
+            "full starting slot must not reject while another worker is free");
+        assertEquals(3, NativeHttp.findAvailablePoolSlot(4, 2, available),
+            "saturated intermediate slot must be skipped");
+        assertEquals(3, NativeHttp.findAvailablePoolSlot(4, 3, available));
+        assertEquals(1, NativeHttp.findAvailablePoolSlot(4, 4, available));
+        assertEquals(1, NativeHttp.findAvailablePoolSlot(4, Long.MAX_VALUE, available));
+        assertEquals(1, NativeHttp.findAvailablePoolSlot(4, -3, available));
+        used[1] = 64;
+        used[3] = 64;
+        assertEquals(-1, NativeHttp.findAvailablePoolSlot(4, 0, available),
+            "HTTP 503 is valid only when every worker is full");
+        used[0] = 0;
+        assertEquals(0, NativeHttp.findAvailablePoolSlot(4, 2, available),
+            "completion must make its worker selectable again");
+        assertThrows(IllegalArgumentException.class,
+            () -> NativeHttp.findAvailablePoolSlot(0, 0, available));
+    }
+
     @Test void pooledAdmissionIsAtomicBoundedAndWorkerSpecific() throws Exception {
         var tracked = new ConcurrentHashMap<String, Set<Integer>>();
         tracked.put("worker-a", ConcurrentHashMap.newKeySet());
