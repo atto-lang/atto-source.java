@@ -7536,12 +7536,25 @@ public final class OresEvalRootNode extends RootNode {
                 for (int i = 0; i < classFields.size(); i++) {
                     Ast.FieldDecl field = classFields.get(i);
                     Object value;
-                    if (i < args.size()) value = args.get(i);
-                    else if (field.initializer() != null) {
+                    if (i < args.size()) {
+                        // Runtime defense in depth: reject fixed-slot injection
+                        // even if this path is reached through a linked program
+                        // or an AST that skipped the static type checker.
+                        if (field.initializer() != null
+                                && field.bindingKind() != Ast.BindingKind.LET) {
+                            throw new IllegalArgumentException(
+                                    "positional construction cannot override initialized final class field '"
+                                            + klass.name() + "." + field.name() + "'");
+                        }
+                        value = args.get(i);
+                    } else if (field.initializer() != null) {
                         OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
                         Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
+                        // The object must remain unobservable while fields
+                        // are being initialized. Static analysis never binds
+                        // self in field initializer scope; the runtime must
+                        // enforce that same boundary for linked/unchecked code.
                         Env initializerEnv = new Env(null, false, fieldOwner);
-                        initializerEnv.define("self", object, Ast.BindingKind.VAL);
                         value = eval(field.initializer(), initializerEnv);
                     } else {
                         throw new IllegalArgumentException(
@@ -7570,17 +7583,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             OresObject object = new OresObject(this, klass, fields);
 
-            // Field initializers run before the constructor body and with the
-            // declaring class's private-member authority.
-            for (Ast.FieldDecl field : classFields) {
-                if (field.initializer() == null) continue;
-                OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
-                Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
-                Env initializerEnv = new Env(null, false, fieldOwner);
-                initializerEnv.define("self", object, Ast.BindingKind.VAL);
-                fields.put(field.name(), eval(field.initializer(), initializerEnv));
-            }
-
+            // Bind constructor parameters before evaluating field initializers.
+            // The object is not returned or published until all initializers
+            // and constructor-body validation have completed.
             Env constructorEnv = new Env(null, false, klass, object);
             constructorEnv.define("self", object, Ast.BindingKind.VAL);
             bindCallableArguments(
@@ -7588,6 +7593,45 @@ public final class OresEvalRootNode extends RootNode {
                     constructor.parameters(),
                     args,
                     "constructor " + klass.name());
+
+            // Deliberately narrower than the constructor-body environment.
+            // A reference, borrow or move-only parameter cannot be injected
+            // into a declaration initializer without a checked transfer
+            // proof. The implicit arguments tuple is likewise unavailable.
+            // Initializer parameter frames carry no constructor authority:
+            // they cannot authorize a write to an uninitialized object slot.
+            Env scalarInitializerArgs = new Env(null, false, klass);
+            for (int i = 0; i < constructor.parameters().size(); i++) {
+                Ast.Param param = constructor.parameters().get(i);
+                Ast.TypeRef parameterType = param.type();
+                String typeName = parameterType.name();
+                if (!parameterType.isBorrow()
+                        && parameterType.arguments().isEmpty()
+                        && !param.structural()
+                        && (typeName.equals("int") || typeName.equals("bool")
+                                || typeName.equals("float") || typeName.equals("string"))) {
+                    scalarInitializerArgs.define(
+                            param.name(), args.get(i),
+                            param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+            }
+
+            // Field initializers run before the constructor body and with the
+            // declaring class's private-member authority. Only the declaring
+            // class may read its own constructor arguments, not inherited
+            // parent-field initializers.
+            for (Ast.FieldDecl field : classFields) {
+                if (field.initializer() == null) continue;
+                OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
+                Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
+                // Do not bind self. Constructor parameters are scalar-only,
+                // and the partly built instance is not an initializer value.
+                Env initializerEnv = new Env(
+                        fieldOwner == klass ? scalarInitializerArgs : null,
+                        false, fieldOwner, null);
+                fields.put(field.name(), eval(field.initializer(), initializerEnv));
+            }
+
             try {
                 executeBlock(constructor.body(), constructorEnv);
             } catch (ReturnSignal signal) {
