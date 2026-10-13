@@ -1896,7 +1896,11 @@ public final class TypeChecker {
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
                 else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException(
+                else if (receiver == Primitive.STRING || receiver instanceof StringLiteral) {
+                    throw new IllegalArgumentException(
+                            "indexed string assignment is not supported: string is an immutable Copy value; "
+                            + "a 'mut' binding does not create mutable character storage");
+                } else throw new IllegalArgumentException(
                         "indexed assignment requires an array/list or tuple; structs have a closed static field set");
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
