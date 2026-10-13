@@ -1451,7 +1451,43 @@ public final class ActorRuntime implements AutoCloseable {
 
     /** The runtime-internal delivery marker never escapes this source
      * actor turn. A plain ActorRef.send cannot spoof a pipeline hop. */
-    private final ThreadLocal<LinearPipeline> currentPipelineSend = new ThreadLocal<>();
+    private record PipelinePublication(LinearPipeline route, int expectedPhase) { }
+
+    /**
+     * Reserve the phase during encoding, but do not claim that DATA was
+     * delivered until the actual recipient mailbox tryWrite succeeds.
+     * -1 is a permanent failed route; -2 - phase is a provisional claim.
+     * A reserved phase is never a successful publication.
+     */
+    private final ThreadLocal<PipelinePublication> currentPipelineSend = new ThreadLocal<>();
+
+    private static int provisionalPipelinePhase(int expected) {
+        return -2 - expected;
+    }
+
+    private static void reservePipelinePublication(LinearPipeline route, int expected) {
+        if (!route.phase().compareAndSet(expected, provisionalPipelinePhase(expected))) {
+            throw new SecurityException(
+                    "pipeline publication claim rejected: expected phase " + expected);
+        }
+    }
+
+    private static void commitPipelinePublication(PipelinePublication publication) {
+        LinearPipeline route = publication.route();
+        int phase = publication.expectedPhase();
+        if (!route.phase().compareAndSet(provisionalPipelinePhase(phase), phase + 1)) {
+            throw new SecurityException(
+                    "pipeline publication was aborted before mailbox commit");
+        }
+    }
+
+    private static void failPipeline(LinearPipeline route) {
+        while (true) {
+            int old = route.phase().get();
+            if (old == -1 || old == 2 * route.count()) return;
+            if (route.phase().compareAndSet(old, -1)) return;
+        }
+    }
 
     private static void advancePipelinePhase(LinearPipeline route, int expected, int next) {
         if (!route.phase().compareAndSet(expected, next)) {
@@ -1630,19 +1666,21 @@ public final class ActorRuntime implements AutoCloseable {
             target = route.stages().get(stage - 1);
             expectedPhase = 2 * route.count() - 1 - stage;
         }
-        // Exactly one in-flight typed route: reject duplicates, replays and
-        // out-of-order causal sends before enqueueing a guest DATA envelope.
-        advancePipelinePhase(route, expectedPhase, expectedPhase + 1);
-        LinearPipeline previous = currentPipelineSend.get();
-        if (previous != null) {
-            route.phase().set(-1);
+        // Reserve single-flight authority before encoding without making the
+        // next phase visible as published DATA. The protected tryWrite in send
+        // will commit the phase before the recipient can dequeue the envelope.
+        if (currentPipelineSend.get() != null) {
+            failPipeline(route);
             throw new SecurityException("nested actor pipeline admission is unsupported");
         }
-        currentPipelineSend.set(route);
+        reservePipelinePublication(route, expectedPhase);
+        currentPipelineSend.set(new PipelinePublication(route, expectedPhase));
         try {
             send(target, value);
         } catch (RuntimeException | Error failure) {
-            route.phase().set(-1); // terminal fail-closed, no retry ambiguity
+            // A failed directional hop is terminal, including ambiguous
+            // errors after publication. Never retry a potentially sent hop.
+            failPipeline(route);
             throw failure;
         } finally {
             currentPipelineSend.remove();
@@ -4870,18 +4908,24 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         Objects.requireNonNull(ref);
         LinearPipeline linkedRoute = linearPipelines.get(ref.id());
+        PipelinePublication publication = currentPipelineSend.get();
         boolean initialPipelineIngress = false;
         /* A root phase claimed before frame validation is only provisional.
          * Distinguish a rejected pre-publication attempt from an already
          * committed DATA message: never roll back a published root turn. */
         boolean initialPipelinePublished = false;
-        if (linkedRoute != null && currentPipelineSend.get() != linkedRoute) {
+        if (publication != null && publication.route() != linkedRoute) {
+            throw new SecurityException(
+                    "pipeline directional authority cannot target an unrelated mailbox");
+        }
+        if (linkedRoute != null && publication == null) {
             if (currentActor.get() != null
                     || !ref.id().equals(linkedRoute.source().id())) {
                 throw new SecurityException(
                         "pipeline actors accept only scheduler-authorized directional DATA");
             }
-            advancePipelinePhase(linkedRoute, 0, 1);
+            reservePipelinePublication(linkedRoute, 0);
+            publication = new PipelinePublication(linkedRoute, 0);
             initialPipelineIngress = true;
         }
         try {
@@ -5036,12 +5080,20 @@ public final class ActorRuntime implements AutoCloseable {
                         throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
                     }
                     /* tryWrite is the DATA publication linearization point.
-                     * The recipient may start executing immediately, so never
-                     * restore phase 0 once this publication succeeded. */
+                     * Own the queued envelope immediately, even if a concurrent
+                     * fatal stage STOP invalidated our provisional claim. Never
+                     * close/release an envelope already inside a mailbox.
+                     *
+                     * Recipient turns dequeue under this same lifecycleLock,
+                     * so phase commitment below occurs before they can execute
+                     * this DATA. Failed CAS means the route is already aborted;
+                     * publication remains terminally ambiguous, never retried.
+                     */
                     if (initialPipelineIngress) initialPipelinePublished = true;
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
                     admitted = true;
+                    if (publication != null) commitPipelinePublication(publication);
                     commitSharedMutexBindings(sharedMutexReservations);
                 }
             }
@@ -5066,8 +5118,16 @@ public final class ActorRuntime implements AutoCloseable {
              *
              * CAS prevents a late loser from rolling back a later phase. */
             if (initialPipelineIngress) {
-                linkedRoute.phase().compareAndSet(1,
-                        initialPipelinePublished ? -1 : 0);
+                if (initialPipelinePublished) {
+                    // Scheduling or bookkeeping failed after tryWrite:
+                    // already-published DATA is never safe to retry.
+                    failPipeline(linkedRoute);
+                } else {
+                    // A rejected root encode/capacity/actor admission did not
+                    // publish DATA. Only its exact provisional claim can be
+                    // returned to phase 0; a concurrent abort remains fatal.
+                    linkedRoute.phase().compareAndSet(provisionalPipelinePhase(0), 0);
+                }
             }
             throw admissionFailure;
         }
