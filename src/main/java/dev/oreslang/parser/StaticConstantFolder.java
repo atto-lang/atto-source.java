@@ -165,10 +165,20 @@ public final class StaticConstantFolder {
                 && member.receiver() instanceof Ast.NameExpr owner) {
             Key target = new Key(owner.name(), member.member());
             if (modules.containsKey(owner.name()) && fields.containsKey(target)) {
+                Ast.ModuleDecl ownerModule = modules.get(owner.name());
                 Ast.FieldDecl field = fields.get(target);
-                if (!owner.name().equals(module)
-                        && field.visibility() != Ast.Visibility.PUBLIC)
-                    throw new IllegalArgumentException("private module constant is not accessible: " + target);
+                if (!owner.name().equals(module)) {
+                    // The visibility of BOTH the owning named module and its
+                    // declaration must permit access. A private module must
+                    // not be bypassed through a publicly marked nested field.
+                    if (!owner.name().equals(Parser.ROOT_MODULE)
+                            && ownerModule.visibility() != Ast.Visibility.PUBLIC)
+                        throw new IllegalArgumentException(
+                                "private module is not accessible for constant reference: " + target);
+                    if (field.visibility() != Ast.Visibility.PUBLIC)
+                        throw new IllegalArgumentException(
+                                "private module constant is not accessible: " + target);
+                }
                 return evaluate(target);
             }
             throw new IllegalArgumentException("unresolved module constant " + target);
