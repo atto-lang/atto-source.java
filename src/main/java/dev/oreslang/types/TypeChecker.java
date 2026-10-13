@@ -4653,6 +4653,7 @@ public final class TypeChecker {
             return true;
         }
         if (!(type instanceof Named named)) return false;
+        if (named.name().equals("$Symbol")) return named.arguments().isEmpty();
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
