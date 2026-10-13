@@ -338,6 +338,31 @@ final class ExclusiveAdtMatchSafetyTest {
     }
 
     @Test
+    void maximumExclusiveArmMatrixSelectsExactlyOneBodyWithoutRecursion() throws Exception {
+        // Legacy matching must scan all 4095 explicit disjoint alternatives
+        // before running the unique matching body. The 4096th is fallback.
+        // This exercises the exclusive path rather than only ordered matching.
+        StringBuilder source = new StringBuilder(
+                "pub async routine main(): void {\nmatch 1\n");
+        source.append("1 -> { stdio.println(\"selected\"); }\n");
+        for (int i = 2; i <= 4095; i++) {
+            source.append(i).append(" -> { stdio.println(\"wrong\"); }\n");
+        }
+        source.append("else -> { stdio.println(\"fallback\"); }\nend\nreturn;\n}");
+        String program = source.toString();
+        accepts(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source guest = Source.newBuilder(OresLanguage.ID,
+                program, "max-exclusive-suspendable-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(guest);
+        }
+        assertEquals("selected", output.toString(StandardCharsets.UTF_8).strip());
+    }
+
+    @Test
     void synchronousAndSuspendableExclusiveMatchesProduceSameResults() throws Exception {
         String matches = """
                 match true
