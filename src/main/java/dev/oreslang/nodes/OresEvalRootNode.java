@@ -7458,7 +7458,9 @@ public final class OresEvalRootNode extends RootNode {
             // A reference, borrow or move-only parameter cannot be injected
             // into a declaration initializer without a checked transfer
             // proof. The implicit arguments tuple is likewise unavailable.
-            Env scalarInitializerArgs = new Env(null, false, klass, object);
+            // Initializer parameter frames carry no constructor authority:
+            // they cannot authorize a write to an uninitialized object slot.
+            Env scalarInitializerArgs = new Env(null, false, klass);
             for (int i = 0; i < constructor.parameters().size(); i++) {
                 Ast.Param param = constructor.parameters().get(i);
                 Ast.TypeRef parameterType = param.type();
