@@ -1589,8 +1589,8 @@ public final class TypeChecker {
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
-                        ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
-                        : "W-SELECT-RETURN: return value in do select exits only the selected arm; the value is discarded");
+                        ? "W-SELECT-RETURN: legacy detached do nb select return; ends only that arm"
+                        : "W-SELECT-RETURN: legacy detached do nb select return value is arm-local and discarded");
             }
             if (currentGenerator) {
                 if (ret.value() != null) {
