@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.NamedCallBinder;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -2092,7 +2093,16 @@ public final class TypeChecker {
                         "unknown runtime ownership operation 'rt " + runtime.operation() + "'");
             };
         }
+        if (expr instanceof Ast.NamedArgumentExpr) {
+            throw new IllegalArgumentException("named argument labels are only valid inside a statically bound call");
+        }
         if (expr instanceof Ast.CallExpr call) {
+            if (NamedCallBinder.hasNamed(call.arguments())
+                    && (isBuiltinStdoutCall(call, "log", env)
+                            || isBuiltinStdoutCall(call, "logList", env)
+                            || booleanIntrinsicName(call, env) != null)) {
+                throw new IllegalArgumentException("builtin call does not declare named argument labels");
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -6585,8 +6595,12 @@ public final class TypeChecker {
             Type callableSelf,
             Map<String, Type> initialBindings,
             String label) {
+        NamedCallBinder.Plan namedPlan = NamedCallBinder.hasNamed(arguments)
+                ? NamedCallBinder.bind(arguments, params, label) : null;
+        List<Ast.Expr> boundArguments = namedPlan == null
+                ? arguments : namedPlan.expressionsInFormalOrder(arguments);
         List<ExpandedCallArgument> expanded =
-                expandFixedCallArguments(arguments, env, callerGenerics, callerSelf, label);
+                expandFixedCallArguments(boundArguments, env, callerGenerics, callerSelf, label);
         if (params.size() != expanded.size()) {
             throw new IllegalArgumentException(
                     label + " arity mismatch: expected " + params.size()
@@ -6597,7 +6611,12 @@ public final class TypeChecker {
         Set<String> fixedBindings = new HashSet<>(initialBindings.keySet());
         List<Type> patterns = params.stream().map(p -> resolveParam(p, unique, callableSelf)).toList();
 
-        for (int i = 0; i < expanded.size(); i++) {
+        // Type/effect checks must visit argument expressions in lexical source
+        // order even though their expected formal types use declaration slots.
+        List<Integer> sourceSlots = namedPlan == null
+                ? java.util.stream.IntStream.range(0, expanded.size()).boxed().toList()
+                : namedPlan.sourceToFormal();
+        for (int i : sourceSlots) {
             Type actual = expandedCallArgumentType(
                     expanded.get(i), patterns.get(i), env, callerGenerics, callerSelf);
             inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
@@ -6605,7 +6624,7 @@ public final class TypeChecker {
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
 
-        for (int i = 0; i < expanded.size(); i++) {
+        for (int i : sourceSlots) {
             Type expected = substituteGenerics(patterns.get(i), bindings);
             if (containsGenericNamed(expected, unbound)) {
                 throw new IllegalArgumentException("cannot infer all generic parameters for " + label + " from argument " + (i + 1));
