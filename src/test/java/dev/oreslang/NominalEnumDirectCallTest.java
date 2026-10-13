@@ -177,4 +177,21 @@ final class NominalEnumDirectCallTest {
         // instead of selecting the only PUBLIC overload by iteration.
         assertThrows(RuntimeException.class, () -> run(source));
     }
+
+    @Test
+    void directTreeShakerApiAlsoRejectsInvalidatedEnumCallBindings() {
+        String source = ENUMS + """
+                fnc choose(Color c): int { return 1; }
+                fnc choose(Mode m): int { return 2; }
+                pub routine main(): void {
+                    stdio.stdout.write(choose(Color.Blue()));
+                }
+                """;
+        var checked = TypeChecker.checkTypes(Parser.parse(source));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.TreeShaker.shake(
+                        checked, dev.oreslang.compiler.BuildOptions.executable()));
+        assertTrue(failure.getMessage().contains("rebinding callable IDs"),
+                failure.getMessage());
+    }
 }
