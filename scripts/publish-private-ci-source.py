@@ -21,6 +21,8 @@ SHA = re.compile(r"^[a-f0-9]{40}$")
 MAX_FILES = 1024
 MAX_BYTES = 40 * 1024 * 1024
 MAX_SINGLE = 10 * 1024 * 1024
+MAX_DIRECTORY_ENTRIES = 4096
+MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 
 
@@ -128,17 +130,30 @@ def collect_source(root, trusted_root):
     directories = []
     entries = []
     total = 0
+    visited = 0
+    entered_dirs = 0
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 
     def walk(directory_fd, prefix, depth):
-        nonlocal total
-        if depth > 64:
-            raise Denied("source directory nesting exceeds safety limit")
+        nonlocal total, visited, entered_dirs
+        entered_dirs += 1
+        if depth > 64 or entered_dirs > MAX_DIRECTORIES:
+            raise Denied("source directory nesting or count exceeds safety limit")
+        # scandir() can stream entries from an opened descriptor. Do not use
+        # os.listdir(), which materializes an unbounded directory before any
+        # quota can be checked.
+        names = []
         try:
-            names = sorted(os.listdir(directory_fd))
+            with os.scandir(directory_fd) as scan:
+                for entry in scan:
+                    visited += 1
+                    if visited > MAX_DIRECTORY_ENTRIES:
+                        raise Denied("source directory entry count exceeds safety limit")
+                    names.append(entry.name)
         except OSError as exc:
             raise Denied("source directory cannot be listed safely") from exc
+        names.sort()
         for name in names:
             if (name in (".", "..", ".git")
                     or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
