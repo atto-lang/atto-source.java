@@ -485,6 +485,16 @@ final class CriticalRwGateTest {
             assertFalse(waiting.isDone(),
                     "queued reader cannot execute until writer's carrier unwinds");
             assertEquals(1, gate.queuedCount());
+
+            // Unlock the guest before the runtime's try-with-resources close.
+            // The STOP thread must then retire the writer and admit the reader.
+            releaseTurn.countDown();
+            stopThread.join(5_000);
+            assertFalse(stopThread.isAlive(), "STOP never finalized after carrier exit");
+            assertNull(stopFailure.get());
+            assertTrue(waiting.isDone(), "reader did not wake after physical quiescence");
+            assertTrue(reader.isHeld());
+            assertFalse(gate.hasWriter());
         } finally {
             releaseTurn.countDown();
             if (stopThread != null) stopThread.join(5_000);
