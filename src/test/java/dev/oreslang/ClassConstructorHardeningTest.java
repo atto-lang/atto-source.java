@@ -275,6 +275,44 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void fieldInitializerCannotInvokeUncheckedTransitiveFunction() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                    fnc helper(): int { return 42; }
+                    define class Unsafe as
+                      final int value: helper();
+                    end
+                    """)));
+        assertTrue(error.getMessage().contains("without a proven transitive effect bound"));
+    }
+
+    @Test
+    void nestedClassConstructionNeedsVerifiedLiteralOnlyDefaultInitialization() {
+        String safe = """
+                define class Inner as
+                  final int answer: 42;
+                end
+                define class Outer as
+                  final mut Inner inner: new Inner();
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(safe)));
+
+        String unsafe = """
+                define class Inner as
+                  final int answer: 42;
+                  constructor() { return; }
+                end
+                define class Outer as
+                  final mut Inner inner: new Inner();
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(unsafe)));
+        assertTrue(failure.getMessage().contains("without a proven transitive effect bound"));
+    }
+
+    @Test
     void fieldInitializerCannotCapturePartiallyInitializedSelf() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
