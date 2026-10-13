@@ -22,6 +22,72 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Regression proving the same actor receives successive HTTP exchanges. */
 class NativeHttpPooledActorTest {
 
+    @Test void unexpectedlyEndedPooledWorkerAbortsInFlightExchangeAndRespawns() throws Exception {
+        String program = """
+            define actor Worker as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                if request.target == "/die"; then
+                  self.end();
+                  return;
+                fi
+                await request.respond(200, "text/plain", "recovered");
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val pool = http.pool_handler("Worker", 1);
+              val server = http.listen("127.0.0.1", 0, 4, 1024, 10000);
+              stdio.println(server.port);
+              for (let int i = 0; i < 2; i = i + 1) {
+                val request = await server.accept();
+                val completed = request.completion;
+                pool.dispatch(rt borrow mut request);
+                stdio.println(await completed);
+              }
+              stdio.println("POOL_TERMINAL_CLEANUP");
+              stdio.println(pool.workers_created);
+              stdio.println(pool.workers_inflight);
+              await server.shutdown(0);
+              return;
+            }
+            """;
+        CompletableFuture<Integer> port = new CompletableFuture<>();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public synchronized void write(byte[] bytes, int off, int length) {
+                super.write(bytes, off, length);
+                String value = toString(StandardCharsets.UTF_8);
+                int end = value.indexOf('\n');
+                if (end >= 0 && !port.isDone())
+                    port.complete(Integer.parseInt(value.substring(0, end).trim()));
+            }
+        };
+        try (Context context = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)
+                .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of()).out(output).build();
+             ExecutorService clients = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> work = clients.submit(() -> {
+                try (HttpClient http = HttpClient.newHttpClient()) {
+                    int listeningPort = port.get(10, TimeUnit.SECONDS);
+                    var die = HttpRequest.newBuilder(
+                        URI.create("http://127.0.0.1:" + listeningPort + "/die"))
+                        .timeout(Duration.ofSeconds(8)).GET().build();
+                    var healthy = HttpRequest.newBuilder(
+                        URI.create("http://127.0.0.1:" + listeningPort + "/healthy"))
+                        .timeout(Duration.ofSeconds(8)).GET().build();
+                    assertEquals(500, http.send(die, HttpResponse.BodyHandlers.ofString()).statusCode());
+                    var after = http.send(healthy, HttpResponse.BodyHandlers.ofString());
+                    assertEquals(200, after.statusCode());
+                    assertEquals("recovered", after.body());
+                } catch (Exception failure) { throw new RuntimeException(failure); }
+            });
+            context.eval(Source.newBuilder(OresLanguage.ID, program, "pooled-worker-died.ores").build());
+            work.get(30, TimeUnit.SECONDS);
+        }
+        String result = output.toString(StandardCharsets.UTF_8);
+        assertTrue(result.contains("POOL_TERMINAL_CLEANUP\n2\n0"),
+            "failed worker left an exchange retained or was incorrectly reused: " + result);
+    }
+
     @Test void oneTimedOutExchangeMustNotDestroyAnOtherwiseHealthyPooledActor() throws Exception {
         String program = """
             define actor Worker as
