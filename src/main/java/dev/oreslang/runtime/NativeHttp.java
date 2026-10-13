@@ -322,7 +322,10 @@ public final class NativeHttp implements AutoCloseable {
             } catch (IllegalArgumentException invalid) {
                 admission.release(); reject(raw, invalid.getMessage().equals("body too large") ? 413 : 400);
             } catch (RuntimeException failure) {
-                if (state != null && active.contains(state)) state.abort(500);
+                // An accepted State owns its admission release even if another
+                // thread has already removed it from active. Testing membership
+                // here and releasing manually can double-release a permit.
+                if (state != null) state.abort(500);
                 else { admission.release(); raw.close(); }
             }
             } finally {
@@ -344,27 +347,42 @@ public final class NativeHttp implements AutoCloseable {
             String length = raw.getRequestHeaders().getFirst("Content-Length");
             if (length != null && Long.parseLong(length) > bodyLimit) throw new IllegalArgumentException("body too large");
         }
-        public synchronized OresFuture<Object> shutdown(int graceMillis) {
+        public OresFuture<Object> shutdown(int graceMillis) {
             supervisor();
             if (graceMillis < 0) throw new IllegalArgumentException("negative drain deadline");
-            if (drained != null) return drained;
-            drained = new OresFuture<>(() -> false, () -> { });
-            stopAccepting();
-            // Do not cancel persistent workers before the grace interval:
-            // they may still own already-admitted HTTP exchanges that need to
-            // finish their response. Stopping admission is independent of
-            // terminating the workers serving those exchanges.
-            io.execute(() -> {
-                try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
-                finally {
-                    for (State state : active) state.abort(503);
-                    for (Handler handler : List.copyOf(pooledHandlers)) handler.shutdownFor(this);
-                    synchronized (this) { transportStopped = true; }
-                    servers.remove(this);
+            OresFuture<Object> result;
+            synchronized (this) {
+                if (drained != null) return drained;
+                drained = new OresFuture<>(() -> false, () -> { });
+                stopAccepting();
+                // A close() that already stopped the transport must not
+                // schedule onto an executor that may have been shut down.
+                if (transportStopped) {
                     completeDrain();
+                    return drained;
                 }
-            });
-            return drained;
+                result = drained;
+            }
+            // Do not cancel workers during the grace period: already-admitted
+            // exchanges may still need to complete their response.
+            try {
+                io.execute(() -> stopTransportAndDrain(graceMillis));
+            } catch (RejectedExecutionException unavailable) {
+                // Context closure may have stopped the shared I/O executor
+                // after shutdown was requested. Cleanup must still occur.
+                stopTransportAndDrain(0);
+            }
+            return result;
+        }
+        private void stopTransportAndDrain(int graceMillis) {
+            try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
+            finally {
+                for (State state : active) state.abort(503);
+                for (Handler handler : List.copyOf(pooledHandlers)) handler.shutdownFor(this);
+                synchronized (this) { transportStopped = true; }
+                servers.remove(this);
+                completeDrain();
+            }
         }
         private synchronized void completeDrain() {
             if (transportStopped && active.isEmpty() && drained != null) drained.completeFromRuntime(null);
@@ -376,11 +394,10 @@ public final class NativeHttp implements AutoCloseable {
         }
         @Override public void close() {
             stopAccepting();
-            for (Handler handler : List.copyOf(pooledHandlers)) handler.shutdownFor(this);
-            transport.stop(0);
-            synchronized (this) { transportStopped = true; }
-            for (State state : active) state.abort(503);
-            servers.remove(this); completeDrain();
+            // This may race a graceful shutdown; both paths are idempotent
+            // because State.abort/release and drained future completion are
+            // terminal-state gated.
+            stopTransportAndDrain(0);
         }
     }
 
@@ -423,12 +440,16 @@ public final class NativeHttp implements AutoCloseable {
             // failed exchange; worker termination is owned by pool shutdown.
             if (actor != null && !pooled && !alreadyClosed) actor.cancel();
             if (alreadyClosed) { release(); return; }
-            try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException closed) {
-                // I/O executor shutdown must not strand admission forever.
-                try { raw.close(); }
-                finally { synchronized (this) { transportClosed = true; } release(); }
-            }
+            Runnable cleanup = () -> {
+                try { if (send) reject(raw, status); else raw.close(); }
+                finally {
+                    synchronized (this) { transportClosed = true; }
+                    release();
+                }
+            };
+            // Accepted tasks must drain during runtime shutdown; if the
+            // executor is already closed, perform the same cleanup inline.
+            executeCleanup(io, cleanup);
         }
         void finish() {
             synchronized (this) { if (terminal) return; terminal = true; }
@@ -727,6 +748,12 @@ public final class NativeHttp implements AutoCloseable {
         try { return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString(); }
         catch (CharacterCodingException invalid) { throw new IllegalArgumentException("invalid UTF-8", invalid); }
     }
+    /** Execute an abort cleanup exactly once, including after executor rejection. */
+    static void executeCleanup(Executor executor, Runnable cleanup) {
+        try { executor.execute(cleanup); }
+        catch (RejectedExecutionException unavailable) { cleanup.run(); }
+    }
+
     private static void reject(HttpExchange raw, int status) {
         try { raw.sendResponseHeaders(status, -1); } catch (IOException ignored) { } finally { raw.close(); }
     }
@@ -734,6 +761,12 @@ public final class NativeHttp implements AutoCloseable {
         closed = true;
         for (Server server : List.copyOf(servers)) server.close();
         for (Handler handler : List.copyOf(pooledHandlers)) handler.shutdownFor(handler.server);
-        timers.shutdownNow(); io.shutdownNow(); transfers.clear();
+        timers.shutdownNow();
+        // shutdownNow() can discard already-accepted abort cleanup tasks,
+        // leaving live State instances holding admission permits and futures.
+        // The transport has been stopped above, so outstanding socket tasks
+        // should be unblocked; let their finally/release paths finish.
+        io.shutdown();
+        transfers.clear();
     }
 }
