@@ -148,6 +148,42 @@ final class ActorTypedTerminalBoundaryTest {
     }
 
     @Test
+    void cleanupPanicSupersedesActorThrowAndRetainsTypedSecondary() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        context.runtime().endCurrentActorWithCleanup(
+                                () -> { throw ActorRuntime.GuestEffectSignal.panicking(99); });
+                        throw ActorRuntime.GuestEffectSignal.throwing(7);
+                    });
+            actor.send("fail-and-cleanup");
+            assertTerminated(actor, PANIC, 99);
+            var secondary = actor.terminalFailureNotice().orElseThrow()
+                    .secondary().orElseThrow();
+            assertEquals(THROW, secondary.origin());
+            assertEquals(7, secondary.originCode());
+        }
+    }
+
+    @Test
+    void weakerCleanupThrowCannotDowngradeInFlightRaise() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        context.runtime().endCurrentActorWithCleanup(
+                                () -> { throw ActorRuntime.GuestEffectSignal.throwing(3); });
+                        throw ActorRuntime.GuestEffectSignal.raising(71);
+                    });
+            actor.send("raise-and-cleanup");
+            assertTerminated(actor, RAISE, 71);
+            var secondary = actor.terminalFailureNotice().orElseThrow()
+                    .secondary().orElseThrow();
+            assertEquals(THROW, secondary.origin());
+            assertEquals(3, secondary.originCode());
+        }
+    }
+
+    @Test
     void compilerEffectSignalRejectsOutOfRangeCodes() {
         assertThrows(IllegalArgumentException.class,
                 () -> ActorRuntime.GuestEffectSignal.throwing(-1));
