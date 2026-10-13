@@ -25,14 +25,26 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
+    public record ModuleDecl(String name, Visibility visibility, List<Annotation> annotations,
+                             List<TypeRef> contracts, List<Decl> declarations) {
         public ModuleDecl {
+            if (visibility == null) throw new IllegalArgumentException("module visibility is required");
             annotations = List.copyOf(annotations);
             contracts = List.copyOf(contracts);
             declarations = List.copyOf(declarations);
         }
-        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), List.of(), declarations); }
-        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
+        // Compatibility for AST-producing tests and existing callers; source
+        // declarations are private unless explicitly marked pub.
+        public ModuleDecl(String name, List<Annotation> annotations,
+                          List<TypeRef> contracts, List<Decl> declarations) {
+            this(name, Visibility.PRIVATE, annotations, contracts, declarations);
+        }
+        public ModuleDecl(String name, List<Decl> declarations) {
+            this(name, Visibility.PRIVATE, List.of(), List.of(), declarations);
+        }
+        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+            this(name, Visibility.PRIVATE, annotations, List.of(), declarations);
+        }
     }
 
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
