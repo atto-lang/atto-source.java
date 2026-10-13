@@ -225,6 +225,43 @@ final class ExclusiveAdtMatchSafetyTest {
     }
 
     @Test
+    void suspendableLegacyMatchKeepsExclusiveSemanticsAcrossGuardsAndFallback() throws Exception {
+        // Async main executes match arms through runMatchArms rather than the
+        // ordinary synchronous statement evaluator. Both must implement the
+        // same exhaustive, exclusive semantics and preserve the selected arm.
+        String program = """
+                pub async routine main(): void {
+                    match true
+                        true -> { stdio.println("true"); }
+                        false -> { stdio.println("wrong"); }
+                    end
+                    match 5
+                        x when x < 0 -> { stdio.println("negative"); }
+                        x when x >= 0 -> { stdio.println("positive"); }
+                        else -> { stdio.println("fallback"); }
+                    end
+                    match false
+                        true -> { stdio.println("wrong"); }
+                        else -> { stdio.println("fallback"); }
+                    end
+                    return;
+                }
+                """;
+        accepts(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source guest = Source.newBuilder(OresLanguage.ID,
+                program, "exclusive-suspendable-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(guest);
+        }
+        assertEquals("true\npositive\nfallback",
+                output.toString(StandardCharsets.UTF_8).strip()
+                        .replace("\r\n", "\n"));
+    }
+
+    @Test
     void exclusiveMatchesHaveAtMostOneFallbackArm() {
         String source = """
                 fnc classify(bool input): int {
