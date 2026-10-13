@@ -376,6 +376,59 @@ final class PatternMatchingHardeningTest {
     }
 
     @Test
+    void incompleteFiniteSumPartitionsNeverTypecheckAcrossCandidateSubsets() {
+        // Small finite-domain exhaustive model: every subset of candidate
+        // patterns is checked, and incomplete subsets must *never* compile.
+        // Complete sets may still be rejected if an ordered arm is dead.
+        String[] optionPatterns = {
+                "Some(true)", "Some(false)", "None", "Some(_)"
+        };
+        for (int mask = 1; mask < (1 << optionPatterns.length); mask++) {
+            boolean coversSome = (mask & 8) != 0 || (mask & 3) == 3;
+            boolean coversNone = (mask & 4) != 0;
+            if (coversSome && coversNone) continue;
+
+            StringBuilder source = new StringBuilder(
+                    "fnc test(Option<bool> value): int { match value over\\n");
+            for (int i = 0; i < optionPatterns.length; i++) {
+                if ((mask & (1 << i)) != 0) {
+                    source.append(" on ").append(optionPatterns[i])
+                            .append(" -> { return 1; }\\n");
+                }
+            }
+            source.append(" end }");
+            final String candidate = source.toString();
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(candidate)),
+                    "incomplete Option<bool> partition compiled (mask=" + mask + ")");
+        }
+
+        String[] resultPatterns = {
+                "Ok(true)", "Ok(false)", "Err(true)", "Err(false)",
+                "Ok(_)", "Err(_)"
+        };
+        for (int mask = 1; mask < (1 << resultPatterns.length); mask++) {
+            boolean coversOk = (mask & 16) != 0 || (mask & 3) == 3;
+            boolean coversErr = (mask & 32) != 0 || (mask & 12) == 12;
+            if (coversOk && coversErr) continue;
+
+            StringBuilder source = new StringBuilder(
+                    "fnc test(Result<bool, bool> value): int { match value over\\n");
+            for (int i = 0; i < resultPatterns.length; i++) {
+                if ((mask & (1 << i)) != 0) {
+                    source.append(" on ").append(resultPatterns[i])
+                            .append(" -> { return 1; }\\n");
+                }
+            }
+            source.append(" end }");
+            final String candidate = source.toString();
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(candidate)),
+                    "incomplete Result<bool,bool> partition compiled (mask=" + mask + ")");
+        }
+    }
+
+    @Test
     void switchIsConstantDispatchAndRejectsDuplicateCases() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int value): int {
