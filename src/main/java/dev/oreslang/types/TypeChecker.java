@@ -2955,7 +2955,8 @@ public final class TypeChecker {
                 };
             }
             if (sumReceiver instanceof Named named && named.name().equals("NioTcpListener")
-                    && member.member().equals("port")) return Primitive.INT;
+                    && (member.member().equals("port") || member.member().equals("peak_outstanding")
+                        || member.member().equals("max_command_queue_ns"))) return Primitive.INT;
             Type ioMember = builtinIoMember(sumReceiver, member.member());
             if (ioMember != null) return ioMember;
             Type httpMember = builtinHttpMember(sumReceiver, member.member());

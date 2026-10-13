@@ -103,8 +103,8 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     }
 
     int outstandingFutures() { return pending.get(); }
-    int peakOutstandingFutures() { return peakPending.get(); }
-    long maxCommandQueueNanos() { return worstCommandQueueNanos.get(); }
+    public int peakOutstandingFutures() { return peakPending.get(); }
+    public long maxCommandQueueNanos() { return worstCommandQueueNanos.get(); }
 
     private boolean submit(OresFuture<?> future, Runnable runnable) {
         synchronized (admissionGate) {

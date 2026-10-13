@@ -6344,6 +6344,8 @@ public final class OresEvalRootNode extends RootNode {
                 context.requireNioOwner(listener, "net.listener." + name);
                 return switch (name) {
                     case "port" -> (long) listener.localPort();
+                    case "peak_outstanding" -> (long) listener.peakOutstandingFutures();
+                    case "max_command_queue_ns" -> listener.maxCommandQueueNanos();
                     case "accept_token_async" -> (Invokable) args -> {
                         requireZero(args, "NioTcpListener.accept_token_async");
                         context.requireNioOwner(listener, "net.accept_token");
