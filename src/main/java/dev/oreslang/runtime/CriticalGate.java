@@ -320,6 +320,13 @@ public final class CriticalGate {
                 WAITING_ON.remove(ticket.logicalOwner, this);
             }
         }
+        // A STOP may close the core gate directly, bypassing the RW facade's
+        // public close(). Invalidate that facade's owner registry before
+        // publishing terminal futures, or a stale owner can block an entirely
+        // different gate on the same logical task.
+        CriticalRwGate facade;
+        synchronized (this) { facade = rwFacade; }
+        if (facade != null) facade.onEngineClosed();
         for (Ticket ticket : revoke) {
             ticket.admitted.failFromRuntime(
                     new CancellationException("critical domain closed"));
