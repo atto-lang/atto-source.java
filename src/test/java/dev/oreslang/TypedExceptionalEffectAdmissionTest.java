@@ -123,6 +123,24 @@ final class TypedExceptionalEffectAdmissionTest {
     }
 
     @Test
+    void rawAstCannotBypassOwnershipOrCapabilityEffectAdmission() {
+        for (String keyword : List.of("throw", "raise", "panic")) {
+            Ast.Program unit = Parser.parse("fnc bad(): void { " + keyword + " 1; }");
+            IllegalArgumentException ownership = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.types.OwnershipChecker.check(unit));
+            assertTrue(ownership.getMessage().contains("not yet enabled"),
+                    ownership::getMessage);
+            SecurityException capability = assertThrows(
+                    SecurityException.class,
+                    () -> dev.oreslang.runtime.CapabilityChecker.check(
+                            unit, dev.oreslang.runtime.IsolatePolicy.developer()));
+            assertTrue(capability.getMessage().contains("supervisor lowering"),
+                    capability::getMessage);
+        }
+    }
+
+    @Test
     void reservedKeywordsCannotMasqueradeAsOrdinaryIdentifiers() {
         for (String effect : List.of("throw", "raise", "panic", "recover")) {
             assertThrows(IllegalArgumentException.class,
