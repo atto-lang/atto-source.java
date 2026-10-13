@@ -6,8 +6,10 @@ writes target the exact repository checked by the private-source policy.
 """
 import argparse
 import base64
+import hashlib
 import json
 import os
+import stat
 from pathlib import Path
 import re
 import subprocess
@@ -82,6 +84,8 @@ def require_preflight(repository, root):
 def collect_source(root):
     if root.is_symlink() or not root.is_dir():
         raise Denied("source path must be a real directory")
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise Denied("operating system cannot enforce no-follow source reads")
     entries = []
     size = 0
     for current, dirs, files in os.walk(root, followlinks=False):
@@ -96,13 +100,22 @@ def collect_source(root):
             rel = path.relative_to(root).as_posix()
             if any(ord(ch) < 32 for ch in rel) or "\\" in rel:
                 raise Denied("source path contains unsupported characters")
-            data = path.read_bytes()
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(fd, "rb") as stream:
+                    metadata = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(metadata.st_mode):
+                        raise Denied("source file is not regular")
+                    data = stream.read(MAX_SINGLE + 1)
+            except OSError as exc:
+                raise Denied("source file changed or cannot be read safely") from exc
             if len(data) > MAX_SINGLE:
                 raise Denied("file exceeds source mirror limit")
             size += len(data)
             if size > MAX_BYTES or len(entries) >= MAX_FILES:
                 raise Denied("source mirror exceeds bounded capacity")
-            entries.append((rel, data, "100755" if os.access(path, os.X_OK) else "100644"))
+            mode = "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
+            entries.append((rel, data, mode))
     if not entries:
         raise Denied("source directory is empty")
     return sorted(entries, key=lambda x: x[0])
@@ -113,6 +126,12 @@ def publish(repository, source, branch, trusted_root):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
+    trusted = trusted_root.resolve(strict=True)
+    checked_source = source.resolve(strict=True)
+    try:
+        checked_source.relative_to(trusted)
+    except ValueError as exc:
+        raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source)
     base = checked_repo(repository)
     default = base.get("default_branch")
@@ -128,8 +147,13 @@ def publish(repository, source, branch, trusted_root):
         blob = gh_api(f"repos/{repository}/git/blobs", method="POST", payload={
             "content": base64.b64encode(data).decode("ascii"), "encoding": "base64"
         })
+        blob_sha = valid_sha(blob.get("sha"))
+        expected = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
+                                + b"\\0" + data).hexdigest()
+        if blob_sha != expected:
+            raise Denied("uploaded blob digest does not match local source bytes")
         elements.append({"path": PREFIX + "/" + rel, "mode": mode,
-                         "type": "blob", "sha": valid_sha(blob.get("sha"))})
+                         "type": "blob", "sha": blob_sha})
     checked_repo(repository)
     new_tree = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"base_tree": base_tree, "tree": elements})
