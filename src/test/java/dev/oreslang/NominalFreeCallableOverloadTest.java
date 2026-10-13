@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -122,6 +123,70 @@ final class NominalFreeCallableOverloadTest {
                 }
                 """);
         assertEquals("20:10", output);
+    }
+
+    @Test
+    void compilerRetainsIdentityBoundTargetInsteadOfRuntimeReselection() {
+        TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(
+                Parser.parse("""
+                        define enum A { Foo = 1 }
+                        define enum B { Foo = 1 }
+                        fnc dispatch(A a): int { return 1; }
+                        fnc dispatch(B b): int { return 2; }
+                        pub routine main(): void {
+                            const A value = A.Foo;
+                            stdio.stdout.write(dispatch(value));
+                            return;
+                        }
+                        """));
+        assertEquals(1, checked.resolvedFreeCalls().size());
+        var binding = checked.resolvedFreeCalls().entrySet().iterator().next();
+        assertEquals("A", binding.getValue().parameters().getFirst().type().name());
+        // AST records compare structurally; compiler selections must *not*
+        // authorize a distinct but equal-looking call site.
+        Ast.CallExpr impersonator = new Ast.CallExpr(
+                binding.getKey().callee(),
+                binding.getKey().typeArguments(),
+                binding.getKey().typeArgumentsPresent(),
+                binding.getKey().arguments());
+        assertEquals(binding.getKey(), impersonator);
+        assertFalse(checked.resolvedFreeCalls().containsKey(impersonator));
+        assertThrows(UnsupportedOperationException.class,
+                () -> checked.resolvedFreeCalls().clear());
+    }
+
+    @Test
+    void nominalOverloadFamilyRejectsDifferentSchedulerEnvelopes() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define enum A { Foo = 1 }
+                        define enum B { Foo = 1 }
+                        fnc dispatch(A a): int { return 1; }
+                        async fnc dispatch(B b): int { return 2; }
+                        """)));
+        assertTrue(error.getMessage().contains("scheduling envelopes"), error::getMessage);
+    }
+
+    @Test
+    void typeAliasesCannotForgeANewEnumOverloadIdentity() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define enum A { Foo = 1 }
+                        type Alias = A;
+                        fnc dispatch(A a): int { return 1; }
+                        fnc dispatch(Alias a): int { return 2; }
+                        """)));
+        assertTrue(error.getMessage().contains("already has arity 1"), error::getMessage);
+    }
+
+    @Test
+    void canonicalPrimitiveAliasesCannotOverloadOneAnother() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc dispatch(i8 value): int { return 1; }
+                        fnc dispatch(int value): int { return 2; }
+                        """)));
+        assertTrue(error.getMessage().contains("already has arity 1"), error::getMessage);
     }
 
     private static String run(String program) throws Exception {
