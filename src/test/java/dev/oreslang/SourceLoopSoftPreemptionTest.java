@@ -169,21 +169,34 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
-    void forOfBackedgesPreserveExactlyOnceIterationAfterCarrierCooperation()
+    void forOfFailureAfterCooperationDoesNotConsumeAnotherElement()
             throws Exception {
-        assertEquals("2400", run("""
-                async fnc count(): int {
-                  let total = 0;
-                  for (let outer = 0; outer < 600; outer = outer + 1) do
-                    for const item of arr[1, 2, 3, 4] do
-                      total = total + 1;
-                    done
-                  done
-                  return total;
+        assertEquals("1603|caught|finally|after", run("""
+                async fnc fail(): int {
+                  rt cooperate;
+                  val Option<int> empty = None;
+                  return empty.unwrap();
                 }
 
                 pub async routine main(): void {
-                  stdio.stdout.write(await count());
+                  let completed = 0;
+                  try {
+                    for (let outer = 0; outer < 600; outer = outer + 1) do
+                      for const item of arr[1, 2, 3, 4] do
+                        completed = completed + 1;
+                        if outer == 400 && item == 3; do
+                          val unused = await fail();
+                        fi
+                      done
+                    done
+                    stdio.stdout.write("unexpected");
+                  } catch (err) {
+                    stdio.stdout.write(completed);
+                    stdio.stdout.write("|caught");
+                  } finally {
+                    stdio.stdout.write("|finally");
+                  }
+                  stdio.stdout.write("|after");
                   return;
                 }
                 """));
