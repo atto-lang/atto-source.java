@@ -50,7 +50,7 @@ final class NativeNetStdlibTest {
             PipedOutputStream output = new PipedOutputStream(readPort);
             Future<?> program = runner.submit(() -> {
                 try {
-                    LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                    LinkedProgramRunner.run(entry, IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK),
                             ExecutionProfile.serverJit(), output, new ByteArrayOutputStream());
                 } catch (Exception e) { throw new RuntimeException(e); }
                 finally { try { output.close(); } catch (IOException ignored) {} }
