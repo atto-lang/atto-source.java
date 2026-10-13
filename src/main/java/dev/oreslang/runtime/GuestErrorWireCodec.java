@@ -158,15 +158,14 @@ public final class GuestErrorWireCodec {
     private static void appendSafeDiagnosticText(StringBuilder out, String guestText) {
         for (int i = 0; i < guestText.length(); i++) {
             char c = guestText.charAt(i);
-            if (c == '\\n') out.append("\\\\n");
-            else if (c == '\\r') out.append("\\\\r");
-            else if (c == '\\t') out.append("\\\\t");
+            if (c == '\n') out.append("\\n");
+            else if (c == '\r') out.append("\\r");
+            else if (c == '\t') out.append("\\t");
             else if (Character.isISOControl(c)
-                    || c == '\\u202a' || c == '\\u202b' || c == '\\u202c'
-                    || c == '\\u202d' || c == '\\u202e'
-                    || (c >= '\\u2066' && c <= '\\u2069')) {
-                out.append("\\\\u");
-                out.append(Character.forDigit((c >>> 12) & 15, 16))
+                    || (c >= 0x202a && c <= 0x202e)
+                    || (c >= 0x2066 && c <= 0x2069)) {
+                out.append("\\u")
+                   .append(Character.forDigit((c >>> 12) & 15, 16))
                    .append(Character.forDigit((c >>> 8) & 15, 16))
                    .append(Character.forDigit((c >>> 4) & 15, 16))
                    .append(Character.forDigit(c & 15, 16));
@@ -182,7 +181,7 @@ public final class GuestErrorWireCodec {
             appendSafeDiagnosticText(result, message);
         }
         for (String frame : frames) {
-            result.append("\\n  at ");
+            result.append("\n  at ");
             appendSafeDiagnosticText(result, frame);
         }
         return result.toString();

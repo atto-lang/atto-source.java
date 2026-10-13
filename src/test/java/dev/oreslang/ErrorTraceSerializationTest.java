@@ -45,8 +45,9 @@ final class ErrorTraceSerializationTest {
                 GuestErrorWireCodec.json("ActorAskTimeoutError", 9007,
                         "test\n\"escaped\"", List.of("main"), true));
         assertEquals("Error (0)", GuestErrorWireCodec.text("Error", 0, "", List.of()));
-        assertEquals("Error (0): first\\nsecond\\rthird\\u202e\\tend\\n  at frame\\nspoof",
-                GuestErrorWireCodec.text("Error", 0, "first\nsecond\rthird\u202e\tend",
+        assertEquals("Error (0): first\\nsecond\\rthird\\u202e\\tend\n  at frame\\nspoof",
+                GuestErrorWireCodec.text("Error", 0,
+                        "first\nsecond\rthird" + (char) 0x202e + "\tend",
                         List.of("frame\nspoof")));
         assertThrows(IllegalArgumentException.class, () ->
                 GuestErrorWireCodec.json("E", 1, "x".repeat(4097), List.of(), true));
