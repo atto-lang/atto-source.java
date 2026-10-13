@@ -7456,7 +7456,11 @@ public final class TypeChecker {
         if (actual.readOnly() && !expected.readOnly()) return false;
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
             Type candidate = actual.members().get(required.getKey());
-            if (candidate == null || !assignable(candidate, required.getValue())) return false;
+            if (candidate == null) return false;
+            // Method identity comes from a compiler witness, not a string name.
+            if (actual.methodKeys().contains(required.getKey())
+                    != expected.methodKeys().contains(required.getKey())) return false;
+            if (!assignable(candidate, required.getValue())) return false;
             // Writable slots must be genuinely invariant. Two-way assignability
             // is insufficient: Unknown, dynamic interop and permissive generic
             // relations can pass both directions without equal representations.
