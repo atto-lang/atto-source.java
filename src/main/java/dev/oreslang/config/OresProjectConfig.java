@@ -178,7 +178,27 @@ public final class OresProjectConfig {
                         "bare import '" + importPath + "' escapes configured search root '" + normalizedRoot + "'");
             }
             Optional<Path> resolved = existingSource(candidate);
-            if (resolved.isPresent()) return resolved;
+            if (resolved.isPresent()) {
+                // Lexical containment alone can be bypassed by a symlink to a
+                // different source root. Each explicit search root may itself
+                // be a symlink, so compare canonical roots rather than merely
+                // rejecting all symlinks.
+                try {
+                    Path realRoot = normalizedRoot.toRealPath();
+                    Path realTarget = resolved.get().toRealPath();
+                    if (!realTarget.startsWith(realRoot)) {
+                        throw new IllegalArgumentException(
+                                "bare import '" + importPath
+                                        + "' resolves outside configured search root '"
+                                        + normalizedRoot + "' through filesystem alias");
+                    }
+                } catch (IOException unreadable) {
+                    throw new IllegalArgumentException(
+                            "cannot resolve physical identity for bare import '" + importPath
+                                    + "' beneath '" + normalizedRoot + "'", unreadable);
+                }
+                return resolved;
+            }
         }
         return Optional.empty();
     }
