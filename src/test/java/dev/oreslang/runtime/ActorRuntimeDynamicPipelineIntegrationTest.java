@@ -25,6 +25,21 @@ import static org.junit.jupiter.api.Assertions.*;
  * tracked separately.
  */
 final class ActorRuntimeDynamicPipelineIntegrationTest {
+    @Test
+    void provisionalClaimIsNotAnAbortOrAnAlreadyCommittedHop() {
+        // A published sibling may physically DONE while its neighbor is
+        // currently encoding the next message. -2 and below are reservations,
+        // not failures. In particular, phase 4 may be reserved as -6 while
+        // a three-stage sink legitimately completes at committed phase 4.
+        assertEquals(0, ActorRuntime.committedPipelinePhase(-2));
+        assertEquals(1, ActorRuntime.committedPipelinePhase(-3));
+        assertEquals(4, ActorRuntime.committedPipelinePhase(-6));
+        assertEquals(5, ActorRuntime.committedPipelinePhase(-7));
+        assertEquals(-1, ActorRuntime.committedPipelinePhase(-1),
+                "terminal failure must remain distinct from all reservations");
+        assertEquals(6, ActorRuntime.committedPipelinePhase(6));
+    }
+
     private record Owned(ActorRuntime.ActorId ownerActorId)
             implements ActorRuntime.ActorOwnedGuestState { }
 
@@ -79,7 +94,7 @@ final class ActorRuntimeDynamicPipelineIntegrationTest {
                     long n = ((Number) message.payload()).longValue();
                     ActorRuntime scheduler = ctx.runtime();
                     switch (actorTypeName) {
-                        case "Source" -> {
+                        case "Source", "SourceFatalAfterResult" -> {
                             if (mail.sender().isEmpty()) {
                                 scheduler.routeCurrentPipeline(
                                         new TaggedMessageCodec.TaggedValue(
@@ -87,6 +102,10 @@ final class ActorRuntimeDynamicPipelineIntegrationTest {
                             } else {
                                 observed.add(n);
                                 scheduler.endCurrentActor();
+                                if (actorTypeName.equals("SourceFatalAfterResult")) {
+                                    throw new IllegalStateException(
+                                            "source failed after final typed reply phase");
+                                }
                             }
                         }
                         case "TransformPostPublishFailure" -> {
@@ -242,6 +261,40 @@ final class ActorRuntimeDynamicPipelineIntegrationTest {
             assertEquals(PipelineController.State.FAILED, failedController.state());
             failedController.close().toCompletableFuture().get(10, TimeUnit.SECONDS);
             assertEquals(PipelineController.State.CLOSED, failedController.state());
+
+            // Source can commit the final nominal reply (phase 2*N) and still
+            // fail before physical DONE. Completion of the route's phase is
+            // not an irrevocable success: actor termination must poison the
+            // whole route and invalidate the previously copied reply.
+            PipelinePlan.ActorProvider fatalSource = () ->
+                    runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED,
+                            executor, "SourceFatalAfterResult");
+            PipelinePlan failsAfterFinalReply = new PipelinePlanner()
+                    .add("source", "SourceFatalAfterResult", domain, fatalSource)
+                    .add("transform", "TransformV1", domain, v1)
+                    .add("sink", "Sink", domain, sink)
+                    .build();
+            ActorRuntimePipelineEngine fatalSourceEngine = new ActorRuntimePipelineEngine(
+                    runtime, task -> Thread.startVirtualThread(task),
+                    Map.of("SourceFatalAfterResult", fatalSource,
+                            "TransformV1", v1, "Sink", sink));
+            PipelineController fatalSourceController =
+                    new PipelineController(failsAfterFinalReply, fatalSourceEngine);
+            PipelineRunner fatalSourceRunner = fatalSourceController.start();
+            assertThrows(Exception.class, () -> fatalSourceRunner.sendExpected(
+                    new TaggedMessageCodec.TaggedValue(
+                            "Signal", "Data", 1, 5L), "Signal.Result")
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS),
+                    "final typed reply was returned despite fatal source physical DONE");
+            assertThrows(Exception.class, () -> fatalSourceRunner.getDone()
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS),
+                    "physical-DONE barrier incorrectly accepted fatal source cleanup");
+            assertEquals(PipelineController.State.FAILED, fatalSourceController.state());
+            fatalSourceController.close().toCompletableFuture()
+                    .get(10, TimeUnit.SECONDS);
+            assertEquals(PipelineController.State.CLOSED, fatalSourceController.state());
+            assertEquals(15L, observed.remove(), "final source failure route did not execute");
+            assertTrue(observed.isEmpty());
         }
     }
 }
