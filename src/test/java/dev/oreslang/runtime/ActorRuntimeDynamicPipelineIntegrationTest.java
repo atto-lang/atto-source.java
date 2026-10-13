@@ -89,6 +89,16 @@ final class ActorRuntimeDynamicPipelineIntegrationTest {
                                 scheduler.endCurrentActor();
                             }
                         }
+                        case "TransformPostPublishFailure" -> {
+                            // Simulate a stage throwing after the downstream
+                            // mailbox has accepted DATA. Publication may have
+                            // occurred, so this flow must never expose success.
+                            scheduler.routeCurrentPipeline(
+                                    new TaggedMessageCodec.TaggedValue(
+                                            "Signal", "Data", 1, n + 2), true);
+                            throw new IllegalStateException(
+                                    "injected failure after directional DATA publication");
+                        }
                         case "TransformV1", "TransformV2" -> {
                             long delta = actorTypeName.equals("TransformV2") ? 10 : 2;
                             if (message.variant().equals("Data")) {
@@ -179,6 +189,34 @@ final class ActorRuntimeDynamicPipelineIntegrationTest {
             second.getDone().toCompletableFuture().get(10, TimeUnit.SECONDS);
             controller.close().toCompletableFuture().get(10, TimeUnit.SECONDS);
             assertEquals(PipelineController.State.CLOSED, controller.state());
+
+            // A fatal actor failure after an already committed directional
+            // publication must poison the route, even if Sink raced ahead and
+            // produced a reply. Neither a successful whole-route DONE nor a
+            // fabricated typed result is permissible.
+            PipelinePlan.ActorProvider fatalStage = () ->
+                    runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED,
+                            executor, "TransformPostPublishFailure");
+            PipelinePlan failsAfterPublication = new PipelinePlanner()
+                    .add("source", "Source", domain, src)
+                    .add("transform", "TransformPostPublishFailure",
+                            domain, fatalStage)
+                    .add("sink", "Sink", domain, sink)
+                    .build();
+            ActorRuntimePipelineEngine failingEngine = new ActorRuntimePipelineEngine(
+                    runtime, Runnable::run, Map.of("Source", src,
+                            "TransformPostPublishFailure", fatalStage, "Sink", sink));
+            PipelineController failedController = new PipelineController(
+                    failsAfterPublication, failingEngine);
+            PipelineRunner failureRunner = failedController.start();
+            assertThrows(Exception.class, () -> failureRunner.sendExpected(
+                    new TaggedMessageCodec.TaggedValue(
+                            "Signal", "Data", 1, 5L), "Signal.Result")
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS),
+                    "failed post-publication actor cannot settle a typed result");
+            assertEquals(PipelineController.State.FAILED, failedController.state());
+            failedController.close().toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(PipelineController.State.CLOSED, failedController.state());
         }
     }
 }
