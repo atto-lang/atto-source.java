@@ -50,6 +50,23 @@ public final class NativeHttp implements AutoCloseable {
         return added[0] ? PoolAdmission.REGISTERED : PoolAdmission.FULL;
     }
 
+    /**
+     * Select a worker slot with available capacity, rotating the start slot
+     * after every successful selection. A saturated slot must not cause a
+     * spurious 503 while another registered worker has free space.
+     */
+    static int findAvailablePoolSlot(int slots, long cursor,
+            java.util.function.IntPredicate hasCapacity) {
+        if (slots <= 0) throw new IllegalArgumentException("pool slots must be positive");
+        Objects.requireNonNull(hasCapacity, "hasCapacity");
+        int first = (int) Math.floorMod(cursor, (long) slots);
+        for (int offset = 0; offset < slots; offset++) {
+            int slot = (int) (((long) first + offset) % slots);
+            if (hasCapacity.test(slot)) return slot;
+        }
+        return -1;
+    }
+
     public NativeHttp(OresContext context) {
         this.context = Objects.requireNonNull(context);
         timers.setRemoveOnCancelPolicy(true);
@@ -151,9 +168,26 @@ public final class NativeHttp implements AutoCloseable {
                 exchange.state.abort(500);
                 throw new IllegalStateException("HTTP pool cannot be shared across listeners");
             }
-            int slot = (int) Math.floorMod(nextSlot++, (long) poolSize);
+            // Scan at most one pool revolution. Dispatch admission remains
+            // serialized under Handler's monitor, while per-worker release
+            // can happen concurrently in State.release().
+            int slot = findAvailablePoolSlot(poolSize, nextSlot, candidateSlot -> {
+                ActorRuntime.ActorRef<Object> candidate = workers.get(candidateSlot);
+                if (candidate == null || !context.actors().isAlive(candidate)) return true;
+                Set<State> outstanding = inFlight.get(candidate);
+                return outstanding == null || outstanding.size() < MAX_POOLED_INFLIGHT_PER_WORKER;
+            });
+            if (slot == -1) {
+                rejected.incrementAndGet();
+                exchange.state.abort(503);
+                return;
+            }
+            // Advance from the chosen slot, not from a saturated slot we
+            // skipped, so recurring traffic still rotates fairly.
+            nextSlot = ((long) slot + 1) % poolSize;
             ActorRuntime.ActorRef<Object> actor = workers.get(slot);
-            boolean fresh = actor == null || !context.actors().isAlive(actor);
+            boolean fresh = actor == null || !context.actors().isAlive(actor)
+                    || !inFlight.containsKey(actor);
             try {
                 if (fresh) {
                     long spawnPerf = CorePerf.start();
