@@ -57,7 +57,10 @@ final class CriticalRwGateTest {
 
                 releaseTurn.countDown();
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-                while (grant.get().isHeld() && System.nanoTime() < deadline) {
+                while ((grant.get().isHeld()
+                        || gate.trackedTicketCount() != 0
+                        || runtime.trackedActorResourceCount(actor) != 0)
+                        && System.nanoTime() < deadline) {
                     Thread.onSpinWait();
                 }
                 assertFalse(grant.get().isHeld(),
@@ -112,7 +115,10 @@ final class CriticalRwGateTest {
 
                 releaseTurn.countDown();
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-                while (grant.get().isHeld() && System.nanoTime() < deadline) {
+                while ((grant.get().isHeld()
+                        || gate.trackedTicketCount() != 0
+                        || runtime.trackedActorResourceCount(actor) != 0)
+                        && System.nanoTime() < deadline) {
                     Thread.onSpinWait();
                 }
                 assertFalse(grant.get().isHeld());
