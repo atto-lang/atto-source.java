@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -176,4 +177,106 @@ final class OresFutureCallbackTest {
                             + "the dependent Future on the registrar stack");
         }
     }
+    @Test
+    void hostStageRejectedCancellationCannotDiscardLaterValue() throws Exception {
+        class CommittedHandoff<T> extends CompletableFuture<T> {
+            @Override
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                // Mirrors a mutex waiter physically dequeued for handoff:
+                // it cannot be cancelled even if the public result is pending.
+                return false;
+            }
+        }
+        CommittedHandoff<Object> handoff = new CommittedHandoff<>();
+        OresFuture<Object> awaited = OresFuture.from(handoff);
+        Object linearValue = new Object();
+
+        assertFalse(awaited.cancel(false),
+                "a rejected physical handoff must not disappear behind an OresFuture cancellation");
+        assertFalse(awaited.isDone());
+        handoff.complete(linearValue);
+        assertSame(linearValue, awaited.get(2, TimeUnit.SECONDS));
+        assertFalse(awaited.isCancelled());
+    }
+
+    @Test
+    void minimalCompletionStageCannotBeCancelledButKeepsItsLateValue() throws Exception {
+        CompletableFuture<Object> producer = new CompletableFuture<>();
+        java.util.concurrent.CompletionStage<Object> minimal =
+                producer.minimalCompletionStage();
+        // This type implements Future but its cancel() throws
+        // UnsupportedOperationException, unlike ordinary CompletableFuture.
+        assertTrue(minimal instanceof java.util.concurrent.Future<?>);
+
+        OresFuture<Object> awaited = OresFuture.from(minimal);
+        Object linearResource = new Object();
+
+        assertFalse(awaited.cancel(false),
+                "unsupported producer cancellation must not publish a cancelled consumer");
+        assertFalse(awaited.isDone());
+        producer.complete(linearResource);
+        assertSame(linearResource, awaited.get(2, TimeUnit.SECONDS));
+        assertFalse(awaited.isCancelled());
+    }
+
+    @Test
+    void independentlyCancelledMinimalStagePropagatesWithoutStalling() throws Exception {
+        CompletableFuture<Integer> producer = new CompletableFuture<>();
+        java.util.concurrent.CompletionStage<Integer> minimal =
+                producer.minimalCompletionStage();
+        OresFuture<Integer> awaited = OresFuture.from(minimal);
+
+        assertTrue(producer.cancel(false));
+        assertThrows(java.util.concurrent.CancellationException.class,
+                () -> awaited.get(2, TimeUnit.SECONDS),
+                "minimal CompletionStage throws from isCancelled(); adapter must use the terminal failure");
+        assertTrue(awaited.isCancelled());
+    }
+
+    @Test
+    void exceptionallyCompletedMinimalStageKeepsFailureIdentity() throws Exception {
+        CompletableFuture<Integer> producer = new CompletableFuture<>();
+        java.util.concurrent.CompletionStage<Integer> minimal =
+                producer.minimalCompletionStage();
+        OresFuture<Integer> awaited = OresFuture.from(minimal);
+        IllegalStateException failure = new IllegalStateException("minimal-source-failure");
+
+        assertTrue(producer.completeExceptionally(failure));
+        var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> awaited.get(2, TimeUnit.SECONDS));
+        assertSame(failure, observed.getCause());
+        assertFalse(awaited.isCancelled(), "an ordinary failure must not become cancellation");
+    }
+
+    @Test
+    void acceptedHostStageCancellationPropagatesExactlyOnce() {
+        CompletableFuture<Integer> producer = new CompletableFuture<>();
+        OresFuture<Integer> awaited = OresFuture.from(producer);
+
+        assertTrue(awaited.cancel(false));
+        assertTrue(producer.isCancelled());
+        assertTrue(awaited.isCancelled());
+        assertThrows(java.util.concurrent.CancellationException.class, awaited::join);
+        assertFalse(awaited.cancel(false), "an already settled consumer cannot claim cancellation twice");
+    }
+
+    @Test
+    void independentlyCancelledHostStageSettlesAwaitableWithoutReentry() {
+        CompletableFuture<Integer> producer = new CompletableFuture<>();
+        OresFuture<Integer> awaited = OresFuture.from(producer);
+
+        assertTrue(producer.cancel(false));
+        assertTrue(awaited.isCancelled());
+        assertThrows(java.util.concurrent.CancellationException.class, awaited::join);
+    }
+
+    @Test
+    void producerThatCompletedBeforeCancellationKeepsItsValue() throws Exception {
+        CompletableFuture<Integer> producer = new CompletableFuture<>();
+        OresFuture<Integer> awaited = OresFuture.from(producer);
+        producer.complete(42);
+        assertFalse(awaited.cancel(false));
+        assertEquals(42, awaited.get(2, TimeUnit.SECONDS));
+    }
+
 }

@@ -6,10 +6,13 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -63,7 +66,28 @@ public final class OresMutex {
      * could be detached from the mutex's domain/permit accounting.</p>
      */
     public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
+        // Queued failures and caller cancellation must physically unlink the
+        // deadlock edge before completing the public Future. The callback is
+        // set before an async waiter can escape to the caller.
+        private volatile java.util.function.BooleanSupplier revokeQueuedWaiter;
+
         private GuardFuture() { }
+
+        private boolean failQueuedFromRuntime(Throwable failure) {
+            java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
+            return revoke != null && revoke.getAsBoolean() && super.completeExceptionally(failure);
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
+            if (revoke != null && !revoke.getAsBoolean()) {
+                // Dequeue already won: an in-flight physical handoff is
+                // noncancellable until the resulting Guard is published.
+                return false;
+            }
+            return super.cancel(mayInterruptIfRunning);
+        }
 
         private boolean completeFromRuntime(Guard<T> guard) {
             return super.complete(guard);
@@ -310,14 +334,58 @@ public final class OresMutex {
         private static final int MAX_ASYNC_WAITERS = 8_192;
         private static final int MAX_GLOBAL_ASYNC_WAITERS = 32_768;
         private static final AtomicInteger GLOBAL_ASYNC_WAITERS = new AtomicInteger();
+        // Every asynchronous waiter retains bounded delivery admission until
+        // Future completion callbacks have drained, including successful and
+        // poisoned physical handoffs. Otherwise a releasing actor or a
+        // notification carrier could execute arbitrary host callback work.
+        private static final int MAX_ASYNC_NOTIFICATIONS = 32_768;
+        private static final AtomicInteger ASYNC_NOTIFICATIONS = new AtomicInteger();
+        // Actor execution domains must not individually monopolize all of
+        // the process-wide callback backlog. This does NOT provide isolation
+        // across multiple actors belonging to one tenant; a tenant-aware
+        // scheduler is a separate runtime policy.
+        private static final int MAX_DOMAIN_ASYNC_NOTIFICATIONS = 1_024;
+        private static final ConcurrentHashMap<Object, Integer> DOMAIN_ASYNC_NOTIFICATIONS =
+                new ConcurrentHashMap<>();
+        // A timed waiter reserves a *separate* notification slot for its whole
+        // lifetime. Its ordinary waiter quota can settle before public
+        // completion, so it cannot bound the notification backlog by itself.
+        // The slot is held through a blocked host whenComplete callback.
+        private static final int MAX_TIMED_NOTIFICATIONS = 32_768;
+        private static final AtomicInteger TIMED_NOTIFICATIONS = new AtomicInteger();
         private static final ConcurrentHashMap<Object, Shared<?>> WAITING_ON =
                 new ConcurrentHashMap<>();
-        private static final ScheduledExecutorService ASYNC_TIMEOUTS =
-                Executors.newSingleThreadScheduledExecutor(
+        // Timer workers only revoke physical waiters and enqueue terminal
+        // notifications. They MUST NOT invoke CompletableFuture dependents,
+        // which are arbitrary host code and can block indefinitely.
+        private static final ScheduledThreadPoolExecutor ASYNC_TIMEOUTS =
+                new ScheduledThreadPoolExecutor(
+                        2,
                         Thread.ofPlatform()
                                 .daemon(true)
-                                .name("ores-shared-mutex-timeouts")
+                                .name("ores-shared-mutex-timeouts-", 0L)
                                 .factory());
+        static {
+            // Timed acquisitions that finish before their deadline must not
+            // keep cancelled ScheduledFuture tasks retained until expiration.
+            ASYNC_TIMEOUTS.setRemoveOnCancelPolicy(true);
+        }
+        // Every async waiter reserves admission BEFORE enqueueing, so the
+        // bounded queue has room for all claimed handoffs and expiries even
+        // with every delivery worker blocked. Abort rather than CallerRuns:
+        // callbacks must never execute on deadline or actor owner carriers.
+        private static final ThreadPoolExecutor TIMEOUT_DELIVERY =
+                new ThreadPoolExecutor(
+                        4,
+                        4,
+                        0L,
+                        TimeUnit.MILLISECONDS,
+                        new ArrayBlockingQueue<>(MAX_ASYNC_NOTIFICATIONS),
+                        Thread.ofPlatform()
+                                .daemon(true)
+                                .name("ores-shared-mutex-notifications-", 0L)
+                                .factory(),
+                        new ThreadPoolExecutor.AbortPolicy());
 
         private final T value;
         private final Semaphore permit = new Semaphore(1, true);
@@ -517,6 +585,30 @@ public final class OresMutex {
         private boolean reserveAsyncWaiter(int limit) {
             return reserveWaiter(asyncWaiters, limit);
         }
+        // ConcurrentHashMap.compute serializes reserve/release operations
+        // for the same semantic execution domain. Removing the entry at zero
+        // avoids retaining an ActorId or host Thread after all requests end.
+        private static boolean reserveDomainNotification(Object domain) {
+            AtomicBoolean admitted = new AtomicBoolean();
+            DOMAIN_ASYNC_NOTIFICATIONS.compute(domain, (ignored, current) -> {
+                int count = current == null ? 0 : current;
+                if (count >= MAX_DOMAIN_ASYNC_NOTIFICATIONS) return current;
+                admitted.set(true);
+                return count + 1;
+            });
+            return admitted.get();
+        }
+
+        private static void releaseDomainNotification(Object domain) {
+            DOMAIN_ASYNC_NOTIFICATIONS.compute(domain, (ignored, current) -> {
+                if (current == null || current <= 0) {
+                    throw new IllegalStateException(
+                            "SharedMutex execution-domain notification admission underflow");
+                }
+                return current == 1 ? null : current - 1;
+            });
+        }
+
 
         private static void releaseWaiter(AtomicInteger counter, String scope) {
             int remaining = counter.decrementAndGet();
@@ -544,6 +636,9 @@ public final class OresMutex {
             private final Object ownerDomain;
             private final boolean enforceOwnerDomain;
             private final GuardFuture<T> future;
+            // Once claimed (by a terminal failure or handoff) admission quota
+            // must be returned before callers can observe the settled Future.
+            private final AtomicBoolean admissionSettled = new AtomicBoolean();
 
             private AsyncWaiter(
                     Object ownerDomain,
@@ -552,6 +647,29 @@ public final class OresMutex {
                 this.ownerDomain = ownerDomain;
                 this.enforceOwnerDomain = enforceOwnerDomain;
                 this.future = future;
+            }
+        }
+
+        /**
+         * Claim cancellation/timeout of a still-queued waiter BEFORE publishing
+         * its terminal Future. Removal and deadlock-edge cleanup share the
+         * dequeue monitor, so a concurrent permit handoff wins or loses as
+         * one atomic decision. A dequeued waiter is already committed to
+         * handoff (including the poisoned failure path).
+         */
+        private void settleWaiterAdmission(AsyncWaiter waiter) {
+            if (!waiter.admissionSettled.compareAndSet(false, true)) return;
+            releaseAsyncWaiter();
+            releaseGlobalAsyncWaiter();
+        }
+
+        private boolean revokeQueuedWaiter(AsyncWaiter waiter) {
+            synchronized (asyncQueueLock) {
+                if (!asyncQueue.remove(waiter)) return false;
+                endWait(waiter.ownerDomain);
+                releaseDomain(waiter.ownerDomain);
+                settleWaiterAdmission(waiter);
+                return true;
             }
         }
 
@@ -576,6 +694,7 @@ public final class OresMutex {
                         // removed from the queue, this path owns wait/domain cleanup.
                         endWait(candidate.ownerDomain);
                         releaseDomain(candidate.ownerDomain);
+                        settleWaiterAdmission(candidate);
                     }
 
                     if (waiter == null) {
@@ -595,7 +714,10 @@ public final class OresMutex {
                 if (poisoned.get()) {
                     endWait(waiter.ownerDomain);
                     releaseDomain(waiter.ownerDomain);
-                    waiter.future.failFromRuntime(new PoisonedMutexException());
+                    settleWaiterAdmission(waiter);
+                    AsyncWaiter claimed = waiter;
+                    TIMEOUT_DELIVERY.execute(() ->
+                            claimed.future.failFromRuntime(new PoisonedMutexException()));
                     continue;
                 }
 
@@ -604,11 +726,17 @@ public final class OresMutex {
                 SharedGuard guard = new SharedGuard(
                         waiter.ownerDomain,
                         waiter.enforceOwnerDomain);
-                if (waiter.future.completeFromRuntime(guard)) return;
-
-                // Cancellation won after dequeue but before completion.
-                clearOwner(waiter.ownerDomain);
-                releaseDomain(waiter.ownerDomain);
+                settleWaiterAdmission(waiter);
+                AsyncWaiter claimed = waiter;
+                TIMEOUT_DELIVERY.execute(() -> {
+                    if (!claimed.future.completeFromRuntime(guard)) {
+                        // Defensive ownership recovery: even if an unexpected
+                        // terminal path claimed the Future after dequeue,
+                        // never strand its already-transferred physical permit.
+                        guard.releaseFromRuntime();
+                    }
+                });
+                return;
             }
         }
 
@@ -711,24 +839,38 @@ public final class OresMutex {
                         "SharedMutex process-wide async waiter limit exceeded: " + MAX_GLOBAL_ASYNC_WAITERS));
             }
 
+            if (!reserveWaiter(ASYNC_NOTIFICATIONS, MAX_ASYNC_NOTIFICATIONS)) {
+                releaseGlobalAsyncWaiter();
+                releaseAsyncWaiter();
+                releaseDomain(ownerDomain);
+                return failedGuardFuture(new RejectedExecutionException(
+                        "SharedMutex async-notification capacity exceeded: "
+                                + MAX_ASYNC_NOTIFICATIONS));
+            }
+            if (!reserveDomainNotification(ownerDomain)) {
+                releaseWaiter(ASYNC_NOTIFICATIONS, "async-notification");
+                releaseGlobalAsyncWaiter();
+                releaseAsyncWaiter();
+                releaseDomain(ownerDomain);
+                return failedGuardFuture(new RejectedExecutionException(
+                        "SharedMutex execution-domain async-notification capacity exceeded: "
+                                + MAX_DOMAIN_ASYNC_NOTIFICATIONS));
+            }
+
             boolean enforceOwnerDomain = ActorRuntime.inActorExecution();
             GuardFuture<T> future = new GuardFuture<>();
             AsyncWaiter waiter = new AsyncWaiter(
                     ownerDomain,
                     enforceOwnerDomain,
                     future);
+            future.revokeQueuedWaiter = () -> revokeQueuedWaiter(waiter);
 
             future.whenComplete((ignored, failure) -> {
-                boolean removed;
-                synchronized (asyncQueueLock) {
-                    removed = asyncQueue.remove(waiter);
-                }
-                if (removed) {
-                    endWait(ownerDomain);
-                    releaseDomain(ownerDomain);
-                }
-                releaseAsyncWaiter();
-                releaseGlobalAsyncWaiter();
+                // Defensive one-shot fallback for unexpected completion paths.
+                // Normal publication always settles admission first.
+                settleWaiterAdmission(waiter);
+                releaseDomainNotification(ownerDomain);
+                releaseWaiter(ASYNC_NOTIFICATIONS, "async-notification");
             });
 
             boolean acquired = false;
@@ -766,9 +908,11 @@ public final class OresMutex {
 
             if (waitFailure != null) {
                 releaseDomain(ownerDomain);
+                settleWaiterAdmission(waiter);
                 future.failFromRuntime(waitFailure);
             } else if (poisonedNow) {
                 releaseDomain(ownerDomain);
+                settleWaiterAdmission(waiter);
                 future.failFromRuntime(new PoisonedMutexException());
             } else if (acquired) {
                 try {
@@ -776,12 +920,14 @@ public final class OresMutex {
                     SharedGuard guard = new SharedGuard(
                             ownerDomain,
                             enforceOwnerDomain);
+                    settleWaiterAdmission(waiter);
                     if (!future.completeFromRuntime(guard)) {
                         guard.releaseFromRuntime();
                     }
                 } catch (RuntimeException | Error failure) {
                     releaseDomain(ownerDomain);
                     releasePermitOrHandoff();
+                    settleWaiterAdmission(waiter);
                     future.failFromRuntime(failure);
                 }
             }
@@ -803,18 +949,45 @@ public final class OresMutex {
 
             long timeoutNanos = saturatedNanos(timeout);
             if (timeoutNanos == 0L) {
-                future.failFromRuntime(new LockTimeoutException(timeout));
+                // Not scheduled: no host has received this Future yet.
+                future.failQueuedFromRuntime(new LockTimeoutException(timeout));
                 return future;
             }
 
+            if (!reserveWaiter(TIMED_NOTIFICATIONS, MAX_TIMED_NOTIFICATIONS)) {
+                // Fail closed before returning an unpublishable timed waiter.
+                // If a concurrent handoff already won, keep its outcome.
+                future.failQueuedFromRuntime(new RejectedExecutionException(
+                        "SharedMutex timed-notification capacity exceeded: "
+                                + MAX_TIMED_NOTIFICATIONS));
+                return future;
+            }
+            // Independent of asyncWaiters: a revoked timed waiter may remain
+            // undelivered while host callbacks occupy every delivery carrier.
+            // Retain admission until the PUBLIC completion path has unwound.
+            AtomicBoolean notificationReleased = new AtomicBoolean();
+            future.whenComplete((ignored, failure) -> {
+                if (notificationReleased.compareAndSet(false, true)) {
+                    releaseWaiter(TIMED_NOTIFICATIONS, "timed-notification");
+                }
+            });
+
             final java.util.concurrent.ScheduledFuture<?> timeoutTask;
             try {
-                timeoutTask = ASYNC_TIMEOUTS.schedule(
-                        () -> future.failFromRuntime(new LockTimeoutException(timeout)),
-                        timeoutNanos,
-                        TimeUnit.NANOSECONDS);
+                timeoutTask = ASYNC_TIMEOUTS.schedule(() -> {
+                    // Physical revocation, deadlock-edge removal and waiter
+                    // quota settlement are completed on the deadline worker.
+                    // Do not call completeExceptionally on this worker: an
+                    // arbitrary host completion callback could block it.
+                    java.util.function.BooleanSupplier revoke = future.revokeQueuedWaiter;
+                    if (revoke != null && revoke.getAsBoolean()) {
+                        TIMEOUT_DELIVERY.execute(() ->
+                                future.failFromRuntime(new LockTimeoutException(timeout)));
+                    }
+                }, timeoutNanos, TimeUnit.NANOSECONDS);
             } catch (RuntimeException schedulingFailure) {
-                future.failFromRuntime(schedulingFailure);
+                // Scheduling failed on the requesting carrier before return.
+                future.failQueuedFromRuntime(schedulingFailure);
                 return future;
             }
             future.whenComplete((ignored, failure) -> timeoutTask.cancel(false));
