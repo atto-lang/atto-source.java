@@ -106,9 +106,13 @@ final class SealedActorStateTest {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var worker = runtime.<String>spawnShared(() -> (mail, ctx) -> {
                 try {
+                    var slice = ctx.actorOwnedMemory().orElseThrow();
+                    long usedBeforeState = slice.usedBytes();
                     var source = new java.util.ArrayList<Long>(java.util.List.of(1L, 2L));
                     var state = new SealedActorState(ctx.self().id(),
                             Map.of("items", "List[int]"), Map.of("items", source));
+                    assertEquals(usedBeforeState + 2L * Long.BYTES,
+                            slice.usedBytes(), "persisted int list must consume actor quota");
                     source.set(0, 800L); // Constructor must not retain host list.
                     @SuppressWarnings("unchecked")
                     var detached = (java.util.ArrayList<Long>) state.critical(
@@ -128,13 +132,24 @@ final class SealedActorStateTest {
                     assertEquals(java.util.List.of(3L, 4L),
                             state.critical(false, access -> access.read("items")));
                     assertEquals(900L, detached.getFirst());
-
+                    long committedCharge = slice.usedBytes();
                     assertThrows(IllegalStateException.class,
                             () -> state.critical(true, access -> {
                                 access.write("items", new java.util.ArrayList<>(
                                         java.util.List.of(700L)));
                                 throw new IllegalStateException("fail after write");
                             }));
+                    assertEquals(java.util.List.of(3L, 4L),
+                            state.critical(false, access -> access.read("items")));
+                    // A failed growth writes no value and retains no heap charge.
+                    assertThrows(IllegalStateException.class,
+                            () -> state.critical(true, access -> {
+                                access.write("items", new java.util.ArrayList<>(
+                                        java.util.List.of(3L, 4L, 5L, 6L)));
+                                throw new IllegalStateException("rollback growth");
+                            }));
+                    assertEquals(committedCharge, slice.usedBytes(),
+                            "failed critical write must refund its tentative charge");
                     assertEquals(java.util.List.of(3L, 4L),
                             state.critical(false, access -> access.read("items")));
                     assertThrows(IllegalArgumentException.class,
@@ -163,7 +178,24 @@ final class SealedActorStateTest {
                     assertThrows(IllegalArgumentException.class,
                             () -> state.critical(false, access ->
                                     new java.util.LinkedList<>(java.util.List.of(1L))));
+                    // Successful growth is quota-charged even if later
+                    // writes shrink the retained list: the charge is a
+                    // deliberate high-water bound until actor retirement.
+                    state.critical(true, access -> {
+                        access.write("items", new java.util.ArrayList<>(
+                                java.util.List.of(3L, 4L, 5L)));
+                        return null;
+                    });
+                    assertEquals(committedCharge + Long.BYTES, slice.usedBytes());
+                    state.critical(true, access -> {
+                        access.write("items", new java.util.ArrayList<>(
+                                java.util.List.of(3L)));
+                        return null;
+                    });
+                    assertEquals(committedCharge + Long.BYTES, slice.usedBytes());
                     state.retireFromRuntime(ctx.self().id());
+                    assertEquals(usedBeforeState, slice.usedBytes(),
+                            "retired actor state must return every reservation");
                     finished.countDown();
                 } catch (Throwable error) {
                     failure.set(error);
