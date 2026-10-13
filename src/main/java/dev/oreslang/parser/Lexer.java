@@ -81,12 +81,43 @@ public final class Lexer {
             case ' ', '\r', '\t' -> { }
             case '\n' -> newline();
             case '"', '\'' -> string(c);
+            case '#' -> symbol();
             default -> {
                 if (isDigit(c)) number();
                 else if (isIdentStart(c)) identifier();
                 else throw error("unexpected character '" + c + "'");
             }
         }
+    }
+
+    /** Hash only introduces Symbol literals; colon remains a field/type separator. */
+    private void symbol() {
+        if (peek() == '"' || peek() == '\'') {
+            char quote = advance();
+            string(quote);
+            Token decoded = tokens.remove(tokens.size() - 1);
+            tokens.add(new Token(SYMBOL_LITERAL, decoded.lexeme(), line, startColumn));
+            return;
+        }
+        if (!asciiSymbolStart(peek())) {
+            throw error("expected Symbol name immediately after '#'");
+        }
+        int nameStart = current;
+        do {
+            advance();
+        } while (asciiSymbolPart(peek()));
+        if (current - nameStart > 128) {
+            throw error("unquoted Symbol literal exceeds 128 ASCII bytes");
+        }
+        tokens.add(new Token(SYMBOL_LITERAL, source.substring(nameStart, current), line, startColumn));
+    }
+
+    private static boolean asciiSymbolStart(char c) {
+        return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z';
+    }
+
+    private static boolean asciiSymbolPart(char c) {
+        return asciiSymbolStart(c) || c >= '0' && c <= '9';
     }
 
     private void blockComment() {
