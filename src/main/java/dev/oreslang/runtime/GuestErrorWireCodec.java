@@ -151,11 +151,40 @@ public final class GuestErrorWireCodec {
         }
     }
 
+    /**
+     * Prevent a guest message or frame from forging extra lines in a
+     * supervisor/diagnostic log. Keep actual frame separators host-owned.
+     */
+    private static void appendSafeDiagnosticText(StringBuilder out, String guestText) {
+        for (int i = 0; i < guestText.length(); i++) {
+            char c = guestText.charAt(i);
+            if (c == '\\n') out.append("\\\\n");
+            else if (c == '\\r') out.append("\\\\r");
+            else if (c == '\\t') out.append("\\\\t");
+            else if (Character.isISOControl(c)
+                    || c == '\\u202a' || c == '\\u202b' || c == '\\u202c'
+                    || c == '\\u202d' || c == '\\u202e'
+                    || (c >= '\\u2066' && c <= '\\u2069')) {
+                out.append("\\\\u");
+                out.append(Character.forDigit((c >>> 12) & 15, 16))
+                   .append(Character.forDigit((c >>> 8) & 15, 16))
+                   .append(Character.forDigit((c >>> 4) & 15, 16))
+                   .append(Character.forDigit(c & 15, 16));
+            } else out.append(c);
+        }
+    }
+
     public static String text(String name, int code, String message, List<String> frames) {
         validate(name, code, message, frames);
         StringBuilder result = new StringBuilder(name).append(" (").append(code).append(")");
-        if (!message.isEmpty()) result.append(": ").append(message);
-        for (String frame : frames) result.append("\n  at ").append(frame);
+        if (!message.isEmpty()) {
+            result.append(": ");
+            appendSafeDiagnosticText(result, message);
+        }
+        for (String frame : frames) {
+            result.append("\\n  at ");
+            appendSafeDiagnosticText(result, frame);
+        }
         return result.toString();
     }
 
