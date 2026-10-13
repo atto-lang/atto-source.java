@@ -178,7 +178,10 @@ final class NamedArgumentsExecutionTest {
     void namedConstructorsFailBeforeArgumentEvaluationUntilFullyBound() {
         String program = """
                 define class Box as
-                  pub Box(int value) { }
+                  val int value;
+                  constructor(int value) {
+                    self.value = value;
+                  }
                 end
                 fnc sideEffect(): int { return 3; }
                 pub routine main(): void {
