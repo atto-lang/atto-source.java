@@ -102,6 +102,31 @@ disjointness from identical/overlapping structural shapes.
    compatibility and deployed sender/receiver negotiation are
    separate requirements.
 
+## Local numeric payloads versus actor-wire codecs
+
+A local enum case can carry a supported exact-width integer such as `u8`,
+`i8`, `u16`, `i16`, `u32`, `i32`, or `u64`, including validated
+tuples/lists of those scalars. The local runtime's constructor validator
+checks signedness, range, scalar type, nested field arity and a bounded
+object graph. An out-of-range numeric constructor **literal** is also
+rejected at compile time. The current generalized source type IR still
+erases numeric width, so nonliteral arithmetic/assignment is not yet a
+complete static proof of exact-width safety; runtime construction remains
+a mandatory checked boundary.
+
+**Do not confuse local admission with portable actor-message admission.**
+`u8`-bearing enum cases have no MessagePack v2 width-preserving shape
+today and `TaggedMessageContracts.verify` must still reject them.
+Only separately verified wire shapes can enter typed actor mailboxes.
+Adding a local enum payload must never silently change an actor schema.
+
+Named enums/patterns may not shadow builtin or ordinary declaration type
+identities, and they are not implicitly generic. Unsupported source enum
+payloads (including `Option<T>`/`Result<T,E>` *nested inside a user enum*,
+unknown classes, and unresolved numeric `f32` semantics) currently fail
+closed until their runtime representation, static checks and codecs are
+implemented. Standalone `Option` and `Result` remain ADT match subjects.
+
 ## Recursive ADTs and ownership
 
 - Reject direct/mutual infinitely-sized **inline** recursion, including
