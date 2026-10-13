@@ -234,7 +234,7 @@ public final class Types {
      * This concerns *whole-value* Unknown/Generic inference only: ordinary
      * opaque reads of proven fields remain legal.
      */
-    private static boolean containsRecordContract(Type type) {
+    static boolean containsRecordContract(Type type) {
         if (type instanceof Record) return true;
         if (type instanceof Union union) {
             return union.options().stream().anyMatch(Types::containsRecordContract);
