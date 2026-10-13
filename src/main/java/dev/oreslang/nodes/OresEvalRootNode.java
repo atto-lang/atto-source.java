@@ -5984,7 +5984,7 @@ public final class OresEvalRootNode extends RootNode {
             if (codeMethod == null || codeMethod.body().size() != 1
                     || !(codeMethod.body().getFirst() instanceof Ast.ReturnStmt codeReturn)
                     || !(codeReturn.value() instanceof Ast.LiteralExpr codeLiteral)
-                    || !(codeLiteral.value() instanceof Number number)) {
+                    || !(codeLiteral.value() instanceof Long number)) {
                 throw new IllegalArgumentException(
                         "error serialization requires a constant integer code(); "
                         + "guest methods cannot execute at a wire boundary");
