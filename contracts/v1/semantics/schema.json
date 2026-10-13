@@ -52,7 +52,7 @@
         "expected_exit": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 125
+          "maximum": 255
         },
         "diagnostic_class": {
           "enum": [

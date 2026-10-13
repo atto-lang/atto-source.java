@@ -44,7 +44,11 @@ final class ActorMailboxExecutionBoundaryTest {
                     @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
                             String type, ActorRuntime.ActorContext<Object> context) {
                         enter.run();
-                        try { return context.self()::id; }
+                        try {
+                            assertTrue(runtime.currentThreadOwnsActorExecutionLease(),
+                                    "initialization must own actor execution carrier");
+                            return context.self()::id;
+                        }
                         finally { leave.run(); }
                     }
                     @Override public void receiveActor(String type, ActorRuntime.ActorOwnedGuestState state,
@@ -52,6 +56,8 @@ final class ActorMailboxExecutionBoundaryTest {
                             throws Exception {
                         enter.run();
                         try {
+                            assertTrue(runtime.currentThreadOwnsActorExecutionLease(),
+                                    "receive must own actor execution carrier");
                             assertEquals(context.self().id(), ActorRuntime.currentActorId().orElseThrow());
                             if (mail.value().equals("register")) {
                                 var target = runtime.captureCurrentContinuationTarget();
@@ -59,6 +65,8 @@ final class ActorMailboxExecutionBoundaryTest {
                                     runtime.enqueueOnCompletion(future, target, (value, failure) -> {
                                         enter.run();
                                         try {
+                                            assertTrue(runtime.currentThreadOwnsActorExecutionLease(),
+                                                    "resumed continuation must own actor execution carrier");
                                             assertNull(failure);
                                             assertEquals(context.self().id(), ActorRuntime.currentActorId().orElseThrow());
                                             assertFalse(Thread.currentThread().getName().startsWith("pool-"));
@@ -72,7 +80,11 @@ final class ActorMailboxExecutionBoundaryTest {
                             } else if (mail.value().equals("end")) {
                                 runtime.endCurrentActorWithCleanup(() -> {
                                     enter.run();
-                                    try { cleanups.incrementAndGet(); }
+                                    try {
+                                        assertTrue(runtime.currentThreadOwnsActorExecutionLease(),
+                                                "actor cleanup must own actor execution carrier");
+                                        cleanups.incrementAndGet();
+                                    }
                                     finally { leave.run(); }
                                 });
                             } else {
@@ -97,10 +109,14 @@ final class ActorMailboxExecutionBoundaryTest {
                     actor.send("end");
                     actor.done().get(2, TimeUnit.SECONDS);
                     assertEquals(16, callbacks.get());
-                    assertEquals(1, threads.size(), kind + " must retain its scheduling lane");
+                    // Thread affinity is not required. An actor may resume on
+                    // another worker, but never on two workers concurrently.
+                    assertFalse(threads.isEmpty(), "actor must have executed");
                     assertEquals(1, cleanups.get());
                     assertEquals(1, maximum.get(), kind + " must have one executing guest thread");
                     assertEquals(0, active.get());
+                    assertFalse(runtime.currentThreadOwnsActorExecutionLease(),
+                            "host or producer thread cannot impersonate an actor turn");
                 } finally { releaseReceive.countDown(); actor.cancel(); }
             }
         }

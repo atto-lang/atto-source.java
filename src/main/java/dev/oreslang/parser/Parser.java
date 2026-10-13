@@ -503,7 +503,11 @@ public final class Parser {
             }
 
             boolean explicitFnc = match(FNC);
-            if (explicitFnc) {
+            boolean explicitMethod = matchExplicitMethodMarker();
+            if (explicitFnc && explicitMethod) {
+                throw error(previous(), "an instance member cannot combine 'fnc' and 'method' markers");
+            }
+            if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             if (mods.generator) throw error(peek(), "'generator' is not permitted on class methods or static class fnc; declare a module/top-level generator fnc or routine");
@@ -511,14 +515,17 @@ public final class Parser {
             if (mods.trapped) throw error(peek(), "'trap' on class methods/static fnc is not enabled until method callable metadata carries the trap effect");
             if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
             if (mods.isStatic) {
+                if (explicitMethod) {
+                    throw error(previous(), "static class functions use 'static fnc', not 'static method'");
+                }
                 if (!explicitFnc) {
                     consume(FNC, "static class functions must be declared with 'static fnc'");
                 }
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
-            } else if (explicitFnc) {
-                throw error(previous(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
             }
-            methods.add(parseMethod(annotations, mods));
+            // Legacy 'fnc name' and explicit 'method name' both describe instance
+            // methods. The AST's isStatic flag, not the spelling, controls binding.
+            methods.add(parseMethod(annotations, mods, isAbstract));
         }
         consume(
                 classTerminator,
@@ -691,14 +698,37 @@ public final class Parser {
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
+            if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                validateActorFieldModifiers(mods);
+                fields.add(parseFinalActorField(annotations, mods.visibility));
+                continue;
+            }
 
             boolean explicitFnc = match(FNC);
-            if (explicitFnc) {
+            boolean explicitMethod = matchExplicitMethodMarker();
+            if (explicitFnc && explicitMethod) {
+                throw error(previous(), "an instance member cannot combine 'fnc' and 'method' markers");
+            }
+            if (explicitFnc || explicitMethod) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             validateActorMethodModifiers(mods);
+            if (mods.isStatic && explicitMethod) {
+                throw error(previous(), "static actor functions use 'static fnc', not 'static method'");
+            }
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
+            }
+            // Do not silently admit methods that look like checked supervisor
+            // handlers before typed exhaustiveness and CONTROL dispatch exist.
+            if (check(IDENT) && (peek().lexeme().equals("on_throw")
+                    || peek().lexeme().equals("on_throws")
+                    || peek().lexeme().equals("on_raise")
+                    || peek().lexeme().equals("on_panic")
+                    || peek().lexeme().equals("on_recover"))) {
+                throw error(peek(), "actor supervision on_* handlers require "
+                        + "compiler-enforced exhaustiveness and CONTROL dispatch; "
+                        + "source handlers are not yet enabled");
             }
             methods.add(parseMethod(annotations, mods));
         }
@@ -849,6 +879,19 @@ public final class Parser {
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
     }
 
+    /** Actor-state 'final name: Type' is a const/immutable field spelling. */
+    private Ast.FieldDecl parseFinalActorField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectCallableStructuralAnnotation(annotations, "fields");
+        consumeContextualIdentifier("final", "expected 'final' actor field");
+        String name = consume(IDENT, "expected field name after 'final'").lexeme();
+        consume(COLON, "expected ':' after final field name");
+        Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
+        Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        consumeExpressionClassFieldTerminator(initializer, "final actor field should end with ';'");
+        return new Ast.FieldDecl(name, visibility, Ast.BindingKind.CONST,
+                type, annotations, initializer, false);
+    }
+
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
@@ -868,6 +911,11 @@ public final class Parser {
     }
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
+        return parseMethod(annotations, mods, false);
+    }
+
+    private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods,
+                                       boolean enclosingAbstractClass) {
         CallableStructural structural = normalizeCallableStructural(annotations, mods.structural);
         annotations = structural.annotations();
         String name = parseMethodName();
@@ -917,12 +965,23 @@ public final class Parser {
         }
 
         Ast.TypeRef returnType = parseReturnType(annotations);
+        // An abstract class may declare required slots as `name(args): Type;`.
+        // Such signatures are implicitly public and abstract unless visibility
+        // was explicitly specified. Their identity is still name + arity only.
+        // Outside abstract classes, a stray semicolon is never a method body.
+        boolean implicitAbstract = check(SEMICOLON) && !mods.isAbstract && enclosingAbstractClass;
+        if (check(SEMICOLON) && !mods.isAbstract && !enclosingAbstractClass) {
+            throw error(peek(), "signature-only method '" + name
+                    + "' requires an abstract class or explicit 'abstract' modifier");
+        }
         List<Ast.Stmt> body;
-        if (mods.isAbstract) {
+        if (mods.isAbstract || implicitAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else body = parseBlock();
-        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async, mods.suspends, structural.enabled(),
+        Ast.Visibility visibility = implicitAbstract && !mods.visibilitySeen
+                ? Ast.Visibility.PUBLIC : mods.visibility;
+        return new Ast.MethodDecl(name, visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body);
     }
 
@@ -1011,7 +1070,7 @@ public final class Parser {
                 if (asyncSeen) throw error(previous(), "duplicate 'async' modifier");
                 asyncSeen = true;
                 async = true;
-            } else if (match(SUSPENDS)) {
+            } else if (match(SUSPENDS) || matchContextualSuspendModifier()) {
                 if (suspendsSeen) throw error(previous(), "duplicate 'suspends' modifier");
                 suspendsSeen = true;
                 suspends = true;
@@ -1496,6 +1555,13 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        // Keep these distinct from ordinary calls/identifiers. Exception
+        // effect checking, typed recovery and actor CONTROL delivery have
+        // not yet been lowered in the Java/Graal production compiler.
+        if (check(THROW) || check(RAISE) || check(PANIC) || check(RECOVER)) {
+            throw error(peek(), "typed exceptional effect '" + peek().lexeme()
+                    + "' requires checked exception and supervision lowering; source effect is not yet enabled");
+        }
         if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
@@ -1599,6 +1665,15 @@ public final class Parser {
         if (match(CONTINUE)) {
             consumeStatementTerminator("continue statement should end with ';'");
             return new Ast.ContinueStmt();
+        }
+        if (match(WHILE)) {
+            // Route the while backedge through the existing source-task
+            // ForStmt trampoline: one continuation and one budget mechanism.
+            Ast.Expr condition = check(LPAREN)
+                    ? parseParenthesizedWhileCondition()
+                    : parseCondition();
+            match(SEMICOLON);
+            return new Ast.ForStmt(null, condition, null, parseLoopBody());
         }
         if (match(IF)) return parseIf();
         if (match(MATCH)) return parseMatch();
@@ -2127,9 +2202,38 @@ public final class Parser {
             type = applyTypeMetadataAnnotations(type, annotations, true);
         }
         consume(EQUAL, "binding requires initializer");
-        Ast.Expr initializer = parseExpression();
+        String inferredTypeName = null;
+        Ast.Expr initializer;
+        if (isContextualIdentifier("infer") && checkNext(LT)) {
+            advance(); // contextual 'infer'
+            consume(LT, "expected '<' after infer");
+            inferredTypeName = consume(IDENT, "expected inferred type name in infer<T>").lexeme();
+            consume(GT, "expected '>' after inferred type name");
+            if (kind != Ast.BindingKind.CONST || mutableReferent) {
+                throw error(previous(), "infer<T> requires an immutable const binding");
+            }
+            if (type == null || !type.name().equals(inferredTypeName)
+                    || !type.arguments().isEmpty() || type.inferArguments()) {
+                throw error(previous(), "binding type must match infer<T> exactly");
+            }
+            if (match(STRUCT)) {
+                initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+            } else if (matchContextualKeyword("tuple")) {
+                consume(LPAREN, "expected '(' after infer<T> tuple");
+                List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
+                consume(RPAREN, "expected ')' after inferred tuple");
+                if (items.isEmpty()) {
+                    throw error(previous(), "infer<T> tuple requires at least one element");
+                }
+                initializer = new Ast.TupleExpr(items);
+            } else {
+                throw error(peek(), "infer<T> requires a struct {...} or tuple (...) literal");
+            }
+        } else {
+            initializer = parseExpression();
+        }
         consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
-        return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent);
+        return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent, inferredTypeName);
     }
 
     private Ast.TypeRef applyTypeMetadataAnnotations(
@@ -2374,6 +2478,13 @@ public final class Parser {
         return false;
     }
 
+    private Ast.Expr parseParenthesizedWhileCondition() {
+        consume(LPAREN, "expected '(' before while condition");
+        Ast.Expr condition = parseCondition();
+        consume(RPAREN, "expected ')' after while condition");
+        return condition;
+    }
+
     private Ast.Expr parseCondition() {
         Ast.Expr expression = normalizeLegacyConditionPipe(parseLogicalOr());
         // Legacy condition-only comma means logical AND. Prefer && in new code.
@@ -2483,7 +2594,7 @@ public final class Parser {
             return new Ast.TuplePattern(elements);
         }
 
-        if (match(INT)) return new Ast.LiteralPattern(Long.parseLong(previous().lexeme().replace("_", "")));
+        if (match(INT)) return new Ast.LiteralPattern(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
         if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
@@ -2736,7 +2847,22 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnary() {
-        if (match(BANG, TILDE, MINUS, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
+        // Signed i64's negative endpoint requires magnitude 2^63, which
+        // cannot be parsed as a positive Java long. Treat exactly that
+        // token sequence as a single negative literal, without broadening
+        // positive literal admission or accepting malformed separators.
+        if (match(MINUS)) {
+            if (check(INT)) {
+                String literal = peek().lexeme();
+                if (!literal.endsWith("_") && !literal.contains("__")
+                        && literal.replace("_", "").equals("9223372036854775808")) {
+                    advance();
+                    return new Ast.LiteralExpr(Long.MIN_VALUE);
+                }
+            }
+            return new Ast.UnaryExpr("-", parseUnary());
+        }
+        if (match(BANG, TILDE, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
             boolean mutable = match(MUT);
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
@@ -2808,10 +2934,10 @@ public final class Parser {
         }
 
         if (!name.equals("copy") && !name.equals("take")
-                && !name.equals("borrow") && !name.equals("share")) {
+                && !name.equals("borrow") && !name.equals("share") && !name.equals("fail")) {
             throw error(operation,
                     "unknown rt operation '" + name
-                            + "'; supported operations are cooperate, copy, take, borrow, and share");
+                            + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
         // Mutable borrows use the same ownership checks as the legacy spelling.
@@ -2926,7 +3052,8 @@ public final class Parser {
         Token token = peek();
         if (token.type() == IDENT
                 || isReservedCallableName(token.type())
-                || isContextualStatementCallableName(token.type())) {
+                || isContextualStatementCallableName(token.type())
+                || token.type() == TRUE || token.type() == FALSE) {
             advance();
             return token.lexeme();
         }
@@ -2994,8 +3121,24 @@ public final class Parser {
         };
     }
 
+    // A guest-language literal must not leak Java's NumberFormatException.
+    // Both expression and pattern literals use the same signed-i64 bound.
+    // Wider integers require a separately admitted type and backend contract.
+    private long parseSignedI64(Token token) {
+        String literal = token.lexeme();
+        // Do not silently turn malformed token separators into valid integers.
+        if (literal.endsWith("_") || literal.contains("__")) {
+            throw error(token, "malformed integer separator: " + literal);
+        }
+        try {
+            return Long.parseLong(literal.replace("_", ""));
+        } catch (NumberFormatException invalid) {
+            throw error(token, "integer literal overflows signed 64-bit: " + literal);
+        }
+    }
+
     private Ast.Expr parsePrimary() {
-        if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
+        if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
             String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
@@ -3225,8 +3368,22 @@ public final class Parser {
         if (match(SEMICOLON) || check(AT) || check(END) || check(PUB) || check(PRIVATE)
                 || check(STATIC) || check(ABSTRACT) || check(ASYNC) || check(SUSPENDS) || check(LBRACKET)
                 || isBindingKind(peek().type())
-                || (check(IDENT) && (checkNext(COLON) || checkNext(LPAREN)))) return;
+                || (check(IDENT) && (checkNext(COLON) || checkNext(LPAREN)))
+                || isNextContextualMemberLine()) return;
         throw error(peek(), message);
+    }
+
+    // A field without a semicolon can be followed by the new contextual
+    // declaration spellings, but only on a *new* source line. Never treat
+    // arbitrary same-line tokens as an implicit field terminator.
+    private boolean isNextContextualMemberLine() {
+        if (current == 0 || previous().line() >= peek().line()) return false;
+        if (check(FNC)) return true;
+        if (!check(IDENT)) return false;
+        String word = peek().lexeme();
+        return (word.equals("suspend") || word.equals("method")
+                || word.equals("final") || word.equals("critical"))
+                && (checkNext(IDENT) || checkNext(FNC) || checkNext(LPAREN));
     }
 
     private boolean hasAnnotation(List<Ast.Annotation> annotations, String name) {
@@ -3417,6 +3574,24 @@ public final class Parser {
         // The modifier spelling is only consumed when it is not already
         // syntactically the member/declaration name.
         if (checkNext(LPAREN) || checkNext(LT) || checkNext(COLON)) return false;
+        advance();
+        return true;
+    }
+
+    // 'suspend' is an alias of 'suspends' only in modifier position; preserve
+    // instance methods actually named suspend(...).
+    private boolean matchContextualSuspendModifier() {
+        if (!isContextualIdentifier("suspend")) return false;
+        if (!checkNext(IDENT) && !checkNext(FNC)) return false;
+        advance();
+        return true;
+    }
+
+    // Preserve an ordinary method named 'method' (method(...)) while accepting
+    // the opt-in declaration marker 'method other_name(...)'.
+    private boolean matchExplicitMethodMarker() {
+        if (!isContextualIdentifier("method")) return false;
+        if (!checkNext(IDENT) && !checkNext(LBRACKET) && !checkNext(STATIC)) return false;
         advance();
         return true;
     }

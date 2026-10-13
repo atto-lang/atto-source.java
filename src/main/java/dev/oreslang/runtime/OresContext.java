@@ -205,10 +205,17 @@ public final class OresContext implements AutoCloseable {
      */
     public void schedulerSafepoint() {
         schedulerSafepoints.incrementAndGet();
+        OresScheduler.checkpointCurrentTurn();
         actors.schedulerSafepoint();
     }
 
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
+
+    /** A watchdog request is advisory until a continuation-safe boundary. */
+    public boolean watchdogPreemptionRequested() {
+        return OresScheduler.preemptionRequested()
+                || actors.watchdogPreemptionRequested();
+    }
 
     /** Count completed VM decisions to hand a source loop off cooperatively. */
     public void recordSourceLoopCooperate() { sourceLoopCooperates.incrementAndGet(); }
