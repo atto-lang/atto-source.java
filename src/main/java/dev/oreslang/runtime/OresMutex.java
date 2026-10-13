@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -345,13 +345,18 @@ public final class OresMutex {
         // Timer workers only revoke physical waiters and enqueue terminal
         // notifications. They MUST NOT invoke CompletableFuture dependents,
         // which are arbitrary host code and can block indefinitely.
-        private static final ScheduledExecutorService ASYNC_TIMEOUTS =
-                Executors.newScheduledThreadPool(
+        private static final ScheduledThreadPoolExecutor ASYNC_TIMEOUTS =
+                new ScheduledThreadPoolExecutor(
                         2,
                         Thread.ofPlatform()
                                 .daemon(true)
                                 .name("ores-shared-mutex-timeouts-", 0L)
                                 .factory());
+        static {
+            // Timed acquisitions that finish before their deadline must not
+            // keep cancelled ScheduledFuture tasks retained until expiration.
+            ASYNC_TIMEOUTS.setRemoveOnCancelPolicy(true);
+        }
         // Each scheduled timed waiter has already reserved one notification
         // slot, so the bounded queue has room for every claimed expiry even
         // when all four delivery workers are blocked. Abort rather than
