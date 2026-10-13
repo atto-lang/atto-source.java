@@ -1,6 +1,7 @@
 package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.VisibilityPolicy;
 import dev.oreslang.imports.ImportRules;
 
 import java.nio.file.Path;
@@ -129,10 +130,13 @@ final class ImportGraph {
         int matches = 0;
         for (Ast.ModuleDecl module : program.modules()) {
             if (kind == Ast.ImportKind.MODULE) {
-                if (module.name().equals(name)) matches++;
+                if (module.name().equals(name) && VisibilityPolicy.exportsModule(module)) matches++;
                 continue;
             }
 
+            // Even an explicitly pub member is not an external export when
+            // its *containing named module* was not declared pub.
+            if (!VisibilityPolicy.permitsMemberExport(module)) continue;
             for (Ast.Decl decl : module.declarations()) {
                 boolean matched = switch (kind) {
                     case FUNCTION -> decl instanceof Ast.FunctionDecl fn
