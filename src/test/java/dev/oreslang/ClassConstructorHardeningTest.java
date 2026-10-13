@@ -288,6 +288,22 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void partiallyInitializedConstructorSelfCannotBeTransferredAsValue() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                    define class Unsafe as
+                      val int age;
+                      constructor(int value) {
+                        const leaked = self;
+                        self.age = value;
+                      }
+                    end
+                    """)));
+        assertTrue(error.getMessage().contains(
+                "partially initialized constructor self cannot escape"));
+    }
+
+    @Test
     void fieldInitializerCannotSuspendEvenInsideAnArithmeticExpression() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
