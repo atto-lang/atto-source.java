@@ -109,4 +109,38 @@ final class ColonClassFieldInitializerTest {
                 end
                 """)));
     }
+
+    @Test
+    void rejectsInheritedFinalWritesAndDeferredConstructorClosures() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Parent as
+                  pub final int token: 42
+                end
+                define class Child extends Parent as
+                  update(): void {
+                    self.token = 7;
+                  }
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  val int late;
+                  constructor() {
+                    val callback = || -> {
+                      self.late = 99;
+                    };
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void acceptsNestedInitializerColonWithoutReinterpretingItAsFieldDelimiter() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  int count: true ? 5 : 9
+                  string text: "a:b=c"
+                end
+                """)));
+    }
 }
