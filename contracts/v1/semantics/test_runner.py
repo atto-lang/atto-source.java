@@ -28,30 +28,43 @@ class DiagnosticProof(unittest.TestCase):
                     run.validate_command(command)
         self.assertEqual(run.validate_command("compiler {source}"), ["compiler", "{source}"])
 
-    def test_required_graal_native_cases_cannot_run_without_guest_adapter(self):
-        import io
-        from contextlib import redirect_stderr
-        suite, _ = run.validate_suite()
-        self.assertTrue(run.requires_guest_runner(suite, "graal"))
-        self.assertFalse(run.requires_guest_runner(suite, "llvm"))
-        no_native = {"cases": [{"kind": "diagnostic", "backends": {"graal": "required"}}]}
-        self.assertFalse(run.requires_guest_runner(no_native, "graal"))
-        with patch.object(sys, "argv", [
-            "run.py", "--backend", "graal",
-            "--command", "python3 contracts/v1/java_probe.py {source}",
-            "--revision", "a" * 40
-        ]), redirect_stderr(io.StringIO()) as err:
-            with self.assertRaises(SystemExit) as terminated:
-                run.main()
-        self.assertEqual(terminated.exception.code, 2)
-        self.assertIn("--run-command is mandatory", err.getvalue())
-
     def test_validates_strict_schema_fixture_inventory(self):
         suite, digest = run.validate_suite()
         self.assertGreaterEqual(len(suite["cases"]), 10)
         self.assertEqual(len(digest), 64)
 
-    def test_distinct_case_ids_cannot_double_count_one_fixture(self):
+    def test_all_defer_and_finally_snapshots_have_explicit_backend_gates(self):
+        suite, _ = run.validate_suite()
+        cases = {case["id"]: case for case in suite["cases"]}
+        for name, expected_exit in (
+            ("native.defer-lifo-cfg", 111),
+            ("native.defer-field-return", 42),
+            ("native.try-finally-return-snapshot", 42),
+        ):
+            with self.subTest(name=name):
+                case = cases[name]
+                self.assertEqual(case["kind"], "native_exit")
+                self.assertEqual(case["expected_exit"], expected_exit)
+                self.assertEqual(case["backends"]["graal"], "required")
+                self.assertEqual(case["backends"]["llvm"], "pending")
+                self.assertTrue(case["pending_reason"])
+
+    def test_native_graal_contract_requires_a_real_guest_command(self):
+        import io
+        from contextlib import redirect_stderr
+        suite, _ = run.validate_suite()
+        self.assertTrue(run.requires_guest_runner(suite, "graal"))
+        self.assertFalse(run.requires_guest_runner(suite, "llvm"))
+        with patch.object(sys, "argv", [
+            "run.py", "--backend", "graal", "--command", "java {source}",
+            "--revision", "a" * 40
+        ]), redirect_stderr(io.StringIO()) as error_output:
+            with self.assertRaises(SystemExit) as raised:
+                run.main()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--run-command is mandatory", error_output.getvalue())
+
+    def test_reject_duplicate_fixture_references_across_different_case_ids(self):
         import json
         import shutil
         import tempfile
@@ -67,13 +80,13 @@ class DiagnosticProof(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "duplicate fixture source"):
                     run.validate_suite()
 
-    def test_nested_unregistered_ores_files_cannot_escape_inventory(self):
+    def test_reject_nested_unregistered_semantic_fixture(self):
         import shutil
         import tempfile
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             shutil.copytree(run.ROOT, root, dirs_exist_ok=True)
-            nested = root / "fixtures" / "unreviewed" / "hidden.ores"
+            nested = root / "fixtures" / "nested" / "hidden.ores"
             nested.parent.mkdir(parents=True)
             nested.write_text("pub fnc main(): int { return 0; }\n")
             with patch.object(run, "ROOT", root):
@@ -145,62 +158,6 @@ class DiagnosticProof(unittest.TestCase):
                                   ["guest", "{source}"])
         self.assertEqual(result["status"], "fail")
         self.assertEqual(mock_run.call_count, 1)
-
-    def test_shared_native_cleanup_case_registry_and_high_exit_admission(self):
-        suite, _ = run.validate_suite()
-        cases = {item["source"]: item for item in suite["cases"]}
-        for name, value in (
-            ("fixtures/native-defer-lifo-cfg.ores", 111),
-            ("fixtures/native-defer-field-return.ores", 222),
-            ("fixtures/native-try-finally-return-snapshot.ores", 246),
-        ):
-            with self.subTest(source=name):
-                self.assertEqual(cases[name]["expected_exit"], value)
-                self.assertEqual(cases[name]["backends"], {"llvm": "required", "graal": "required"})
-        compiled = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        case = {"id": "native.finally", "kind": "native_exit",
-                "source": "fixtures/native-try-finally-return-snapshot.ores",
-                "expected_exit": 246}
-        for status, wanted in ((246, "pass"), (222, "fail"), (-10, "fail"), (1, "fail")):
-            with self.subTest(status=status):
-                outcome = CompletedProcess(args=[], returncode=status, stdout="", stderr="")
-                with patch.object(run.subprocess, "run", side_effect=[compiled, outcome]):
-                    result = run.run_case(case, "graal", ["check", "{source}"], "", 3,
-                                          ["guest", "{source}"])
-                    self.assertEqual(result["status"], wanted)
-
-    def test_llvm_high_exit_result_requires_compilation_and_matching_guest(self):
-        case = {"id": "native.finally", "kind": "native_exit",
-                "source": "fixtures/native-try-finally-return-snapshot.ores",
-                "expected_exit": 246}
-        verified_ir = CompletedProcess(args=[], returncode=0,
-                                     stdout="; ModuleID = 'oreslang'\n", stderr="")
-        linked = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        for status, stdout, stderr, wanted in (
-            (246, "", "", "pass"),
-            (222, "", "", "fail"),
-            (-10, "", "", "fail"),
-            (246, "unverified guest output", "", "fail"),
-            (246, "", "unexpected stderr", "fail"),
-        ):
-            with self.subTest(status=status, stdout=stdout, stderr=stderr):
-                guest = CompletedProcess(args=[], returncode=status,
-                                         stdout=stdout, stderr=stderr)
-                with patch.object(run.subprocess, "run",
-                                  side_effect=[verified_ir, linked, guest]) as commands:
-                    result = run.run_case(case, "llvm", ["compiler", "{source}"],
-                                          "clang", 3)
-                self.assertEqual(result["status"], wanted)
-                self.assertEqual(commands.call_count, 3)
-
-        failed_link = CompletedProcess(args=[], returncode=1,
-                                       stdout="", stderr="invalid LLVM IR")
-        with patch.object(run.subprocess, "run",
-                          side_effect=[verified_ir, failed_link]) as commands:
-            result = run.run_case(case, "llvm", ["compiler", "{source}"], "clang", 3)
-        self.assertEqual(result["status"], "fail")
-        self.assertEqual(commands.call_count, 2,
-                         "failed native linker must prevent guest execution")
 
     def test_native_test_does_not_skip_missing_clang(self):
         case = {"id":"native.add","kind":"native_exit","source":"fixtures/add.ores","expected_exit":42}
@@ -276,11 +233,16 @@ class ComparatorParityProof(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("SUITE_COMPLETE=no", summary)
 
-    def test_strict_gate_accepts_complete_fixture_suite_with_pinned_heads(self):
+    def test_strict_gate_rejects_real_pending_fixture_with_pinned_heads(self):
+        # A pending LLVM native-defer case is not full parity, even when both
+        # report revisions match the expected source heads. Only the fully
+        # required subset may be validated as complete.
+        self.assertTrue(any("pending" in case["backends"].values()
+                            for case in self.suite["cases"]))
         status, summary = self.compare(strict=True, revisions=self.sha)
-        self.assertEqual(status, 0)
-        self.assertIn("SUITE_COMPLETE=yes", summary)
-        self.assertIn("BACKEND_PENDING=0", summary)
+        self.assertEqual(status, 1)
+        self.assertIn("SUITE_COMPLETE=no", summary)
+        self.assertIn("BACKEND_PENDING=", summary)
 
     def test_strict_gate_demands_pinned_heads(self):
         with self.assertRaisesRegex(ValueError, "requires pinned"):

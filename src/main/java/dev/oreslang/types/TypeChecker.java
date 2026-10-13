@@ -300,7 +300,10 @@ public final class TypeChecker {
             String category;
             if (decl instanceof Ast.FunctionDecl fn) {
                 name = fn.name();
-                category = fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "fnc";
+                // FNC and ROUTINE share the same name+arity callable family.
+                // Their kinds affect whether a value can be reified, not the slot key.
+                // putFunctionSlot has already rejected any duplicate arity.
+                category = "callable";
             } else if (decl instanceof Ast.ClassDecl klass) {
                 name = klass.name();
                 category = "class";
