@@ -587,6 +587,7 @@ public final class TypeChecker {
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
+            rejectUntrackedNestedResult(parameterType, "function parameter " + param.name());
             argumentTypes.add(parameterType);
             if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
@@ -1233,6 +1234,7 @@ public final class TypeChecker {
                             false,
                             "mailbox payload of actor '" + klass.name() + ".receive'");
                 }
+                rejectUntrackedNestedResult(parameterType, "method parameter " + param.name());
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             defineImplicitArguments(env, methodArgumentTypes);
@@ -1426,6 +1428,37 @@ public final class TypeChecker {
                 && named.arguments().getFirst() == Primitive.VOID;
     }
 
+    // Until recursive Result obligations have their own CFG/drop proof, a
+    // nested void Result must not be laundered through an Option, container,
+    // union, record, or borrow. Root Result<void,E> is tracked separately.
+    private static boolean containsMustUseVoidResult(Type type) {
+        if (isMustUseVoidResult(type)) return true;
+        if (type instanceof Named named) {
+            return named.arguments().stream().anyMatch(TypeChecker::containsMustUseVoidResult);
+        }
+        if (type instanceof ListType list) return containsMustUseVoidResult(list.element());
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(TypeChecker::containsMustUseVoidResult);
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream().anyMatch(TypeChecker::containsMustUseVoidResult);
+        }
+        if (type instanceof Types.Union union) {
+            return union.options().stream().anyMatch(TypeChecker::containsMustUseVoidResult);
+        }
+        if (type instanceof Borrow borrow) return containsMustUseVoidResult(borrow.target());
+        if (type instanceof SelfType selfType) return containsMustUseVoidResult(selfType.bound());
+        return false;
+    }
+
+    private static void rejectUntrackedNestedResult(Type type, String where) {
+        if (!isMustUseVoidResult(type) && containsMustUseVoidResult(type)) {
+            throw new IllegalArgumentException(
+                    "must-use nested Result<void,E> at " + where
+                            + " requires recursive ownership and handling proof");
+        }
+    }
+
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
         Env env = new Env(parent);
         Env previousTypeScope = currentTypeScope;
@@ -1569,6 +1602,8 @@ public final class TypeChecker {
             Type declared = declaredAhead == null
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
+            rejectUntrackedNestedResult(actual, "local initializer");
+            rejectUntrackedNestedResult(declared, "local binding");
             if (isMustUseVoidResult(actual) && !isMustUseVoidResult(declared)) {
                 throw new IllegalArgumentException(
                         "must-use Result<void,E> cannot be erased by binding '" + binding.name() + "'");
@@ -1634,6 +1669,8 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
+            rejectUntrackedNestedResult(actual, "return value");
+            rejectUntrackedNestedResult(expectedReturn, "return type");
             if (isMustUseVoidResult(actual) && !isMustUseVoidResult(expectedReturn)) {
                 throw new IllegalArgumentException(
                         "must-use Result<void,E> cannot be erased by function return");
@@ -1660,6 +1697,7 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.ExprStmt expression) {
             Type result = typeOf(expression.expression(), env, generics, self);
+            rejectUntrackedNestedResult(result, "discarded expression");
             if (isMustUseVoidResult(result)) {
                 throw new IllegalArgumentException("must-use Result<void,E> expression is discarded");
             }
@@ -6863,6 +6901,7 @@ public final class TypeChecker {
         Type actual = argument.expression() == null
                 ? argument.staticType()
                 : typeOfAgainstExpected(argument.expression(), expected, env, generics, self);
+        rejectUntrackedNestedResult(actual, "call argument");
         // A freshly constructed Result<void,E> cannot be passed to an
         // untyped/generic sink: the temporary has no must-use binding whose
         // eventual handling can be verified. Named references may be inspected
