@@ -38,6 +38,17 @@ public final class PipelineController {
         CompletionStage<Object> send(Object value);
 
         /**
+         * Trusted, side-effect-free pre-admission check against the concrete
+         * compiler-bound mailbox domain. The default fails closed so an
+         * engine that cannot prove the expected type cannot admit DATA.
+         * Must not allocate actors, publish DATA, or invoke guest code.
+         */
+        default void requireExpectedReplyCase(String qualifiedCase) {
+            throw new UnsupportedOperationException(
+                    "pipeline engine does not attest nominal reply cases");
+        }
+
+        /**
          * No DATA may be admitted after this call starts. Complete only after
          * all admitted messages and every stage's physical DONE has settled.
          * Must be safe to call after a failed send or actor termination.
@@ -188,6 +199,31 @@ public final class PipelineController {
             if (failure == null) observer.complete(null);
             else observer.completeExceptionally(failure);
         });
+    }
+
+    CompletionStage<Object> submitExpected(
+            long expectedGeneration, Object value, String expectedCase) {
+        Objects.requireNonNull(value, "pipeline message");
+        Objects.requireNonNull(expectedCase, "expected nominal result case");
+        Session selected;
+        synchronized (gate) {
+            if (closeRequested || state != State.RUNNING
+                    || generation != expectedGeneration || inFlight) {
+                return CompletableFuture.failedFuture(new IllegalStateException(
+                        "stale runner, paused ingress, or outstanding pipeline flow"));
+            }
+            selected = active;
+        }
+        // Call external session code without holding the controller gate.
+        // A rejected case MUST NOT consume the single-flow admission token.
+        // submit() below rechecks the generation after this validation:
+        // a concurrent pause/restart cannot publish on a stale session.
+        try {
+            selected.requireExpectedReplyCase(expectedCase);
+        } catch (RuntimeException | Error rejected) {
+            return CompletableFuture.failedFuture(rejected);
+        }
+        return submit(expectedGeneration, value);
     }
 
     CompletionStage<Object> submit(long expectedGeneration, Object value) {
