@@ -49,6 +49,50 @@ class DiagnosticProof(unittest.TestCase):
                 self.assertEqual(case["backends"]["llvm"], "pending")
                 self.assertTrue(case["pending_reason"])
 
+    def test_native_graal_contract_requires_a_real_guest_command(self):
+        import io
+        from contextlib import redirect_stderr
+        suite, _ = run.validate_suite()
+        self.assertTrue(run.requires_guest_runner(suite, "graal"))
+        self.assertFalse(run.requires_guest_runner(suite, "llvm"))
+        with patch.object(sys, "argv", [
+            "run.py", "--backend", "graal", "--command", "java {source}",
+            "--revision", "a" * 40
+        ]), redirect_stderr(io.StringIO()) as error_output:
+            with self.assertRaises(SystemExit) as raised:
+                run.main()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--run-command is mandatory", error_output.getvalue())
+
+    def test_reject_duplicate_fixture_references_across_different_case_ids(self):
+        import json
+        import shutil
+        import tempfile
+        suite, _ = run.validate_suite()
+        duplicate = dict(suite["cases"][0])
+        duplicate["id"] = "native.duplicate-fixture-regression"
+        suite["cases"].append(duplicate)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shutil.copytree(run.ROOT, root, dirs_exist_ok=True)
+            (root / "cases.json").write_text(json.dumps(suite))
+            with patch.object(run, "ROOT", root):
+                with self.assertRaisesRegex(ValueError, "duplicate fixture source"):
+                    run.validate_suite()
+
+    def test_reject_nested_unregistered_semantic_fixture(self):
+        import shutil
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shutil.copytree(run.ROOT, root, dirs_exist_ok=True)
+            nested = root / "fixtures" / "nested" / "hidden.ores"
+            nested.parent.mkdir(parents=True)
+            nested.write_text("pub fnc main(): int { return 0; }\n")
+            with patch.object(run, "ROOT", root):
+                with self.assertRaisesRegex(ValueError, "orphan or missing fixtures"):
+                    run.validate_suite()
+
     def test_mutating_fixture_or_schema_changes_suite_identity(self):
         import shutil
         import tempfile
