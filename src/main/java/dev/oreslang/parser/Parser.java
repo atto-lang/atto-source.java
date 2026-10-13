@@ -549,7 +549,7 @@ public final class Parser {
             }
             // Type-first fields accept ':' canonically and '=' for compatibility.
             // 'final' is contextual, so final(...) remains an ordinary method.
-            if ((isContextualIdentifier("final") && (checkNext(IDENT) || checkNext(MUT)))
+            if ((isContextualIdentifier("final") && (checkNext(IDENT) || checkNext(MUT) || checkNext(CONST)))
                     || looksLikeTypeFirstClassField()) {
                 validateClassFieldModifiers(mods);
                 fields.add(parseTypeFirstClassField(annotations, mods.visibility));
@@ -935,13 +935,23 @@ public final class Parser {
             List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
         boolean isFinal = matchContextualIdentifier("final");
+        boolean compileTimeOnly = isFinal && match(CONST);
         boolean mutableReferent = match(MUT);
+        if (compileTimeOnly && mutableReferent) {
+            throw error(previous(), "'final const' fields cannot request a mutable referent");
+        }
         Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
         String name = consume(IDENT, "expected class field name after type").lexeme();
         if (!match(COLON, EQUAL)) {
             throw error(peek(), "class field initializer requires ':' or '='");
         }
         Ast.Expr initializer = parseExpression();
+        if (compileTimeOnly && !(initializer instanceof Ast.LiteralExpr)) {
+            // This is a deliberately bounded subset: constant-expression folding
+            // must land before expressions such as 1 + 2 become admissible.
+            // Never erase 'const' on a runtime expression in a formatter.
+            throw error(previous(), "'final const' class field currently requires a literal initializer");
+        }
         consumeExpressionClassFieldTerminator(initializer, "field declaration should end with ';'");
         // Slot reassignment and mutation through its stored referent are
         // separate capabilities. 'final' does NOT silently grant mutable
