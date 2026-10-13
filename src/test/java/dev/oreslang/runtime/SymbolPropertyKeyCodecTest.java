@@ -114,6 +114,56 @@ final class SymbolPropertyKeyCodecTest {
                         SymbolPropertyKeyCodec.encode("tenant-a/private")));
     }
 
+    @Test void scopedUntrustedAdmissionCannotLaunderStableSymbols() {
+        String stableName = "550e8400-e29b-41d4-a716-446655440000";
+        OresSymbol stable = OresSymbol.stable(stableName);
+        var scope = new SymbolPropertyKeyCodec.AdmissionScope("tenant-a", "worker", "v1");
+        var manifest = new SymbolPropertyKeyCodec.ExportManifest(
+                java.util.Map.of(scope, Set.of(stable)));
+        byte[] stableWire = SymbolPropertyKeyCodec.encode(stable);
+        // v1 exports are restricted to PROCESS identities, regardless of
+        // whether a trusted component mistakenly includes a stable one.
+        assertThrows(SecurityException.class,
+                () -> SymbolPropertyKeyCodec.decodeForUntrusted(stableWire, scope, manifest));
+        assertThrows(SecurityException.class,
+                () -> SymbolPropertyKeyCodec.decodeDistinctKeysForUntrusted(
+                        List.of(stableWire), scope, manifest));
+        assertEquals(stable, SymbolPropertyKeyCodec.decode(stableWire),
+                "trusted decoding may still roundtrip stable Symbols");
+    }
+
+    @Test void bulkUntrustedDecodeAppliesPolicyBeforeBuildingKeys() {
+        var scope = new SymbolPropertyKeyCodec.AdmissionScope("tenant-a", "worker", "v1");
+        var other = new SymbolPropertyKeyCodec.AdmissionScope("tenant-b", "worker", "v1");
+        OresSymbol exported = OresSymbol.process("tenant-a/exported");
+        OresSymbol hidden = OresSymbol.process("tenant-a/hidden");
+        var manifest = new SymbolPropertyKeyCodec.ExportManifest(
+                java.util.Map.of(scope, Set.of(exported)));
+        byte[] text = SymbolPropertyKeyCodec.encode("#ready");
+        byte[] core = SymbolPropertyKeyCodec.encode(OresSymbol.process("ready"));
+        byte[] allowed = SymbolPropertyKeyCodec.encode(exported);
+        byte[] denied = SymbolPropertyKeyCodec.encode(hidden);
+        assertEquals(List.of("#ready", OresSymbol.process("ready"), exported),
+                SymbolPropertyKeyCodec.decodeDistinctKeysForUntrusted(
+                        List.of(text, core, allowed), scope, manifest));
+        assertThrows(SecurityException.class, () ->
+                SymbolPropertyKeyCodec.decodeDistinctKeysForUntrusted(List.of(allowed)));
+        assertThrows(SecurityException.class, () ->
+                SymbolPropertyKeyCodec.decodeDistinctKeysForUntrusted(
+                        List.of(allowed), other, manifest));
+        assertThrows(SecurityException.class, () ->
+                SymbolPropertyKeyCodec.decodeDistinctKeysForUntrusted(
+                        List.of(text, denied), scope, manifest));
+        assertThrows(IllegalArgumentException.class, () ->
+                SymbolPropertyKeyCodec.decodeDistinctKeysForUntrusted(
+                        List.of(core, core), scope, manifest));
+        List<Object> frozen = SymbolPropertyKeyCodec.decodeDistinctKeysForUntrusted(
+                List.of(text, core), scope, manifest);
+        text[text.length - 1] = 'X';
+        assertEquals("#ready", frozen.getFirst());
+        assertThrows(UnsupportedOperationException.class, () -> frozen.add("bad"));
+    }
+
     @Test void entryCountQuotaIsEnforcedBeforeDecode() {
         List<byte[]> tooMany = new ArrayList<>();
         byte[] foo = SymbolPropertyKeyCodec.encode("foo");
