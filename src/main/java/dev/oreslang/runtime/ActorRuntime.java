@@ -339,10 +339,31 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(terminal, "terminal");
             Objects.requireNonNull(secondary, "secondary");
             Objects.requireNonNull(diagnosticType, "diagnosticType");
+            if (diagnosticType.isEmpty() || diagnosticType.length() > 128
+                    || diagnosticType.chars().anyMatch(ch -> ch < 0x20 || ch > 0x7e)) {
+                throw new IllegalArgumentException(
+                        "CONTROL diagnostic type must be printable ASCII and at most 128 bytes");
+            }
+            if (secondary.isPresent() && !secondary.get().failed()) {
+                throw new IllegalArgumentException(
+                        "normal return is not a valid secondary failure");
+            }
             if (!terminal.failed()) {
                 throw new IllegalArgumentException("normal actor return has no failure notice");
             }
         }
+    }
+
+    private static String boundedDiagnosticType(Throwable failure) {
+        // Never call untrusted getMessage()/toString() while finalizing.
+        // Keep the class name as a bounded host-owned ASCII string.
+        String raw = failure.getClass().getName();
+        StringBuilder out = new StringBuilder(Math.min(raw.length(), 128));
+        for (int i = 0; i < raw.length() && out.length() < 128; i++) {
+            char ch = raw.charAt(i);
+            out.append(ch >= 0x20 && ch <= 0x7e ? ch : '?');
+        }
+        return out.toString();
     }
 
     private static ExceptionBoundaryPolicy.Terminal actorTerminalOf(Throwable failure) {
@@ -6847,7 +6868,7 @@ public final class ActorRuntime implements AutoCloseable {
                                         ? Optional.empty() : Optional.of(parent.ref.id()),
                                 kind, actorTerminalOf(terminalForNotice),
                                 Optional.ofNullable(ref.secondaryFailure.get()),
-                                terminalForNotice.getClass().getName()));
+                                boundedDiagnosticType(terminalForNotice)));
             }
             try {
                 actorExitHook.accept(executionDomain);
