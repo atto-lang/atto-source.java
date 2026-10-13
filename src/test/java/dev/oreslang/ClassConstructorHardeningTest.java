@@ -288,6 +288,27 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void constructorCannotDispatchInstanceMethodBeforeObjectPublication() {
+        String sourceText = """
+                define class Unsafe as
+                  val int value;
+                  constructor(int input) {
+                    self.publish();
+                    self.value = input;
+                  }
+                  pub publish(): void {
+                    stdio.stdout.write(self.value);
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(sourceText)));
+        assertTrue(error.getMessage().contains(
+                "constructor cannot invoke methods on partially initialized self"));
+    }
+
+    @Test
     void partiallyInitializedConstructorSelfCannotBeTransferredAsValue() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
@@ -313,7 +334,7 @@ final class ClassConstructorHardeningTest {
                     end
                     """)));
         assertTrue(failure.getMessage().contains(
-                "cannot await, select, or suspend during object construction"));
+                "cannot await, select, call, or suspend during object construction"));
     }
 
     @Test
