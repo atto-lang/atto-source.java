@@ -173,11 +173,16 @@ class ComparatorParityProof(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("SUITE_COMPLETE=no", summary)
 
-    def test_strict_gate_accepts_complete_fixture_suite_with_pinned_heads(self):
+    def test_strict_gate_rejects_real_pending_fixture_with_pinned_heads(self):
+        # A pending LLVM native-defer case is not full parity, even when both
+        # report revisions match the expected source heads. Only the fully
+        # required subset may be validated as complete.
+        self.assertTrue(any("pending" in case["backends"].values()
+                            for case in self.suite["cases"]))
         status, summary = self.compare(strict=True, revisions=self.sha)
-        self.assertEqual(status, 0)
-        self.assertIn("SUITE_COMPLETE=yes", summary)
-        self.assertIn("BACKEND_PENDING=0", summary)
+        self.assertEqual(status, 1)
+        self.assertIn("SUITE_COMPLETE=no", summary)
+        self.assertIn("BACKEND_PENDING=", summary)
 
     def test_strict_gate_demands_pinned_heads(self):
         with self.assertRaisesRegex(ValueError, "requires pinned"):
