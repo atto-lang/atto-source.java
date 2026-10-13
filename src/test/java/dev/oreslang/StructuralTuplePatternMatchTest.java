@@ -32,7 +32,7 @@ final class StructuralTuplePatternMatchTest {
                       end
 
                       fnc named(Base value): int {
-                        match value over
+                        do match value over
                           on structural R r -> {
                             r.foo(r.bar);
                             return 1;
@@ -42,7 +42,7 @@ final class StructuralTuplePatternMatchTest {
                       }
 
                       fnc inline(Base value): string {
-                        match value over
+                        do match value over
                           on structural { bar: string } v -> {
                             return v.bar;
                           }
@@ -70,7 +70,7 @@ final class StructuralTuplePatternMatchTest {
                   end
 
                   fnc classify(Base value, Dog dog): int {
-                    match (value, dog) over
+                    do match (value, dog) over
                       on (structural { bar: string } shaped, Dog g) -> {
                         return 7;
                       }
@@ -93,7 +93,7 @@ final class StructuralTuplePatternMatchTest {
                           end
 
                           fnc classify(Base value): int {
-                            match value over
+                            do match value over
                               on structural { foo: string } broad -> {
                                 return 1;
                               }
@@ -120,7 +120,7 @@ final class StructuralTuplePatternMatchTest {
                     end
                     fnc bad(): void {
                       const value = infer struct{bar: "before"};
-                      match value over
+                      do match value over
                         on structural %s narrowed -> {
                           narrowed.bar = "after";
                         }
@@ -142,7 +142,7 @@ final class StructuralTuplePatternMatchTest {
                     fnc read(): string {
                       const when = true;
                       const value = infer struct{bar: "ok"};
-                      match value over
+                      do match value over
                         on structural { bar: string } narrowed when when -> {
                           return narrowed.bar;
                         }
@@ -158,7 +158,7 @@ final class StructuralTuplePatternMatchTest {
     void listPatternsAndDefaultMatchArmsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(List<int> values): int {
-                  match values over
+                  do match values over
                     on [_, _] -> { return 1; }
                     on _ -> { return 0; }
                   end
@@ -169,7 +169,7 @@ final class StructuralTuplePatternMatchTest {
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
                         fnc bad(bool value): int {
-                          match value over
+                          do match value over
                             default -> { return 1; }
                           end
                         }
@@ -198,7 +198,7 @@ final class StructuralTuplePatternMatchTest {
                   end
 
                   fnc named(Base value): int {
-                    match value over
+                    do match value over
                       on structural R r -> {
                         r.foo(r.bar);
                         return 1;
@@ -208,14 +208,14 @@ final class StructuralTuplePatternMatchTest {
                   }
 
                   fnc inline(Base value): string {
-                    match value over
+                    do match value over
                       on structural { bar: string } v -> { return v.bar; }
                       on _ -> { return "missing"; }
                     end
                   }
 
                   fnc tupled(Base value, Dog dog): int {
-                    match (value, dog) over
+                    do match (value, dog) over
                       on (structural { bar: string } v, Dog g) -> { return 7; }
                       on (_, _) -> { return 0; }
                     end
