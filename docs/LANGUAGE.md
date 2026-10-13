@@ -380,7 +380,7 @@ remain unfinished. No guest code may execute during constant folding.
 Symbol literal `#ready` can be used in a `match` arm or `switch` case.
 Both dispatch using nominal Symbol identity and do not coerce Strings:
 ```ores
-match status over
+return match status over
   on #ready -> { return 1; }
   on #'needs attention' -> { return 2; }
   on _ -> { return 0; }
