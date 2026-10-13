@@ -39,8 +39,12 @@ public final class GuestTraceCapture {
 
     /** New owned list in outermost-to-innermost order, capped to 64 callables. */
     public static List<String> frames() {
-        List<String> frames = new ArrayList<>(CURRENT.get());
-        return Collections.unmodifiableList(frames);
+        ArrayDeque<String> active = CURRENT.get();
+        if (active.isEmpty()) {
+            CURRENT.remove();
+            return List.of();
+        }
+        return Collections.unmodifiableList(new ArrayList<>(active));
     }
 
     public static String text() {

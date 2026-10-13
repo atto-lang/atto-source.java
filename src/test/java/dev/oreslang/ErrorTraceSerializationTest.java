@@ -77,6 +77,35 @@ final class ErrorTraceSerializationTest {
     }
 
     @Test
+    void mutableErrorReceiverIsRequiredOnlyForCapture() {
+        String prelude = """
+                define class LocalError as
+                  pub let Array<String> stack = [];
+                  pub capture(mut self)(): Array<String> {
+                    self.stack = rt trace_frames();
+                    return self.stack;
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> dev.oreslang.types.TypeChecker.check(
+                dev.oreslang.parser.Parser.parse(prelude + """
+                  fnc valid(): void {
+                    val LocalError e = new LocalError();
+                    e.capture();
+                    return;
+                  }
+                  """)));
+        assertThrows(IllegalArgumentException.class, () -> dev.oreslang.types.TypeChecker.check(
+                dev.oreslang.parser.Parser.parse(prelude + """
+                  fnc bad(): void {
+                    const LocalError e = new LocalError();
+                    e.capture();
+                    return;
+                  }
+                  """)));
+    }
+
+    @Test
     void sourceCapturesTraceWithoutConstructingAnException() throws Exception {
         Path entry = temp.resolve("trace.ores");
         Files.writeString(entry, """
