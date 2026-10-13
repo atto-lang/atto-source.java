@@ -30,7 +30,17 @@ pub routine main(): void {
   discriminators; ambiguous declarations are rejected early.
 - Static type-checking selects a unique declaration by primitive/enum
   signature before ordinary generic, parameter, effect and ownership checks.
-  Unknown/generic/union static arguments require narrowing.
+  Unknown/generic/union static arguments require narrowing. A dotted variant
+  name is accepted only if its owner and case are explicitly registered in
+  the closed enum registry; invented `Enum.Missing` type names cannot
+  impersonate a registered enum.
+- A lexical generic type parameter shadows the enum of the same spelling.
+  Such a parameter is **not** a nominal discriminator even when a root enum
+  exists with that name. We reject apparent overload disjointness caused by
+  this spelling collision.
+- Overload registration verifies each new candidate against previously
+  admitted signatures. This makes cumulative admission quadratic rather
+  than repeatedly comparing all old pairs after each insertion (cubic).
 - Java/Graal frontend returns an immutable **identity-keyed source call
   binding map**. OresLanguage passes that map to OresEvalRootNode, and the
   evaluator executes only the already-selected declaration; it validates
@@ -39,6 +49,10 @@ pub routine main(): void {
 - Unverified host/dynamic/imported nominal overload calls are rejected
   because they lack a trusted static call binding and cross-file manifest.
   Class/interface/trait method selectors are unchanged.
+- Speculative argument typing used to choose an overload rolls back
+  definite-field-initialization metadata before the normal argument checker
+  commits its effects. Qualified module calls must select public callables,
+  consistent with the interpreter's access checks.
 
 ## Intentional blockers
 
