@@ -83,6 +83,8 @@ public final class ChannelRuntime {
         // constructor and their separate envelope/capability policy.
         private final java.util.function.Consumer<? super T> payloadValidator;
         private final java.util.function.UnaryOperator<T> payloadSnapshotter;
+        private final Object guestSeal;
+        private final Object guestOwner;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
         private boolean closed;
@@ -110,6 +112,20 @@ public final class ChannelRuntime {
                 int capacity,
                 java.util.function.Consumer<? super T> payloadValidator,
                 java.util.function.UnaryOperator<T> payloadSnapshotter) {
+            this(capacity, payloadValidator, payloadSnapshotter, null, null);
+        }
+
+        /**
+         * An opaque, interpreter-controlled identity seal prevents arbitrary
+         * host-created channels from impersonating guest Channel<T>.
+         * Supplying a custom validator alone never grants guest admission.
+         */
+        public Channel(
+                int capacity,
+                java.util.function.Consumer<? super T> payloadValidator,
+                java.util.function.UnaryOperator<T> payloadSnapshotter,
+                Object guestSeal,
+                Object guestOwner) {
             if (capacity < 0) {
                 throw new IllegalArgumentException(
                         "channel capacity cannot be negative");
@@ -117,6 +133,8 @@ public final class ChannelRuntime {
             this.capacity = capacity;
             this.payloadValidator = payloadValidator;
             this.payloadSnapshotter = payloadSnapshotter;
+            this.guestSeal = guestSeal;
+            this.guestOwner = guestOwner;
         }
 
         /**
@@ -126,6 +144,12 @@ public final class ChannelRuntime {
          */
         public boolean hasGuestDataPolicy() {
             return payloadValidator != null && payloadSnapshotter != null;
+        }
+
+        public boolean isAuthorizedGuestChannel(Object expectedSeal, Object expectedOwner) {
+            return hasGuestDataPolicy()
+                    && guestSeal != null && guestSeal == expectedSeal
+                    && guestOwner != null && guestOwner == expectedOwner;
         }
 
         public int capacity() {
