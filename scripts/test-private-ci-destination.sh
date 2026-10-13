@@ -15,7 +15,7 @@ cat > "$work/gh" <<'MOCK'
 [[ "${1:-}" == api && "${2:-}" == repos/trusted/ci ]] || exit 2
 [[ "${3:-}" == --jq ]] || exit 2
 [[ "${MOCK_API_FAILURE:-false}" != true ]] || exit 4
-printf '%s\t%s\t%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}"
+printf '%s\t%s\t%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_EXTRA_LINE:-}"
 MOCK
 cat > "$work/record" <<'MOCK'
 #!/usr/bin/env bash
@@ -64,7 +64,7 @@ export MOCK_API_FAILURE=true
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_API_FAILURE
-printf 'other/repo\n' > "$policy"
+export MOCK_EXTRA_LINE=
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 printf 'trusted/ci #bad-comment\n' > "$policy"
@@ -76,4 +76,10 @@ rm "$policy"
 expect_fail trusted/ci
 ln -s "$work/fixture/scripts/check-private-ci-destination.sh" "$policy"
 expect_fail trusted/ci
-printf 'PASS: approved-only private, exact identity, fail-closed policy, no child execution\n'
+rm "$policy"
+printf 'trusted/ci\n' > "$policy"
+mv "$work/fixture/.github" "$work/approved-policy-directory"
+ln -s "$work/approved-policy-directory" "$work/fixture/.github"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+printf 'PASS: approved private identity, reject parent symlinks and multiline metadata, no child execution\n'
