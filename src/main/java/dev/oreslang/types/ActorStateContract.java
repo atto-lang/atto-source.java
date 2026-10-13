@@ -237,6 +237,37 @@ public final class ActorStateContract {
                         "actor state-backed reference alias requires verified snapshot lowering");
             }
             if (node instanceof Ast.AssignExpr assignment
+                    && !isDirectStateFieldTarget(assignment.target(), activeAccess)
+                    && containsReferenceBearingStateProjection(
+                            assignment.target(), activeAccess, keys)) {
+                // Nested list/map/record writes need element-level provenance
+                // plus write-borrow lowering, not merely a critical outer
+                // admission. This includes s.items[i] = external and
+                // s.items.element = external.
+                throw new IllegalArgumentException(
+                        "actor state nested reference write requires verified element ownership");
+            }
+            if (node instanceof Ast.TypeTestExpr test
+                    && containsReferenceBearingStateProjection(
+                            test.value(), activeAccess, keys)) {
+                // The 'is Type alias' form can bind the object by reference.
+                throw new IllegalArgumentException(
+                        "actor state-backed reference pattern binding requires verified no-escape lowering");
+            }
+            if (node instanceof Ast.PatternTestExpr test
+                    && containsReferenceBearingStateProjection(
+                            test.value(), activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state-backed reference pattern binding requires verified no-escape lowering");
+            }
+            if (node instanceof Ast.MatchStmt match
+                    && containsReferenceBearingStateProjection(
+                            match.subject(), activeAccess, keys)) {
+                // Match arm variables may retain the matched subject.
+                throw new IllegalArgumentException(
+                        "actor state-backed reference match requires verified pattern ownership");
+            }
+            if (node instanceof Ast.AssignExpr assignment
                     && isDirectStateFieldTarget(assignment.target(), activeAccess)
                     && !detachedScalarStateType(keys.get(
                             ((Ast.MemberExpr) assignment.target()).member()))
