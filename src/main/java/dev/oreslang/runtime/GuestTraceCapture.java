@@ -14,7 +14,12 @@ public final class GuestTraceCapture {
     private GuestTraceCapture() { }
 
     /** Nested synchronous guest invocation frame, not a Java stack frame. */
-    public static AutoCloseable enter(String callable) {
+    @FunctionalInterface
+    public interface Scope extends AutoCloseable {
+        @Override void close();
+    }
+
+    public static Scope enter(String callable) {
         if (callable == null || callable.isBlank()) throw new IllegalArgumentException("blank guest frame");
         ArrayDeque<String> frames = CURRENT.get();
         boolean admitted = frames.size() < MAX_FRAMES;
@@ -39,6 +44,6 @@ public final class GuestTraceCapture {
     }
 
     public static String text() {
-        return String.join("\\n", frames());
+        return String.join("\n", frames());
     }
 }

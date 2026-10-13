@@ -2916,6 +2916,10 @@ public final class Parser {
         }
 
         String name = operation.lexeme();
+        if (name.equals("trace_frames") || name.equals("trace_string")) {
+            if (match(LPAREN)) consume(RPAREN, "rt trace capture takes no arguments");
+            return new Ast.RuntimeCallExpr(name, List.of());
+        }
         if (operation.type() == YIELD || name.equals("yield") || name.equals("cooperate")) {
             if (match(LPAREN)) {
                 if (!check(RPAREN)) {
@@ -2928,7 +2932,9 @@ public final class Parser {
         }
 
         if (!name.equals("copy") && !name.equals("take")
-                && !name.equals("borrow") && !name.equals("share") && !name.equals("fail")) {
+                && !name.equals("borrow") && !name.equals("share") && !name.equals("fail")
+                && !name.equals("error_to_string") && !name.equals("error_to_json")
+                && !name.equals("error_to_messagepack") && !name.equals("error_to_proto_buf")) {
             throw error(operation,
                     "unknown rt operation '" + name
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");

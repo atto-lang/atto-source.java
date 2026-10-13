@@ -2074,6 +2074,10 @@ public final class TypeChecker {
                 Type actorType = resolve(created.type(), generics, self);
                 return new Named("ActorRef", List.of(actorType));
             }
+            if (runtime.operation().equals("trace_frames") || runtime.operation().equals("trace_string")) {
+                if (!runtime.arguments().isEmpty()) throw new IllegalArgumentException("rt trace capture takes no arguments");
+                return runtime.operation().equals("trace_string") ? Primitive.STRING : new ListType(Primitive.STRING);
+            }
             if (runtime.operation().equals("cooperate")) {
                 if (!runtime.arguments().isEmpty()) {
                     throw new IllegalArgumentException("rt cooperate takes no arguments");
@@ -2092,6 +2096,16 @@ public final class TypeChecker {
             if (runtime.operation().equals("fail")) {
                 requireAssignable(operand, Primitive.STRING, "rt fail message");
                 return Primitive.VOID;
+            }
+            if (runtime.operation().startsWith("error_to_")) {
+                Ast.ClassDecl errorRoot = findClass("Error");
+                if (errorRoot == null) throw new IllegalArgumentException("rt error codec requires std/error");
+                requireAssignable(operand, nominalClassType(errorRoot), "rt error codec receiver");
+                return switch (runtime.operation()) {
+                    case "error_to_string", "error_to_json" -> Primitive.STRING;
+                    case "error_to_messagepack", "error_to_proto_buf" -> new ListType(Primitive.INT);
+                    default -> throw new IllegalArgumentException("unknown runtime error codec");
+                };
             }
             return switch (runtime.operation()) {
                 case "borrow" -> new Borrow(operand, false);

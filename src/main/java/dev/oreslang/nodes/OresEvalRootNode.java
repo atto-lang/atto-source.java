@@ -23,6 +23,8 @@ import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.SourceCooperationQuantum;
+import dev.oreslang.runtime.GuestTraceCapture;
+import dev.oreslang.runtime.GuestErrorWireCodec;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
@@ -763,7 +765,16 @@ public final class OresEvalRootNode extends RootNode {
             Invocation current = initial;
             int tailHops = 0;
             while (true) {
-                Object result = current.owner().executeRaw(current);
+                Object result;
+                String callable = switch (current.kind()) {
+                    case FUNCTION, FUNCTION_BODY -> ((Ast.FunctionDecl) current.target()).name();
+                    case METHOD, STATIC_FUNCTION, STATIC_FUNCTION_BODY ->
+                            ((Ast.MethodDecl) current.target()).name();
+                    case INVOKABLE -> "<callable>";
+                };
+                try (GuestTraceCapture.Scope frame = GuestTraceCapture.enter(callable)) {
+                    result = current.owner().executeRaw(current);
+                }
                 if (!(result instanceof TailCall tail)) return result;
                 current = tail.invocation();
                 tailHops++;
@@ -5905,6 +5916,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object applyRuntimeOwnership(String operation, Object value) {
             return switch (operation) {
+                case "error_to_string", "error_to_json", "error_to_messagepack", "error_to_proto_buf" -> serializeGuestError(operation, value);
                 case "fail" -> {
                     if (!(value instanceof String message)) {
                         throw new IllegalArgumentException("rt fail message must be a String");
@@ -5919,6 +5931,38 @@ public final class OresEvalRootNode extends RootNode {
                 case "copy" -> value;
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + operation + "'");
+            };
+        }
+
+        private Object serializeGuestError(String operation, Object value) {
+            if (!(value instanceof OresObject object)
+                    || !object.fields.containsKey("full_trace")
+                    || !object.fields.containsKey("json_full")
+                    || !object.fields.containsKey("message")
+                    || !object.fields.containsKey("stack"))
+                throw new IllegalArgumentException("error codec requires a guest std/error value");
+            Object codeValue = object.owner.invoke(object.owner.prepareBoundMethodInvocation(
+                    object, "code", List.of(), null));
+            if (!(codeValue instanceof Number code)) throw new IllegalStateException("error code() must return int");
+            Object fullTrace = object.fields.get("full_trace");
+            Object jsonFull = object.fields.get("json_full");
+            Object message = object.fields.get("message");
+            Object stack = object.fields.get("stack");
+            if (!(fullTrace instanceof Boolean includeTrace)
+                    || !(jsonFull instanceof Boolean includeJson)
+                    || !(message instanceof String msg)
+                    || !(stack instanceof List<?> frameList)
+                    || frameList.stream().anyMatch(x -> !(x instanceof String)))
+                throw new IllegalArgumentException("invalid guest error encoding fields");
+            @SuppressWarnings("unchecked")
+            List<String> frames = (List<String>) frameList;
+            List<String> shown = includeTrace ? frames : List.of();
+            return switch (operation) {
+                case "error_to_string" -> GuestErrorWireCodec.text(object.klass.name(), code.intValue(), msg, shown);
+                case "error_to_json" -> GuestErrorWireCodec.json(object.klass.name(), code.intValue(), msg, shown, includeJson);
+                case "error_to_messagepack" -> GuestErrorWireCodec.messagePack(object.klass.name(), code.intValue(), msg, shown);
+                case "error_to_proto_buf" -> GuestErrorWireCodec.protoBuf(object.klass.name(), code.intValue(), msg, shown);
+                default -> throw new IllegalArgumentException("unknown guest error encoding");
             };
         }
 
@@ -6157,6 +6201,12 @@ public final class OresEvalRootNode extends RootNode {
                             runtimeKind,
                             this,
                             created.type().name());
+                }
+                if (runtime.operation().equals("trace_frames") || runtime.operation().equals("trace_string")) {
+                    if (!runtime.arguments().isEmpty())
+                        throw new IllegalArgumentException("rt trace capture takes no arguments");
+                    return runtime.operation().equals("trace_frames")
+                            ? new ArrayList<>(GuestTraceCapture.frames()) : GuestTraceCapture.text();
                 }
                 if (runtime.operation().equals("cooperate")) {
                     if (!runtime.arguments().isEmpty()) {
