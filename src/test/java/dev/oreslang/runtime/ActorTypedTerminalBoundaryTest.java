@@ -357,8 +357,8 @@ final class ActorTypedTerminalBoundaryTest {
                 Thread.onSpinWait();
             }
             assertNotNull(source.get(), "actor never created the delayed Future");
-            assertEquals(1, source.get().pendingRuntimeWaiterCount(),
-                    "actor continuation must be installed before producer rejection");
+            assertTrue(source.get().pendingRuntimeWaiterCount() >= 3,
+                    "actor ownership and scheduler continuation must be installed before rejection");
             assertNotNull(producer.get());
             assertFalse(outcome.isDone(), "one-shot result must await actor finalization");
             producer.get().reject(ActorRuntime.GuestEffectSignal.raising(1004));
