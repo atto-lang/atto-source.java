@@ -8,6 +8,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +39,10 @@ public final class StaticConstantFolder {
     private final Map<Key, Object> memo = new HashMap<>();
     private final Map<Key, Boolean> visiting = new HashMap<>();
     private final ArrayDeque<Key> stack = new ArrayDeque<>();
+    private final Set<Key> validatedDependencies = new HashSet<>();
+    private final Set<Key> activeDependencies = new HashSet<>();
+    private final ArrayDeque<Key> dependencyPath = new ArrayDeque<>();
+    private int validationSteps;
     private int steps;
     private int expressionDepth;
 
@@ -58,6 +65,13 @@ public final class StaticConstantFolder {
     /** Fold all static bindings regardless of whether they are imported or used. */
     public static Ast.Program fold(Ast.Program program) {
         StaticConstantFolder folder = new StaticConstantFolder(program);
+        // Validate the entire dependency DAG, including never-taken branches,
+        // before reducing any initializer to a literal. This prevents a
+        // short-circuit from concealing invalid names, cycles or custom ops.
+        for (var entry : folder.fields.entrySet()) {
+            if (entry.getValue().bindingKind() == Ast.BindingKind.CONST)
+                folder.validateDependencyGraph(entry.getKey());
+        }
         List<Ast.ModuleDecl> rewritten = new ArrayList<>();
         for (Ast.ModuleDecl module : program.modules()) {
             List<Ast.Decl> declarations = new ArrayList<>();
@@ -95,10 +109,6 @@ public final class StaticConstantFolder {
         visiting.put(key, true);
         stack.push(key);
         try {
-            // Validate the entire expression tree, including dead/short-circuited
-            // branches, before folding any values. Runtime calls must not be
-            // smuggled into a const through 'false && userCall()'.
-            requireClosedExpression(field.initializer(), 0);
             Object value = eval(field.initializer(), key.module());
             memo.put(key, value);
             return value;
@@ -108,24 +118,115 @@ public final class StaticConstantFolder {
         }
     }
 
-    private void requireClosedExpression(Ast.Expr expr, int depth) {
+    private void validateDependencyGraph(Key key) {
+        if (validatedDependencies.contains(key)) return;
+        if (!activeDependencies.add(key)) {
+            List<Key> cycle = new ArrayList<>(dependencyPath);
+            java.util.Collections.reverse(cycle);
+            cycle.add(key);
+            throw new IllegalArgumentException("circular constant dependency: " + cycle);
+        }
+        if (dependencyPath.size() >= MAX_RECURSION_DEPTH) {
+            activeDependencies.remove(key);
+            throw new IllegalArgumentException("constant dependency chain exceeds depth limit at " + key);
+        }
+        dependencyPath.push(key);
+        try {
+            Ast.FieldDecl declaration = fields.get(key);
+            if (declaration == null || declaration.bindingKind() != Ast.BindingKind.CONST)
+                throw new IllegalArgumentException("constant " + key + " refers to non-const runtime binding");
+            Set<Key> dependencies = new LinkedHashSet<>();
+            requireClosedExpression(declaration.initializer(), key.module(), 0, dependencies);
+            for (Key reference : dependencies)
+                validateDependencyGraph(reference);
+            validatedDependencies.add(key);
+        } finally {
+            dependencyPath.pop();
+            activeDependencies.remove(key);
+        }
+    }
+
+    private Key resolveUnqualified(String module, String name) {
+        Key local = new Key(module, name);
+        if (fields.containsKey(local)) return requireConstantTarget(local);
+        Key root = new Key(Parser.ROOT_MODULE, name);
+        if (!module.equals(Parser.ROOT_MODULE) && fields.containsKey(root))
+            return requireConstantTarget(root);
+        throw new IllegalArgumentException("unknown compile-time constant '" + name
+                + "' in module " + module + "; imported values require static linking");
+    }
+
+    private Key resolveQualified(String module, String owner, String member) {
+        Key target = new Key(owner, member);
+        if (!modules.containsKey(owner) || !fields.containsKey(target))
+            throw new IllegalArgumentException("unresolved module constant " + target);
+        if (!owner.equals(module)) {
+            Ast.ModuleDecl declaration = modules.get(owner);
+            if (!owner.equals(Parser.ROOT_MODULE)
+                    && declaration.visibility() != Ast.Visibility.PUBLIC)
+                throw new IllegalArgumentException(
+                        "private module is not accessible for constant reference: " + target);
+            if (fields.get(target).visibility() != Ast.Visibility.PUBLIC)
+                throw new IllegalArgumentException(
+                        "private module constant is not accessible: " + target);
+        }
+        return requireConstantTarget(target);
+    }
+
+    private Key requireConstantTarget(Key target) {
+        if (fields.get(target).bindingKind() != Ast.BindingKind.CONST)
+            throw new IllegalArgumentException("constant " + target
+                    + " refers to non-const runtime binding");
+        return target;
+    }
+
+    private void requireClosedExpression(Ast.Expr expr, String module, int depth,
+                                         Set<Key> dependencies) {
+        if (expr == null)
+            throw new IllegalArgumentException("file/module const requires an initializer");
         if (depth >= MAX_RECURSION_DEPTH)
             throw new IllegalArgumentException("compile-time expression exceeds depth limit");
-        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return;
-        if (expr instanceof Ast.MemberExpr member && member.receiver() instanceof Ast.NameExpr) return;
+        if (++validationSteps > MAX_EXPRESSION_STEPS)
+            throw new IllegalArgumentException("compile-time constant preflight step limit exceeded");
+
+        if (expr instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            if (value instanceof String text) boundedString(text);
+            else if (value instanceof Double number && !Double.isFinite(number))
+                throw new IllegalArgumentException("nonfinite compile-time numeric literal");
+            else if (value != null && !(value instanceof Long)
+                    && !(value instanceof Integer) && !(value instanceof Double)
+                    && !(value instanceof Boolean) && !(value instanceof OresSymbol))
+                throw new IllegalArgumentException("unsupported compile-time literal type");
+            return;
+        }
+        if (expr instanceof Ast.NameExpr name) {
+            dependencies.add(resolveUnqualified(module, name.name()));
+            return;
+        }
+        if (expr instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr owner) {
+            dependencies.add(resolveQualified(module, owner.name(), member.member()));
+            return;
+        }
         if (expr instanceof Ast.UnaryExpr unary) {
-            requireClosedExpression(unary.operand(), depth + 1);
+            if (!Set.of("-", "+", "!").contains(unary.operator()))
+                throw new IllegalArgumentException("unsupported constant unary operator " + unary.operator());
+            requireClosedExpression(unary.operand(), module, depth + 1, dependencies);
             return;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
-            requireClosedExpression(binary.left(), depth + 1);
-            requireClosedExpression(binary.right(), depth + 1);
+            if (!Set.of("+", "-", "*", "/", "%", "<", "<=", ">", ">=",
+                    "&&", "||", "==", "!=", "eq", "neq").contains(binary.operator()))
+                throw new IllegalArgumentException("unsupported constant binary operator " + binary.operator());
+            requireClosedExpression(binary.left(), module, depth + 1, dependencies);
+            requireClosedExpression(binary.right(), module, depth + 1, dependencies);
             return;
         }
         if (expr instanceof Ast.ConditionalExpr choice) {
-            requireClosedExpression(choice.condition(), depth + 1);
-            requireClosedExpression(choice.whenTrue(), depth + 1);
-            requireClosedExpression(choice.whenFalse(), depth + 1);
+            requireClosedExpression(choice.condition(), module, depth + 1, dependencies);
+            requireClosedExpression(choice.whenTrue(), module, depth + 1, dependencies);
+            requireClosedExpression(choice.whenFalse(), module, depth + 1, dependencies);
             return;
         }
         throw new IllegalArgumentException("file/module const requires a closed compile-time expression; "
@@ -153,35 +254,11 @@ public final class StaticConstantFolder {
                     + value.getClass().getSimpleName());
         }
         if (expression instanceof Ast.NameExpr name) {
-            Key local = new Key(module, name.name());
-            if (fields.containsKey(local)) return evaluate(local);
-            Key root = new Key(Parser.ROOT_MODULE, name.name());
-            if (!module.equals(Parser.ROOT_MODULE) && fields.containsKey(root))
-                return evaluate(root);
-            throw new IllegalArgumentException("unknown compile-time constant '" + name.name()
-                    + "' in module " + module + "; imported values require static linking");
+            return evaluate(resolveUnqualified(module, name.name()));
         }
         if (expression instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr owner) {
-            Key target = new Key(owner.name(), member.member());
-            if (modules.containsKey(owner.name()) && fields.containsKey(target)) {
-                Ast.ModuleDecl ownerModule = modules.get(owner.name());
-                Ast.FieldDecl field = fields.get(target);
-                if (!owner.name().equals(module)) {
-                    // The visibility of BOTH the owning named module and its
-                    // declaration must permit access. A private module must
-                    // not be bypassed through a publicly marked nested field.
-                    if (!owner.name().equals(Parser.ROOT_MODULE)
-                            && ownerModule.visibility() != Ast.Visibility.PUBLIC)
-                        throw new IllegalArgumentException(
-                                "private module is not accessible for constant reference: " + target);
-                    if (field.visibility() != Ast.Visibility.PUBLIC)
-                        throw new IllegalArgumentException(
-                                "private module constant is not accessible: " + target);
-                }
-                return evaluate(target);
-            }
-            throw new IllegalArgumentException("unresolved module constant " + target);
+            return evaluate(resolveQualified(module, owner.name(), member.member()));
         }
         if (expression instanceof Ast.UnaryExpr unary) {
             Object value = eval(unary.operand(), module);
