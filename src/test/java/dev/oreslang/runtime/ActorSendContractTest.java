@@ -534,6 +534,7 @@ final class ActorSendContractTest {
     @Test
     void blockedExitHookCannotPrematurelyCompleteDoneAndCanReenterStop() throws Exception {
         CountDownLatch exitHookEntered = new CountDownLatch(1);
+        CountDownLatch exitHookReentered = new CountDownLatch(1);
         CountDownLatch exitHookRelease = new CountDownLatch(1);
         java.util.concurrent.atomic.AtomicReference<ActorRuntime.ActorRef<Integer>> reference =
                 new java.util.concurrent.atomic.AtomicReference<>();
@@ -544,8 +545,9 @@ final class ActorSendContractTest {
             runtime.setActorExitHook(domain -> {
                 exitHooks.incrementAndGet();
                 ActorRuntime.ActorRef<Integer> actor = reference.get();
-                if (actor != null) actor.stop(); // Reenter stop during physical retirement.
                 exitHookEntered.countDown();
+                if (actor != null) actor.stop(); // Reenter stop during physical retirement.
+                exitHookReentered.countDown();
                 try {
                     if (!exitHookRelease.await(5, TimeUnit.SECONDS)) {
                         throw new IllegalStateException("exit hook release timed out");
@@ -568,7 +570,12 @@ final class ActorSendContractTest {
             }, "actor-reentrant-exit-hook-stop");
             stopper.start();
             try {
-                assertTrue(exitHookEntered.await(5, TimeUnit.SECONDS));
+                assertTrue(exitHookEntered.await(5, TimeUnit.SECONDS),
+                        () -> "exit hook not entered, callback count=" + exitHooks.get()
+                                + ", stopperFailure=" + stopperFailure.get()
+                                + ", done=" + actor.getDone().isDone());
+                assertTrue(exitHookReentered.await(5, TimeUnit.SECONDS),
+                        "actor.stop() called from exit hook must return without deadlock");
                 assertFalse(actor.getDone().isDone(),
                         "DONE must not precede completion of the exit hook");
                 assertFalse(actor.awaitTermination(75, TimeUnit.MILLISECONDS),
