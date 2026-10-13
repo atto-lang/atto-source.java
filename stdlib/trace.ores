@@ -71,6 +71,12 @@ define module Trace as
     }
   end
 
+  // Packaged classes are constructed within their owning Oreslang module;
+  // imported modules expose this factory rather than a host-level class alias.
+  pub fnc buffer(int capacity): Buffer {
+    return new Buffer(capacity);
+  }
+
   // Call only for enabled/sampled spans; producing an Event performs no I/O.
   // Phase and correlation identifiers must not embed request/tenant secrets.
   pub fnc event(int correlation_id, int phase_id, int elapsed_ns): Event {
