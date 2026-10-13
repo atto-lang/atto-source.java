@@ -169,6 +169,6 @@ final class IntersectionTypeHardeningTest {
             context.eval(Source.newBuilder(OresLanguage.ID, source, "intersection.ores")
                     .mimeType(OresLanguage.MIME_TYPE).build());
         }
-        assertEquals("9\\nready\\n", output.toString(java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals("9\nready\n", output.toString(java.nio.charset.StandardCharsets.UTF_8));
     }
 }
