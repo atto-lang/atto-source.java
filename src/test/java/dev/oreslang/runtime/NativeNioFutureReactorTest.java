@@ -131,13 +131,80 @@ final class NativeNioFutureReactorTest {
         }
     }
 
+    @Test void cancelledReadCannotConsumeFutureSocketBytes() throws Exception {
+        try (var reactor = NativeNioFutureReactor.loopback(0, 8, 1, 8)) {
+            var admission = reactor.acceptAsync();
+            try (Socket peer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
+                var connection = admission.get(2, TimeUnit.SECONDS);
+                var cancelled = connection.readAsync(64);
+                assertTrue(cancelled.cancel(false), "pending non-consuming read can be cancelled");
+                assertTrue(cancelled.isCancelled());
+                // A fresh read queued after cancellation must receive the bytes.
+                var receiving = connection.readAsync(64);
+                peer.getOutputStream().write("preserved".getBytes(StandardCharsets.US_ASCII));
+                assertEquals("preserved", new String(receiving.get(2, TimeUnit.SECONDS),
+                        StandardCharsets.US_ASCII));
+                connection.closeAsync().get(2, TimeUnit.SECONDS);
+            }
+            assertEquals(0, reactor.outstandingFutures());
+        }
+    }
+
+    @Test void cancelledAcceptDoesNotClaimIncomingSocket() throws Exception {
+        try (var reactor = NativeNioFutureReactor.loopback(0, 8, 1, 8)) {
+            var first = reactor.acceptAsync();
+            assertTrue(first.cancel(false));
+            var next = reactor.acceptAsync();
+            try (Socket peer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
+                var connection = next.get(2, TimeUnit.SECONDS);
+                assertTrue(first.isCancelled());
+                connection.closeAsync().get(2, TimeUnit.SECONDS);
+            }
+            assertEquals(0, reactor.outstandingFutures());
+        }
+    }
+
+    @Test void cancelledAcceptAndReadDoNotLeakAdmissionUnderRepeatedRaces() throws Exception {
+        for (int round = 0; round < 30; round++) {
+            try (var reactor = NativeNioFutureReactor.loopback(0, 4, 1, 12)) {
+                var cancelled = new java.util.ArrayList<OresFuture<?>>();
+                for (int i = 0; i < 8; i++) {
+                    var request = reactor.acceptAsync();
+                    assertTrue(request.cancel(false));
+                    cancelled.add(request);
+                }
+                // The subsequent I/O must not stall behind cancelled accepts.
+                var accepted = reactor.acceptAsync();
+                try (Socket peer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
+                    var connection = accepted.get(2, TimeUnit.SECONDS);
+                    for (int i = 0; i < 4; i++) {
+                        var read = connection.readAsync(10);
+                        assertTrue(read.cancel(false));
+                        cancelled.add(read);
+                    }
+                    var latest = connection.readAsync(10);
+                    peer.getOutputStream().write('q');
+                    assertEquals("q", new String(latest.get(2, TimeUnit.SECONDS),
+                            StandardCharsets.US_ASCII));
+                    connection.closeAsync().get(2, TimeUnit.SECONDS);
+                }
+                reactor.close();
+                assertTrue(reactor.awaitTerminated(2000));
+                for (var request : cancelled) assertTrue(request.isCancelled());
+                assertEquals(0, reactor.outstandingFutures());
+            }
+        }
+    }
+
     @Test void outstandingAcceptSettlesOnShutdownWithoutBlockingCaller() throws Exception {
         var reactor = NativeNioFutureReactor.loopback(0, 2, 1, 1);
         try {
             var waiting = reactor.acceptAsync();
-            assertFalse(waiting.cancel(false), "until cancellation fencing exists cancellation is declined");
+            assertTrue(waiting.cancel(false), "pending accept cancellation must win before kernel accept");
+            assertTrue(waiting.isCancelled());
             reactor.close(); // wake selector, never join on actor carrier
-            assertThrows(ExecutionException.class, () -> waiting.get(2, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> waiting.get(2, TimeUnit.SECONDS));
             assertTrue(reactor.awaitTerminated(2000));
             assertEquals(0, reactor.outstandingFutures());
         } finally {

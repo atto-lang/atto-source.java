@@ -58,7 +58,7 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     private final AtomicLong worstCommandQueueNanos = new AtomicLong();
     private final AtomicInteger peakPending = new AtomicInteger();
     // The fields below must be accessed on the dedicated reactor thread only.
-    private final ArrayDeque<OresFuture<Connection>> accepts = new ArrayDeque<>();
+    private final ArrayDeque<Cancelable<Connection>> accepts = new ArrayDeque<>();
     private final Set<Connection> connections = new HashSet<>();
     private volatile Throwable terminalFailure;
     private final OresFuture<Void> terminated = new OresFuture<>(() -> false, () -> { });
@@ -143,19 +143,58 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         selector.wakeup();
     }
 
-    public OresFuture<Connection> acceptAsync() {
-        // Cancellation is declined pending the operation's kernel arbitration.
-        OresFuture<Connection> future = new OresFuture<>(() -> false, () -> { });
-        if (!submit(future, () -> {
-            if (shuttingDown.get()) {
-                fail(future, new IOException("TCP reactor closing"));
-                return;
+    /**
+     * The admission flag arbitrates cancellation against the kernel syscall.
+     * Cancel wins: no socket syscall may start. Reactor wins: cancellation is
+     * rejected until a non-consuming readiness attempt returns zero/null.
+     * Future.cancel() invokes the cleanup hook only after its terminal CAS,
+     * so reclamation cannot happen before cancellation becomes observable.
+     */
+    private final class Cancelable<T> {
+        final AtomicBoolean mayConsume = new AtomicBoolean(true);
+        final OresFuture<T> future = new OresFuture<>(
+                () -> mayConsume.compareAndSet(true, false),
+                () -> {
+                    synchronized (admissionGate) {
+                        if (!shuttingDown.get()) postOwned(() -> forgetCancelled(this));
+                    }
+                });
+
+        boolean claimForKernel() {
+            return mayConsume.compareAndSet(true, false);
+        }
+
+        void retryAfterNoProgress() {
+            mayConsume.set(true);
+        }
+    }
+
+    private void forgetCancelled(Cancelable<?> operation) {
+        accepts.removeIf(candidate -> candidate == operation);
+        for (Connection connection : connections) {
+            if (connection.read != null && connection.read.operation() == operation) {
+                connection.read = null;
+                connection.updateInterest();
             }
-            accepts.add(future);
-            updateAcceptInterest();
+        }
+        release(operation.future);
+        updateAcceptInterest();
+    }
+
+    public OresFuture<Connection> acceptAsync() {
+        Cancelable<Connection> operation = new Cancelable<>();
+        if (!submit(operation.future, () -> {
+            if (operation.future.isCancelled()) {
+                forgetCancelled(operation);
+            } else if (shuttingDown.get()) {
+                fail(operation.future, new IOException("TCP reactor closing"));
+            } else {
+                accepts.add(operation);
+                updateAcceptInterest();
+            }
         })) return OresFuture.failed(
                 new RejectedExecutionException("TCP listener is closed or at capacity"));
-        return future;
+        return operation.future;
     }
 
     public final class Connection {
@@ -218,19 +257,21 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         public OresFuture<byte[]> readAsync(int maximum) {
             if (maximum < 1 || maximum > MAX_IO_BYTES)
                 return OresFuture.failed(new IllegalArgumentException("invalid read size"));
-            OresFuture<byte[]> future = new OresFuture<>(() -> false, () -> { });
-            if (!submit(future, () -> {
-                if (terminated || shuttingDown.get() || closeRequested.get()) {
-                    fail(future, new IOException("connection closed"));
+            Cancelable<byte[]> operation = new Cancelable<>();
+            if (!submit(operation.future, () -> {
+                if (operation.future.isCancelled()) {
+                    forgetCancelled(operation);
+                } else if (terminated || shuttingDown.get() || closeRequested.get()) {
+                    fail(operation.future, new IOException("connection closed"));
                 } else if (read != null) {
-                    fail(future, new IllegalStateException("only one pending TCP read permitted"));
+                    fail(operation.future, new IllegalStateException("only one pending TCP read permitted"));
                 } else {
-                    read = new ReadOp(future, maximum);
+                    read = new ReadOp(operation, maximum);
                     updateInterest();
                 }
             })) return OresFuture.failed(
                     new RejectedExecutionException("TCP read admission exhausted"));
-            return future;
+            return operation.future;
         }
 
         public OresFuture<Integer> writeAsync(byte[] bytes) {
@@ -280,7 +321,7 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         }
     }
 
-    private record ReadOp(OresFuture<byte[]> future, int maximum) { }
+    private record ReadOp(Cancelable<byte[]> operation, int maximum) { }
     private record WriteOp(OresFuture<Integer> future, ByteBuffer bytes) { }
 
     private <T> void succeed(OresFuture<T> future, T value) {
@@ -302,8 +343,18 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     private void acceptReady() throws IOException {
         int accepted = 0;
         while (!accepts.isEmpty() && connections.size() < maxConnections && accepted++ < 64) {
+            Cancelable<Connection> operation = accepts.peekFirst();
+            if (!operation.claimForKernel()) {
+                accepts.removeFirst();
+                release(operation.future);
+                continue;
+            }
             SocketChannel channel = listener.accept();
-            if (channel == null) break;
+            if (channel == null) {
+                operation.retryAfterNoProgress();
+                break;
+            }
+            accepts.removeFirst();
             channel.configureBlocking(false);
             Connection connection = new Connection(channel);
             try {
@@ -313,7 +364,7 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                 throw failure;
             }
             connections.add(connection);
-            succeed(accepts.removeFirst(), connection);
+            succeed(operation.future, connection);
         }
         updateAcceptInterest();
     }
@@ -322,12 +373,19 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         if (connection.terminated) return;
         if ((ops & SelectionKey.OP_READ) != 0 && connection.read != null) {
             ReadOp op = connection.read;
-            ByteBuffer buffer = ByteBuffer.allocate(op.maximum());
-            int n = connection.channel.read(buffer);
-            if (n != 0) {
+            if (!op.operation().claimForKernel()) {
                 connection.read = null;
-                if (n < 0) succeed(op.future(), new byte[0]); // EOF, never zero-byte read
-                else succeed(op.future(), Arrays.copyOf(buffer.array(), n));
+                release(op.operation().future);
+            } else {
+                ByteBuffer buffer = ByteBuffer.allocate(op.maximum());
+                int n = connection.channel.read(buffer);
+                if (n == 0) {
+                    op.operation().retryAfterNoProgress();
+                } else {
+                    connection.read = null;
+                    if (n < 0) succeed(op.operation().future, new byte[0]); // EOF
+                    else succeed(op.operation().future, Arrays.copyOf(buffer.array(), n));
+                }
             }
         }
         if ((ops & SelectionKey.OP_WRITE) != 0 && connection.write != null) {
@@ -350,7 +408,7 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         if (key != null) key.cancel();
         try { connection.channel.close(); } catch (IOException ignored) { }
         if (connection.read != null) {
-            fail(connection.read.future(), reason);
+            fail(connection.read.operation().future, reason);
             connection.read = null;
         }
         if (connection.write != null) {
@@ -402,7 +460,7 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                     if (terminalFailure == null) terminalFailure = drainedFailure;
                 }
                 IOException failure = new IOException("TCP reactor terminated", terminalFailure);
-                while (!accepts.isEmpty()) fail(accepts.removeFirst(), failure);
+                while (!accepts.isEmpty()) fail(accepts.removeFirst().future, failure);
                 for (Connection connection : Set.copyOf(connections)) {
                     try { closeConnection(connection, failure); }
                     catch (RuntimeException cleanupFailure) {
