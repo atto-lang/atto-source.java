@@ -84,8 +84,11 @@ public final class CriticalRwGate implements AutoCloseable {
         }
 
         public OresFuture<Void> enterAsync() {
-            registerOwner(logicalOwner(false));
             try {
+                // Registration is itself a fallible admission step. Reclaim
+                // denied tickets too; otherwise repeated nested/upgrade
+                // attempts accumulate in the facade's tracked ticket set.
+                registerOwner(logicalOwner(false));
                 OresFuture<Void> readiness = underlying.enterAsync();
                 readiness.whenCompleteRuntime((value, failure) -> {
                     if (failure != null) unregisterOwner();
@@ -98,8 +101,8 @@ public final class CriticalRwGate implements AutoCloseable {
         }
 
         public void enterSync() {
-            registerOwner(logicalOwner(true));
             try {
+                registerOwner(logicalOwner(true));
                 underlying.enterSync();
             } catch (RuntimeException | Error failure) {
                 close();
