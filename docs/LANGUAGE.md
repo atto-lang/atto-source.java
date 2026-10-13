@@ -566,6 +566,67 @@ types. See
 [channels-select-and-actor-cancellation.md](channels-select-and-actor-cancellation.md)
 for exact restrictions and caveats about untrusted host/runtime callers.
 
+## Canonical slim-arrow dispatch for match and select
+
+Use `->` to separate each arm's pattern/operation from its braced body.
+The arrow has no effect on channel admission or matching: the compiler
+first matches/selects exactly one arm, then introduces arm-local bindings.
+
+```ores
+fnc dispatch(Option<{v: int, label: string}> incoming): void {
+  do match incoming over
+    on Some as {v, label} -> {
+      stdio.println(v);
+      stdio.println(label);
+    }
+    on None -> {
+      stdio.println("no value");
+    }
+  end
+}
+```
+
+`do match` is the explicit statement/no-collected-result spelling.
+The parser records that intent in the MatchStmt AST. The currently
+implemented match statement has no expression-returning counterpart;
+adding an expression `match` with collected results is future
+compiler/runtime work, not silently implied by this parser change.
+
+`on Some as {v}` binds the `v` field of the `Some` tagged payload,
+provided its declared type is a **record/struct** with that field.
+Missing/duplicate fields fail at parse/type-check time. Field names
+are local to the matching arm; the runtime stages all extracted values
+before binding. The corresponding `on Foo as {v}` form parses, but
+arbitrary user-defined `Foo` tagged variants are not yet recognized by
+this Java backend: this currently compiles only for supported
+`Option`/`Result` constructors. No reflective class-field matching.
+
+For static selection, use `when` and the same slim arrow:
+
+```ores
+fnc receive(Channel<{x: int, y: string}> messages): void {
+  do select {
+    when readch messages: let {x,y} -> {
+      x = x + 1;  // let permits rebinding this arm-local variable
+      stdio.println(x);
+      stdio.println(y);
+    }
+    default: -> {
+      stdio.println("nothing ready");
+    }
+  }
+}
+```
+
+The `let` before `{x,y}` determines binding mutability, not ownership
+of the original message. Selection consumes one payload; field
+projections do not perform another `readch`. `when` is canonical.
+Existing `case` and brace-only select bodies remain accepted pending
+formatter normalization. An unprefixed `{fields} ->` is recognized as
+record destructuring, while `{ statements }` without an arrow
+retains its historical meaning as an arm body. A `match` arm
+**always requires `->`**; using `=>` is a compiler error.
+
 ## Channel select/when typed projections
 
 The canonical static selection form uses `when` and `-> { ... }`:
