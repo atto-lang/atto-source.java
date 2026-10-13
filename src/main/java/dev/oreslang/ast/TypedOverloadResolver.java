@@ -135,7 +135,7 @@ public final class TypedOverloadResolver {
             }
             return new Signature(Domain.MODULE, module + "." + function.name(),
                     function.parameters().stream()
-                            .map(p -> TypeKey.fromSource(p.type(), resolvedEnums))
+                            .map(p -> admittedParameterType(p, resolvedEnums))
                             .toList());
         }
 
@@ -165,7 +165,7 @@ public final class TypedOverloadResolver {
             return new Signature(method.isStatic() ? Domain.STATIC : Domain.INSTANCE,
                     module + "." + declaringClass.name() + "." + method.name(),
                     method.parameters().stream()
-                            .map(p -> TypeKey.fromSource(p.type(), resolvedEnums))
+                            .map(p -> admittedParameterType(p, resolvedEnums))
                             .toList());
         }
 
@@ -196,6 +196,19 @@ public final class TypedOverloadResolver {
             out.append(bytes.length).append('_')
                     .append(HexFormat.of().formatHex(bytes)).append('$');
         }
+    }
+
+    private static TypeKey admittedParameterType(
+            Ast.Param parameter, Map<String, String> resolvedEnums) {
+        Objects.requireNonNull(parameter, "parameter");
+        // Structural compatibility is deliberately not a runtime overload
+        // discriminator. A tagged enum's nominal identity cannot stand in
+        // for a structural parameter's shape-matching contract.
+        if (parameter.structural()) {
+            throw new IllegalArgumentException(
+                    "structural parameter cannot distinguish an overload: " + parameter.name());
+        }
+        return TypeKey.fromSource(parameter.type(), resolvedEnums);
     }
 
     public record Candidate<T>(T declaration, Signature signature) {
