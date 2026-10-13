@@ -181,6 +181,48 @@ final class TypedOverloadResolverTest {
     }
 
     @Test
+    void astBasedCallableSignaturesIgnoreFncRoutineKindAndSeparateMethods() {
+        var parsed = dev.oreslang.parser.Parser.parse("""
+                fnc execute(int value): int { return value; }
+                routine execute(int value): int { return value + 1; }
+
+                define class Worker as
+                  pub handle(int value): int { return value; }
+                  pub static fnc handle(int value): int { return value + 1; }
+                end
+                """);
+        var decls = parsed.modules().getFirst().declarations();
+        Signature fnc = Signature.ofFunction("__root__",
+                (Ast.FunctionDecl) decls.get(0), Map.of());
+        Signature routine = Signature.ofFunction("__root__",
+                (Ast.FunctionDecl) decls.get(1), Map.of());
+        assertEquals(fnc, routine);
+        assertEquals(fnc.symbolId(), routine.symbolId());
+
+        Ast.ClassDecl klass = (Ast.ClassDecl) decls.get(2);
+        Signature instance = Signature.ofMethod("__root__.Worker",
+                klass.methods().get(0), Map.of());
+        Signature statik = Signature.ofMethod("__root__.Worker",
+                klass.methods().get(1), Map.of());
+        assertEquals(Domain.INSTANCE, instance.domain());
+        assertEquals(Domain.STATIC, statik.domain());
+        assertNotEquals(instance.symbolId(), statik.symbolId());
+        assertEquals(1, instance.arity());
+        assertEquals(1, statik.arity());
+    }
+
+    @Test
+    void astBasedSelectorCannotPretendGenericErasureIsNominalOverloadIdentity() {
+        var parsed = dev.oreslang.parser.Parser.parse("""
+                fnc generic<T>(T input): void { return; }
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        assertThrows(IllegalArgumentException.class, () ->
+                Signature.ofFunction("__root__", fn, Map.of()));
+    }
+
+    @Test
     void callableDomainsAndArityAreNeverInterchanged() {
         Signature instance = new Signature(Domain.INSTANCE, "Picker.select",
                 List.of(primitive("int")));
