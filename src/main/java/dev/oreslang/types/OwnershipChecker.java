@@ -34,6 +34,7 @@ public final class OwnershipChecker {
     private record ResolvedMethod(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.FieldDecl field) { }
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
+    private final TaggedMessageContracts.Registry taggedMessages;
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
@@ -44,6 +45,7 @@ public final class OwnershipChecker {
     private boolean currentAsyncGenerator;
 
     private OwnershipChecker(Ast.Program program) {
+        taggedMessages = TaggedMessageContracts.forTypes(program);
         index(program);
     }
 
@@ -2086,10 +2088,17 @@ public final class OwnershipChecker {
             return;
         }
         if (pattern instanceof Ast.TuplePattern tuple) {
-            List<Ast.TypeRef> elementTypes =
-                    subjectType != null && subjectType.isTupleType()
-                            ? subjectType.arguments()
-                            : List.of();
+            List<Ast.TypeRef> elementTypes = List.of();
+            if (subjectType != null) {
+                if (subjectType.isTupleType()) {
+                    elementTypes = subjectType.arguments();
+                } else if (subjectType.name().equals("Tuple")) {
+                    elementTypes = subjectType.arguments().size() == 1
+                            && subjectType.arguments().getFirst().isSequenceShape()
+                            ? subjectType.arguments().getFirst().arguments()
+                            : subjectType.arguments();
+                }
+            }
             for (int i = 0; i < tuple.elements().size(); i++) {
                 Ast.TypeRef elementType =
                         i < elementTypes.size()
@@ -2107,13 +2116,34 @@ public final class OwnershipChecker {
             List<Ast.TypeRef> argTypes = constructorPatternTypes(constructor.constructor(), subjectType);
             for (int i = 0; i < constructor.arguments().size(); i++) {
                 Ast.TypeRef argType = i < argTypes.size() ? argTypes.get(i) : Ast.TypeRef.inferred();
-                definePatternAliases(constructor.arguments().get(i), argType, source, destination);
+                // A Copy payload can be extracted without moving its enum
+                // owner. Move-only payloads retain the original ownership
+                // root so destructuring cannot manufacture a second owner.
+                definePatternAliases(constructor.arguments().get(i), argType,
+                        isCopyType(argType) ? null : source, destination);
             }
         }
     }
 
     private List<Ast.TypeRef> constructorPatternTypes(String constructor, Ast.TypeRef subjectType) {
         if (subjectType == null) return List.of();
+        if (constructor.indexOf('.') > 0) {
+            TaggedMessageContracts.Case variant = taggedMessages.requireCase(constructor);
+            Ast.TypeRef domainType = subjectType.isBorrow()
+                    ? subjectType.borrowedTarget() : subjectType;
+            if (!domainType.arguments().isEmpty()) {
+                throw error("enum match domain cannot have type parameters: "
+                        + domainType.name());
+            }
+            TaggedMessageContracts.Domain domain = taggedMessages.requireDomain(domainType.name());
+            if (domain.cases().stream().noneMatch(c ->
+                    c.qualifiedName().equals(variant.qualifiedName()))) {
+                throw error("enum case " + constructor
+                        + " does not belong to match subject " + domainType.name());
+            }
+            return variant.sourcePayload() == null
+                    ? List.of() : List.of(variant.sourcePayload());
+        }
         if (constructor.equals("Some") && subjectType.name().equals("Option") && subjectType.arguments().size() == 1) {
             return List.of(subjectType.arguments().getFirst());
         }
