@@ -3857,6 +3857,12 @@ public final class OresEvalRootNode extends RootNode {
                                         return;
                                     }
 
+                                    try {
+                                        requireChannelDataValue(value);
+                                    } catch (RuntimeException | Error failure) {
+                                        continuation.accept(t2, null, failure);
+                                        return;
+                                    }
                                     if (operation.callback()) {
                                         try {
                                             if (!ActorRuntime.inActorExecution()) {
@@ -5315,9 +5321,13 @@ public final class OresEvalRootNode extends RootNode {
                     case DEFAULT -> cases.add(ChannelRuntime.defaultCase());
                     case READ -> cases.add(ChannelRuntime.read(
                             requireChannel(eval(arm.channel(), env), "readch select case")));
-                    case WRITE -> cases.add(ChannelRuntime.write(
-                            requireChannel(eval(arm.channel(), env), "writech select case"),
-                            eval(arm.value(), env)));
+                    case WRITE -> {
+                        ChannelRuntime.Channel<Object> target =
+                                requireChannel(eval(arm.channel(), env), "writech select case");
+                        Object payload = eval(arm.value(), env);
+                        requireChannelDataValue(payload);
+                        cases.add(ChannelRuntime.write(target, payload));
+                    }
                 }
             }
             return new ChannelRuntime.SelectSet(
@@ -5391,6 +5401,89 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        /**
+         * Runtime defense for guest writes. Channel<T> has a static data-only
+         * type, but a host/cast boundary must not inject executable objects
+         * or actor capabilities into a value that claims a record shape.
+         *
+         * This does not serialize/copy the payload: ownership transfer is
+         * still enforced by the compiler. A separate transport-level check is
+         * needed before allowing untrusted direct ChannelRuntime API callers.
+         */
+        private static void requireChannelDataValue(Object value) {
+            checkChannelDataValue(value, new IdentityHashMap<>(), "channel payload", 0);
+        }
+
+        private static void checkChannelDataValue(
+                Object value, IdentityHashMap<Object, Boolean> ancestors,
+                String where, int depth) {
+            if (depth > 128) {
+                throw new IllegalArgumentException(where + " exceeds the maximum channel data nesting depth");
+            }
+            if (value instanceof String || value instanceof Boolean
+                    || value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof Float || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal) return;
+            if (value == null || value == UNINITIALIZED_FIELD) {
+                throw new IllegalArgumentException(where + " must be initialized owned data");
+            }
+            if (ancestors.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException(where + " contains a cyclic aggregate; Channel<T> data must be acyclic");
+            }
+            try {
+                if (value instanceof OptionValue option) {
+                    if (option.present()) {
+                        checkChannelDataValue(option.value(), ancestors, where + " Some", depth + 1);
+                    }
+                    return;
+                }
+                if (value instanceof ResultValue result) {
+                    checkChannelDataValue(result.value(), ancestors, where + " Result", depth + 1);
+                    return;
+                }
+                if (value instanceof Object[] tuple) {
+                    for (int i = 0; i < tuple.length; i++) {
+                        checkChannelDataValue(tuple[i], ancestors,
+                                where + " tuple element " + i, depth + 1);
+                    }
+                    return;
+                }
+                // Source arrays and tuples are ArrayList or JDK immutable lists.
+                // Do not trust arbitrary Java List implementors via host interop.
+                if (value instanceof List<?> list
+                        && (value.getClass() == ArrayList.class
+                            || value.getClass().getName().startsWith("java.util.ImmutableCollections$")
+                            || value.getClass().getName().equals("java.util.Arrays$ArrayList"))) {
+                    for (int i = 0; i < list.size(); i++) {
+                        checkChannelDataValue(list.get(i), ancestors,
+                                where + " list element " + i, depth + 1);
+                    }
+                    return;
+                }
+                if (value instanceof Map<?, ?> map
+                        && (value instanceof ReadonlyRecordValue
+                            || value.getClass() == LinkedHashMap.class
+                            || value.getClass().getName().startsWith("java.util.ImmutableCollections$"))) {
+                    for (Map.Entry<?, ?> field : map.entrySet()) {
+                        if (!(field.getKey() instanceof String key)) {
+                            throw new IllegalArgumentException(where + " record keys must be strings");
+                        }
+                        checkChannelDataValue(field.getValue(), ancestors,
+                                where + " field '" + key + "'", depth + 1);
+                    }
+                    return;
+                }
+                throw new IllegalArgumentException(
+                        where + " must contain only data-only scalar, tuple, list, record/struct,"
+                        + " Option or Result values; class, callable, actor and host objects are forbidden ("
+                        + value.getClass().getSimpleName() + ")");
+            } finally {
+                ancestors.remove(value);
+            }
+        }
+
         private Object evalChannelOperation(
                 Ast.ChannelOpExpr operation,
                 Env env) {
@@ -5417,6 +5510,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Object value = eval(operation.value(), env);
+            requireChannelDataValue(value);
             if (operation.callback()) {
                 if (!ActorRuntime.inActorExecution()) {
                     throw new IllegalStateException(
