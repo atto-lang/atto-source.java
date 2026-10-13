@@ -7515,6 +7515,12 @@ public final class OresEvalRootNode extends RootNode {
                             && field.visibility() == Ast.Visibility.PUBLIC
                             && field.name().equals(name)) {
                         if (field.initializer() == null) throw new IllegalArgumentException("exported binding has no initializer: " + name);
+                        // A proven literal const is already static data.
+                        // Its lookup cannot trigger the imported file's init hook.
+                        if (field.bindingKind() == Ast.BindingKind.CONST
+                                && field.initializer() instanceof Ast.LiteralExpr literal) {
+                            return literal.value();
+                        }
                         initialize();
                         return eval(field.initializer(), new Env(null));
                     }
@@ -7668,6 +7674,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
                     if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
+                    // Reading a static const must not turn import into executable startup.
+                    // Nonliteral expressions remain behind the existing initialization
+                    // barrier until the compiler has a verified const evaluator.
+                    if (field.bindingKind() == Ast.BindingKind.CONST
+                            && field.initializer() instanceof Ast.LiteralExpr literal) {
+                        return literal.value();
+                    }
                     if (importedAccess) initialize();
                     return eval(field.initializer(), new Env(null));
                 }
