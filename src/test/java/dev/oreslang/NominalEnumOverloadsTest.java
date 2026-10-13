@@ -123,18 +123,11 @@ final class NominalEnumOverloadsTest {
 
     @Test
     void repeatedEnumSpellingAcrossModulesIsNotMistakenForOneSymbol() {
-        Ast.Program program = Parser.parse("""
-                module alpha as
-                    define enum Color as
-                        Red
-                    end
-                end
-                module beta as
-                    define enum Color as
-                        Blue
-                    end
-                end
-                """);
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("alpha", List.of(new Ast.EnumDecl("Color",
+                        List.of(new Ast.EnumCase("Red", null, 1))))),
+                new Ast.ModuleDecl("beta", List.of(new Ast.EnumDecl("Color",
+                        List.of(new Ast.EnumCase("Blue", null, 1)))))));
         Map<String, String> enums = NominalEnumOverloads.eligibleEnumSymbols(program);
         assertFalse(enums.containsKey("Color"));
         assertNotEquals(enums.get("alpha::Color"), enums.get("beta::Color"));
