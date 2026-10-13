@@ -11,12 +11,23 @@
 // The manifest in contracts/v1/error-catalog.json must match this source.
 // This initial schema intentionally has no user-provided message/cause fields:
 // transport, ownership and diagnostic redaction require a separate parity gate.
+// Abstract category classes are not constructible; interfaces express
+// cross-cutting behavior without adding concrete inheritance edges.
 
-pub define class Error as
-  pub code(): int { return 0; }
+pub define interface CodedError as
+  fnc code() => int;
 end
 
-pub define class ArgumentError extends Error as
+// Advisory contract only: never auto-retry non-idempotent operations.
+pub define interface RetryAdvisory extends CodedError as
+  fnc retry_hint() => bool;
+end
+
+pub define abstract class Error implements CodedError as
+  pub code(): int;
+end
+
+pub define abstract class ArgumentError extends Error as
   pub code(): int { return 1000; }
 end
 
@@ -52,7 +63,7 @@ pub define class IndexError extends ArgumentError as
   pub code(): int { return 1008; }
 end
 
-pub define class StateError extends Error as
+pub define abstract class StateError extends Error as
   pub code(): int { return 2000; }
 end
 
@@ -88,11 +99,11 @@ pub define class StaleHandleError extends StateError as
   pub code(): int { return 2008; }
 end
 
-pub define class IOError extends Error as
+pub define abstract class IOError extends Error as
   pub code(): int { return 3000; }
 end
 
-pub define class FileSystemError extends IOError as
+pub define abstract class FileSystemError extends IOError as
   pub code(): int { return 3090; }
 end
 
@@ -128,7 +139,7 @@ pub define class BrokenPipeError extends IOError as
   pub code(): int { return 3008; }
 end
 
-pub define class NetworkError extends IOError as
+pub define abstract class NetworkError extends IOError as
   pub code(): int { return 4000; }
 end
 
@@ -140,8 +151,9 @@ pub define class ConnectionRefusedError extends NetworkError as
   pub code(): int { return 4002; }
 end
 
-pub define class ConnectionResetError extends NetworkError as
+pub define class ConnectionResetError extends NetworkError implements RetryAdvisory as
   pub code(): int { return 4003; }
+  pub retry_hint(): bool { return true; }
 end
 
 pub define class ConnectionAbortedError extends NetworkError as
@@ -164,32 +176,36 @@ pub define class ProtocolError extends NetworkError as
   pub code(): int { return 4008; }
 end
 
-pub define class TimingError extends Error as
+pub define abstract class TimingError extends Error as
   pub code(): int { return 5000; }
 end
 
-pub define class TimeoutError extends TimingError as
+pub define class TimeoutError extends TimingError implements RetryAdvisory as
   pub code(): int { return 5001; }
+  pub retry_hint(): bool { return true; }
 end
 
 pub define class DeadlineExceededError extends TimingError as
   pub code(): int { return 5002; }
 end
 
-pub define class WouldBlockError extends TimingError as
+pub define class WouldBlockError extends TimingError implements RetryAdvisory as
   pub code(): int { return 5003; }
+  pub retry_hint(): bool { return true; }
 end
 
 pub define class RetryLimitExceededError extends TimingError as
   pub code(): int { return 5004; }
 end
 
-pub define class BackpressureError extends TimingError as
+pub define class BackpressureError extends TimingError implements RetryAdvisory as
   pub code(): int { return 5005; }
+  pub retry_hint(): bool { return true; }
 end
 
-pub define class RateLimitedError extends TimingError as
+pub define class RateLimitedError extends TimingError implements RetryAdvisory as
   pub code(): int { return 5006; }
+  pub retry_hint(): bool { return true; }
 end
 
 pub define class TimerConfigurationError extends TimingError as
@@ -200,7 +216,7 @@ pub define class ClockError extends TimingError as
   pub code(): int { return 5008; }
 end
 
-pub define class DataError extends Error as
+pub define abstract class DataError extends Error as
   pub code(): int { return 6000; }
 end
 
@@ -236,7 +252,7 @@ pub define class SchemaMismatchError extends DataError as
   pub code(): int { return 6008; }
 end
 
-pub define class SecurityError extends Error as
+pub define abstract class SecurityError extends Error as
   pub code(): int { return 7000; }
 end
 
@@ -272,7 +288,7 @@ pub define class CertificateError extends SecurityError as
   pub code(): int { return 7008; }
 end
 
-pub define class OperationError extends Error as
+pub define abstract class OperationError extends Error as
   pub code(): int { return 8000; }
 end
 

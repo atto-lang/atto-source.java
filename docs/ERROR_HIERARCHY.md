@@ -18,7 +18,7 @@ pub fnc category(Error error): int {
 }
 ```
 
-The type `Error` is a nominal Oreslang class, never Java `Throwable`. In v1 its public stable method `code(): int` returns its catalog ID. The root class returns 0; 8 family classes have codes 1000, ..., 8000. `FileSystemError` (3090) is a child of `IOError`; `NetworkError` (4000) is also a child of `IOError`. There are exactly **64 concrete named leaf error types** in **8 main families**, plus 9 grouping classes and the root: **74 classes** in total.
+The type `Error` is a nominal **abstract** Oreslang class, never Java `Throwable`. Its `code(): int` is a required abstract slot (code 0 is reserved for this root in the catalog, not produced by an instance). Eight families and `FileSystemError` are also abstract; every concrete leaf provides its own `code()` value. `FileSystemError` (3090) and `NetworkError` (4000) are descendants of `IOError`. The catalog has **64 concrete leaf classes and 10 abstract group/root classes**: **74 classes** total.
 
 The machine-readable complete name/parent/code inventory is `contracts/v1/error-catalog.json`. Names and codes are permanently assigned. Deprecate old codes instead of changing their meaning; reserve new codes for new types. Never dispatch on code instead of guest nominal type metadata.
 
@@ -37,11 +37,60 @@ The machine-readable complete name/parent/code inventory is `contracts/v1/error-
 
 `FileSystemError` has code 3090 and parents the first six `IOError` leaves. `EndOfFileError` and `BrokenPipeError` are direct `IOError` children.
 
+## Composition: one class parent and nominal interfaces
+
+Multiple class inheritance is allowed in Oreslang, but `std/error` deliberately
+uses **at most one concrete/abstract class parent** per type. This prevents
+ambiguous inherited state, constructor paths and name-plus-arity method slots.
+The abstract root has a **pure virtual** `code(): int` slot; other abstract
+group classes implement their reserved codes, while the 64 leaf classes
+override `code()` with stable, unique core codes.
+
+`CodedError` is an exported interface with `fnc code() => int`.
+`Error` implements it, so its subclasses inherit that nominal membership.
+`RetryAdvisory extends CodedError` additionally requires
+`fnc retry_hint() => bool`. Only **five** explicitly opted-in error types
+(`ConnectionResetError`, `TimeoutError`, `WouldBlockError`,
+`BackpressureError`, `RateLimitedError`) implement it.
+This says that a retry may be considered, **not** that any operation is
+idempotent, safe to repeat, authorized, or guaranteed to succeed.
+In particular, no failure handling mechanism may automatically retry solely
+because an error implements this interface.
+
+Canonical usage:
+
+```ores
+import class Error from "std/error";
+import class RateLimitedError from "std/error";
+import interface RetryAdvisory from "std/error";
+
+fnc choose(Error failure): int {
+  match failure over
+    on RateLimitedError rate -> { return rate.code(); }
+    on RetryAdvisory candidate -> { return candidate.code(); }
+    on Error other -> { return -1; }
+  end
+}
+```
+
+Traits and interfaces share `InterfaceDecl` semantics in the present Java
+frontend; the `interface` spelling is used for exported cross-unit contracts
+until the linker separately tracks trait-vs-interface identity. The runtime
+uses declared nominal interface ancestry, not the presence of a similarly
+named `retry_hint()` method. A structurally similar class that does not
+implement `RetryAdvisory` must not match it.
+
+The v1 manifest now explicitly records each class's `abstract` flag,
+direct `interfaces`, and the versioned interface parent/method contracts.
+Codes are guaranteed unique **only inside the versioned core catalog**:
+third-party error subtypes require their own application-domain code registry.
+Do not use codes for secure type identity or exception catch admission.
+
 ## Pattern-matching hardening
 
 1. **Nominal identity only**: use guest type IDs and transitive Oreslang parent edges. Never classify by Java `instanceof`, Java exception name, error string, code alone, or structural field coincidence.
 2. **Most specific first**: `FileNotFoundError` before `FileSystemError` before `IOError` before `Error`. Parent-first subtype arms must fail as dead/unreachable (under the current ordered implementation) or be rejected as overlapping (under a future disjoint-match form).
-3. **Do not silently change the language contract**: `docs/PATTERN_MATCHING.md` describes disjoint ordinary `match` and explicit `match first`, but current `PatternMatchingHardeningTest` admits source-ordered overlapping nominal patterns under ordinary `match`. Resolve that frontend/documentation discrepancy BEFORE enabling typed exception matching as stable syntax. Until then, regression coverage locks down existing runtime behavior and tests must not assert an unimplemented form as supported.
+3. **Keep language forms distinct**: canonical `match x over` is ordered and requires exhaustive coverage; legacy non-`over` match has disjoint-proof semantics. Both are now documented in `docs/PATTERN_MATCHING.md`. Preserve that distinction when typed catches are implemented. Until then, regression coverage locks down existing runtime behavior and tests must not assert an unimplemented form as supported.
 4. For a future `catch` statement, **catch only a `Throw<Error subtype>` effect**, match typed subclasses by guest nominal identity, preserve the original error on rethrow, and reject forged type tags. `raise`/`panic`/cancellation/termination do not downgrade to catchable `Error` objects merely because their diagnostic has a matching code.
 5. `trap` converts only an uncaught *ordinary throw* to `None` (losing detail). Returning `Error` or `Result.Err` is ordinary data and remains unchanged. Never convert permission-denied control, host-fatal OOM, or forced actor termination into `None`.
 6. An actor's unhandled ordinary throw/raise must ultimately reach supervisor PANIC if no handler/recover consumes it, carrying original type identity and bounded diagnostics. `panic` bypasses actor-local handlers and reaches the supervisor CONTROL path. Non-actor unhandled failures need a deterministic top-level exit contract with full cleanup first.

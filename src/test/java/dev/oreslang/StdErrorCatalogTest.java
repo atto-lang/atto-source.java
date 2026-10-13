@@ -28,12 +28,15 @@ final class StdErrorCatalogTest {
     // Keep this deliberately simple/explicit: no host reflection or Java
     // exception classes may silently define guest error type identity.
     private static final Pattern TYPE = Pattern.compile(
-            "(?m)^pub define class (\\w+)(?: extends (\\w+))? as\\R"
-            + "  pub code\\(\\): int \\{ return (\\d+); \\}\\Rend$");
+            "(?m)^pub define (abstract )?class (\\w+)(?: extends (\\w+))?(?: implements (\\w+))? as\\R"
+            + "  pub code\\(\\): int(?: \\{ return (\\d+); \\}|;)\\R"
+            + "(?:  pub retry_hint\\(\\): bool \\{ return true; \\}\\R)?end$");
     private static final Pattern CATALOG_ENTRY = Pattern.compile(
-            "\\{\"name\":\"(\\w+)\",\"parent\":(null|\"\\w+\"),\"code\":(\\d+)\\}");
+            "\\"name\\"\\s*:\\s*\\"(\\w+)\\"\\s*,\\s*\\"parent\\"\\s*:\\s*(null|\\"\\w+\\")"
+            + "\\s*,\\s*\\"code\\"\\s*:\\s*(\\d+)\\s*,\\s*\\"abstract\\"\\s*:\\s*(true|false)"
+            + "\\s*,\\s*\\"interfaces\\"\\s*:\\s*\\[([^\\]]*)\\]");
 
-    record Entry(String parent, int code) { }
+    record Entry(String parent, int code, boolean abstractClass, String iface) { }
 
     @Test
     void packagedCatalogMatchesStableManifestAndIsAcyclic() throws Exception {
@@ -43,22 +46,28 @@ final class StdErrorCatalogTest {
         assertFalse(source.contains("java:"));
         assertFalse(Pattern.compile("(?m)^\\s*rt\\s").matcher(source).find());
         assertFalse(Pattern.compile("(?m)^\\s*import\\s").matcher(source).find());
+        assertTrue(source.contains("pub define interface CodedError as"));
+        assertTrue(source.contains("pub define interface RetryAdvisory extends CodedError as"));
         TypeChecker.check(Parser.parse(source));
 
         Map<String, Entry> parsed = new HashMap<>();
         Set<Integer> codes = new HashSet<>();
         Matcher declarations = TYPE.matcher(source);
         while (declarations.find()) {
-            String name = declarations.group(1);
-            String parent = declarations.group(2);
-            int code = Integer.parseInt(declarations.group(3));
-            assertNull(parsed.put(name, new Entry(parent, code)), name);
+            String name = declarations.group(2);
+            String parent = declarations.group(3);
+            int code = declarations.group(5) == null ? 0 : Integer.parseInt(declarations.group(5));
+            boolean abstractClass = declarations.group(1) != null;
+            String iface = declarations.group(4);
+            assertNull(parsed.put(name, new Entry(parent, code, abstractClass, iface)), name);
             assertTrue(codes.add(code), "duplicate error code " + code);
         }
         assertEquals(74, parsed.size(), "every catalog type must have an executable Oreslang code method");
-        assertEquals(new Entry(null, 0), parsed.get("Error"));
-        assertEquals(new Entry("IOError", 3090), parsed.get("FileSystemError"));
-        assertEquals(new Entry("IOError", 4000), parsed.get("NetworkError"));
+        assertEquals(new Entry(null, 0, true, "CodedError"), parsed.get("Error"));
+        assertEquals(new Entry("IOError", 3090, true, null), parsed.get("FileSystemError"));
+        assertEquals(new Entry("IOError", 4000, true, null), parsed.get("NetworkError"));
+        assertEquals(10, parsed.values().stream().filter(Entry::abstractClass).count());
+        assertEquals(5, parsed.values().stream().filter(e -> "RetryAdvisory".equals(e.iface())).count());
         long leaves = parsed.keySet().stream().filter(name ->
                 parsed.keySet().stream().noneMatch(child -> name.equals(parsed.get(child).parent()))
                 ).count();
@@ -81,9 +90,13 @@ final class StdErrorCatalogTest {
         Matcher catalog = CATALOG_ENTRY.matcher(manifest);
         while (catalog.find()) {
             String parent = catalog.group(2);
+            String interfaces = catalog.group(5).trim();
+            assertTrue(interfaces.isEmpty() || interfaces.matches("\\\"[A-Za-z][A-Za-z0-9]*\\\""), interfaces);
+            String iface = interfaces.isEmpty() ? null : interfaces.substring(1, interfaces.length() - 1);
             assertNull(expected.put(catalog.group(1),
                     new Entry(parent.equals("null") ? null : parent.substring(1, parent.length() - 1),
-                            Integer.parseInt(catalog.group(3)))));
+                            Integer.parseInt(catalog.group(3)),
+                            Boolean.parseBoolean(catalog.group(4)), iface)));
         }
         assertEquals(parsed, expected, "manifest/source drift or malformed catalog record");
         assertThrows(IllegalArgumentException.class, () -> CoreLibrarySources.source("std/error/../core"));
@@ -102,6 +115,15 @@ final class StdErrorCatalogTest {
                 import class ConnectionRefusedError from "std/error";
                 import class ArgumentError from "std/error";
                 import class InvalidArgumentError from "std/error";
+                import class TimeoutError from "std/error";
+                import class RateLimitedError from "std/error";
+                import class ConnectionResetError from "std/error";
+                import interface RetryAdvisory from "std/error";
+
+                define class Imposter extends Error as
+                  pub code(): int { return 9002; }
+                  pub retry_hint(): bool { return true; }
+                end
 
                 define class CustomAppError extends Error as
                   pub code(): int { return 9001; }
@@ -120,6 +142,13 @@ final class StdErrorCatalogTest {
                   end
                 }
 
+                fnc advisory(Error error): int {
+                  match error over
+                    on RetryAdvisory hint -> { return hint.code(); }
+                    on Error other -> { return -1; }
+                  end
+                }
+
                 pub routine main(): void {
                   stdio.stdout.write(classify(new FileNotFoundError()));
                   stdio.stdout.write("|");
@@ -128,6 +157,14 @@ final class StdErrorCatalogTest {
                   stdio.stdout.write(classify(new InvalidArgumentError()));
                   stdio.stdout.write("|");
                   stdio.stdout.write(classify(new CustomAppError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(advisory(new TimeoutError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(advisory(new RateLimitedError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(advisory(new ConnectionResetError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(advisory(new Imposter()));
                   return;
                 }
                 """);
@@ -135,7 +172,7 @@ final class StdErrorCatalogTest {
         LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                 ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
                 new ByteArrayOutputStream());
-        assertEquals("3001|4002|1001|-30", out.toString(StandardCharsets.UTF_8));
+        assertEquals("3001|4002|1001|-30|5001|5006|4003|-1", out.toString(StandardCharsets.UTF_8));
     }
 
     @Test
@@ -168,6 +205,18 @@ final class StdErrorCatalogTest {
                     }
                     """)));
         assertTrue(failure.getMessage().contains("non-exhaustive match"), failure::getMessage);
+    }
+
+    @Test
+    void abstractErrorCategoriesCannotBeConstructed() throws Exception {
+        String source = CoreLibrarySources.source("std/error");
+        for (String category : new String[]{"Error", "ArgumentError", "IOError",
+                "FileSystemError", "NetworkError", "TimingError"}) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source + "\nfnc bad(): void { val x = new "
+                            + category + "(); return; }")));
+            assertTrue(failure.getMessage().contains("cannot instantiate abstract class"), failure::getMessage);
+        }
     }
 
     @Test
