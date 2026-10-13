@@ -3415,6 +3415,7 @@ public final class Parser {
     private boolean isNextContextualMemberLine() {
         if (current == 0 || previous().line() >= peek().line()) return false;
         if (check(FNC)) return true;
+        if (check(MUT)) return looksLikeTypeFirstClassField();
         if (!check(IDENT)) return false;
         String word = peek().lexeme();
         return ((word.equals("suspend") || word.equals("method")
