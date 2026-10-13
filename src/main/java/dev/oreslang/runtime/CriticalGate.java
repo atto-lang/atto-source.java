@@ -77,7 +77,7 @@ public final class CriticalGate {
         /** Captured actor incarnation, not a JVM carrier/thread affinity. */
         private java.util.function.Consumer<Runnable> actorPhysicalExit;
         /** Only the original actor incarnation and logical task can release inline. */
-        private java.util.function.Consumer<Runnable> actorTicketRelease;
+        private volatile ActorRuntime.TicketReleaseAuthority actorTicketRelease;
         /** One queued deferred physical release per admitted ticket. */
         private boolean physicalReleaseQueued;
         // Only host/embedder synchronous callers may wait on a physical thread.
@@ -103,7 +103,7 @@ public final class CriticalGate {
             Object domain = OresScheduler.currentTaskDomain();
             if (domain == null) domain = ActorRuntime.currentActorExecutionDomain();
             if (domain == null) domain = synchronous ? Thread.currentThread() : this;
-            java.util.function.Consumer<Runnable> ticketRelease = actor == null
+            ActorRuntime.TicketReleaseAuthority ticketRelease = actor == null
                     ? null : actor.captureCurrentActorTicketRelease(domain);
             boolean completeNow = false;
             synchronized (COORDINATOR) {
@@ -289,15 +289,22 @@ public final class CriticalGate {
         }
 
         private void closeTicket(boolean pendingOnly, boolean afterPhysicalExit) {
+            // Resolve owner authority before acquiring the global metadata
+            // coordinator: the actor lifecycle lock must never be nested
+            // inside COORDINATOR. The physical closed/granted decision is
+            // revalidated atomically under COORDINATOR below.
+            ActorRuntime.TicketReleaseAuthority authority = actorTicketRelease;
+            boolean ownTurn = !pendingOnly && !afterPhysicalExit
+                    && authority != null && authority.isOwnerTurn();
             java.util.List<Ticket> wake = java.util.List.of();
             java.util.concurrent.CountDownLatch cancelledWaiter = null;
             Runnable removeActorTracking = () -> { };
             Runnable notifyWrapper = () -> { };
-            java.util.function.Consumer<Runnable> release = null;
+            ActorRuntime.TicketReleaseAuthority release = null;
             synchronized (COORDINATOR) {
                 if (closed || (pendingOnly && granted)) return;
                 if (!pendingOnly && !afterPhysicalExit && granted
-                        && actorTicketRelease != null) {
+                        && actorTicketRelease != null && !ownTurn) {
                     // Atomically reserve the one deferred release while the
                     // grant is still visible. Concurrent STOP, completion,
                     // explicit close, and whole-domain close cannot wake a
@@ -326,7 +333,7 @@ public final class CriticalGate {
                 }
             }
             if (release != null) {
-                release.accept(() -> closeTicket(false, true));
+                release.release(() -> closeTicket(false, true));
                 return;
             }
             Throwable cleanupFailure = null;
