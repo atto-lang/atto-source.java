@@ -6040,6 +6040,9 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.SpreadExpr) {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
             }
+            if (expr instanceof Ast.NamedArgumentExpr) {
+                throw new IllegalArgumentException("named argument labels require a statically bound call");
+            }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
                 if (runtime.operation().equals("spawn")) {
                     if (runtime.arguments().size() != 1
