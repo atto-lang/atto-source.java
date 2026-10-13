@@ -36,6 +36,8 @@ public final class OwnershipChecker {
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
     private final TaggedMessageContracts.Registry taggedMessages;
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
+    /** Share the *same declaration identity* selected by TypeChecker. */
+    private final Map<Ast.CallExpr, Ast.FunctionDecl> boundDirectCalls;
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
@@ -46,6 +48,7 @@ public final class OwnershipChecker {
 
     private OwnershipChecker(Ast.Program program) {
         taggedMessages = TaggedMessageContracts.forTypes(program);
+        boundDirectCalls = program.boundDirectCalls();
         index(program);
     }
 
@@ -1149,7 +1152,7 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.NameExpr name) {
-            Ast.FunctionDecl fn = findFunction(name.name());
+            Ast.FunctionDecl fn = boundFunction(call, name.name());
             if (fn != null) {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
@@ -1163,7 +1166,7 @@ public final class OwnershipChecker {
 
         if (call.callee() instanceof Ast.MemberExpr qualified
                 && qualified.receiver() instanceof Ast.NameExpr namespace) {
-            Ast.FunctionDecl fn = findFunction(namespace.name() + "." + qualified.member());
+            Ast.FunctionDecl fn = boundFunction(call, namespace.name() + "." + qualified.member());
             if (fn != null) {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
@@ -2553,6 +2556,17 @@ public final class OwnershipChecker {
         }
         seen.remove(klass);
         return false;
+    }
+
+    private Ast.FunctionDecl boundFunction(Ast.CallExpr call, String name) {
+        Ast.FunctionDecl chosen = boundDirectCalls.get(call);
+        if (chosen != null) {
+            if (!(name.equals(chosen.name()) || name.endsWith("." + chosen.name()))) {
+                throw error("compiler-bound function does not match the call expression");
+            }
+            return chosen;
+        }
+        return findFunction(name);
     }
 
     private Ast.FunctionDecl findFunction(String name) {
