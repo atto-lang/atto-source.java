@@ -90,19 +90,28 @@ final class CircularImportInitializationTest {
 
         Files.writeString(a, """
                 import fnc b_value from "./b.ores";
-                pub fnc a_value(): String { return "A"; }
+                pub fnc a_value(): void {
+                  stdio.stdout.write("A");
+                  return;
+                }
                 pub routine main(): void {
-                  stdio.stdout.write(b_value());
+                  b_value();
                   return;
                 }
                 """);
         Files.writeString(b, """
                 import fnc c_value from "./c.ores";
-                pub fnc b_value(): String { return c_value(); }
+                pub fnc b_value(): void {
+                  c_value();
+                  return;
+                }
                 """);
         Files.writeString(c, """
                 import fnc a_value from "./a.ores";
-                pub fnc c_value(): String { return a_value(); }
+                pub fnc c_value(): void {
+                  a_value();
+                  return;
+                }
                 """);
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
