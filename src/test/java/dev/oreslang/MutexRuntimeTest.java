@@ -1492,6 +1492,87 @@ final class MutexRuntimeTest {
         assertEquals(0, queuedAsyncReservations(fastMutex));
     }
 
+
+    @Test
+    @org.junit.jupiter.api.Timeout(15)
+    void allBlockedHostNotificationWorkersCannotStallPhysicalDeadlineRevocation() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var owner = mutex.lock();
+        var callbackEntered = new CountDownLatch(4);
+        var permitCallbacksToFinish = new CountDownLatch(1);
+        var callbackFailure = new AtomicReference<Throwable>();
+        var pending = new java.util.concurrent.CopyOnWriteArrayList<
+                java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>();
+        try {
+            var registered = new CountDownLatch(4);
+            for (int index = 0; index < 4; index++) {
+                Thread.ofPlatform().start(() -> {
+                    try {
+                        var future = mutex.lockAsyncFor(Duration.ofMillis(350));
+                        future.whenComplete((guard, failure) -> {
+                            try {
+                                assertInstanceOf(OresMutex.LockTimeoutException.class, failure);
+                                assertTrue(Thread.currentThread().getName()
+                                                .startsWith("ores-shared-mutex-notifications-"),
+                                        "host callbacks must never run on deadline workers");
+                                callbackEntered.countDown();
+                                assertTrue(permitCallbacksToFinish.await(5, TimeUnit.SECONDS),
+                                        "test must unblock every notification worker");
+                            } catch (Throwable error) {
+                                callbackFailure.compareAndSet(null, error);
+                            }
+                        });
+                        pending.add(future);
+                    } catch (Throwable error) {
+                        callbackFailure.compareAndSet(null, error);
+                    } finally {
+                        registered.countDown();
+                    }
+                });
+            }
+            assertTrue(registered.await(2, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get(), String.valueOf(callbackFailure.get()));
+            assertTrue(callbackEntered.await(3, TimeUnit.SECONDS),
+                    "all four notification workers should be busy in host callbacks");
+
+            AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                    fifth = new AtomicReference<>();
+            var fifthRegistered = new CountDownLatch(1);
+            Thread.ofPlatform().start(() -> {
+                try {
+                    fifth.set(mutex.lockAsyncFor(Duration.ofMillis(30)));
+                } catch (Throwable error) {
+                    callbackFailure.compareAndSet(null, error);
+                } finally {
+                    fifthRegistered.countDown();
+                }
+            });
+            assertTrue(fifthRegistered.await(2, TimeUnit.SECONDS));
+            assertNotNull(fifth.get());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (queuedAsyncReservations(mutex) != 0 && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertEquals(0, queuedAsyncReservations(mutex),
+                    "fifth timeout MUST revoke its waiter and free admission "
+                            + "even while all notification callbacks are blocked");
+            assertFalse(fifth.get().isDone(),
+                    "fifth terminal notification should wait behind blocked delivery workers");
+        } finally {
+            permitCallbacksToFinish.countDown();
+            owner.release();
+        }
+        for (var future : pending) {
+            var problem = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> future.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(OresMutex.LockTimeoutException.class, problem.getCause());
+        }
+        assertNull(callbackFailure.get(), String.valueOf(callbackFailure.get()));
+        assertEquals(0, queuedAsyncReservations(mutex));
+        var next = mutex.lockFor(Duration.ofSeconds(1)).orElseThrow();
+        next.release();
+    }
+
     @Test
     void zeroDurationLockForRemainsTryOnly() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
