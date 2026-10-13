@@ -81,6 +81,18 @@ def require_preflight(repository, root):
     checked_repo(repository)
 
 
+def checked_policy_fingerprint(root):
+    policy_dir = root / ".github"
+    policy = policy_dir / "private-ci-approved-repositories.txt"
+    if (not policy_dir.is_dir() or policy_dir.is_symlink()
+            or not policy.is_file() or policy.is_symlink()):
+        raise Denied("private CI approval policy missing or redirected")
+    try:
+        return hashlib.sha256(policy.read_bytes()).digest()
+    except OSError as exc:
+        raise Denied("private CI approval policy cannot be read") from exc
+
+
 def collect_source(root):
     if root.is_symlink() or not root.is_dir():
         raise Denied("source path must be a real directory")
@@ -126,6 +138,7 @@ def publish(repository, source, branch, trusted_root):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
+    approved_policy = checked_policy_fingerprint(trusted_root)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -141,9 +154,14 @@ def publish(repository, source, branch, trusted_root):
     base_sha = valid_sha(base_ref.get("object", {}).get("sha"))
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
+    def authorize_write():
+        if checked_policy_fingerprint(trusted_root) != approved_policy:
+            raise Denied("private CI destination approval policy changed during transfer")
+        checked_repo(repository)
+
     elements = []
     for rel, data, mode in files:
-        checked_repo(repository)  # recheck immediately before each write
+        authorize_write()  # recheck approval and identity before each write
         blob = gh_api(f"repos/{repository}/git/blobs", method="POST", payload={
             "content": base64.b64encode(data).decode("ascii"), "encoding": "base64"
         })
@@ -154,17 +172,17 @@ def publish(repository, source, branch, trusted_root):
             raise Denied("uploaded blob digest does not match local source bytes")
         elements.append({"path": PREFIX + "/" + rel, "mode": mode,
                          "type": "blob", "sha": blob_sha})
-    checked_repo(repository)
+    authorize_write()
     new_tree = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"base_tree": base_tree, "tree": elements})
     new_tree_sha = valid_sha(new_tree.get("sha"))
-    checked_repo(repository)
+    authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
         "message": "ci: source snapshot from approved private Oreslang checkout",
         "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
-    checked_repo(repository)
+    authorize_write()
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
