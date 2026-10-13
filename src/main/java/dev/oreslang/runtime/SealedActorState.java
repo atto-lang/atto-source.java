@@ -25,6 +25,9 @@ public final class SealedActorState {
     private static final int MAX_TOTAL_LIST_ELEMENTS = 16384;
 
     private final ActorRuntime.ActorId owner;
+    private final ActorRuntime.ActorMemorySlice memorySlice;
+    private final ArrayList<ActorRuntime.MemoryReservation> reservations = new ArrayList<>();
+    private long reservedPayloadBytes;
     private final LinkedHashMap<String, String> schema;
     private final LinkedHashMap<String, Object> values;
     private Access current;
@@ -37,6 +40,12 @@ public final class SealedActorState {
                             Map<String, String> schema,
                             Map<String, Object> defaults) {
         this.owner = Objects.requireNonNull(owner, "actor identity");
+        this.memorySlice = ActorRuntime.currentActorMemorySlice().orElseThrow(
+                () -> new SecurityException(
+                        "actor state may only be initialized inside an admitted actor turn"));
+        if (!owner.equals(memorySlice.owner())) {
+            throw new SecurityException("cannot initialize a foreign actor state domain");
+        }
         this.schema = new LinkedHashMap<>(Objects.requireNonNull(schema, "schema"));
         if (this.schema.isEmpty() || this.schema.size() > MAX_FIELDS) {
             throw new IllegalArgumentException("actor state requires 1..256 typed fields");
@@ -63,6 +72,10 @@ public final class SealedActorState {
             retainedListElements += listSize;
             values.put(entry.getKey(), detached);
         }
+        // Reserve exactly the constructor's current persistent payload.
+        // Later writes reserve increases before publication. This accounts
+        // for state quota without pretending Java objects have a native heap.
+        reservePayloadGrowth(statePayloadBytes());
     }
 
     private enum Uninitialized { INSTANCE }
@@ -139,6 +152,22 @@ public final class SealedActorState {
                 ? List.copyOf(verifiedIntList(value)) : value;
     }
 
+    /** Persistent payload accounting; excludes transient detached results.
+     * Successful shrinks deliberately keep the high-water reservation until
+     * actor retirement. Failed callbacks refund all newly reserved bytes. */
+    private long statePayloadBytes() {
+        return Math.addExact((long) retainedStringBytes,
+                Math.multiplyExact((long) retainedListElements, Long.BYTES));
+    }
+
+    private void reservePayloadGrowth(long requiredBytes) {
+        if (requiredBytes <= reservedPayloadBytes) return;
+        ActorRuntime.MemoryReservation acquired =
+                memorySlice.reserveHeap(requiredBytes - reservedPayloadBytes);
+        reservations.add(acquired);
+        reservedPayloadBytes = requiredBytes;
+    }
+
     public final class Access {
         private final long token;
         private final boolean writable;
@@ -181,9 +210,16 @@ public final class SealedActorState {
                     - (retainedListElements - previousElements)) {
                 throw new IllegalArgumentException("actor state aggregate budget exceeded");
             }
+            int updatedStringBytes = retainedStringBytes - previousBytes + nextBytes;
+            int updatedListElements = retainedListElements - previousElements + nextElements;
+            long requiredBytes = Math.addExact((long) updatedStringBytes,
+                    Math.multiplyExact((long) updatedListElements, Long.BYTES));
+            // Reserve before publishing. A heap-limit rejection leaves the
+            // stored value and its accounting unchanged.
+            reservePayloadGrowth(requiredBytes);
             values.put(name, detached);
-            retainedStringBytes = retainedStringBytes - previousBytes + nextBytes;
-            retainedListElements = retainedListElements - previousElements + nextElements;
+            retainedStringBytes = updatedStringBytes;
+            retainedListElements = updatedListElements;
         }
     }
 
@@ -211,6 +247,8 @@ public final class SealedActorState {
                 ? new LinkedHashMap<>(values) : null;
         int priorStringBytes = retainedStringBytes;
         int priorListElements = retainedListElements;
+        long priorReservedBytes = reservedPayloadBytes;
+        int priorReservations = reservations.size();
         current = access;
         try {
             T result = callback.apply(access);
@@ -226,6 +264,12 @@ public final class SealedActorState {
                 values.putAll(before);
                 retainedStringBytes = priorStringBytes;
                 retainedListElements = priorListElements;
+                // The transaction may have reserved actor quota for larger
+                // state; none of it may survive a failed callback/result.
+                for (int i = reservations.size() - 1; i >= priorReservations; i--) {
+                    reservations.remove(i).close();
+                }
+                reservedPayloadBytes = priorReservedBytes;
             }
             throw failure;
         } finally {
@@ -277,6 +321,10 @@ public final class SealedActorState {
         values.clear();
         retainedStringBytes = 0;
         retainedListElements = 0;
+        for (int i = reservations.size() - 1; i >= 0; i--) {
+            reservations.remove(i).close();
+        }
+        reservedPayloadBytes = 0;
     }
 
     public Set<String> declaredKeys() { return Set.copyOf(schema.keySet()); }
