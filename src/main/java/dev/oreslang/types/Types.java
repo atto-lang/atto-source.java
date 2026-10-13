@@ -141,9 +141,14 @@ public final class Types {
         }
 
         if (from instanceof Record source && to instanceof Record target) {
+            // A readonly view cannot recover write permission via a structural alias.
+            if (source.readOnly() && !target.readOnly()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
                 if (actual == null || !isAssignable(actual, required.getValue())) return false;
+                // Writable record members are invariant: otherwise an alias could
+                // write a wider value into an underlying narrower slot.
+                if (!target.readOnly() && !isAssignable(required.getValue(), actual)) return false;
             }
             return true;
         }
@@ -207,6 +212,84 @@ public final class Types {
         if (flattened.size() == 1) return flattened.getFirst();
         flattened.sort(java.util.Comparator.comparing(Object::toString));
         return new Union(flattened);
+    }
+
+    /**
+     * A deliberately bounded first phase of intersection semantics.
+     *
+     * No nominal/class/trait implementation is synthesized here. Prove a
+     * representable intersection or fail closed, including for Generic/Unknown.
+     * In particular, coercive numeric assignability is NOT set intersection:
+     * int & float must not accidentally become int.
+     */
+    public static Type intersectOf(List<Type> types) {
+        if (types.isEmpty()) throw new IllegalArgumentException("intersection type requires at least one operand");
+        Type result = types.getFirst();
+        for (int i = 1; i < types.size(); i++) result = intersectOf(result, types.get(i));
+        return result;
+    }
+
+    public static Type intersectOf(Type left, Type right) {
+        Objects.requireNonNull(left);
+        Objects.requireNonNull(right);
+        if (left.equals(right)) return left;
+        if (left == Unknown.INSTANCE || right == Unknown.INSTANCE
+                || left instanceof Generic || right instanceof Generic) {
+            throw new IllegalArgumentException(
+                    "intersection involving an unresolved generic or unknown type requires a proven runtime contract");
+        }
+        if (left instanceof Union union) return intersectUnion(union, right);
+        if (right instanceof Union union) return intersectUnion(union, left);
+        if (left instanceof StringLiteral && right == Primitive.STRING) return left;
+        if (right instanceof StringLiteral && left == Primitive.STRING) return right;
+        if (left instanceof Record a && right instanceof Record b) {
+            if (a.readOnly() != b.readOnly()) {
+                throw new IllegalArgumentException(
+                        "intersection of readonly and mutable records requires per-member access capabilities");
+            }
+            java.util.TreeMap<String, Type> merged = new java.util.TreeMap<>(a.members());
+            for (Map.Entry<String, Type> field : b.members().entrySet()) {
+                Type existing = merged.get(field.getKey());
+                if (existing == null) {
+                    merged.put(field.getKey(), field.getValue());
+                    continue;
+                }
+                if (!a.readOnly()) {
+                    if (!existing.equals(field.getValue())) {
+                        throw new IllegalArgumentException(
+                                "intersection conflicting writable field '" + field.getKey()
+                                        + "': " + existing + " vs " + field.getValue());
+                    }
+                } else {
+                    try {
+                        merged.put(field.getKey(), intersectOf(existing, field.getValue()));
+                    } catch (IllegalArgumentException failure) {
+                        throw new IllegalArgumentException(
+                                "intersection conflicting readonly field '" + field.getKey()
+                                        + "': " + failure.getMessage(), failure);
+                    }
+                }
+            }
+            return new Record(merged, a.readOnly());
+        }
+        throw new IllegalArgumentException(
+                "intersection has no proven common value or supported representation: "
+                        + left + " & " + right);
+    }
+
+    private static Type intersectUnion(Union union, Type other) {
+        java.util.ArrayList<Type> common = new java.util.ArrayList<>();
+        for (Type option : union.options()) {
+            // Only identical alternatives are provably safe in this phase.
+            if (option.equals(other)) common.add(option);
+            if (other instanceof Union candidate && candidate.options().contains(option)
+                    && !common.contains(option)) common.add(option);
+        }
+        if (common.isEmpty()) {
+            throw new IllegalArgumentException("intersection has no common union alternative: "
+                    + union + " & " + other);
+        }
+        return unionOf(common);
     }
 
     public static boolean isNumeric(Type type) {
