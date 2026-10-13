@@ -124,6 +124,36 @@ final class ChannelRuntimeDataGuardTest {
         rejects(withNull);
     }
     @Test
+    void guestChannelPolicyIsDistinctFromPrivilegedInternalMailboxChannel() {
+        ChannelRuntime.Channel<Object> internal = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Object> guest = new ChannelRuntime.Channel<>(
+                1, ChannelRuntimeDataGuardTest::check,
+                ChannelRuntimeDataGuardTest::snapshot);
+        assertFalse(internal.hasGuestDataPolicy());
+        assertTrue(guest.hasGuestDataPolicy());
+        assertThrows(SecurityException.class,
+                () -> checkGuestChannel(internal, "readch"));
+        assertDoesNotThrow(() -> checkGuestChannel(guest, "readch"));
+    }
+
+    private static void checkGuestChannel(
+            ChannelRuntime.Channel<?> channel, String operation) {
+        try {
+            Class<?> evaluator = Class.forName(
+                    "dev.oreslang.nodes.OresEvalRootNode$Evaluator");
+            Method method = evaluator.getDeclaredMethod(
+                    "requireGuestDataChannel", ChannelRuntime.Channel.class, String.class);
+            method.setAccessible(true);
+            method.invoke(null, channel, operation);
+        } catch (InvocationTargetException invocation) {
+            if (invocation.getCause() instanceof SecurityException denied) throw denied;
+            throw new AssertionError("unexpected guest-channel failure", invocation.getCause());
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError("missing guest channel sealing gate", failure);
+        }
+    }
+
+    @Test
     void sealedGuestStyleChannelRejectsBadValuesBeforeAnyWriteOrSelectRegistration() {
         ChannelRuntime.Channel<Object> channel = new ChannelRuntime.Channel<>(1,
                 ChannelRuntimeDataGuardTest::check);
