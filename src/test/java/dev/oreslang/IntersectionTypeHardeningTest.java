@@ -171,4 +171,31 @@ final class IntersectionTypeHardeningTest {
         }
         assertEquals("9\nready\n", output.toString(java.nio.charset.StandardCharsets.UTF_8));
     }
+
+    @Test
+    void ownershipFailsClosedOnBorrowedMoveOnlyAndGenericIntersectionFields() {
+        for (String source : List.of(
+                """
+                type C = {loan: &int} & {id: int};
+                fnc use(C value): void { return; }
+                """,
+                """
+                define class Resource as
+                end
+                type C = {owned: Resource} & {id: int};
+                fnc use(C value): void { return; }
+                """)) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(failure.getMessage().contains("ownership-aware field projection")
+                    || failure.getMessage().contains("borrowed or move-only"), failure.getMessage());
+        }
+        IllegalArgumentException generic = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type Box<T> = {value: T};
+                        type C = Box<int> & {id: int};
+                        fnc use(C value): void { return; }
+                        """)));
+        assertTrue(generic.getMessage().contains("ownership-aware generic field projection"), generic.getMessage());
+    }
 }
