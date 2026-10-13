@@ -957,7 +957,7 @@ public final class Parser {
         // separate capabilities. 'final' does NOT silently grant mutable
         // referent access; only an explicit 'mut' modifier requests it.
         Ast.BindingKind kind = isFinal ? Ast.BindingKind.VAL : Ast.BindingKind.LET;
-        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent, isFinal);
     }
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
