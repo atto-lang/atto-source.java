@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Timeout;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @Timeout(20)
 final class SourceLoopSoftPreemptionTest {
@@ -148,6 +149,43 @@ final class SourceLoopSoftPreemptionTest {
                   stdio.stdout.write("|");
                   stdio.stdout.write(process.descriptor.source_loop_cooperates);
                   guard.release();
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void explicitRtCooperateCannotSuspendALiveMutexGuard() {
+        RuntimeException error = assertThrows(RuntimeException.class, () -> run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  rt cooperate;
+                  guard.release();
+                  return;
+                }
+                """));
+        assertTrue(error.getMessage().contains("MutexGuard"),
+                "guard violation must fail closed: " + error.getMessage());
+    }
+
+    @Test
+    void explicitRtCooperateWorksImmediatelyAfterGuardRelease()
+            throws Exception {
+        assertEquals("released-then-cooperated", run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  guard.value = guard.value + 1;
+                  guard.release();
+                  rt cooperate;
+                  stdio.stdout.write("released-then-cooperated");
                   return;
                 }
                 """));
