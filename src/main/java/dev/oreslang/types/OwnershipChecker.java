@@ -36,6 +36,8 @@ public final class OwnershipChecker {
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> intersectionAliases = new HashMap<>();
+    private final Set<String> ambiguousIntersectionAliases = new HashSet<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -89,6 +91,9 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    index(intersectionAliases, ambiguousIntersectionAliases, module.name(), alias.name(), alias);
+                }
             }
         }
     }
@@ -107,8 +112,72 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
+                else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    validateIntersectionFields(alias.target(), false, new HashSet<>());
+                }
             }
         }
+    }
+
+    /**
+     * Until intersection field projections have a canonical ownership lowering,
+     * require every intersected record's field to be Copy. Otherwise a synthetic
+     * type alias could expose a move-only/borrowed field without tracking the
+     * move or lifetime of its original owner.
+     */
+    private void validateIntersectionFields(
+            Ast.TypeRef ref, boolean insideIntersection, Set<String> visitedAliases) {
+        if (ref.isIntersection()) {
+            for (Ast.TypeRef part : ref.arguments()) {
+                validateIntersectionFields(part, true, visitedAliases);
+            }
+            return;
+        }
+        if (ref.isRecordType()) {
+            for (Map.Entry<String, Ast.TypeRef> field : ref.recordMembers().entrySet()) {
+                if (insideIntersection && !safeIntersectionCopyField(field.getValue(), new HashSet<>())) {
+                    throw error("intersection field '" + field.getKey()
+                            + "' is borrowed or move-only; ownership-aware field projection is not yet implemented");
+                }
+                validateIntersectionFields(field.getValue(), false, visitedAliases);
+            }
+            return;
+        }
+        if (ref.isBorrow()) {
+            validateIntersectionFields(ref.borrowedTarget(), false, visitedAliases);
+            return;
+        }
+        Ast.TypeAliasDecl alias = ambiguousIntersectionAliases.contains(ref.name())
+                ? null : intersectionAliases.get(ref.name());
+        if (alias != null && alias.genericParameters().isEmpty() && ref.arguments().isEmpty()) {
+            if (!visitedAliases.add(ref.name())) return; // cyclic aliases fail earlier during type analysis
+            try {
+                validateIntersectionFields(alias.target(), insideIntersection, visitedAliases);
+            } finally {
+                visitedAliases.remove(ref.name());
+            }
+            return;
+        }
+        for (Ast.TypeRef part : ref.arguments()) {
+            validateIntersectionFields(part, false, visitedAliases);
+        }
+    }
+
+    private boolean safeIntersectionCopyField(Ast.TypeRef type, Set<String> visitedAliases) {
+        if (type.isBorrow() || type.isIntersection() || type.isRecordType()) return false;
+        if (type.isUnion()) return type.arguments().stream()
+                .allMatch(option -> safeIntersectionCopyField(option, visitedAliases));
+        Ast.TypeAliasDecl alias = ambiguousIntersectionAliases.contains(type.name())
+                ? null : intersectionAliases.get(type.name());
+        if (alias != null && alias.genericParameters().isEmpty() && type.arguments().isEmpty()) {
+            if (!visitedAliases.add(type.name())) return false;
+            try {
+                return safeIntersectionCopyField(alias.target(), visitedAliases);
+            } finally {
+                visitedAliases.remove(type.name());
+            }
+        }
+        return isCopyType(type);
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
