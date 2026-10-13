@@ -50,6 +50,7 @@ public final class OresEvalRootNode extends RootNode {
 
     private final Ast.Program program;
     private final String codeUnitId;
+    private final Map<Ast.CallExpr, Ast.FunctionDecl> resolvedFreeCalls;
     private volatile Evaluator evaluator;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
@@ -57,9 +58,16 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
+        this(language, program, codeUnitId, Map.of());
+    }
+
+    public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId,
+            Map<Ast.CallExpr, Ast.FunctionDecl> resolvedFreeCalls) {
         super(language);
         this.program = program;
         this.codeUnitId = codeUnitId;
+        this.resolvedFreeCalls = java.util.Collections.unmodifiableMap(
+                new IdentityHashMap<>(resolvedFreeCalls));
     }
 
     @Override public String getName() { return "ores-eval"; }
@@ -116,7 +124,8 @@ public final class OresEvalRootNode extends RootNode {
         if (current != null) return current;
         synchronized (this) {
             current = evaluator;
-            if (current == null) evaluator = current = new Evaluator(program, context, codeUnitId);
+            if (current == null) evaluator = current =
+                    new Evaluator(program, context, codeUnitId, resolvedFreeCalls);
             return current;
         }
     }
@@ -134,6 +143,7 @@ public final class OresEvalRootNode extends RootNode {
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
         private final Map<String, Map<Integer, List<Ast.FunctionDecl>>> nominalFunctionFamilies = new HashMap<>();
+        private final Map<Ast.CallExpr, Ast.FunctionDecl> resolvedFreeCalls;
         private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> declarationModules =
                 new IdentityHashMap<>();
@@ -191,10 +201,12 @@ public final class OresEvalRootNode extends RootNode {
         }
 
 
-        private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
+        private Evaluator(Ast.Program program, OresContext context, String codeUnitId,
+                Map<Ast.CallExpr, Ast.FunctionDecl> resolvedFreeCalls) {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.resolvedFreeCalls = resolvedFreeCalls;
             this.messageTypes = dev.oreslang.types.TaggedMessageContracts.forTypes(program);
             indexImports();
             indexDeclarations();
