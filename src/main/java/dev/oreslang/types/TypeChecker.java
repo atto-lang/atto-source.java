@@ -4476,8 +4476,8 @@ public final class TypeChecker {
                                 && root.name().equals("self");
                         if (!initializingInConstructor) {
                             throw new IllegalArgumentException(
-                                    "cannot reassign final/fixed class field '"
-                                            + field.owner().name() + "." + field.field().name() + "'");
+                                    "field '" + field.owner().name() + "." + field.field().name()
+                                            + "' is immutable/final; cannot reassign fixed class field");
                         }
                     }
                     Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
