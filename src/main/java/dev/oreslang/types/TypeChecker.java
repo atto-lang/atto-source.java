@@ -3249,6 +3249,13 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            if (sumReceiver instanceof Named pipelineReply
+                    && (pipelineReply.name().equals("PipelineTypedReply")
+                        || pipelineReply.name().equals("PipelineDeliveryReceipt"))) {
+                throw new IllegalArgumentException(
+                        "opaque pipeline reply has no accessible members; "
+                        + "use runner.send<ExpectedEnumCase>(message) for typed results");
+            }
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
