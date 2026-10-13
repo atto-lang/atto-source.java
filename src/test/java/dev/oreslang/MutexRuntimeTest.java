@@ -1501,6 +1501,8 @@ final class MutexRuntimeTest {
         var callbackEntered = new CountDownLatch(4);
         var permitCallbacksToFinish = new CountDownLatch(1);
         var callbackFailure = new AtomicReference<Throwable>();
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                fifth = new AtomicReference<>();
         var pending = new java.util.concurrent.CopyOnWriteArrayList<
                 java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>();
         try {
@@ -1535,8 +1537,6 @@ final class MutexRuntimeTest {
             assertTrue(callbackEntered.await(3, TimeUnit.SECONDS),
                     "all four notification workers should be busy in host callbacks");
 
-            AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
-                    fifth = new AtomicReference<>();
             var fifthRegistered = new CountDownLatch(1);
             Thread.ofPlatform().start(() -> {
                 try {
@@ -1562,6 +1562,10 @@ final class MutexRuntimeTest {
             permitCallbacksToFinish.countDown();
             owner.release();
         }
+        assertEquals(4, pending.size(), "four slow host callbacks must have been registered");
+        var fifthOutcome = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> fifth.get().get(3, TimeUnit.SECONDS));
+        assertInstanceOf(OresMutex.LockTimeoutException.class, fifthOutcome.getCause());
         for (var future : pending) {
             var problem = assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> future.get(3, TimeUnit.SECONDS));
