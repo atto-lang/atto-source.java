@@ -5421,6 +5421,142 @@ public final class OresEvalRootNode extends RootNode {
          * still enforced by the compiler. A separate transport-level check is
          * needed before allowing untrusted direct ChannelRuntime API callers.
          */
+        /**
+         * Channel.new<T> retains its source T at runtime. The first traversal
+         * rejects executable/host/actor objects and cycles; the second proves
+         * the concrete typed shape. No dynamic reflection or nominal class
+         * conversion is permitted.
+         */
+        private void requireChannelTypedDataValue(Ast.TypeRef type, Object value) {
+            requireChannelDataValue(value);
+            checkChannelTypeShape(type, value, new LinkedHashSet<>(), "Channel<T>");
+        }
+
+        private void checkChannelTypeShape(
+                Ast.TypeRef type, Object value, Set<String> activeAliases, String where) {
+            if (type == null) {
+                throw new IllegalArgumentException(where + " has no runtime payload type");
+            }
+            Ast.TypeAliasDecl alias = typeAliases.get(type.name());
+            if (alias != null) {
+                if (alias.genericParameters().size() != type.arguments().size()) {
+                    throw new IllegalArgumentException(where + " alias arity mismatch for " + type.name());
+                }
+                if (!activeAliases.add(type.name())) {
+                    throw new IllegalArgumentException(where + " recursive channel payload alias " + type.name());
+                }
+                try {
+                    Map<String, Ast.TypeRef> substitutions = new HashMap<>();
+                    for (int i = 0; i < alias.genericParameters().size(); i++) {
+                        substitutions.put(alias.genericParameters().get(i), type.arguments().get(i));
+                    }
+                    checkChannelTypeShape(substituteReturnType(alias.target(), substitutions),
+                            value, activeAliases, where);
+                } finally {
+                    activeAliases.remove(type.name());
+                }
+                return;
+            }
+            if (type.isStringLiteral()) {
+                if (!(value instanceof String text)
+                        || !text.equals(type.stringLiteralValue())) {
+                    throw new IllegalArgumentException(where + " expected literal string "
+                            + type.stringLiteralValue());
+                }
+                return;
+            }
+            if (type.isUnion()) {
+                ArrayList<String> failures = new ArrayList<>();
+                for (Ast.TypeRef variant : type.arguments()) {
+                    try {
+                        checkChannelTypeShape(variant, value,
+                                new LinkedHashSet<>(activeAliases), where);
+                        return;
+                    } catch (IllegalArgumentException failed) {
+                        failures.add(failed.getMessage());
+                    }
+                }
+                throw new IllegalArgumentException(where
+                        + " does not match any permitted union variant: " + failures);
+            }
+            if (type.isTupleType()) {
+                List<?> items = asSequence(value);
+                List<Ast.TypeRef> members = type.arguments();
+                if (items.size() != members.size()) {
+                    throw new IllegalArgumentException(where + " tuple length "
+                            + items.size() + " differs from declared " + members.size());
+                }
+                for (int i = 0; i < members.size(); i++) {
+                    checkChannelTypeShape(members.get(i), items.get(i),
+                            activeAliases, where + "[" + i + "]");
+                }
+                return;
+            }
+            if (type.isRecordType()) {
+                if (!(value instanceof Map<?, ?> record)) {
+                    throw new IllegalArgumentException(where + " requires a record/struct payload");
+                }
+                for (Map.Entry<String, Ast.TypeRef> field : type.recordMembers().entrySet()) {
+                    if (!record.containsKey(field.getKey())) {
+                        throw new IllegalArgumentException(where
+                                + " missing record field '" + field.getKey() + "'");
+                    }
+                    checkChannelTypeShape(field.getValue(), record.get(field.getKey()),
+                            activeAliases, where + "." + field.getKey());
+                }
+                return;
+            }
+
+            String name = type.name();
+            if (name.equals("Option") && type.arguments().size() == 1) {
+                if (!(value instanceof OptionValue option)) {
+                    throw new IllegalArgumentException(where + " requires Option<T>");
+                }
+                if (option.present()) {
+                    checkChannelTypeShape(type.arguments().getFirst(), option.value(),
+                            activeAliases, where + ".Some");
+                }
+                return;
+            }
+            if (name.equals("Result") && type.arguments().size() == 2) {
+                if (!(value instanceof ResultValue result)) {
+                    throw new IllegalArgumentException(where + " requires Result<T,E>");
+                }
+                checkChannelTypeShape(type.arguments().get(result.ok() ? 0 : 1), result.value(),
+                        activeAliases, where + (result.ok() ? ".Ok" : ".Err"));
+                return;
+            }
+            if (Set.of("Array", "List", "Vector", "Slice",
+                    "FixedArray", "FixedList").contains(name)
+                    && type.arguments().size() == 1) {
+                if (!(value instanceof List<?> || value instanceof Object[])) {
+                    throw new IllegalArgumentException(where + " requires an array/list");
+                }
+                List<?> items = asSequence(value);
+                for (int i = 0; i < items.size(); i++) {
+                    checkChannelTypeShape(type.arguments().getFirst(), items.get(i),
+                            activeAliases, where + "[" + i + "]");
+                }
+                return;
+            }
+            boolean valid = switch (name) {
+                case "bool", "Bool" -> value instanceof Boolean;
+                case "string", "String" -> value instanceof String;
+                case "i8", "i16", "i32", "i64", "u8", "u16",
+                        "u32", "u64", "int", "uint", "bigint" ->
+                        value instanceof Number num && isIntegral(num);
+                case "f32", "f64", "float", "decimal" ->
+                        value instanceof Number;
+                case "complex64", "complex128", "complex" ->
+                        value instanceof Number || value instanceof Complex;
+                default -> false;
+            };
+            if (!valid) {
+                throw new IllegalArgumentException(where + " expected declared data type "
+                        + type + ", got " + value.getClass().getSimpleName());
+            }
+        }
+
         private static void requireChannelDataValue(Object value) {
             checkChannelDataValue(value, new IdentityHashMap<>(), "channel payload", 0);
         }
@@ -5436,7 +5572,8 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Integer || value instanceof Long
                     || value instanceof Float || value instanceof Double
                     || value instanceof java.math.BigInteger
-                    || value instanceof java.math.BigDecimal) return;
+                    || value instanceof java.math.BigDecimal
+                    || value instanceof Complex) return;
             if (value == null || value == UNINITIALIZED_FIELD) {
                 throw new IllegalArgumentException(where + " must be initialized owned data");
             }
