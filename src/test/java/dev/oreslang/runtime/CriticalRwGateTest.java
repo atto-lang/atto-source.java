@@ -557,7 +557,11 @@ final class CriticalRwGateTest {
                     }
                     assertEquals(0, gate.queuedCount(),
                             "STOP must retract a pending ticket without parking on guest turn exit");
-                    assertTrue(pending.get().isDone());
+                    while (!pending.get().isDone() && System.nanoTime() < deadline) {
+                        Thread.onSpinWait();
+                    }
+                    assertTrue(pending.get().isDone(),
+                            "STOP must settle the cancelled reader's admission Future");
                     assertTrue(independentWriter.isHeld(),
                             "STOP cannot release another actor or host owner's writer");
                     assertEquals(0, runtime.trackedActorResourceCount(actor));
