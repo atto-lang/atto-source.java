@@ -9,6 +9,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
 
 ROOT = Path(__file__).resolve().parent
 
@@ -33,7 +34,12 @@ def emitted_validator(folder: Path):
     for file in files:
         document = read_json(file)
         Draft202012Validator.check_schema(document)
-        resource = Resource.from_contents(document)
+        # TypeSpec may omit $schema on emitted referenced models. Without a
+        # default specification, referencing raises CannotDetermineSpecification
+        # before differential validation even starts. The normative contract
+        # is Draft 2020-12, so specify it for every resource explicitly.
+        resource = Resource.from_contents(
+            document, default_specification=DRAFT202012)
         registry = registry.with_resource(file.resolve().as_uri(), resource)
         registry = registry.with_resource(file.name, resource)
         if "$id" in document:
