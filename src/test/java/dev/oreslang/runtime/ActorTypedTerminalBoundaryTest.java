@@ -258,6 +258,72 @@ final class ActorTypedTerminalBoundaryTest {
     }
 
     @Test
+    void actorAndRootTaskReceiveDetachedFutureFailureInsteadOfRawThrowable()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var target = runtime.<String>spawnShared(
+                    () -> { throw ActorRuntime.GuestEffectSignal.raising(702); });
+
+            // Trusted host still receives the original exception for diagnostics.
+            var readyFailure = assertThrows(ExecutionException.class,
+                    () -> target.ready().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.GuestEffectSignal.class, readyFailure.getCause());
+            assertTrue(target.awaitTermination(5, TimeUnit.SECONDS));
+
+            var observedReady = new java.util.concurrent.atomic.AtomicReference<OresFuture<Void>>();
+            var observedReadyRef = new java.util.concurrent.atomic.AtomicReference<
+                    OresFuture<ActorRuntime.ActorRef<String>>>();
+            var observedDone = new java.util.concurrent.atomic.AtomicReference<OresFuture<Void>>();
+            var observer = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        observedReady.set(target.ready());
+                        observedReadyRef.set(target.readyRef());
+                        observedDone.set(target.done());
+                        assertSame(observedDone.get(), target.getDone(),
+                                "guest failure view must not allocate on repeated reads");
+                        assertFalse(observedDone.get().cancel(false),
+                                "failure observer cannot cancel another actor");
+                        assertThrows(SecurityException.class, target::failure);
+                        context.self().stop();
+                    });
+            observer.send("observe");
+            assertTrue(observer.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(observer.failure().isEmpty());
+
+            for (OresFuture<?> view : new OresFuture<?>[]{
+                    observedReady.get(), observedReadyRef.get(), observedDone.get()}) {
+                assertNotNull(view);
+                var wrapped = assertThrows(ExecutionException.class,
+                        () -> view.get(5, TimeUnit.SECONDS));
+                var snapshot = assertInstanceOf(
+                        ActorRuntime.ActorFailureSnapshotException.class, wrapped.getCause());
+                assertNull(snapshot.getCause(), "no guest Throwable cause may escape");
+                assertEquals(PANIC, snapshot.notice().terminal().delivered());
+                assertEquals(RAISE, snapshot.notice().terminal().origin());
+                assertEquals(702, snapshot.notice().terminal().originCode());
+            }
+
+            try (OresScheduler root = new OresScheduler(1)) {
+                var taskView = new java.util.concurrent.atomic.AtomicReference<OresFuture<Void>>();
+                var task = root.start(resume -> {
+                    taskView.set(target.done());
+                    assertThrows(SecurityException.class, target::failure);
+                    return OresScheduler.done(1);
+                });
+                assertEquals(1, task.get(5, TimeUnit.SECONDS));
+                var wrapped = assertThrows(ExecutionException.class,
+                        () -> taskView.get().get(5, TimeUnit.SECONDS));
+                assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class,
+                        wrapped.getCause());
+            }
+            // Host retains raw exception access without crossing a guest boundary.
+            assertInstanceOf(ActorRuntime.GuestEffectSignal.class,
+                    assertThrows(ExecutionException.class,
+                            () -> target.done().get(5, TimeUnit.SECONDS)).getCause());
+        }
+    }
+
+    @Test
     void forgedSupervisorMetadataAndOversizeDiagnosticsFailClosed() {
         var id = ActorRuntime.ActorId.create();
         var terminal = ExceptionBoundaryPolicy.actorTerminal(PANIC);
