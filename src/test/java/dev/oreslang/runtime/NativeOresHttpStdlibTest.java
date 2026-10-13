@@ -86,8 +86,28 @@ final class NativeOresHttpStdlibTest {
                   for (let int i = 0; i < 4; i = i + 1) {
                     val Future<NioTcpConnection> incoming = net_core.accept(rt borrow listener);
                     val NioTcpConnection peer = await incoming;
-                    val Future<void> response = http_wire.serve_connection(peer);
-                    await response;
+                    let mut Array<int> pending = new Array<int>();
+                    loop {
+                      val http_wire.Head head = http_wire.parse_head(rt borrow pending);
+                      if head.status == 0; then
+                        val Future<Array<int>> reading = net_core.read(rt borrow peer, 2048);
+                        val Array<int> received = await reading;
+                        if received.size == 0; then break; fi
+                        for (const c of received) { pending.add(c); }
+                      else
+                        val Array<int> wire_response = http_wire.response(head.status, head.keep_alive, head.head_only);
+                        val Future<int> sending = net_core.write(rt borrow peer, wire_response);
+                        val int written = await sending;
+                        if head.status != 200 || !head.keep_alive; then break; fi
+                        let Array<int> rest = new Array<int>();
+                        for (let int k = head.consumed; k < pending.size; k = k + 1) {
+                          rest.add(pending.get(k));
+                        }
+                        pending = rest;
+                      fi
+                    }
+                    val Future<void> closed = net_core.close_connection(peer);
+                    await closed;
                   }
                   val Future<void> shutdown = net_core.close_listener(listener);
                   await shutdown;
