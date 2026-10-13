@@ -27,6 +27,13 @@ public final class CriticalGate {
     private final IdentityHashMap<Ticket, Boolean> readers = new IdentityHashMap<>();
     private Ticket owner;
     private boolean domainClosed;
+    private CriticalRwGate rwFacade;
+
+    /** One RW facade per domain; legacy and explicit modes share this core. */
+    public synchronized CriticalRwGate rwGate() {
+        if (rwFacade == null) rwFacade = new CriticalRwGate(this);
+        return rwFacade;
+    }
 
     public final class Ticket implements AutoCloseable {
         // Cancellation of a pending admission retracts its queue slot. A granted
@@ -303,6 +310,10 @@ public final class CriticalGate {
 
     public int queuedCount() {
         synchronized (COORDINATOR) { return waiters.size(); }
+    }
+
+    public boolean hasWriter() {
+        synchronized (COORDINATOR) { return owner != null; }
     }
 
     public boolean held() {
