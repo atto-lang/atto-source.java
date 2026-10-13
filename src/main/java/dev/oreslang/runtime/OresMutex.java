@@ -38,6 +38,14 @@ public final class OresMutex {
         }
     }
 
+    /** Stable across scheduler suspension and carrier migration. */
+    private static Object semanticExecutionDomain() {
+        Object actorDomain = ActorRuntime.currentActorExecutionDomain();
+        if (actorDomain != null) return actorDomain;
+        Object taskDomain = OresScheduler.currentTaskDomain();
+        return taskDomain != null ? taskDomain : ActorRuntime.currentExecutionDomain();
+    }
+
     public static <T> Local<T> local(T value) {
         return new Local<>(value);
     }
@@ -204,11 +212,11 @@ public final class OresMutex {
 
         private Local(T value) {
             this.value = value;
-            this.ownerDomain = ActorRuntime.currentExecutionDomain();
+            this.ownerDomain = semanticExecutionDomain();
         }
 
         private void requireOwnerDomain() {
-            if (!Objects.equals(ActorRuntime.currentExecutionDomain(), ownerDomain)) {
+            if (!Objects.equals(semanticExecutionDomain(), ownerDomain)) {
                 throw new WrongMutexDomainException(
                         "Mutex<T> is actor/private-domain state and cannot be accessed from another actor/execution domain; use SharedMutex<T>");
             }
@@ -445,7 +453,7 @@ public final class OresMutex {
          */
         private Object reserveDomain(boolean tryOnly) {
             requireActorAccess();
-            Object domain = ActorRuntime.currentExecutionDomain();
+            Object domain = semanticExecutionDomain();
             if (activeDomains.add(domain)) return domain;
             if (tryOnly) return null;
             throw new RecursiveLockException("SharedMutex<T>");
@@ -918,7 +926,7 @@ public final class OresMutex {
 
             private void requireOwnerDomain() {
                 if (enforceOwnerDomain
-                        && !Objects.equals(ActorRuntime.currentExecutionDomain(), ownerDomain)) {
+                        && !Objects.equals(semanticExecutionDomain(), ownerDomain)) {
                     throw new WrongMutexDomainException(
                             "SharedMutex guard belongs to another actor/execution domain");
                 }
