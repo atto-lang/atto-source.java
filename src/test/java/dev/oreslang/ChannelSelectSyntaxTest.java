@@ -55,79 +55,51 @@ final class ChannelSelectSyntaxTest {
     }
 
     @Test
-    void doSelectTerminalReturnsAreArmLocalAndNeverEscapeCallable() {
-        Ast.Program program = TypeChecker.check(Parser.parse("""
-                fnc choose(Channel<int> input): int {
-                  do select {
-                  case readch input: val value
-                    return value;
-                  default:
-                    return 7;
-                  }
-                  return 19;
-                }
-                actor fnc deferred(): void {
-                  val Channel<int> input = Channel.new<int>(1);
-                  do nb select {
-                  case readch input: val value
-                    return value + 1;
-                  }
-                  return;
-                }
-                """));
-        Ast.FunctionDecl choose = (Ast.FunctionDecl) program.modules().getFirst().declarations().get(0);
-        Ast.SelectStmt blocking = assertInstanceOf(Ast.SelectStmt.class, choose.body().getFirst());
-        assertInstanceOf(Ast.ExprStmt.class, blocking.arms().getFirst().body().getLast());
-        assertInstanceOf(Ast.ExprStmt.class, blocking.arms().get(1).body().getLast());
-        assertInstanceOf(Ast.ReturnStmt.class, choose.body().get(1));
-        Ast.FunctionDecl deferred = (Ast.FunctionDecl) program.modules().getFirst().declarations().get(1);
-        Ast.SelectStmt nb = assertInstanceOf(Ast.SelectStmt.class, deferred.body().get(1));
-        assertInstanceOf(Ast.ExprStmt.class, nb.arms().getFirst().body().getLast());
+    void blockingDoSelectMustNotDiscardArmReturns() {
+        IllegalArgumentException diagnostic = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                    fnc choose(Channel<int> input): int {
+                      do select {
+                        case readch input: val value
+                          return value;
+                        default:
+                          return 7;
+                      }
+                      return 19;
+                    }
+                    """));
+        assertTrue(diagnostic.getMessage().contains("FUNCTION_RETURN"),
+                diagnostic::toString);
 
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc bad(Channel<int> input): void {
-                  do select {
-                  case readch input: val value
-                    if value > 0 then
-                      return 1;
-                    fi
-                    stdio.println(value);
-                  }
-                  return;
-                }
-                """));
+        IllegalArgumentException bare = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                    fnc probe(Channel<int> input): void {
+                      do select {
+                        case readch input: val value
+                          return;
+                      }
+                      return;
+                    }
+                    """));
+        assertTrue(bare.getMessage().contains("FUNCTION_RETURN"), bare::toString);
     }
 
     @Test
-    void doSelectAllowsArmLocalBareReturnAndOptionalSemicolon() {
+    void detachedDoNbSelectRetainsIndependentReturnScopeForCompatibility() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
-                fnc probe(Channel<int> input): int {
-                  do try select {
-                  case readch input: val value
-                    return;
-                  default:
-                    return;
-                  };
-                  return 21;
-                }
                 actor fnc deferred(): void {
                   val Channel<int> input = Channel.new<int>(1);
                   do nb select {
-                  case readch input: val value
-                    return;
-                  };
+                    case readch input: val value
+                      return value + 1;
+                  }
                   return;
                 }
                 """));
-        Ast.FunctionDecl probe = (Ast.FunctionDecl) program.modules().getFirst().declarations().get(0);
-        Ast.SelectStmt immediate = assertInstanceOf(Ast.SelectStmt.class, probe.body().getFirst());
-        assertTrue(immediate.arms().stream().allMatch(arm -> arm.body().isEmpty()));
-        assertInstanceOf(Ast.ReturnStmt.class, probe.body().get(1));
-
-        Ast.FunctionDecl deferred = (Ast.FunctionDecl) program.modules().getFirst().declarations().get(1);
-        Ast.SelectStmt nb = assertInstanceOf(Ast.SelectStmt.class, deferred.body().get(1));
-        assertTrue(nb.arms().getFirst().body().isEmpty());
-        assertDoesNotThrow(() -> OwnershipChecker.check(program));
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                program.modules().getFirst().declarations().getFirst();
+        Ast.SelectStmt nb = assertInstanceOf(Ast.SelectStmt.class, fn.body().get(1));
+        assertInstanceOf(Ast.ExprStmt.class, nb.arms().getFirst().body().getLast());
     }
 
     @Test
