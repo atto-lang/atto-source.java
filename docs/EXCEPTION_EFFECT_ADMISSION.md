@@ -39,3 +39,13 @@ A child terminal panic becomes one immutable typed CONTROL event for its owning 
 7. Test exact guest source on Java/GraalVM and LLVM/Clang, with matching traced semantics and identical source Git blobs; no claims of parity from lexer or host scaffolding alone.
 
 First executable milestone: a `void` actor invocation with `defer`, `throw`, and direct `recover()`, plus a non-recoverable panic that results in an immutable supervisor CONTROL notification.
+
+## Terminal execution boundary
+
+Escaping `throw`/`raise` remains typed while unwinding ordinary call frames;
+when it reaches an actor or non-actor task/root execution boundary unhandled,
+that boundary emits terminal `Panic(origin=Throw|Raise)` with the original
+cause retained. Direct `panic` is already terminal and actor-local recovery is
+forbidden. See `contracts/EXCEPTION_CONTROL_V1.md`.
+
+Tracks LLVM issue #143 and Java/LLVM existing supervision draft work.
