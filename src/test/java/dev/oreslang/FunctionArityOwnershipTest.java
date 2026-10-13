@@ -100,6 +100,45 @@ final class FunctionArityOwnershipTest {
     }
 
     @Test
+    void fncAndRoutineShareOneCallableFamilyByArity() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc execute(int value): int { return value; }
+                routine execute(int value, int extra): int { return value + extra; }
+
+                fnc success(): int {
+                  return execute(1) + execute(2, 3);
+                }
+                """)));
+
+        IllegalArgumentException duplicate = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc execute(int value): int { return value; }
+                        routine execute(float value): int { return 2; }
+                        """)));
+        assertTrue(duplicate.getMessage().contains("already has arity 1"),
+                duplicate.getMessage());
+    }
+
+    @Test
+    void moduleQualifiedSameNameFunctionsKeepTheirSeparateOverloadFamilies() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module first as
+                  pub fnc select(int value): int { return value; }
+                  pub fnc select(int value, int extra): int { return value + extra; }
+                end
+
+                define module second as
+                  pub fnc select(int value): int { return value + 10; }
+                end
+
+                fnc success(): int {
+                  return first.select(1, 2) + second.select(3);
+                }
+                """)));
+    }
+
+    @Test
     void sameArityPrimitiveSignaturesStillFailClosedUntilTypedDispatchExists() {
         IllegalArgumentException conflict = assertThrows(
                 IllegalArgumentException.class,
