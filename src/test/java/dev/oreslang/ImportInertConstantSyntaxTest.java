@@ -144,6 +144,46 @@ final class ImportInertConstantSyntaxTest {
     }
 
     @Test
+    void privateNamedModuleCannotLeakPublicNestedClass() {
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("lib.ores", """
+                define module Hidden as
+                    pub define class Box as
+                    end
+                end
+                """);
+        sources.put("main.ores", """
+                import class Box from "./lib.ores";
+                pub fnc main(): void { return; }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> new IncrementalCompiler().compile(sources));
+        sources.put("lib.ores", """
+                define pub module Hidden as
+                    pub define class Box as
+                    end
+                end
+                """);
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(sources));
+    }
+
+    @Test
+    void staticSymbolFactoryCannotBeShadowedByImportsOrDeclarations() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define pub const Symbol s = Symbol.for("abc");
+                const int Symbol = 123;
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                import * as Symbol from "./other.ores";
+                define pub const Symbol s = Symbol.for("abc");
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define pub const Symbol s = Symbol.for("abc");
+                define module Symbol as
+                end
+                """));
+    }
+
+    @Test
     void publicConstantValueChangesInvalidateImportersButPrivateChangesDoNot() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> sources = new LinkedHashMap<>();
