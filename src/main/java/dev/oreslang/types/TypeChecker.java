@@ -218,12 +218,22 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("Symbol")) {
+                        throw new IllegalArgumentException(
+                                "Symbol is a built-in value type; rename this class or qualify a legacy class under a different type name");
+                    }
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    if (iface.name().equals("Symbol")) {
+                        throw new IllegalArgumentException("Symbol is a reserved built-in type, not an interface name");
+                    }
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    if (alias.name().equals("Symbol")) {
+                        throw new IllegalArgumentException("Symbol is a reserved built-in type, not an alias name");
+                    }
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
@@ -3263,7 +3273,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.NewExpr created) {
             // Guest Symbols are immutable keys, not fresh reference capabilities.
             // Do not silently reinterpret the historical STABLE constructor.
-            if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
+            if (created.type().name().equals("Symbol")) {
                 throw new IllegalArgumentException("new Symbol(...) is not supported; use #name or Symbol.stable(uuid)");
             }
             if (created.type().name().equals("DynamicStruct")) {
@@ -7791,7 +7801,12 @@ public final class TypeChecker {
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
-        for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        for (String name : names) {
+            if (name.equals("Symbol")) {
+                throw new IllegalArgumentException("generic 'Symbol' shadows the built-in Symbol type in " + owner);
+            }
+            if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        }
         return result;
     }
 
