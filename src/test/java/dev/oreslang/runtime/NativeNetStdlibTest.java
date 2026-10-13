@@ -25,7 +25,7 @@ final class NativeNetStdlibTest {
 
     @Test void realGuestAcceptReadWriteThroughNonblockingKernel() throws Exception {
         Path entry = Files.createTempFile("ores-net-guest-", ".ores");
-        ExecutorService runner = Executors.newSingleThreadExecutor();
+        ExecutorService runner = Executors.newFixedThreadPool(2);
         try {
             Files.writeString(entry, """
                 import module net_core from "std/net";
@@ -50,7 +50,7 @@ final class NativeNetStdlibTest {
                 } catch (Exception e) { throw new RuntimeException(e); }
                 finally { try { output.close(); } catch (IOException ignored) {} }
             });
-            Future<String> line = Executors.newSingleThreadExecutor().submit(() -> {
+            Future<String> line = runner.submit(() -> {
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(readPort))) {
                     return reader.readLine();
                 }
