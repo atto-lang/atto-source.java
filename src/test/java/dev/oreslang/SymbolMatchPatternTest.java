@@ -145,20 +145,17 @@ final class SymbolMatchPatternTest {
                 }
                 """));
 
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc status(Symbol v): int {
-                    return match v over
-                        on #ready -> { return 1; }
-                        on _ -> { return 2; }
-                    end
-                }
-                fnc code(Symbol v): int {
-                    return switch v
-                        case #ready -> { return 3; }
-                        default -> { return 4; }
-                    end
-                }
-                """)));
+        // Value-form syntax is reserved, but MUST fail closed until the
+        // compiler lowers typed ARM_RESULT, not procedural function returns.
+        for (String form : new String[] {"match", "switch"}) {
+            String arms = form.equals("match")
+                    ? "on #ready -> { return 1; } on _ -> { return 2; }"
+                    : "case #ready -> { return 1; } default -> { return 2; }";
+            IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("fnc status(Symbol v): int { return "
+                            + form + " v over " + arms + " end }".replace("switch v over", "switch v")));
+            assertTrue(missing.getMessage().contains("ARM_RESULT"), missing::toString);
+        }
     }
 
     @Test
