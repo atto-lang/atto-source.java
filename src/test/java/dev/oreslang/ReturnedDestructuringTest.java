@@ -238,8 +238,8 @@ final class ReturnedDestructuringTest {
     }
 
     @Test
-    void unionDestructureRejectsIncompatibleArityOrMissingMembers() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+    void unionDestructureAcceptsCompatiblePrefixesAndRejectsMissingPositionsOrMembers() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc variant(bool flag): [int, string] | [bool, string, int] {
                   if flag; do
                     return (3, "number");
@@ -250,6 +250,21 @@ final class ReturnedDestructuringTest {
 
                 pub fnc main(): void {
                   const [value, label] = variant(true);
+                  return;
+                }
+                """)));
+
+        // Even with prefix extraction, all alternatives need enough positions.
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc variant(bool flag): [int, string] | [bool, string, int] {
+                  if flag; do
+                    return (3, "number");
+                  else
+                    return (true, "boolean", 9);
+                  fi
+                }
+                pub fnc main(): void {
+                  const [value, label, extra] = variant(true);
                   return;
                 }
                 """)));
