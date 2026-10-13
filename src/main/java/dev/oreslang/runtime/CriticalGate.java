@@ -243,17 +243,25 @@ public final class CriticalGate {
      * Call only under COORDINATOR.
      */
     private boolean wouldCreateCycle(Object requester) {
-        Ticket current = owner;
         IdentityHashMap<Object, Boolean> visited = new IdentityHashMap<>();
-        while (current != null) {
-            Object ownerDomain = current.logicalOwner;
+        ArrayDeque<Object> pending = new ArrayDeque<>();
+        appendOwners(pending);
+        while (!pending.isEmpty()) {
+            Object ownerDomain = pending.removeFirst();
             if (ownerDomain == requester) return true;
-            if (visited.put(ownerDomain, Boolean.TRUE) != null) return false;
+            if (visited.put(ownerDomain, Boolean.TRUE) != null) continue;
             CriticalGate waiting = WAITING_ON.get(ownerDomain);
-            if (waiting == null) return false;
-            current = waiting.owner;
+            if (waiting != null) waiting.appendOwners(pending);
         }
         return false;
+    }
+
+    /** Caller owns global COORDINATOR. Include every admitted reader. */
+    private void appendOwners(ArrayDeque<Object> pending) {
+        if (owner != null) pending.addLast(owner.logicalOwner);
+        for (Ticket reader : readers.keySet()) {
+            pending.addLast(reader.logicalOwner);
+        }
     }
 
     public Ticket newTicket() { return newTicket(Mode.WRITE); }
