@@ -122,6 +122,39 @@ class DiagnosticProof(unittest.TestCase):
                                           ["guest", "{source}"])
                     self.assertEqual(result["status"], wanted)
 
+    def test_llvm_high_exit_result_requires_compilation_and_matching_guest(self):
+        case = {"id": "native.finally", "kind": "native_exit",
+                "source": "fixtures/native-try-finally-return-snapshot.ores",
+                "expected_exit": 246}
+        verified_ir = CompletedProcess(args=[], returncode=0,
+                                     stdout="; ModuleID = 'oreslang'\n", stderr="")
+        linked = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        for status, stdout, stderr, wanted in (
+            (246, "", "", "pass"),
+            (222, "", "", "fail"),
+            (-10, "", "", "fail"),
+            (246, "unverified guest output", "", "fail"),
+            (246, "", "unexpected stderr", "fail"),
+        ):
+            with self.subTest(status=status, stdout=stdout, stderr=stderr):
+                guest = CompletedProcess(args=[], returncode=status,
+                                         stdout=stdout, stderr=stderr)
+                with patch.object(run.subprocess, "run",
+                                  side_effect=[verified_ir, linked, guest]) as commands:
+                    result = run.run_case(case, "llvm", ["compiler", "{source}"],
+                                          "clang", 3)
+                self.assertEqual(result["status"], wanted)
+                self.assertEqual(commands.call_count, 3)
+
+        failed_link = CompletedProcess(args=[], returncode=1,
+                                       stdout="", stderr="invalid LLVM IR")
+        with patch.object(run.subprocess, "run",
+                          side_effect=[verified_ir, failed_link]) as commands:
+            result = run.run_case(case, "llvm", ["compiler", "{source}"], "clang", 3)
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(commands.call_count, 2,
+                         "failed native linker must prevent guest execution")
+
     def test_native_test_does_not_skip_missing_clang(self):
         case = {"id":"native.add","kind":"native_exit","source":"fixtures/add.ores","expected_exit":42}
         with patch.object(run.subprocess, "run", return_value=CompletedProcess(
