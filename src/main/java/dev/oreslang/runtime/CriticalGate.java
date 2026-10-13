@@ -272,6 +272,31 @@ public final class CriticalGate {
         return new Ticket(mode);
     }
 
+    /** Permanently revoke all tickets for a torn-down protection domain. */
+    public void closeAll() {
+        java.util.List<Ticket> revoke = new java.util.ArrayList<>();
+        synchronized (COORDINATOR) {
+            if (domainClosed) return;
+            domainClosed = true;
+            if (owner != null) revoke.add(owner);
+            revoke.addAll(readers.keySet());
+            revoke.addAll(waiters);
+            owner = null;
+            readers.clear();
+            waiters.clear();
+            for (Ticket ticket : revoke) {
+                ticket.closed = true;
+                ticket.granted = false;
+                WAITING_ON.remove(ticket.logicalOwner, this);
+            }
+        }
+        for (Ticket ticket : revoke) {
+            ticket.admitted.failFromRuntime(
+                    new CancellationException("critical domain closed"));
+            if (ticket.synchronousWaiter != null) ticket.synchronousWaiter.countDown();
+        }
+    }
+
     public int activeReaderCount() {
         synchronized (COORDINATOR) { return readers.size(); }
     }
