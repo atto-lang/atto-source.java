@@ -136,6 +136,35 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void admitVerifiedSynchronousScalarHelper() {
+        String source = """
+                fnc forty(): int {
+                  return 40;
+                }
+                define class Safe as
+                  pub final int answer: forty() + 2;
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void rejectTrappedCallableAsConstructorSafeHelper() {
+        String source = """
+                trap fnc forty(): int {
+                  return 40;
+                }
+                define class Unsafe as
+                  pub final int answer: forty();
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("without a proven transitive effect bound"),
+                error.getMessage());
+    }
+
+    @Test
     void retainPlainScalarInitializer() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
                     define class Safe as
