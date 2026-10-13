@@ -103,6 +103,18 @@ final class SymbolMapGuestSourceTest {
         }
     }
 
+    @Test void mapKeysNeverBecomeStringNamedDotProperties() {
+        String[] invalid = {
+            "pub fnc bad(): void { let m = new Map<Symbol, int>(); let v = m.ready; return; }",
+            "pub fnc bad(): void { let m = new Map<Symbol, int>(); m.ready = 4; return; }",
+            "pub fnc bad(): void { let m = new Map<String, int>(); m.get(\"ready\"); return; }"
+        };
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), source);
+        }
+    }
+
     @Test void keylessOrAmbiguousGenericMapCannotBeReified() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse(
                 "pub fnc bad(): void { let m = new Map<>(); return; }")));
