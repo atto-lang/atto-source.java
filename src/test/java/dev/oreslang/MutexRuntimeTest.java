@@ -1740,6 +1740,92 @@ final class MutexRuntimeTest {
         assertNull(error.get(), String.valueOf(error.get()));
     }
 
+    private static boolean hasQueuedWaiterRevocationAuthority(
+            java.util.concurrent.CompletableFuture<?> future) throws Exception {
+        var field = OresMutex.GuardFuture.class.getDeclaredField("revokeQueuedWaiter");
+        field.setAccessible(true);
+        return field.get(future) != null;
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void terminalGuardFuturesDoNotRetainMutexRevocationClosures() throws Exception {
+        var free = OresMutex.shared(new int[]{0});
+        var acquired = free.lockAsync();
+        var freeGuard = acquired.get(2, TimeUnit.SECONDS);
+        assertFalse(hasQueuedWaiterRevocationAuthority(acquired),
+                "completed successful Future retained a queued-waiter closure");
+        freeGuard.release();
+
+        var contested = OresMutex.shared(new int[]{0});
+        var owner = contested.lock();
+        var failure = new AtomicReference<Throwable>();
+        Thread cancelled = Thread.ofPlatform().start(() -> {
+            try {
+                var pending = contested.lockAsync();
+                assertTrue(hasQueuedWaiterRevocationAuthority(pending));
+                assertTrue(pending.cancel(false));
+                assertFalse(hasQueuedWaiterRevocationAuthority(pending),
+                        "cancelled Future retained mutex and actor-domain authority");
+            } catch (Throwable problem) {
+                failure.compareAndSet(null, problem);
+            }
+        });
+        cancelled.join(3_000);
+        assertFalse(cancelled.isAlive());
+        assertNull(failure.get(), String.valueOf(failure.get()));
+
+        Thread timed = Thread.ofPlatform().start(() -> {
+            try {
+                var pending = contested.lockAsyncFor(Duration.ofMillis(15));
+                var timedFailure = assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> pending.get(2, TimeUnit.SECONDS));
+                assertInstanceOf(OresMutex.LockTimeoutException.class, timedFailure.getCause());
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (hasQueuedWaiterRevocationAuthority(pending)
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(2);
+                }
+                assertFalse(hasQueuedWaiterRevocationAuthority(pending),
+                        "expired Future retained queued-waiter closure");
+            } catch (Throwable problem) {
+                failure.compareAndSet(null, problem);
+            }
+        });
+        timed.join(3_000);
+        assertFalse(timed.isAlive());
+        assertNull(failure.get(), String.valueOf(failure.get()));
+
+        Thread poisoned = Thread.ofPlatform().start(() -> {
+            try {
+                var pending = contested.lockAsync();
+                var poisonedFailure = assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> pending.get(2, TimeUnit.SECONDS));
+                assertInstanceOf(OresMutex.PoisonedMutexException.class, poisonedFailure.getCause());
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (hasQueuedWaiterRevocationAuthority(pending)
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(2);
+                }
+                assertFalse(hasQueuedWaiterRevocationAuthority(pending),
+                        "poisoned Future retained queued-waiter closure");
+            } catch (Throwable problem) {
+                failure.compareAndSet(null, problem);
+            }
+        });
+        long queuedDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (queuedAsyncReservations(contested) == 0
+                && System.nanoTime() < queuedDeadline) {
+            Thread.sleep(2);
+        }
+        assertEquals(1, queuedAsyncReservations(contested),
+                "poisoned test must exercise a genuinely queued waiter");
+        owner.fail();
+        poisoned.join(3_000);
+        assertFalse(poisoned.isAlive());
+        assertNull(failure.get(), String.valueOf(failure.get()));
+    }
+
     @Test
     void zeroDurationLockForRemainsTryOnly() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
