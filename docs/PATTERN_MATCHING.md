@@ -17,9 +17,9 @@ fi
 val dog = animal as Dog;
 val maybeDog = animal as? Dog;
 
-match result over
-  on Some(value) -> { use(value); }
-  on None -> { recover(); }
+match result
+  Some(value) -> { use(value); }
+  None -> { recover(); }
 end
 
 switch status
@@ -43,55 +43,64 @@ function types and interface callable signatures.
   successful control-flow edge.
 - `x as T` is a checked cast. A failed runtime cast raises `CastError`.
 - `x as? T` is a non-panicking cast with type `Option<T>`.
-- `match x over ... on P -> { ... } end` is ordered pattern matching
-  with conservative exhaustiveness and dead-arm checking.
-- The legacy `match x` / `match first x` forms remain accepted; the
-  current checker also evaluates these in source order.
+- `match x` is proof-checked pattern partitioning.
+- `match first x` is the explicit ordered/priority escape hatch.
 - `switch x` is constant/equality dispatch and never performs destructuring.
 
 A refinement binding is not a copy. If `dog` is introduced by
 `animal is type Dog dog`, both names identify the same ownership place. Moving
 through either name consumes the same move-only value.
 
-## Ordered match and conservative exhaustiveness
+## Exclusive match proof obligation
 
-In current Oreslang, `match value over` dispatches in source order. Overlapping
-patterns are allowed, but a later arm completely subsumed by an earlier,
-unguarded arm is rejected as dead code. Exhaustiveness is a separate
-proof obligation: every possible scrutinee value must match at least one arm.
-No match may silently fall through.
+For a scrutinee domain `D`, each explicit arm is normalized to a predicate
+`P_i(x)`. A normal match is admitted only when the checker establishes:
 
-A pattern on a sum variant is exhaustive *for that variant* only if its payload
-is covered. These are **not** exhaustive:
+```text
+for every i != j:  D(x) && P_i(x) && P_j(x) is UNSAT
+exhaustiveness:    D(x) && !(P_1(x) || ... || P_n(x)) is UNSAT
+```
+
+An unguarded final `else`, `_`, or catch-all binding is not treated as an
+ordinary universal arm. It denotes the complement of all preceding explicit
+arms.
+
+The first proof engine is intentionally conservative. It has exact reasoning
+for:
+
+- booleans and literal equality;
+- `Option` constructors `Some` / `None`;
+- `Result` constructors `Ok` / `Err`;
+- nominal subtype/interface relations when a relation is provable;
+- simple numeric guard intervals using `< <= == >= >`;
+- wildcard/catch-all coverage.
+
+If disjointness cannot be proved, ordinary `match` is rejected rather than
+silently using source order. Code that deliberately needs priority semantics
+must say `match first`.
+
+This is the important semantic distinction:
 
 ```ores
-match value over
-  on Some(0) -> { return 1; }
-  on None -> { return 0; }
+match value
+  is Dog dog -> { dog.bark(); }
+  is Animal animal -> { handle(animal); }
 end
 ```
 
-`Option<int>` also admits `Some(1)`. Likewise `Ok(0)` never covers every
-`Ok(int)`. The checker proves nested `Option` and `Result` cases recursively
-and recognizes complete finite Boolean partitions:
+is rejected because a `Dog` witnesses both predicates. The ordered form is
+explicit:
 
 ```ores
-match value over
-  on Some(true) -> { return 1; }
-  on Some(false) -> { return 2; }
-  on None -> { return 0; }
+match first value
+  is Dog dog -> { dog.bark(); }
+  is Animal animal -> { handle(animal); }
 end
 ```
 
-Guards do **not** establish unguarded exhaustiveness, even if they appear
-tautological. An unguarded `on _` is the explicit catch-all. For open domains
-or patterns the checker cannot yet prove complete, it rejects the match rather
-than guessing. Type-pattern coverage must never treat `Unknown` or an
-unconstrained generic as a provably finite or identical runtime type.
-
-Do not confuse this ordered checker with the older design proposal for
-exclusive/non-overlapping matches. That exclusivity proof is not enforced
-by the current `match ... over` implementation.
+Arbitrary calls inside guards are opaque to the proof engine unless a future
+verified predicate/contract system gives the compiler a sound logical summary.
+The checker must never infer exclusivity from undocumented function behavior.
 
 ## Lowering contract
 
