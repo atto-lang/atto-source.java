@@ -971,12 +971,15 @@ public final class Parser {
      */
     private Ast.EnumDecl parseTaggedEnum() {
         String name = consume(IDENT, "expected enum name").lexeme();
-        consume(AS, "expected 'as' after enum name");
+        // Both the canonical 'as ... end' and compact '{ ... }'
+        // declaration forms carry the same nominal enum type identity.
+        boolean braceDelimited = match(LBRACE);
+        if (!braceDelimited) consume(AS, "expected 'as' or '{' after enum name");
         List<Ast.EnumCase> cases = new ArrayList<>();
         java.util.Set<String> names = new java.util.HashSet<>();
         java.util.Set<Integer> tags = new java.util.HashSet<>();
         int nextTag = 1;
-        while (!check(END) && !check(EOF)) {
+        while (!(braceDelimited ? check(RBRACE) : check(END)) && !check(EOF)) {
             Token start = consume(IDENT, "expected enum case name");
             if (!names.add(start.lexeme())) throw error(start, "duplicate enum case " + start.lexeme());
             Ast.TypeRef payload = match(COLON) ? parseTypeRef() : null;
@@ -993,17 +996,19 @@ public final class Parser {
                         + "retired tags cannot be reused");
             }
             if (!tags.add(tag)) throw error(start, "duplicate enum wire tag " + tag);
-            if (tag == Integer.MAX_VALUE && !check(END)) {
+            if (tag == Integer.MAX_VALUE && !(braceDelimited ? check(RBRACE) : check(END))) {
                 throw error(start, "cannot implicitly increment enum tag after INT32_MAX");
             }
             nextTag = tag == Integer.MAX_VALUE ? tag : tag + 1;
             cases.add(new Ast.EnumCase(start.lexeme(), payload, tag));
             boolean separator = match(COMMA, SEMICOLON);
-            if (!separator && !check(END) && peek().line() <= previous().line()) {
+            if (!separator && !(braceDelimited ? check(RBRACE) : check(END))
+                    && peek().line() <= previous().line()) {
                 throw error(peek(), "enum cases require separate lines, commas or semicolons");
             }
         }
-        consume(END, "expected 'end' after enum " + name);
+        if (braceDelimited) consume(RBRACE, "expected '}' after enum " + name);
+        else consume(END, "expected 'end' after enum " + name);
         if (cases.isEmpty()) throw error(previous(), "enum must declare at least one case");
         return new Ast.EnumDecl(name, cases);
     }
