@@ -6397,6 +6397,8 @@ public final class TypeChecker {
             rejectStaticClassGenericReferences(conditional.whenFalse(), classGenerics, klass, method);
         } else if (expression instanceof Ast.SpreadExpr spread) {
             rejectStaticClassGenericReferences(spread.expression(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.NamedArgumentExpr named) {
+            rejectStaticClassGenericReferences(named.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.RuntimeCallExpr runtime) {
             for (Ast.Expr argument : runtime.arguments()) {
                 rejectStaticClassGenericReferences(argument, classGenerics, klass, method);
