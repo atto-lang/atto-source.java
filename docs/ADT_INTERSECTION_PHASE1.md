@@ -28,6 +28,11 @@ general class/trait/method intersections or LLVM lowering.
   arbitrary fabricated classes or method tables.
 - Runtime type matching uses conjunction; return-value shaping verifies **every**
   intersection operand (not the first one that succeeds).
+- The ownership pass independently rejects intersection record members that are
+  borrowed, move-only, or reached through unresolved generic aliases. This is a
+  deliberately restrictive safety gate: field-projection borrow/move tracking is
+  not yet implemented for intersection aliases. Copy-only payload fields are the
+  fully admitted first phase.
 
 ## Examples (source syntax)
 
