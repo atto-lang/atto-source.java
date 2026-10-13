@@ -358,6 +358,56 @@ final class WithStateCapabilityContractTest {
         }
     }
 
+    @Test void referenceFieldWritesCannotAdoptUnprovenExternalOwners() {
+        for (String callback : new String[] {
+            "self.handle_state(critical |s| -> { s.items = foreign; return s.count; })",
+            "using state.write(critical |s| -> { s.items = foreign; return s.count; })",
+            "self.handle_state(critical |s| -> { s.items = [1, 2]; return s.count; })",
+            "using state.write(critical |s| -> { s.items = [3, 4]; return s.count; })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; count: int = 0; } "
+                    + "set(): int with state.read, state.write { return "
+                    + callback + "; } end";
+            var denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(Parser.parse(source)), callback);
+            assertTrue(denied.getMessage().contains("reference write requires verified owned-value"),
+                    denied::getMessage);
+        }
+    }
+
+    @Test void constructorCannotLaunderLiveStateReference() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { new Box(s.items); return s.count; })",
+            "using state.read(|s| -> { new Box([s.items]); return s.count; })",
+            "using state.write(critical |s| -> { new Box(s.items); return s.count; })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; count: int = 0; } "
+                    + "get(): int with state.read, state.write { return "
+                    + callback + "; } end";
+            var denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(Parser.parse(source)), callback);
+            assertTrue(denied.getMessage().contains("reference construction"),
+                    denied::getMessage);
+        }
+    }
+
+    @Test void directActorOwnedReferenceWritesAndScalarWritesRemainAdmissible() {
+        for (String callback : new String[] {
+            "self.handle_state(critical |s| -> { s.items = s.items; return s.count; })",
+            "using state.write(critical |s| -> { s.items = s.items; return s.count; })",
+            "self.handle_state(critical |s| -> { s.count = 10; return s.count; })",
+            "using state.write(critical |s| -> { s.count = 10; return s.count; })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; count: int = 0; } "
+                    + "set(): int with state.read, state.write { return "
+                    + callback + "; } end";
+            assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(source)), callback);
+        }
+    }
+
     @Test void sealedCallbackEffectsFollowLoweringAndCannotBeForged() {
         Ast.Program p = Parser.parse(actor("with state.read",
                 "using state.read(|s| -> { return s.v; })"));
