@@ -501,6 +501,15 @@ public final class Parser {
                 fields.add(parseColonField(annotations, mods.visibility));
                 continue;
             }
+            // Canonical member syntax: [final] [mut] Type name: initializer.
+            // Only a complete typed field is consumed here. Method names and
+            // type-generic methods continue through the method parser unchanged.
+            Ast.FieldDecl canonicalField = tryParseCanonicalClassField(annotations, mods.visibility);
+            if (canonicalField != null) {
+                validateClassFieldModifiers(mods);
+                fields.add(canonicalField);
+                continue;
+            }
 
             boolean explicitFnc = match(FNC);
             boolean explicitMethod = matchExplicitMethodMarker();
@@ -840,6 +849,68 @@ public final class Parser {
         return refs;
     }
 
+    /**
+     * Parse a canonical typed class field without consuming method declarations.
+     * `final` is contextual here; local bindings retain their own keywords.
+     * The explicit final spelling must initialize at the declaration site.
+     */
+    private Ast.FieldDecl tryParseCanonicalClassField(
+            List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        int start = current;
+        // A member named 'final' with a method signature or legacy name: Type
+        // syntax remains a normal identifier, not a field modifier.
+        boolean fixed = isContextualIdentifier("final")
+                && !checkNext(LPAREN) && !checkNext(COLON);
+        if (fixed) advance();
+        boolean mutableReferent = match(MUT);
+        if (mutableReferent && check(MUT)) {
+            throw error(peek(), "duplicate 'mut' qualifier on class field");
+        }
+
+        if (!check(IDENT)) {
+            current = start;
+            if (fixed || mutableReferent) {
+                throw error(peek(), "expected type after class field modifier");
+            }
+            return null;
+        }
+
+        Ast.TypeRef type;
+        try {
+            type = parseTypeRef();
+        } catch (IllegalArgumentException failure) {
+            current = start;
+            if (fixed || mutableReferent) throw failure;
+            return null;
+        }
+        if (!check(IDENT)) {
+            current = start;
+            if (fixed || mutableReferent) {
+                throw error(peek(), "expected field name after type");
+            }
+            return null;
+        }
+        String name = advance().lexeme();
+        if (!check(COLON) && !check(EQUAL) && !check(SEMICOLON)) {
+            current = start;
+            if (fixed || mutableReferent) {
+                throw error(peek(), "expected ':' after field name");
+            }
+            return null;
+        }
+        Ast.Expr initializer = match(COLON, EQUAL) ? parseExpression() : null;
+        if (fixed && initializer == null) {
+            throw error(previous(), "final class field '" + name
+                    + "' requires a declaration-site initializer");
+        }
+        rejectCallableStructuralAnnotation(annotations, "fields");
+        consumeExpressionClassFieldTerminator(initializer, "class field should end with ';'");
+        type = applyTypeMetadataAnnotations(type, annotations, false);
+        return new Ast.FieldDecl(name, visibility,
+                fixed ? Ast.BindingKind.CONST : Ast.BindingKind.LET,
+                type, annotations, initializer, mutableReferent);
+    }
+
     private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
         Ast.BindingKind kind = parseBindingKind();
@@ -852,7 +923,7 @@ public final class Parser {
             type = parseTypeRef();
             name = consume(IDENT, "expected field name").lexeme();
         }
-        Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        Ast.Expr initializer = match(EQUAL, COLON) ? parseExpression() : null;
         if (type == null && initializer == null) {
             throw error(previous(), "inferred field '" + name + "' requires an initializer");
         }
