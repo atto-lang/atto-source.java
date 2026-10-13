@@ -772,4 +772,47 @@ final class ActorSendContractTest {
         }
     }
 
+    @Test
+    void hostStopMustNotReturnDuringRegistryRemovalBeforeDone() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> { });
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Map<ActorRuntime.ActorId, Object> actors =
+                    (java.util.Map<ActorRuntime.ActorId, Object>) actorsField.get(runtime);
+            Object cell = actors.remove(actor.id());
+            assertNotNull(cell);
+
+            CountDownLatch stopStarted = new CountDownLatch(1);
+            CountDownLatch stopReturned = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Thread stopper = new Thread(() -> {
+                stopStarted.countDown();
+                try {
+                    actor.stop();
+                } catch (Throwable error) {
+                    failure.set(error);
+                } finally {
+                    stopReturned.countDown();
+                }
+            }, "stop-during-registry-retirement");
+            try {
+                stopper.start();
+                assertTrue(stopStarted.await(5, TimeUnit.SECONDS));
+                assertFalse(stopReturned.await(75, TimeUnit.MILLISECONDS),
+                        "a missing registry entry must not cause stop to return before DONE");
+                assertFalse(actor.getDone().isDone());
+            } finally {
+                assertNull(actors.put(actor.id(), cell));
+                actor.stop();
+                stopper.join(5_000);
+            }
+            assertFalse(stopper.isAlive());
+            assertNull(failure.get());
+            assertTrue(actor.getDone().isDone());
+        }
+    }
+
 }
