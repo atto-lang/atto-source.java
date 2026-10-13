@@ -6,9 +6,10 @@
       "name": "Error",
       "parent": null,
       "code": 0,
-      "abstract": true,
+      "abstract": false,
       "interfaces": [
-        "CodedError"
+        "CodedError",
+        "Serializable"
       ]
     },
     {
@@ -737,6 +738,16 @@
         "CodedError"
       ],
       "methods": []
+    },
+    {
+      "name": "Serializable",
+      "parents": [],
+      "methods": [
+        "to_string(): String",
+        "to_json(): String",
+        "to_messagepack(): Array<u8>",
+        "to_proto_buf(): Array<u8>"
+      ]
     }
   ]
 }

@@ -1,0 +1,11 @@
+// Source-friendly capture of current Oreslang callable names.
+// No Error is allocated or thrown. These functions return owned snapshots.
+// NB: current Java backend captures active synchronous call frames only;
+// async suspended ancestry and LLVM parity require separate proof.
+pub fnc capture_trace_string(): String {
+  return rt trace_string();
+}
+
+pub fnc capture_trace_frames(): Array<String> {
+  return rt trace_frames();
+}

@@ -28,8 +28,33 @@ end
 pub define interface ActorApiError extends CodedError as
 end
 
-pub define abstract class Error implements CodedError as
-  pub code(): int;
+pub define interface Serializable as
+  fnc to_string() => String;
+  fnc to_json() => String;
+  fnc to_messagepack() => Array<u8>;
+  fnc to_proto_buf() => Array<u8>;
+end
+
+// Deliberately concrete: new Error() allocates data and captures NO stack.
+// Positional synthesized constructor arguments: full_trace, json_full, message.
+// Derived errors inherit these defaults without requiring unsupported super() calls.
+pub define class Error implements CodedError, Serializable as
+  pub val bool full_trace = true;
+  pub val bool json_full = true;
+  pub val String message = "";
+  pub let Array<String> stack = [];
+
+  pub code(): int { return 0; }
+
+  pub capture_stack(): Array<String> {
+    self.stack = rt trace_frames();
+    return self.stack;
+  }
+
+  pub to_string(): String { return rt error_to_string(self); }
+  pub to_json(): String { return rt error_to_json(self); }
+  pub to_messagepack(): Array<u8> { return rt error_to_messagepack(self); }
+  pub to_proto_buf(): Array<u8> { return rt error_to_proto_buf(self); }
 end
 
 pub define abstract class ArgumentError extends Error as
