@@ -431,6 +431,45 @@ final class CircularImportInitializationTest {
     }
 
     @Test
+    void importedConstantSymbolsDispatchInMatchWithoutRunningInit() throws Exception {
+        Path entry = tempDir.resolve("symbol-constant-entry.ores");
+        Path dependency = tempDir.resolve("symbol-constant-dep.ores");
+        Files.writeString(entry, """
+                import module Z from "./symbol-constant-dep.ores";
+                pub routine main(): void {
+                  match Z.sym2 over
+                    on #abc -> { stdio.stdout.write("matched|"); }
+                    on _ -> { stdio.stdout.write("unexpected|"); }
+                  end
+                  stdio.stdout.write(Z.answer);
+                  stdio.stdout.write("|");
+                  Z.trigger();
+                  return;
+                }
+                """);
+        Files.writeString(dependency, """
+                define pub const int base = 40;
+                define pub module Z as
+                  pub const int answer = base + 2;
+                  pub const Symbol sym2 = Symbol.for("abc");
+                  pub fnc trigger(): void {
+                    stdio.stdout.write("called");
+                    return;
+                  }
+                end
+                fnc init(): void {
+                  stdio.stdout.write("init|");
+                  return;
+                }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry,
+                IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                output, new ByteArrayOutputStream());
+        assertEquals("matched|42|init|called", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void importedNonLoweredConstantFailsClosedWithoutRunningInitializer() throws Exception {
         Path entry = tempDir.resolve("not-lowered-entry.ores");
         Path dependency = tempDir.resolve("not-lowered-dep.ores");
