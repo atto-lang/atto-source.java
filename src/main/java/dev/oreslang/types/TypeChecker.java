@@ -5115,6 +5115,10 @@ public final class TypeChecker {
             }
         }
 
+        if (!matched.ordered()) {
+            validateExclusiveMatchArms(arms, subject, generics, self);
+        }
+
         boolean exhaustive = coveredByUnguarded != null
                 ? allTrue(coveredByUnguarded)
                 : matchProvablyExhaustive(arms, subject, generics, self);
@@ -5405,6 +5409,48 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * Legacy `match subject` (without `over`) chooses exactly one
+     * non-fallback branch. The interpreter rejects multiple matching arms,
+     * so the compiler must never accept overlapping explicit alternatives
+     * based on *ordered* first-match semantics.
+     *
+     * Guards only establish disjointness when the existing numerical guard
+     * range proof can establish it; side-effecting/unknown guards never do.
+     */
+    private void validateExclusiveMatchArms(
+            List<Ast.MatchArm> arms, Type subject,
+            Set<String> generics, Type self) {
+        boolean foundFallback = false;
+        for (int i = 0; i < arms.size(); i++) {
+            Ast.MatchArm current = arms.get(i);
+            if (isFallbackArm(current)) {
+                if (foundFallback) {
+                    throw new IllegalArgumentException(
+                            "exclusive match has multiple fallback arms");
+                }
+                foundFallback = true;
+                continue;
+            }
+            for (int j = 0; j < i; j++) {
+                Ast.MatchArm previous = arms.get(j);
+                if (isFallbackArm(previous)) continue;
+                boolean exclusive = patternsProvablyDisjoint(
+                        previous.pattern(), current.pattern(), subject, generics, self);
+                if (!exclusive && previous.guard() != null && current.guard() != null) {
+                    exclusive = guardsProvablyDisjoint(previous.guard(), current.guard());
+                }
+                if (!exclusive) {
+                    throw new IllegalArgumentException(
+                            "overlapping exclusive match arms " + (j + 1)
+                                    + " and " + (i + 1)
+                                    + "; use ordered 'match ... over' for precedence"
+                                    + " or prove the legacy arms disjoint");
+                }
+            }
+        }
+    }
+
     private boolean patternsProvablyDisjoint(
             Ast.Pattern left, Ast.Pattern right, Type subject, Set<String> generics, Type self) {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
@@ -5414,12 +5460,31 @@ public final class TypeChecker {
         }
         if (left instanceof Ast.ConstructorPattern a && right instanceof Ast.ConstructorPattern b) {
             if (!a.constructor().equals(b.constructor())) {
+                // Different qualified nominal cases have different tags,
+                // regardless of their payloads. Neither can match the other.
+                if (taggedCaseOrNull(a.constructor()) != null
+                        && taggedCaseOrNull(b.constructor()) != null) return true;
                 if ((a.constructor().equals("Some") && b.constructor().equals("None"))
                         || (a.constructor().equals("None") && b.constructor().equals("Some"))
                         || (a.constructor().equals("Ok") && b.constructor().equals("Err"))
                         || (a.constructor().equals("Err") && b.constructor().equals("Ok"))) return true;
+                return false;
+            }
+            if (a.arguments().size() != b.arguments().size()) return false;
+            for (int i = 0; i < a.arguments().size(); i++) {
+                if (patternsProvablyDisjoint(
+                        a.arguments().get(i), b.arguments().get(i),
+                        Unknown.INSTANCE, generics, self)) return true;
             }
             return false;
+        }
+        if (left instanceof Ast.TuplePattern a && right instanceof Ast.TuplePattern b
+                && a.elements().size() == b.elements().size()) {
+            for (int i = 0; i < a.elements().size(); i++) {
+                if (patternsProvablyDisjoint(
+                        a.elements().get(i), b.elements().get(i),
+                        Unknown.INSTANCE, generics, self)) return true;
+            }
         }
         if (left instanceof Ast.TypePattern a && right instanceof Ast.TypePattern b) {
             Type at = deref(resolve(a.type(), generics, self));
