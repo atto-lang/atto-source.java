@@ -335,6 +335,38 @@ public final class OresEvalRootNode extends RootNode {
             return functions.containsKey(name);
         }
 
+        private Ast.FunctionDecl preboundFunction(Ast.CallExpr call, String name) {
+            Ast.FunctionDecl resolved = program.boundDirectCalls().get(call);
+            if (resolved != null) {
+                if (!resolved.name().equals(name)) {
+                    throw new IllegalStateException("compiler-bound function name mismatch");
+                }
+                // Never inspect runtime argument values to select this target.
+                // TypeChecker has already validated arity, generic arguments,
+                // effects and nominal ownership for this exact source call.
+                return resolved;
+            }
+            // Only arity-unique legacy families can reach this path. Current
+            // Java admission still rejects all same-name/same-arity pairs.
+            return findFunction(name, call.arguments().size());
+        }
+
+        private Invocation preboundModuleInvocation(
+                Ast.CallExpr call, ModuleFacade module, String member, List<Object> args) {
+            Ast.FunctionDecl resolved = program.boundDirectCalls().get(call);
+            if (resolved == null) {
+                return module.owner().prepareModuleInvocation(module.module(), member, args);
+            }
+            if (module.owner() != this
+                    || !resolved.name().equals(member)
+                    || resolved.visibility() != Ast.Visibility.PUBLIC
+                    || module.module().declarations().stream().noneMatch(decl -> decl == resolved)) {
+                throw new IllegalStateException(
+                        "compiler-bound module callable does not belong to the resolved namespace");
+            }
+            return functionInvocation(resolved, args);
+        }
+
         private Ast.FunctionDecl findFunction(String name, int arity) {
             if (ambiguousFunctions.contains(name)) {
                 throw new IllegalArgumentException(
@@ -1537,7 +1569,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (call.callee() instanceof Ast.NameExpr name
                         && !functionNameBoundLocally(name.name())) {
-                    Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
+                    Ast.FunctionDecl target = preboundFunction(call, name.name());
                     if (target != null) {
                         // Creating a generator activation does not pull or await it.
                         if (target.generator()) return false;
@@ -3900,7 +3932,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceValueCont continuation) {
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
+                Ast.FunctionDecl direct = preboundFunction(call, name.name());
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, name.name());
                     evalSuspendableArguments(
@@ -4155,10 +4187,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (receiver instanceof ModuleFacade module) {
-                return module.owner().prepareModuleInvocation(
-                        module.module(),
-                        member.member(),
-                        args);
+                return preboundModuleInvocation(call, module, member.member(), args);
             }
 
             if (receiver instanceof ImportedNamespace namespace) {
@@ -5364,7 +5393,7 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
+                Ast.FunctionDecl direct = preboundFunction(call, directName.name());
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, directName.name());
                     List<Object> args = evaluateArguments(call.arguments(), env);
@@ -5477,8 +5506,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (receiver instanceof ModuleFacade module) {
-                    return module.owner().prepareModuleInvocation(
-                            module.module(), methodCall.member(), args);
+                    return preboundModuleInvocation(call, module, methodCall.member(), args);
                 }
 
                 if (receiver instanceof OresMutex.Guard<?> guard
