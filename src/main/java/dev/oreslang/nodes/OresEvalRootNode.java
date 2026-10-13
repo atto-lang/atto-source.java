@@ -2113,7 +2113,7 @@ public final class OresEvalRootNode extends RootNode {
                                 for (Ast.SwitchCase arm : switched.cases()) {
                                     boolean matchedCase = false;
                                     for (Ast.Expr constant : arm.constants()) {
-                                        if (Objects.equals(subject, eval(constant, env))) {
+                                        if (valueEquals(subject, eval(constant, env))) {
                                             matchedCase = true;
                                             break;
                                         }
