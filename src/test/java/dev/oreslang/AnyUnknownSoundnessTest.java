@@ -138,6 +138,36 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void mutableStructuralFieldsDoNotWidenToWritableAny() {
+        Types.Record mutableInt = new Types.Record(Map.of("foo", Types.Primitive.INT));
+        Types.Record mutableAny = new Types.Record(Map.of("foo", Types.Any.INSTANCE));
+        Types.Record readonlyAny = new Types.Record(Map.of("foo", Types.Any.INSTANCE), true);
+        Types.Record readonlyInt = new Types.Record(Map.of("foo", Types.Primitive.INT), true);
+        assertFalse(Types.isAssignable(mutableInt, mutableAny));
+        assertTrue(Types.isAssignable(mutableInt, readonlyAny));
+        assertFalse(Types.isAssignable(readonlyInt, mutableInt));
+        assertFalse(Types.isAssignable(readonlyInt, mutableAny));
+        assertFalse(Types.isAssignable(
+                new Types.Record(Map.of("value", Types.Primitive.INT)),
+                new Types.Record(Map.of("value", Types.Primitive.FLOAT))));
+        assertTrue(Types.isAssignable(
+                new Types.Record(Map.of("foo", Types.Primitive.INT, "bar", Types.Primitive.BOOL)),
+                new Types.Record(Map.of("foo", Types.Primitive.INT), true)));
+    }
+
+    @Test
+    void directInternalInferenceHoleDoesNotImpersonateKnownValue() {
+        reject("fnc bad(int value): int { return unrelated(value); }", "unknown name");
+        assertFalse(Types.isAssignable(Types.UnknownValue.INSTANCE, Types.Primitive.INT));
+    }
+
+    @Test
+    void sourceTopsCannotBeShadowedByGenericParameters() {
+        reject("fnc identity<Any>(Any value): Any { return value; }", "reserved type name");
+        reject("fnc identity<Unknown>(Unknown value): Unknown { return value; }", "reserved type name");
+    }
+
+    @Test
     void unregisteredNominalTypesCannotProduceFakeRuntimeMatches() {
         reject("fnc bad(Any value): bool { return value is UnregisteredNominal; }",
                 "no verified Oreslang runtime type descriptor");

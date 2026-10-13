@@ -219,9 +219,15 @@ public final class Types {
         }
 
         if (from instanceof Record source && to instanceof Record target) {
+            // A readonly *view* may safely widen readable members, but an
+            // explicitly writable destination may not offer broader writes.
+            // In particular, {foo:int} must not become writable {foo:Any}.
+            if (source.readOnly() && !target.readOnly()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
                 if (actual == null || !isAssignable(actual, required.getValue())) return false;
+                if (!target.readOnly() && !isCompilerMethodContract(required.getKey())
+                        && !isAssignable(required.getValue(), actual)) return false;
             }
             return true;
         }
@@ -253,6 +259,15 @@ public final class Types {
         }
 
         return numericWidening(from, to);
+    }
+
+    /**
+     * Only compiler-emitted instance method slots carry the method
+     * contravariance/covariance contract. Source record field identifiers are
+     * not synthesized into these slots.
+     */
+    private static boolean isCompilerMethodContract(String key) {
+        return key.matches("instance\\$[^\\s]+\\$arity[0-9]+\\$generics[0-9]+");
     }
 
     private static boolean numericWidening(Type from, Type to) {

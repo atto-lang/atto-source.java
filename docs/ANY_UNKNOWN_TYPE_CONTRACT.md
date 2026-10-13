@@ -76,6 +76,23 @@ cannot be erased by this simplification. Type checks also reject unknown
 nominal names without guest runtime recognition, rather than silently testing
 a Java host class or always returning false.
 
+## Writable structural fields and inference boundaries
+
+A record whose members are writable may not widen member types covariantly.
+For example, mutable `{foo: int}` must never become mutable `{foo: Any}`,
+since assigning a string through the second view would invalidate the first.
+Readonly views preserve structural width and safe value covariance; compiler
+generated method slots continue to use function parameter contravariance and
+result covariance. Future richer per-field `pub val`/writable capability
+metadata should replace the coarse record-level conservative rule.
+
+The direct unresolved compiler inference sentinel is rejected when it is the
+source of a value assignment to a known type. Nested/expected-directed holes
+used by `None`, `Ok`, `Err` and empty collections remain a tracked migration
+under issue #847; they are **not yet** an independently proven constraint
+solver. The source names `Any` and `Unknown` are reserved in generic
+parameter positions and resolve ahead of inferred aliases.
+
 ## Actor, async, and channel boundaries
 
 Opaque top types conceal callable/borrow/ownership provenance. Until a runtime

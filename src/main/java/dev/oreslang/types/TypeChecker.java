@@ -7166,6 +7166,14 @@ public final class TypeChecker {
             }
             return new Record(members, ref.isReadonlyRecordType());
         }
+        // Language tops are reserved, not type variables or user aliases:
+        // aliases/inferred local names must not shadow the proof boundary.
+        if (ref.name().equals("Any") || ref.name().equals("Unknown")) {
+            if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                throw new IllegalArgumentException(ref.name() + " does not accept type arguments");
+            }
+            return ref.name().equals("Any") ? Types.Any.INSTANCE : Types.UnknownValue.INSTANCE;
+        }
         if (generics.contains(ref.name())) return new Generic(ref.name());
         Type scopedType = currentTypeScope == null ? null : currentTypeScope.lookupInferredType(ref.name());
         if (scopedType != null) {
@@ -7385,6 +7393,10 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        // A *value* with an unresolved internal type cannot prove a concrete
+        // contract. The reverse legacy wildcard is retained temporarily for
+        // contextual builtin/inference holes (None/Ok/Err/empty collections).
+        if (actual == Unknown.INSTANCE && expected != Unknown.INSTANCE) return false;
         // Safe source-level top types must not inherit the permissive internal
         // Unknown inference-sentinel behavior.
         if (actual == Types.Any.INSTANCE || actual == Types.UnknownValue.INSTANCE
@@ -7490,11 +7502,23 @@ public final class TypeChecker {
     }
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {
+        // Readonly destinations are observation-only, and may use structural
+        // width/covariance. Mutable destinations require write-safe field
+        // types. Generated instance-method slots are call-only and preserve
+        // their established parameter/return variance.
+        if (actual.readOnly() && !expected.readOnly()) return false;
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
             Type candidate = actual.members().get(required.getKey());
             if (candidate == null || !assignable(candidate, required.getValue())) return false;
+            if (!expected.readOnly()
+                    && !isInstanceMethodShapeSlot(required.getKey())
+                    && !assignable(required.getValue(), candidate)) return false;
         }
         return true;
+    }
+
+    private static boolean isInstanceMethodShapeSlot(String key) {
+        return key.matches("instance\\$[^\\s]+\\$arity[0-9]+\\$generics[0-9]+");
     }
 
     private Named concreteClassReference(Ast.TypeRef ref, Ast.ClassDecl owner, Named ownerType) {
@@ -7634,7 +7658,15 @@ public final class TypeChecker {
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
-        for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        for (String name : names) {
+            if (name.equals("Any") || name.equals("Unknown")) {
+                throw new IllegalArgumentException(
+                        "reserved type name '" + name + "' cannot be used as a generic parameter in " + owner);
+            }
+            if (!result.add(name)) {
+                throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+            }
+        }
         return result;
     }
 
