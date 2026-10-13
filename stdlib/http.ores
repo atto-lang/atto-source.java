@@ -137,19 +137,32 @@ define module http_wire as
   // Oreslang. No Java HTTP parser, response engine, or socket streams.
   pub fnc response(int status, bool keep_alive, bool head_only) -> Array<int> {
     let mut Array<int> out = new Array<int>();
-    let Array<int> prefix = status == 200
-      ? arr[72,84,84,80,47,49,46,49,32,50,48,48,32,79,75,13,10]
-      : arr[72,84,84,80,47,49,46,49,32,52,48,48,32,66,97,100,32,82,101,113,117,101,115,116,13,10];
-    for (const c of prefix) { out.add(c); }
-    for (const c of arr[67,111,110,116,101,110,116,45,76,101,110,103,116,104,58,32,51,13,10]) { out.add(c); }
-    if keep_alive; then
+    if status == 200; then
+      for (const c of arr[72,84,84,80,47,49,46,49,32,50,48,48,32,79,75,13,10]) { out.add(c); }
+    elif status == 404; then
+      for (const c of arr[72,84,84,80,47,49,46,49,32,52,48,52,32,78,111,116,32,70,111,117,110,100,13,10]) { out.add(c); }
+    elif status == 405; then
+      for (const c of arr[72,84,84,80,47,49,46,49,32,52,48,53,32,77,101,116,104,111,100,32,78,111,116,32,65,108,108,111,119,101,100,13,10]) { out.add(c); }
+    elif status == 431; then
+      for (const c of arr[72,84,84,80,47,49,46,49,32,52,51,49,32,82,101,113,117,101,115,116,32,72,101,97,100,101,114,32,70,105,101,108,100,115,32,84,111,111,32,76,97,114,103,101,13,10]) { out.add(c); }
+    else
+      for (const c of arr[72,84,84,80,47,49,46,49,32,52,48,48,32,66,97,100,32,82,101,113,117,101,115,116,13,10]) { out.add(c); }
+    fi
+    if status == 200; then
+      for (const c of arr[67,111,110,116,101,110,116,45,76,101,110,103,116,104,58,32,51,13,10]) { out.add(c); }
+      for (const c of arr[67,111,110,116,101,110,116,45,84,121,112,101,58,32,116,101,120,116,47,112,108,97,105,110,13,10]) { out.add(c); }
+    else
+      for (const c of arr[67,111,110,116,101,110,116,45,76,101,110,103,116,104,58,32,48,13,10]) { out.add(c); }
+    fi
+    if status == 200 && keep_alive; then
       for (const c of arr[67,111,110,110,101,99,116,105,111,110,58,32,107,101,101,112,45,97,108,105,118,101,13,10]) { out.add(c); }
     else
       for (const c of arr[67,111,110,110,101,99,116,105,111,110,58,32,99,108,111,115,101,13,10]) { out.add(c); }
     fi
-    out.add(13);
-    out.add(10);
-    if !head_only; then out.add(111); out.add(107); out.add(10); fi
+    out.add(13); out.add(10);
+    if status == 200 && !head_only; then
+      out.add(111); out.add(107); out.add(10);
+    fi
     return out;
   }
 end
