@@ -1,5 +1,13 @@
 # Oreslang class-method overload contract (pre-1.0)
 
+> **Current implementation:** this file describes the arity-only implementation
+> in Java/GraalVM. **New normative target:** same-arity overloading will be
+> allowed **only** for eligible distinct nominal enum types, with arity first,
+> static selection, and no structural lookup. See
+> [NOMINAL_ENUM_OVERLOAD_CONTRACT.md](NOMINAL_ENUM_OVERLOAD_CONTRACT.md).
+> The new rule is **not implemented** until coordinated compiler/runtime changes
+> and backend parity tests land; current same-arity duplicates still reject.
+
 ## Closed-world selector
 
 The canonical class callable slot is:
