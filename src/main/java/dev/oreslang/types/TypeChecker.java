@@ -3521,25 +3521,82 @@ public final class TypeChecker {
                 where + " requires Channel<T>; got " + channel);
     }
 
+    /**
+     * Channel messages carry inert data, never executable behavior, identity,
+     * borrows, runtime handles or host objects. This is intentionally stricter
+     * than async task-safe values and actor mailbox capabilities: there is no
+     * implicit class serialization or function transfer in Channel<T>.
+     *
+     * The recursive check is applied at Channel<T> declarations,
+     * Channel.new<T>, readch/writech and static/dynamic select cases.
+     */
     private void validateChannelPayloadType(Type element, String where) {
-        if (element == Primitive.VOID) {
+        validateChannelDataType(element, where + " payload");
+    }
+
+    private void validateChannelDataType(Type type, String where) {
+        if (type == Unknown.INSTANCE || type instanceof Generic
+                || type instanceof SelfType || type instanceof Borrow
+                || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
-                    "Channel<void> cannot carry a value; use an explicit signal/unit type");
+                    where + " must be concrete, owned data-only channel payload; "
+                    + "functions, borrowed values, capabilities, and unresolved generic types are forbidden: "
+                    + type);
         }
-        // Ordinary Channel<T> is an execution-domain-local capability, not a
-        // mailbox. Owned function values and objects containing callables may
-        // move through local channels. Actor message types are checked by
-        // validateActorCallableBoundaryType/isSharedSafe instead and remain
-        // strictly non-callable. Borrows cannot inhabit buffered channels
-        // until channel-bound lifetimes are expressible and checked.
-        if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.VOID || primitive == Primitive.NULL) {
+                throw new IllegalArgumentException(
+                        where + " cannot be " + primitive + "; use Option<T> for absence or a concrete signal value");
+            }
+            return;
+        }
+        if (type instanceof StringLiteral) return;
+        if (type instanceof ListType list) {
+            validateChannelDataType(list.element(), where + " array/list element");
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                validateChannelDataType(tuple.elements().get(i), where + " tuple element " + i);
+            }
+            return;
+        }
+        if (type instanceof Union union) {
+            for (int i = 0; i < union.options().size(); i++) {
+                validateChannelDataType(union.options().get(i), where + " union variant " + i);
+            }
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Map.Entry<String, Type> field : record.members().entrySet()) {
+                validateChannelDataType(field.getValue(), where + " field '" + field.getKey() + "'");
+            }
+            return;
+        }
+        if (type instanceof Named named) {
+            // Only built-in tagged data constructors are admitted by name.
+            // Explicit structs are compiled to Record; named class, trait and
+            // interface types (including classes with no declared methods)
+            // are never a channel payload.
+            if (named.name().equals("Option") && named.arguments().size() == 1) {
+                Type inner = named.arguments().getFirst();
+                if (inner == Primitive.NULL) return; // existing Option<null> marker
+                validateChannelDataType(inner, where + " Option value");
+                return;
+            }
+            if (named.name().equals("Result") && named.arguments().size() == 2) {
+                validateChannelDataType(named.arguments().get(0), where + " Result success");
+                validateChannelDataType(named.arguments().get(1), where + " Result error");
+                return;
+            }
             throw new IllegalArgumentException(
-                    where + " cannot transport borrowed payloads, including nested fields: "
-                            + "channel storage may outlive their owners");
+                    where + " cannot transport nominal/capability type '" + named.name()
+                    + "': channels accept only primitives, structs/records, tuples, arrays,"
+                    + " and recursively data-only tagged values; no classes, interfaces,"
+                    + " traits, actors, functions, ActorRef, Channel, Future or host handles");
         }
-        if (element == Unknown.INSTANCE) {
-            throw new IllegalArgumentException(where + " requires a statically resolved channel payload type");
-        }
+        throw new IllegalArgumentException(
+                where + " cannot transport non-data channel payload: " + type);
     }
 
     private boolean containsChannelCallable(
