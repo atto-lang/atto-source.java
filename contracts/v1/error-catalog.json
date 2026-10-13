@@ -531,6 +531,76 @@
       "code": 8008,
       "abstract": false,
       "interfaces": []
+    },
+    {
+      "name": "KeyNotFoundError",
+      "parent": "DataError",
+      "code": 6009,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "DuplicateKeyError",
+      "parent": "DataError",
+      "code": 6010,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "InvalidFormatError",
+      "parent": "DataError",
+      "code": 6011,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "EmptyCollectionError",
+      "parent": "StateError",
+      "code": 2009,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "IteratorExhaustedError",
+      "parent": "StateError",
+      "code": 2010,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "DeadlockDetectedError",
+      "parent": "StateError",
+      "code": 2011,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ProcessNotFoundError",
+      "parent": "StateError",
+      "code": 2012,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "MailboxFullError",
+      "parent": "StateError",
+      "code": 2013,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "NotImplementedError",
+      "parent": "OperationError",
+      "code": 8009,
+      "abstract": false,
+      "interfaces": []
+    },
+    {
+      "name": "ResourceExhaustedError",
+      "parent": "OperationError",
+      "code": 8010,
+      "abstract": false,
+      "interfaces": []
     }
   ],
   "traits": [

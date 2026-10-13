@@ -323,3 +323,45 @@ end
 pub define class DependencyFailureError extends OperationError as
   pub code(): int { return 8008; }
 end
+
+// Cross-language additions: ordinary guest error values, not exceptional control effects.
+
+pub define class KeyNotFoundError extends DataError as
+  pub code(): int { return 6009; }
+end
+
+pub define class DuplicateKeyError extends DataError as
+  pub code(): int { return 6010; }
+end
+
+pub define class InvalidFormatError extends DataError as
+  pub code(): int { return 6011; }
+end
+
+pub define class EmptyCollectionError extends StateError as
+  pub code(): int { return 2009; }
+end
+
+pub define class IteratorExhaustedError extends StateError as
+  pub code(): int { return 2010; }
+end
+
+pub define class DeadlockDetectedError extends StateError as
+  pub code(): int { return 2011; }
+end
+
+pub define class ProcessNotFoundError extends StateError as
+  pub code(): int { return 2012; }
+end
+
+pub define class MailboxFullError extends StateError as
+  pub code(): int { return 2013; }
+end
+
+pub define class NotImplementedError extends OperationError as
+  pub code(): int { return 8009; }
+end
+
+pub define class ResourceExhaustedError extends OperationError as
+  pub code(): int { return 8010; }
+end

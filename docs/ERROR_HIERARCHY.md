@@ -18,7 +18,7 @@ pub fnc category(Error error): int {
 }
 ```
 
-The type `Error` is a nominal **abstract** Oreslang class, never Java `Throwable`. Its `code(): int` is a required abstract slot (code 0 is reserved for this root in the catalog, not produced by an instance). Eight families and `FileSystemError` are also abstract; every concrete leaf provides its own `code()` value. `FileSystemError` (3090) and `NetworkError` (4000) are descendants of `IOError`. The catalog has **64 concrete leaf classes and 10 abstract group/root classes**: **74 classes** total.
+The type `Error` is a nominal **abstract** Oreslang class, never Java `Throwable`. Its `code(): int` is a required abstract slot (code 0 is reserved for this root in the catalog, not produced by an instance). Eight families and `FileSystemError` are also abstract; every concrete leaf provides its own `code()` value. `FileSystemError` (3090) and `NetworkError` (4000) are descendants of `IOError`. The catalog has **74 concrete leaf classes and 10 abstract group/root classes**: **84 classes** total.
 
 The machine-readable complete name/parent/code inventory is `contracts/v1/error-catalog.json`. Names and codes are permanently assigned. Deprecate old codes instead of changing their meaning; reserve new codes for new types. Never dispatch on code instead of guest nominal type metadata.
 
@@ -27,13 +27,13 @@ The machine-readable complete name/parent/code inventory is `contracts/v1/error-
 | Family | Code | Leaf range | Meaning |
 | --- | ---: | ---: | --- |
 | ArgumentError | 1000 | 1001–1008 | Inputs, arity, casts, bounds |
-| StateError | 2000 | 2001–2008 | Lifecycle, mutation, stale handles |
+| StateError | 2000 | 2001–2013 | Lifecycle, iteration, mailboxes, detected deadlocks |
 | IOError | 3000 | 3001–3008 | Filesystem, EOF, broken pipes |
 | NetworkError : IOError | 4000 | 4001–4008 | DNS, connections, TLS, protocols |
 | TimingError | 5000 | 5001–5008 | Timeouts, backpressure, retries |
-| DataError | 6000 | 6001–6008 | Parse, encode/decode, schemas |
+| DataError | 6000 | 6001–6011 | Parse, map keys, formatting, schemas |
 | SecurityError | 7000 | 7001–7008 | Authentication, capabilities, integrity |
-| OperationError | 8000 | 8001–8008 | Numeric, unsupported, version, dependency |
+| OperationError | 8000 | 8001–8010 | Numeric, unsupported, bounded resource admission |
 
 `FileSystemError` has code 3090 and parents the first six `IOError` leaves. `EndOfFileError` and `BrokenPipeError` are direct `IOError` children.
 
@@ -85,6 +85,37 @@ direct `interfaces`, and the versioned interface parent/method contracts.
 Codes are guaranteed unique **only inside the versioned core catalog**:
 third-party error subtypes require their own application-domain code registry.
 Do not use codes for secure type identity or exception catch admission.
+
+## Cross-language extension: ten concrete errors
+
+The catalog now has 74 concrete leaf classes and 10 abstract classes (84 classes total).
+The original 74 classes, their names, parents, codes, abstract flags and interface memberships are unchanged.
+
+| Name | Parent | Code | Intended meaning |
+| --- | --- | ---: | --- |
+| KeyNotFoundError | DataError | 6009 | Required lookup of absent map key; optional lookup stays Option.None |
+| DuplicateKeyError | DataError | 6010 | Uniqueness-enforcing insert rejects existing key; ordinary overwrite succeeds |
+| InvalidFormatError | DataError | 6011 | Invalid formatting specifier/template, distinct from ParseError |
+| EmptyCollectionError | StateError | 2009 | Remove from empty collection, distinct from index bounds |
+| IteratorExhaustedError | StateError | 2010 | Advance exhausted iterator; normal exhaustion stays Option.None |
+| DeadlockDetectedError | StateError | 2011 | Proven recoverable deadlock detection; not a timeout or cancellation |
+| ProcessNotFoundError | StateError | 2012 | Explicit process/actor address lookup fails; not actor supervisor panic |
+| MailboxFullError | StateError | 2013 | Nonblocking actor send admission reports bounded capacity full |
+| NotImplementedError | OperationError | 8009 | Explicit placeholder operation, not missing abstract overrides or backend IR |
+| ResourceExhaustedError | OperationError | 8010 | Recoverable quota/admission failure, never fatal OOM or sandbox termination |
+
+Semantics and exclusions:
+
+- KeyNotFoundError is for required lookup, while a normal optional lookup returns Option.None; DuplicateKeyError does not describe an ordinary overwriting map update.
+- IteratorExhaustedError is not the ordinary end of an iterator. EmptyCollectionError denotes empty-container removal. Neither should make normal iteration exceptional.
+- InvalidFormatError concerns a formatting specification; ParseError concerns malformed external data. No new parser effect is admitted implicitly.
+- DeadlockDetectedError requires concrete detection, not a timeout guess. ProcessNotFoundError applies to an explicit lookup and not an actor supervisor notice.
+- MailboxFullError is an explicit nonblocking-send admission outcome and can be carried in Result.Err; the presence of a type alone does not make mailbox send throw.
+- NotImplementedError must never replace compiler failures for missing abstract methods or unsupported backend lowering.
+- ResourceExhaustedError is for recoverable guest quota/admission outcomes only; host-fatal OOM, sandbox kills, forced termination and cancellation do not become ordinary errors.
+- None of these new classes implements RetryAdvisory. PatternMatchFail/badmatch remain compile-time exhaustiveness failures under the Oreslang matching contract wherever proof is required.
+
+References: .NET KeyNotFoundException, FormatException and NotImplementedException; Java/Kotlin NoSuchElementException; Haskell Control.Exception; Erlang maps and process errors.
 
 ## Pattern-matching hardening
 

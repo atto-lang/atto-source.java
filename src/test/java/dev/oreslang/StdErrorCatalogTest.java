@@ -62,7 +62,7 @@ final class StdErrorCatalogTest {
             assertNull(parsed.put(name, new Entry(parent, code, abstractClass, iface)), name);
             assertTrue(codes.add(code), "duplicate error code " + code);
         }
-        assertEquals(74, parsed.size(), "every catalog type must have an executable Oreslang code method");
+        assertEquals(84, parsed.size(), "every catalog type must have an executable Oreslang code method");
         assertEquals(new Entry(null, 0, true, "CodedError"), parsed.get("Error"));
         assertEquals(new Entry("IOError", 3090, true, null), parsed.get("FileSystemError"));
         assertEquals(new Entry("IOError", 4000, true, null), parsed.get("NetworkError"));
@@ -71,7 +71,7 @@ final class StdErrorCatalogTest {
         long leaves = parsed.keySet().stream().filter(name ->
                 parsed.keySet().stream().noneMatch(child -> name.equals(parsed.get(child).parent()))
                 ).count();
-        assertEquals(64, leaves);
+        assertEquals(74, leaves);
         for (String name : parsed.keySet()) {
             Set<String> visited = new HashSet<>();
             String current = name;
@@ -99,6 +99,25 @@ final class StdErrorCatalogTest {
                             Boolean.parseBoolean(catalog.group(4)), iface)));
         }
         assertEquals(parsed, expected, "manifest/source drift or malformed catalog record");
+        // Lock down established core error identities while extending the catalog.
+        assertEquals(1006, parsed.get("CastError").code());
+        assertEquals(2008, parsed.get("StaleHandleError").code());
+        assertEquals(3001, parsed.get("FileNotFoundError").code());
+        assertEquals(4002, parsed.get("ConnectionRefusedError").code());
+        assertEquals(5001, parsed.get("TimeoutError").code());
+        assertEquals(6008, parsed.get("SchemaMismatchError").code());
+        assertEquals(7004, parsed.get("CapabilityDeniedError").code());
+        assertEquals(8008, parsed.get("DependencyFailureError").code());
+        assertEquals(new Entry("DataError", 6009, false, null), parsed.get("KeyNotFoundError"));
+        assertEquals(new Entry("DataError", 6010, false, null), parsed.get("DuplicateKeyError"));
+        assertEquals(new Entry("DataError", 6011, false, null), parsed.get("InvalidFormatError"));
+        assertEquals(new Entry("StateError", 2009, false, null), parsed.get("EmptyCollectionError"));
+        assertEquals(new Entry("StateError", 2010, false, null), parsed.get("IteratorExhaustedError"));
+        assertEquals(new Entry("StateError", 2011, false, null), parsed.get("DeadlockDetectedError"));
+        assertEquals(new Entry("StateError", 2012, false, null), parsed.get("ProcessNotFoundError"));
+        assertEquals(new Entry("StateError", 2013, false, null), parsed.get("MailboxFullError"));
+        assertEquals(new Entry("OperationError", 8009, false, null), parsed.get("NotImplementedError"));
+        assertEquals(new Entry("OperationError", 8010, false, null), parsed.get("ResourceExhaustedError"));
         assertThrows(IllegalArgumentException.class, () -> CoreLibrarySources.source("std/error/../core"));
         assertThrows(IllegalArgumentException.class, () -> CoreLibrarySources.source("std/unknown-error"));
     }
@@ -173,6 +192,69 @@ final class StdErrorCatalogTest {
                 ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
                 new ByteArrayOutputStream());
         assertEquals("3001|4002|1001|-30|5001|5006|4003|-1", out.toString(StandardCharsets.UTF_8));
+    }
+
+
+    @Test
+    void expandedCoreErrorsImportAndMatchUsingNominalParents() throws Exception {
+        Path entry = temp.resolve("expanded-errors.ores");
+        Files.writeString(entry, """
+                import class Error from "std/error";
+                import class KeyNotFoundError from "std/error";
+                import class DuplicateKeyError from "std/error";
+                import class InvalidFormatError from "std/error";
+                import class EmptyCollectionError from "std/error";
+                import class IteratorExhaustedError from "std/error";
+                import class DeadlockDetectedError from "std/error";
+                import class ProcessNotFoundError from "std/error";
+                import class MailboxFullError from "std/error";
+                import class NotImplementedError from "std/error";
+                import class ResourceExhaustedError from "std/error";
+
+                fnc classify(Error error): int {
+                  match error over
+                    on KeyNotFoundError e -> { return e.code(); }
+                    on DuplicateKeyError e -> { return e.code(); }
+                    on InvalidFormatError e -> { return e.code(); }
+                    on EmptyCollectionError e -> { return e.code(); }
+                    on IteratorExhaustedError e -> { return e.code(); }
+                    on DeadlockDetectedError e -> { return e.code(); }
+                    on ProcessNotFoundError e -> { return e.code(); }
+                    on MailboxFullError e -> { return e.code(); }
+                    on NotImplementedError e -> { return e.code(); }
+                    on ResourceExhaustedError e -> { return e.code(); }
+                    on Error other -> { return -1; }
+                  end
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(classify(new KeyNotFoundError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new DuplicateKeyError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new InvalidFormatError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new EmptyCollectionError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new IteratorExhaustedError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new DeadlockDetectedError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ProcessNotFoundError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new MailboxFullError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new NotImplementedError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ResourceExhaustedError()));
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
+                new ByteArrayOutputStream());
+        assertEquals("6009|6010|6011|2009|2010|2011|2012|2013|8009|8010", out.toString(StandardCharsets.UTF_8));
     }
 
     @Test
