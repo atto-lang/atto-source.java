@@ -38,6 +38,16 @@ class StrictAotJsonTest(unittest.TestCase):
             with self.subTest(size=len(source)), self.assertRaises(ValueError):
                 decode(source)
 
+    def test_invalid_raw_unicode_and_deep_json_fail_as_value_errors(self):
+        # Some callers provide already-decoded text, not JSON escape tokens.
+        # Encoding and parser recursion must fail with the same admission
+        # error category as ordinary malformed JSON.
+        raw_surrogate = '{"name":"' + chr(0xD800) + '"}'
+        pathological_depth = "[" * 1600 + "0" + "]" * 1600
+        for source in (raw_surrogate, pathological_depth):
+            with self.subTest(size=len(source)), self.assertRaises(ValueError):
+                decode(source)
+
     def test_rejects_trailing_json(self):
         with self.assertRaises(ValueError):
             decode('{"ok":true}{"unsafe":true}')
