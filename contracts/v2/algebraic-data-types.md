@@ -190,6 +190,12 @@ range (absolute value greater than 2^53) cannot prove disjointness.
 Opaque, imprecise, or overlapping cases fail closed; use `match ... over`
 when precedence is intentional.
 
+Enum wire tags are positive signed 32-bit values, including INT32_MAX.
+A final variant tagged INT32_MAX may have an optional trailing comma or
+semicolon; introducing any further variant is invalid because no larger
+wire tag exists. The parser must examine the next case after consuming an
+optional separator, not reject the separator itself.
+
 Both parser and type checker limit match bodies to 4096 arms. Parser-side
 admission prevents oversized source programs from forcing AST allocation
 before the semantic pass. The Java suspendable matcher uses an iterative scan
