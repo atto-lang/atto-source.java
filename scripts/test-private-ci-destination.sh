@@ -6,6 +6,7 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/fixture/scripts" "$work/fixture/.github"
 cp "$original_script_dir/check-private-ci-destination.sh" "$work/fixture/scripts/"
 cp "$original_script_dir/run-in-private-ci-destination.sh" "$work/fixture/scripts/"
+cp "$original_script_dir/publish-private-ci-source.py" "$work/fixture/scripts/"
 script_dir="$work/fixture/scripts"
 policy="$work/fixture/.github/private-ci-approved-repositories.txt"
 printf '# Approved for this isolated test only\ntrusted/ci\n' > "$policy"
