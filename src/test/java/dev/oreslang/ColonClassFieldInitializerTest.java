@@ -228,4 +228,32 @@ final class ColonClassFieldInitializerTest {
         assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(ambiguous)));
     }
+
+    @Test
+    void finalReferentMutabilityIsIndependentFromSlotReassignment() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  final mut Array<int> items: [1, 2]
+                  modify(mut self)(): void {
+                    self.items[0] = 9;
+                  }
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  final Array<int> items: [1, 2]
+                  modify(mut self)(): void {
+                    self.items[0] = 9;
+                  }
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  final mut Array<int> items: [1, 2]
+                  modify(mut self)(): void {
+                    self.items = [9];
+                  }
+                end
+                """)));
+    }
 }
