@@ -5189,9 +5189,14 @@ public final class TypeChecker {
     }
 
     private boolean runtimeRecordShapeCovered(Record source, Record target) {
+        return runtimeRecordShapeCovered(source, target, 0);
+    }
+
+    private boolean runtimeRecordShapeCovered(Record source, Record target, int depth) {
+        if (depth >= 32) return false;
         for (Map.Entry<String, Type> required : target.members().entrySet()) {
             Type actual = source.members().get(required.getKey());
-            if (actual == null || !runtimeValueTypeCovered(actual, required.getValue())) {
+            if (actual == null || !runtimeValueTypeCovered(actual, required.getValue(), depth + 1)) {
                 return false;
             }
         }
@@ -5205,14 +5210,15 @@ public final class TypeChecker {
      * require a fallback unless a future verified runtime descriptor proves
      * otherwise.
      */
-    private boolean runtimeValueTypeCovered(Type source, Type target) {
+    private boolean runtimeValueTypeCovered(Type source, Type target, int depth) {
+        if (depth >= 32) return false;
         if (source == Unknown.INSTANCE || target == Unknown.INSTANCE
                 || source instanceof Generic || target instanceof Generic) return false;
         if (source instanceof Union union) {
-            return union.options().stream().allMatch(option -> runtimeValueTypeCovered(option, target));
+            return union.options().stream().allMatch(option -> runtimeValueTypeCovered(option, target, depth + 1));
         }
         if (target instanceof Union union) {
-            return union.options().stream().anyMatch(option -> runtimeValueTypeCovered(source, option));
+            return union.options().stream().anyMatch(option -> runtimeValueTypeCovered(source, option, depth + 1));
         }
         if (source instanceof Primitive left && target instanceof Primitive right) {
             if (left == Primitive.VOID || left == Primitive.NULL
@@ -5223,13 +5229,13 @@ public final class TypeChecker {
         }
         if (source instanceof StringLiteral && target == Primitive.STRING) return true;
         if (source instanceof Record left && target instanceof Record right) {
-            return runtimeRecordShapeCovered(left, right);
+            return runtimeRecordShapeCovered(left, right, depth + 1);
         }
         if (source instanceof Tuple left && target instanceof Tuple right) {
             if (left.kind() != TupleKind.TUPLE || right.kind() != TupleKind.TUPLE
                     || left.elements().size() != right.elements().size()) return false;
             for (int i = 0; i < left.elements().size(); i++) {
-                if (!runtimeValueTypeCovered(left.elements().get(i), right.elements().get(i))) {
+                if (!runtimeValueTypeCovered(left.elements().get(i), right.elements().get(i), depth + 1)) {
                     return false;
                 }
             }
