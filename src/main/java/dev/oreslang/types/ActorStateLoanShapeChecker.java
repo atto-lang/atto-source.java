@@ -36,6 +36,13 @@ public final class ActorStateLoanShapeChecker {
             if (fields.putIfAbsent(field.name(), field.type()) != null) {
                 throw invalid("duplicate sealed actor state field: " + field.name());
             }
+            if (field.initializer() == null) {
+                throw invalid("sealed actor state field requires initialization: " + field.name());
+            }
+            // The first scalar-only proof cannot inherit a closure, actor
+            // message, native call, reference or other effect from actor
+            // construction. There is no callback state loan at this point.
+            validateValue(field.initializer(), "", Map.of());
         }
         String loan = access.callback().parameters().getFirst().name();
         Ast.LambdaExpr callback = access.callback();
