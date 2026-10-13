@@ -4075,16 +4075,62 @@ public final class ActorRuntime implements AutoCloseable {
                                     "cannot spawn a child from a stopping or force-fenced actor "
                                             + parent.ref.id());
                         }
-                        parent.children.add(cell);
-                        linkedToParent = true;
-                        actors.put(id, cell);
+                        // A nested spawn inherits its parent's structured
+                        // lifecycle group. The spawn lineage is not a new
+                        // supervisor or a new group. Event-bus membership
+                        // remains opt-in and is never inherited here.
+                        ActorGroupId inheritedId = parent.managedByGroup.get();
+                        ActorGroup inherited = inheritedId == null
+                                ? null : actorGroups.get(inheritedId);
+                        if (inheritedId != null && inherited == null) {
+                            throw new IllegalStateException(
+                                    "parent's lifecycle ActorGroup no longer exists");
+                        }
+                        if (inherited != null) {
+                            // Publish ownership, lineage and actor identity
+                            // atomically against group close/worker transfer.
+                            synchronized (inherited.authorityLock) {
+                                inherited.requireOpen();
+                                if (!inheritedId.equals(parent.managedByGroup.get())) {
+                                    throw new IllegalStateException(
+                                            "parent's lifecycle ActorGroup changed during spawn");
+                                }
+                                if (inherited.managedWorkers.size() >= inherited.memberLimit) {
+                                    throw new IllegalStateException(
+                                            "ActorGroup managed worker limit exceeded: maximum "
+                                                    + inherited.memberLimit);
+                                }
+                                cell.managedByGroup.set(inheritedId);
+                                inherited.managedWorkers.put(id, ref);
+                                parent.children.add(cell);
+                                linkedToParent = true;
+                                actors.put(id, cell);
+                            }
+                        } else {
+                            parent.children.add(cell);
+                            linkedToParent = true;
+                            actors.put(id, cell);
+                        }
                     }
                 } else {
                     actors.put(id, cell);
                 }
                 return ref;
             } catch (RuntimeException | Error failure) {
+                // Roll back every registry when spawn admission fails. In
+                // particular, never strand an inherited group ownership ref.
+                if (cell != null) actors.remove(cell.ref.id(), cell);
                 if (linkedToParent && cell != null) parent.children.remove(cell);
+                if (cell != null) {
+                    ActorGroupId inheritedId = cell.managedByGroup.get();
+                    ActorGroup inherited = inheritedId == null
+                            ? null : actorGroups.get(inheritedId);
+                    if (inherited != null) {
+                        synchronized (inherited.authorityLock) {
+                            inherited.managedWorkers.remove(cell.ref.id(), cell.ref);
+                        }
+                    }
+                }
                 actorCount.decrementAndGet();
                 throw failure;
             }
