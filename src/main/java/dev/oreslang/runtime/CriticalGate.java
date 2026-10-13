@@ -21,13 +21,18 @@ public final class CriticalGate {
     private static final Object COORDINATOR = new Object();
     private static final IdentityHashMap<Object, CriticalGate> WAITING_ON =
             new IdentityHashMap<>();
+    public enum Mode { READ, WRITE }
+    public static final int MAX_ACTIVE_READERS = MAX_WAITERS;
     private final ArrayDeque<Ticket> waiters = new ArrayDeque<>();
+    private final IdentityHashMap<Ticket, Boolean> readers = new IdentityHashMap<>();
     private Ticket owner;
+    private boolean domainClosed;
 
     public final class Ticket implements AutoCloseable {
         // Cancellation of a pending admission retracts its queue slot. A granted
         // admission is already settled and therefore cannot be cancelled.
         private final OresFuture<Void> admitted = new OresFuture<>(this::close);
+        private final Mode mode;
         private boolean requested;
         private boolean granted;
         private boolean closed;
@@ -37,7 +42,8 @@ public final class CriticalGate {
         // Per-ticket signaling avoids waking every queued host thread.
         private java.util.concurrent.CountDownLatch synchronousWaiter;
 
-        private Ticket() { }
+        private Ticket(Mode mode) { this.mode = Objects.requireNonNull(mode, "mode"); }
+        public Mode mode() { return mode; }
 
         /**
          * Nonblocking admission. Each scheduler task has a stable logical id
@@ -54,7 +60,7 @@ public final class CriticalGate {
             if (domain == null) domain = synchronous ? Thread.currentThread() : this;
             boolean completeNow = false;
             synchronized (COORDINATOR) {
-                if (closed || requested) {
+                if (closed || requested || domainClosed) {
                     throw new IllegalStateException("critical ticket already used or released");
                 }
                 requested = true;
@@ -209,14 +215,24 @@ public final class CriticalGate {
         return false;
     }
 
-    public Ticket newTicket() { return new Ticket(); }
+    public Ticket newTicket() { return newTicket(Mode.WRITE); }
+    public Ticket newTicket(Mode mode) {
+        synchronized (COORDINATOR) {
+            if (domainClosed) throw new IllegalStateException("critical gate closed");
+        }
+        return new Ticket(mode);
+    }
+
+    public int activeReaderCount() {
+        synchronized (COORDINATOR) { return readers.size(); }
+    }
 
     public int queuedCount() {
         synchronized (COORDINATOR) { return waiters.size(); }
     }
 
     public boolean held() {
-        synchronized (COORDINATOR) { return owner != null; }
+        synchronized (COORDINATOR) { return owner != null || !readers.isEmpty(); }
     }
 
     /** Runtime diagnostic; identifies queued logical invocations, not threads. */
