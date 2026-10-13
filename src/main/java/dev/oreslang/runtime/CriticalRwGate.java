@@ -104,7 +104,13 @@ public final class CriticalRwGate implements AutoCloseable {
             try {
                 OresFuture<Void> readiness = underlying.enterAsync();
                 readiness.whenCompleteRuntime((value, failure) -> {
-                    if (failure != null) unregisterOwner();
+                    // An admission denial/cancellation is terminal for the
+                    // wrapper, not merely its logical owner registration.
+                    // Without close(), failed waiters remain strongly held by
+                    // the facade's tracking set until whole-domain shutdown.
+                    // A successfully granted Future cannot later fail, so
+                    // this never revokes a live successful grant.
+                    if (failure != null) close();
                 });
                 return readiness;
             } catch (RuntimeException | Error failure) {
