@@ -40,6 +40,35 @@ final class SymbolMapGuestTest {
     }
 
     @Test
+    void symbolFactoryAndLiteralHaveTheSameLogicalKeyInGuest() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  let a: Symbol = #ready;
+                  let b: Symbol = Symbol.process("ready");
+                  let c: Symbol = #'ready foo';
+                  let d: Symbol = #"ready foo";
+                  let m: Map<Symbol, int> = new Map<Symbol, int>();
+                  m[c] = 7;
+                  if a == b && c == d then
+                    stdio.stdout.write(m[d]);
+                  else
+                    stdio.stdout.write("wrong");
+                  fi
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "symbol-equivalence.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("7", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void guestStringAndSymbolKeysRequireExplicitUnionMap() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
                 fnc accept(): void {
