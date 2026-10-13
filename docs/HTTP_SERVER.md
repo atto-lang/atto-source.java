@@ -128,3 +128,35 @@ The planned native socket and request-scoped endpoint transfer paths, including
 serialized-only untrusted handlers, are described in
 [Actor physical boundaries](runtime/actor-physical-boundaries.md). The standalone
 native transfer tests do not change the JDK transport ownership model above.
+
+## Reusable request actors
+
+`http.handler("Worker").pooled(size)` registers a supervisor-owned lazy pool
+of 1..4096 workers. Register this handler with Spin as usual. Both shared and
+isolated source actors are supported; untrusted actors remain disallowed.
+A worker receives each request token through its existing bounded mailbox and
+calls `http.claim`. Return from `receive` after awaiting the response; **do not
+call `self.end()`** after each request. Actor fields persist across requests;
+request-local data should remain local to the receive callback.
+
+Each exchange still gets its own ownership generation and single-use token.
+Closing its response revokes its capability, removes it from the worker's active
+request set, releases HTTP admission, and settles `completion`. For pooled
+handlers, completion means transport/exchange completion, not worker termination
+or the end of any application code after `respond`. Later mailbox deliveries
+remain serialized across `await` by the existing source receive gate.
+
+Workers are selected round-robin. Pool size controls reusable actor count, not
+HTTP admission, mailbox capacity, or scheduler threads. A full mailbox rejects
+dispatch with 500 in this initial API; no hidden retry is performed. HTTP admission
+exhaustion remains 503. Set explicit ingress limits so accepted work fits bounded
+mailboxes. A request timeout/abort cancels its worker and fails other pending
+requests assigned to that worker; a later dispatch replaces a fully terminated
+worker. Failed dispatch does not cancel otherwise healthy workers. Completed
+requests do not accumulate actor-termination subscriptions.
+
+`handler.created` counts worker creations and `handler.reused` counts selections
+of existing workers; they are supervisor-only diagnostics, not successful-request
+counters. Pools live until their HTTP runtime/context closes; server shutdown
+still drains request exchanges, and context shutdown cancels idle pool workers.
+The existing unpooled API keeps its actor-per-request/self.end lifecycle.
