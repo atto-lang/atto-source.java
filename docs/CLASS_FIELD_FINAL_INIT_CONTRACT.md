@@ -57,3 +57,23 @@ Java parser recognizes the four typed class member declaration forms and
 rejects a missing initializer for explicitly spelled `final`. Constructor
 parameter initializers, fully strict alias treatment and constructor-body
 final-assignment removal remain unresolved.
+
+## Current Java implementation status (October 2026)
+
+Java now type-checks class field initializer access to explicit constructor
+parameters for a limited value-scalar subset: int, bool, float, string.
+Reference, borrowed, generic, and structural parameters and the implicit
+arguments tuple are not available to field initialization until the
+ownership checker proves safe transfer. Parent initializers do not inherit
+child constructor parameters. The runtime binds permitted values before
+declaration-site initialization and executes the constructor body afterward.
+
+The final and const aliases require declaration-site initialization.
+Positional fallback construction cannot replace initialized fixed members;
+the generic-inference and runtime paths enforce the same rule. Initialized
+fixed members cannot be rewritten during construction.
+
+Legacy uninitialized val constructor filling and some positional field
+construction remain as explicit migration compatibility. Native LLVM does
+not yet support constructor-parameter initializers. Real Maven, AOT/hybrid,
+LLVM, sanitizer, and formatter results are still required before merging.
