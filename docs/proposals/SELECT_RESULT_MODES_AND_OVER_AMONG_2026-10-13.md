@@ -92,6 +92,17 @@ pub fnc process(Channel[int] commands): int {
 
 As with current static select, a default branch means that if no selectable is ready at the atomic decision point, the default wins rather than installing waiters. A blocking select without default may suspend until readiness, cancellation or another terminal condition. A nonblocking select is *asynchronous*, not the same as an immediate try select probe. The separate try select / select from cases APIs require their own typed migration plan; this proposal does not redefine them.
 
+## Explicit return: control-flow hardening
+
+A value-producing select creates a **lexically scoped result-return target** for its arm bodies. A `return expr;` executed directly in that arm (or in a nested ordinary control-flow block belonging to the arm) exits the **selected arm**, not the enclosing function. The target is the innermost applicable value-producing expression arm. This rule must be consistent with value-producing match/switch and must not be implemented by a runtime exception that accidentally crosses asynchronous boundaries.
+
+- `return;` is invalid in a value arm. `return expr;` is mandatory on every reachable normal-completion path, including paths through `if`, `match`, and `switch`. A path that only throws/raises/panics is not a normal completion path and does not need to manufacture a value.
+- A nested `do match`, `do switch`, or `do select` inside a value arm introduces **no new value-return target**. Its `return` retains the procedural construct's function-return meaning; compiler control-flow analysis must reject unsafe crossing of a deferred `nb select` continuation. A nested value-producing `match`/`switch`/`select` introduces its **own** result target, so its `return` does not satisfy the outer select arm unless the outer arm explicitly returns that nested expression.
+- Named function and lambda bodies create their own return scope. A `return` inside a lambda invoked by an arm returns from the lambda, not the select. Neither capture nor inline expansion may retarget it.
+- After a value-arm return, the select result is available at the expression join; an arm cannot continue to execute later statements. For `nb select`, the result completes its Future after successful arm execution. Arm failure or cancellation settles the Future through the error/cancellation channel instead of fabricating a value.
+- The result type is determined statically from all reachable arm-local returns. Incompatible returns fail compilation; `Never`/nonreturning paths do not force an `Any` join. A default arm is subject to the same return analysis.
+- The syntax `return select over ... end;` is unambiguous: inner arm returns feed the select expression, then the **outer** return exits the function. A `do select` arm return still exits the function and does not yield a select value.
+
 ## Concurrency, liveness and ownership
 
 - Registration/arbitration must atomically claim **one** winning event; losing channel reads must not consume data, losing writes must not send, losing Future/Observable listeners must be unregistered. Handle readiness-cancellation races without duplicate resolution.
@@ -130,7 +141,7 @@ There should be one shared arm parser and one winner-selection runtime; syntax a
 
 Positive parse/type/runtime tests for all **nine** spellings (three result modes × three delimiters), policy combinations, nested end-delimited matches/selects, immediate readiness vs future readiness, and mixed Channel/Future/Selectable arms. Test nested typed destructuring and typed-arrow binding where those features are compiled.
 
-Negative tests: bare trailing expressions instead of explicit returns; return without value in value mode; non-exhaustive value-return paths within arms; empty arm set; mixed/missing terminators; duplicate defaults; value arms without values; mismatched branch types; do select used as a value; return inside nb/value arm; detached captures of forbidden loans; unsupported selectable operations; cancellation vs wakeup races; malformed await/readch precedence; duplicate firing; actor STOP while armed; attempts to write into full user mailboxes that consume reserved control headroom.
+Negative tests: bare trailing expressions instead of explicit returns; return without value in value mode; non-exhaustive value-return paths within arms; empty arm set; mixed/missing terminators; duplicate defaults; value arms without values; mismatched branch types; do select used as a value; attempted outer-function return from nb/value arm; detached captures of forbidden loans; unsupported selectable operations; cancellation vs wakeup races; malformed await/readch precedence; duplicate firing; actor STOP while armed; attempts to write into full user mailboxes that consume reserved control headroom.
 
 Formatting tests: among -> over canonicalization, idempotence, comments/strings containing 'over', contextual identifiers named among/over, policy spelling, and fully nested arm braces. Differential parity gates: Java/GraalVM interpreter; Java AOT/hybrid; LLVM compiled guest; cross-backend conformance. No merge based only on parser acceptance or documentation.
 
