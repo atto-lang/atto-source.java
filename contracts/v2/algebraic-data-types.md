@@ -88,12 +88,15 @@ disjointness from identical/overlapping structural shapes.
 6. Guards cannot be counted as unconditional coverage. An unguarded
    wildcard/binding is a complete fallback. Dead arms following a
    subsuming unguarded arm must be rejected.
-7. Proof failures must fail closed. A future decision matrix should
-   prove *combined* partial coverage, e.g. `Some(true)`,
-   `Some(false)`, `None` for `Option<bool>`, and tuple cross-products.
-   The current Java implementation conservatively accepts full
-   payload catch-alls and rejects unresolved combined partial proofs;
-   it must never accept a partial proof as exhaustive.
+7. Proof failures must fail closed. Java now admits *combined*
+   partial coverage when it can enumerate the complete finite domain
+   (maximum 4096 inhabitants; recursion depth capped at 16). Examples:
+   `Some(true)`, `Some(false)`, `None` for `Option<bool>`, boolean
+   tuple cross-products, and finite enum payloads. It rejects arms
+   collectively made unreachable by earlier unconditional arms.
+   Infinite, oversized, opaque and unresolved domains use a
+   conservative constructor/payload check instead. These checks
+   are not yet a general symbolic decision-matrix solver.
 8. Enum growth changes the resolved domain of `...Enum`; downstream
    exhaustive match compilation must be invalidated. Wire schema
    compatibility and deployed sender/receiver negotiation are
