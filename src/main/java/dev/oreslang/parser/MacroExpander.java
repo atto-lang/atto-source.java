@@ -250,6 +250,11 @@ public final class MacroExpander {
     }
 
     private static void validateTemplate(List<Token> template, List<Parameter> params) {
+        if (template.isEmpty()) {
+            // Empty replacement is never an expression, and an unused capture
+            // must not trigger List.getFirst() / NoSuchElementException.
+            throw new IllegalArgumentException("macro expression template must not be empty");
+        }
         Map<String, Integer> useCounts = new LinkedHashMap<>();
         params.forEach(param -> useCounts.put(param.name, 0));
         for (int i = 0; i < template.size(); i++) {
