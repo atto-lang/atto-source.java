@@ -166,7 +166,8 @@ public final class OresEvalRootNode extends RootNode {
         // code never implies shared mutable scheduler state.
         private final IdentityHashMap<Ast.SelectStmt, AtomicLong> rootStaticSelectCursors =
                 new IdentityHashMap<>();
-        private StartupPhase startupPhase = StartupPhase.CREATED;
+        // Published across host invocations: linked is not yet initialized.
+        private volatile StartupPhase startupPhase = StartupPhase.CREATED;
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
@@ -750,6 +751,14 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invokePublic(String name, Object[] arguments) {
+            // The Java/Ores bridge is only exposed after the complete graph's
+            // initialization barrier. A host must not bypass it by invoking a
+            // linked (or failed) unit before it becomes READY.
+            if (startupPhase != StartupPhase.READY) {
+                throw new IllegalStateException(
+                        "public invocation cannot run before successful initialization of code unit "
+                                + codeUnitId + "; current phase=" + startupPhase);
+            }
             Ast.FunctionDecl fn = findFunction(name, arguments.length);
             if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
