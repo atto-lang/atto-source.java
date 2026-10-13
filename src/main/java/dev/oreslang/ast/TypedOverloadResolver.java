@@ -29,6 +29,7 @@ public final class TypedOverloadResolver {
             Objects.requireNonNull(kind, "kind");
             Objects.requireNonNull(identity, "identity");
             if (identity.isBlank()) throw new IllegalArgumentException("blank overload type identity");
+            requireValidUtf16(identity);
             if (kind == Kind.PRIMITIVE && !PRIMITIVES.contains(identity)) {
                 throw new IllegalArgumentException("unsupported overload primitive: " + identity);
             }
@@ -111,6 +112,7 @@ public final class TypedOverloadResolver {
             Objects.requireNonNull(qualifiedName, "qualifiedName");
             Objects.requireNonNull(parameters, "parameters");
             if (qualifiedName.isBlank()) throw new IllegalArgumentException("missing callable name");
+            requireValidUtf16(qualifiedName);
             parameters = List.copyOf(parameters);
             if (parameters.stream().anyMatch(t -> t.kind() == Kind.DYNAMIC)) {
                 throw new IllegalArgumentException(
@@ -143,16 +145,25 @@ public final class TypedOverloadResolver {
          * Class generic parameters require substitution before using this.
          */
         public static Signature ofMethod(
-                String qualifiedOwner, Ast.MethodDecl method,
+                String module, Ast.ClassDecl declaringClass, Ast.MethodDecl method,
                 Map<String, String> resolvedEnums) {
-            Objects.requireNonNull(qualifiedOwner, "qualifiedOwner");
+            Objects.requireNonNull(module, "module");
+            Objects.requireNonNull(declaringClass, "declaringClass");
             Objects.requireNonNull(method, "method");
-            if (qualifiedOwner.isBlank() || !method.genericParameters().isEmpty()) {
+            if (module.isBlank() || !declaringClass.genericParameters().isEmpty()
+                    || !method.genericParameters().isEmpty()) {
                 throw new IllegalArgumentException(
-                        "unresolved generic method is not an overload discriminator");
+                        "unresolved generic class/method cannot supply a typed overload ABI key");
+            }
+            // A call site may dispatch through a subclass, but an overload
+            // symbol belongs to the actual declaring class. Never let a
+            // caller spoof an owner's slot using a method from elsewhere.
+            if (declaringClass.methods().stream().noneMatch(slot -> slot == method)) {
+                throw new IllegalArgumentException(
+                        "method does not belong to the supplied declaring class");
             }
             return new Signature(method.isStatic() ? Domain.STATIC : Domain.INSTANCE,
-                    qualifiedOwner + "." + method.name(),
+                    module + "." + declaringClass.name() + "." + method.name(),
                     method.parameters().stream()
                             .map(p -> TypeKey.fromSource(p.type(), resolvedEnums))
                             .toList());
@@ -257,11 +268,32 @@ public final class TypedOverloadResolver {
             if (!dominated) best.add(eligible.get(i));
         }
         if (best.size() != 1) {
+            // Stable diagnostics regardless of declaration/import iteration
+            // order (HashMap/vtable order must never leak into error output).
+            List<String> alternatives = best.stream()
+                    .map(x -> x.signature().toString())
+                    .sorted().toList();
             throw new IllegalArgumentException("ambiguous overload of " + qualifiedName
-                    + " for " + arguments + ": "
-                    + best.stream().map(x -> x.signature().toString()).toList());
+                    + " for " + arguments + ": " + alternatives);
         }
         return best.getFirst();
+    }
+
+    /** Reject malformed UTF-16 rather than silently replacing its code units
+     * with identical '?' bytes while generating a supposed injective ABI key. */
+    private static void requireValidUtf16(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char current = value.charAt(i);
+            if (Character.isHighSurrogate(current)) {
+                if (i + 1 >= value.length()
+                        || !Character.isLowSurrogate(value.charAt(i + 1))) {
+                    throw new IllegalArgumentException("unpaired UTF-16 surrogate in overload identity");
+                }
+                i++;
+            } else if (Character.isLowSurrogate(current)) {
+                throw new IllegalArgumentException("unpaired UTF-16 surrogate in overload identity");
+            }
+        }
     }
 
     private static boolean dominates(int[] a, int[] b) {
