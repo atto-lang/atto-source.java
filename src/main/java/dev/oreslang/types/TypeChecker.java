@@ -168,7 +168,7 @@ public final class TypeChecker {
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
-                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
+                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -1818,6 +1818,15 @@ public final class TypeChecker {
             if (value instanceof Double) return Primitive.FLOAT;
             if (value instanceof Boolean) return Primitive.BOOL;
             if (value instanceof String s) return new StringLiteral(s);
+            if (value instanceof dev.oreslang.runtime.OresSymbol symbol) {
+                // Userland identities need tenant-scoped exports before an untrusted
+                // actor may compile a reference to them. Never silently intern them.
+                if (currentActorKind == Ast.ActorKind.UNTRUSTED
+                        && !symbol.publicToUntrustedCoreV1()) {
+                    throw new SecurityException("Symbol is not exported to untrusted actor");
+                }
+                return new Named("$builtin$Symbol", List.of());
+            }
             if (value instanceof Ast.Imaginary) return Primitive.COMPLEX;
             return Unknown.INSTANCE;
         }
@@ -3228,6 +3237,11 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            // Guest Symbols are immutable keys, not fresh reference capabilities.
+            // Do not silently reinterpret the historical STABLE constructor.
+            if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
+                throw new IllegalArgumentException("new Symbol(...) is not supported; use #name or Symbol.stable(uuid)");
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
                         "DynamicStruct has been removed; use infer struct{...}, "
@@ -7170,6 +7184,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Symbol" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Symbol does not accept type arguments");
+                }
+                yield new Named("$builtin$Symbol", List.of());
+            }
             case "void" -> Primitive.VOID;
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
