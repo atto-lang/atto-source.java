@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from pathlib import Path
 from jsonschema import Draft202012Validator
 
@@ -23,9 +24,40 @@ def reject_non_json_constant(value):
     raise ValueError("non-JSON numeric literal in AOT manifest: " + value)
 
 
+MAX_MANIFEST_BYTES = 64 * 1024
+MAX_MANIFEST_DEPTH = 64
+
+
+def reject_noncanonical_value(root):
+    """Reject values that cannot be represented as interoperable signed JSON."""
+    stack = [(root, 0)]
+    while stack:
+        value, depth = stack.pop()
+        if depth > MAX_MANIFEST_DEPTH:
+            raise ValueError("AOT manifest nesting depth exceeded")
+        if isinstance(value, str):
+            if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+                raise ValueError("unpaired Unicode surrogate in AOT manifest")
+        elif isinstance(value, float):
+            # JSON 1e10000 is a legal numeric token but Python turns it into
+            # Infinity. It cannot be signed as a finite RFC 8785 JSON number.
+            if not math.isfinite(value):
+                raise ValueError("nonfinite JSON number in AOT manifest")
+        elif isinstance(value, list):
+            stack.extend((entry, depth + 1) for entry in value)
+        elif isinstance(value, dict):
+            for key, entry in value.items():
+                stack.append((key, depth + 1))
+                stack.append((entry, depth + 1))
+    return root
+
+
 def decode(text):
-    return json.loads(text, object_pairs_hook=unique_keys,
-                      parse_constant=reject_non_json_constant)
+    if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_MANIFEST_BYTES:
+        raise ValueError("AOT manifest must be UTF-8 text of at most 64 KiB")
+    return reject_noncanonical_value(json.loads(
+        text, object_pairs_hook=unique_keys,
+        parse_constant=reject_non_json_constant))
 
 def check():
     schema = decode((ROOT / "manifest.schema.json").read_text())
@@ -87,7 +119,20 @@ def check():
         pass
     else:
         raise AssertionError("duplicate nested JSON key escaped admission")
-    print("AOT manifest V1 schema: valid fixture and 29 negative checks passed")
+    for name, invalid in (
+        ("JSON exponent overflow", '{"n":1e10000}'),
+        ("lone Unicode surrogate value", '{"name":"\\uD800"}'),
+        ("lone Unicode surrogate key", '{"\\uDC00":"unsafe"}'),
+        ("manifest nesting exhaustion", "[" * 66 + "0" + "]" * 66),
+        ("manifest input size", '"' + "A" * (MAX_MANIFEST_BYTES + 1) + '"'),
+    ):
+        try:
+            decode(invalid)
+        except (ValueError, RecursionError):
+            pass
+        else:
+            raise AssertionError(name + " escaped strict signed JSON admission")
+    print("AOT manifest V1 schema: valid fixture and 34 negative checks passed")
 
 if __name__ == "__main__":
     check()
