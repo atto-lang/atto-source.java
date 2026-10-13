@@ -175,7 +175,9 @@ public final class Parser {
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
         if (foldedSymbolFactoryConstant) rejectShadowedSymbolFactory(imports, modules);
-        return new Ast.Program(namespace, imports, modules);
+        // Every file/module const is folded into immutable compiler-owned data
+        // before typechecking and linking. No user function is executed.
+        return StaticConstantFolder.fold(new Ast.Program(namespace, imports, modules));
     }
 
     private Ast.ImportDecl parseImport() {
