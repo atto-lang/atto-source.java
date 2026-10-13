@@ -4633,6 +4633,148 @@ public final class TypeChecker {
                 && constructorCoversPayload(candidate, payload, generics, self));
     }
 
+    /**
+     * Small finite ADT domains can be proved exhaustively by enumerating
+     * semantic witnesses instead of requiring one irrefutable arm per
+     * constructor. This admits combinations such as Some(true), Some(false),
+     * None without confusing Some(7) with all Some(int) values.
+     * An unknown/infinite/oversized domain returns null and uses the
+     * conservative proof below. No proof may rely on a truncated domain.
+     */
+    private static final int MAX_ADT_MATCH_WITNESSES = 4096;
+    private record FiniteAdtCase(String name, List<Object> fields) {
+        FiniteAdtCase { fields = List.copyOf(fields); }
+    }
+
+    private List<Object> finiteAdtWitnesses(
+            Type type, Set<String> generics, Type self, int depth) {
+        if (depth > 16) return null;
+        if (type == Primitive.BOOL) return List.of(Boolean.FALSE, Boolean.TRUE);
+        if (type instanceof Tuple tuple && tuple.kind() == TupleKind.TUPLE) {
+            List<Object> result = new ArrayList<>();
+            result.add(List.of());
+            for (Type member : tuple.elements()) {
+                List<Object> choices = finiteAdtWitnesses(member, generics, self, depth + 1);
+                if (choices == null || choices.size() > MAX_ADT_MATCH_WITNESSES / result.size()) {
+                    return null;
+                }
+                List<Object> next = new ArrayList<>();
+                for (Object prefix : result) for (Object choice : choices) {
+                    List<Object> combination = new ArrayList<>((List<?>) prefix);
+                    combination.add(choice);
+                    next.add(List.copyOf(combination));
+                }
+                result = next;
+            }
+            return List.copyOf(result);
+        }
+        if (type instanceof Union union) {
+            List<Object> values = new ArrayList<>();
+            for (Type member : union.options()) {
+                List<Object> choices = finiteAdtWitnesses(member, generics, self, depth + 1);
+                if (choices == null || choices.size() > MAX_ADT_MATCH_WITNESSES - values.size()) {
+                    return null;
+                }
+                values.addAll(choices);
+            }
+            return List.copyOf(values);
+        }
+        if (!(type instanceof Named named)) return null;
+        if (named.name().equals("Option") && named.arguments().size() == 1) {
+            List<Object> payloads = finiteAdtWitnesses(
+                    named.arguments().getFirst(), generics, self, depth + 1);
+            if (payloads == null || payloads.size() >= MAX_ADT_MATCH_WITNESSES) return null;
+            List<Object> values = new ArrayList<>();
+            values.add(new FiniteAdtCase("None", List.of()));
+            for (Object payload : payloads) values.add(
+                    new FiniteAdtCase("Some", List.of(payload)));
+            return List.copyOf(values);
+        }
+        if (named.name().equals("Result") && named.arguments().size() == 2) {
+            List<Object> oks = finiteAdtWitnesses(
+                    named.arguments().get(0), generics, self, depth + 1);
+            List<Object> errs = finiteAdtWitnesses(
+                    named.arguments().get(1), generics, self, depth + 1);
+            if (oks == null || errs == null
+                    || oks.size() > MAX_ADT_MATCH_WITNESSES - errs.size()) return null;
+            List<Object> values = new ArrayList<>();
+            for (Object value : oks) values.add(new FiniteAdtCase("Ok", List.of(value)));
+            for (Object value : errs) values.add(new FiniteAdtCase("Err", List.of(value)));
+            return List.copyOf(values);
+        }
+        TaggedMessageContracts.Domain domain = matchCaseDomain(type);
+        if (domain == null) return null;
+        List<Object> values = new ArrayList<>();
+        for (TaggedMessageContracts.Case variant : domain.cases()) {
+            if (variant.sourcePayload() == null) {
+                values.add(new FiniteAdtCase(variant.qualifiedName(), List.of()));
+            } else {
+                Type payloadType = deref(resolve(variant.sourcePayload(), generics, self));
+                List<Object> payloads = finiteAdtWitnesses(
+                        payloadType, generics, self, depth + 1);
+                if (payloads == null
+                        || payloads.size() > MAX_ADT_MATCH_WITNESSES - values.size()) return null;
+                for (Object payload : payloads) values.add(
+                        new FiniteAdtCase(variant.qualifiedName(), List.of(payload)));
+            }
+        }
+        return List.copyOf(values);
+    }
+
+    private Type finiteConstructorPayloadType(
+            Type subject, String constructor, Set<String> generics, Type self) {
+        if (subject instanceof Named named) {
+            if (named.name().equals("Option") && constructor.equals("Some")
+                    && named.arguments().size() == 1) return named.arguments().getFirst();
+            if (named.name().equals("Result") && named.arguments().size() == 2) {
+                if (constructor.equals("Ok")) return named.arguments().get(0);
+                if (constructor.equals("Err")) return named.arguments().get(1);
+            }
+        }
+        TaggedMessageContracts.Case variant = taggedCaseOrNull(constructor);
+        return variant != null && variant.sourcePayload() != null
+                ? deref(resolve(variant.sourcePayload(), generics, self)) : null;
+    }
+
+    private boolean patternAcceptsFiniteWitness(
+            Ast.Pattern pattern, Object value, Type subject,
+            Set<String> generics, Type self) {
+        if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.BindingPattern) return true;
+        if (pattern instanceof Ast.LiteralPattern literal) {
+            return java.util.Objects.equals(literal.value(), value);
+        }
+        if (pattern instanceof Ast.TypePattern || pattern instanceof Ast.StructuralPattern) {
+            // Conservative: only a statically universal type pattern proves
+            // coverage of this finite witness. Partial type tests never
+            // accidentally count as complete coverage.
+            return patternCoversType(pattern, subject, generics, self);
+        }
+        if (pattern instanceof Ast.TuplePattern tuplePattern
+                && value instanceof List<?> values
+                && subject instanceof Tuple tuple
+                && tuple.kind() == TupleKind.TUPLE
+                && values.size() == tuplePattern.elements().size()
+                && values.size() == tuple.elements().size()) {
+            for (int i = 0; i < values.size(); i++) {
+                if (!patternAcceptsFiniteWitness(tuplePattern.elements().get(i),
+                        values.get(i), tuple.elements().get(i), generics, self)) return false;
+            }
+            return true;
+        }
+        if (pattern instanceof Ast.ConstructorPattern constructor
+                && value instanceof FiniteAdtCase finite
+                && constructor.constructor().equals(finite.name())
+                && constructor.arguments().size() == finite.fields().size()) {
+            if (finite.fields().isEmpty()) return true;
+            Type payload = finiteConstructorPayloadType(
+                    subject, finite.name(), generics, self);
+            return payload != null && patternAcceptsFiniteWitness(
+                    constructor.arguments().getFirst(), finite.fields().getFirst(),
+                    payload, generics, self);
+        }
+        return false;
+    }
+
     private boolean isTaggedVariantAssignable(Type actual, Type expected) {
         if (!(actual instanceof Named variant) || !(expected instanceof Named domain)
                 || !variant.arguments().isEmpty() || !domain.arguments().isEmpty()
@@ -5204,6 +5346,16 @@ public final class TypeChecker {
                     && patternCoversType(arm.pattern(), subject, generics, self)) {
                 return true;
             }
+        }
+
+        List<Object> finiteWitnesses = finiteAdtWitnesses(subject, generics, self, 0);
+        if (finiteWitnesses != null) {
+            // An arm with a guard can fail for a witness, even when the
+            // pattern itself matches it. Never use guarded arms in a proof.
+            return finiteWitnesses.stream().allMatch(witness ->
+                    arms.stream().anyMatch(arm -> arm.guard() == null
+                            && patternAcceptsFiniteWitness(
+                                    arm.pattern(), witness, subject, generics, self)));
         }
 
         // A nominal enum or closed match-pattern domain is a disjoint
