@@ -2917,6 +2917,9 @@ public final class Parser {
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+        // Expression-level trap is a typed Option boundary; the declaration
+        // modifier "trap fnc" remains a distinct grammar production.
+        if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
         if (match(RT)) return parseRuntimeExpression();
 
         if (match(NB)) {
@@ -3055,7 +3058,9 @@ public final class Parser {
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
-            } else if (match(DOT)) {
+            } else if (match(DOT, DOUBLE_COLON)) {
+                // Two explicit qualified-member spellings, one binding and
+                // evaluation path; no dynamic symbol lookup or macro rewrite.
                 String member = consumeMemberName();
                 expr = new Ast.MemberExpr(expr, member);
             } else if (match(LBRACKET)) {
@@ -3513,6 +3518,11 @@ public final class Parser {
         }
         if (expression instanceof Ast.BinaryExpr binary) {
             return containsExpressionBodyLambda(binary.left()) || containsExpressionBodyLambda(binary.right());
+        }
+        if (expression instanceof Ast.TrapExpr trapped) {
+            // A call-site trap must never hide an expression-bodied lambda
+            // from the required explicit statement/class-field terminator.
+            return containsExpressionBodyLambda(trapped.expression());
         }
         if (expression instanceof Ast.UnaryExpr unary) {
             return containsExpressionBodyLambda(unary.operand());
