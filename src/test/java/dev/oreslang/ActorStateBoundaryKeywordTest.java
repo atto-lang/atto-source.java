@@ -330,6 +330,25 @@ final class ActorStateBoundaryKeywordTest {
     }
 
     @Test
+    void scalarStateLoanProofRejectsEffectfulActorInitialization() {
+        for (String initializer : List.of("load_secret()", "external")) {
+            Ast.Program program = Parser.parse(
+                    "define actor Counter as state { value: int = " + initializer + "; } "
+                    + "pub get(): int { return self.handle_state(critical-read |s| -> s.value); } end");
+            Ast.ClassDecl actor = (Ast.ClassDecl)
+                    program.modules().getFirst().declarations().getFirst();
+            Ast.ActorStateAccessExpr access = (Ast.ActorStateAccessExpr)
+                    ((Ast.ReturnStmt) actor.methods().getFirst().body().getFirst()).value();
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.ActorStateLoanShapeChecker.validate(actor, access));
+            assertTrue(failure.getMessage().contains("state-loan effect violation"),
+                    initializer + " -> " + failure.getMessage());
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(program),
+                    "unsafe initializers must not reach guest codegen");
+        }
+    }
+
+    @Test
     void scalarStateLoanEffectCheckerRejectsEscapesSuspensionAndReadMutation() {
         for (String callback : List.of(
                 "critical-read |s| -> s",
