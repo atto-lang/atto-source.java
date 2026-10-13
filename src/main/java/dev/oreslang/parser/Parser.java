@@ -2591,6 +2591,7 @@ public final class Parser {
         if (match(INT)) return new Ast.LiteralPattern(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
+        if (match(SYMBOL_LITERAL)) return new Ast.LiteralPattern(new Ast.Symbol(previous().lexeme()));
         if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralPattern(Boolean.FALSE);
         if (check(IDENT) && peek().lexeme().equals("_")) {
@@ -3139,6 +3140,7 @@ public final class Parser {
             return new Ast.LiteralExpr(new Ast.Imaginary(Double.parseDouble(raw)));
         }
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
+        if (match(SYMBOL_LITERAL)) return new Ast.LiteralExpr(new Ast.Symbol(previous().lexeme()));
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
