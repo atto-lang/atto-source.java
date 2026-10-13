@@ -32,6 +32,8 @@ final class ActorSupervisorControlLane {
     private Slot head;
     private Slot tail;
     private int pending;
+    /** Exactly one admitted supervisor CONTROL callback at a time. */
+    private int inFlight;
 
     ActorSupervisorControlLane(int capacity) {
         if (capacity <= 0) throw new IllegalArgumentException("CONTROL capacity must be positive");
@@ -60,6 +62,9 @@ final class ActorSupervisorControlLane {
     }
 
     synchronized Optional<ActorRuntime.ActorFailureNotice> poll() {
+        if (inFlight != 0) {
+            throw new IllegalStateException("overlapping supervisor CONTROL admissions");
+        }
         if (head == null) return Optional.empty();
         Slot slot = head;
         head = slot.next;
@@ -67,6 +72,7 @@ final class ActorSupervisorControlLane {
         slot.next = null;
         slot.queued = false;
         slot.inFlight = true;
+        ++inFlight;
         --pending;
         return Optional.of(slot.notice);
     }
@@ -76,6 +82,7 @@ final class ActorSupervisorControlLane {
         if (!slot.inFlight) throw new IllegalStateException("CONTROL event is not in flight");
         slots.remove(child);
         slot.inFlight = false;
+        --inFlight;
         slot.notice = null;
     }
 
@@ -83,6 +90,7 @@ final class ActorSupervisorControlLane {
         Slot slot = required(child);
         if (!slot.inFlight) throw new IllegalStateException("CONTROL event is not in flight");
         slot.inFlight = false;
+        --inFlight;
         enqueue(slot);
     }
 
@@ -101,16 +109,27 @@ final class ActorSupervisorControlLane {
      */
     synchronized java.util.List<ActorRuntime.ActorFailureNotice> drainPublished() {
         java.util.ArrayList<ActorRuntime.ActorFailureNotice> failures = new java.util.ArrayList<>();
+        // First transfer any already-admitted failure whose handler was
+        // interrupted by shutdown. Preserve FIFO order for the queued tail.
         for (var iterator = slots.values().iterator(); iterator.hasNext();) {
             Slot slot = iterator.next();
-            if (slot.notice != null) {
+            if (slot.inFlight) {
                 failures.add(slot.notice);
                 iterator.remove();
+                slot.inFlight = false;
             }
         }
-        head = null;
+        while (head != null) {
+            Slot slot = head;
+            head = slot.next;
+            slot.next = null;
+            slot.queued = false;
+            failures.add(slot.notice);
+            slots.remove(slot.child);
+        }
         tail = null;
         pending = 0;
+        inFlight = 0;
         return failures;
     }
 
