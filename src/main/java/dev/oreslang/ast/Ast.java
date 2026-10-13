@@ -903,7 +903,8 @@ public final class Ast {
                         "sealed actor state access needs one lexical callback parameter");
             }
             Param param = callback.parameters().getFirst();
-            if (!param.type().equals(TypeRef.inferred()) || param.mutable()) {
+            if (!param.type().equals(TypeRef.inferred()) || param.mutable()
+                    || param.structural()) {
                 throw new IllegalArgumentException(
                         "sealed actor state loans have a compiler-owned inferred type");
             }
