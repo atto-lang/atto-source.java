@@ -1758,17 +1758,49 @@ public final class Parser {
                 Ast.BindingKind bindingKind = null;
                 String bindingName = null;
                 boolean mutableReferent = false;
+                Ast.TypeRef bindingType = null;
+                Ast.DestructureKind destructureKind = null;
+                List<Ast.DestructureBinding> destructureBindings = List.of();
 
                 if (match(READCH)) {
                     operation = Ast.ChannelOperation.READ;
                     channel = parseExpression();
                     consume(COLON, "readch select arm requires ':'");
-                    if (isBindingKind(peek().type())) {
-                        bindingKind = parseBindingKind();
+                    if (!check(LBRACE) && !check(ARROW) && !check(SEMICOLON)) {
+                        bindingKind = isBindingKind(peek().type())
+                                ? parseBindingKind() : Ast.BindingKind.CONST;
                         mutableReferent = parseReferentMutability(bindingKind);
-                        bindingName = consume(IDENT, "readch select arm binding requires a name").lexeme();
-                        match(SEMICOLON);
+                        if (check(LBRACKET) || check(LBRACE)) {
+                            destructureKind = check(LBRACKET)
+                                    ? Ast.DestructureKind.SEQUENCE
+                                    : Ast.DestructureKind.OBJECT;
+                            destructureBindings = parseSelectDestructureBindings(
+                                    destructureKind, bindingKind, mutableReferent);
+                        } else if (check(IDENT)
+                                && (checkNext(LBRACE) || checkNext(ARROW)
+                                        || checkNext(SEMICOLON))) {
+                            bindingName = advance().lexeme();
+                        } else if (check(IDENT) && checkNext(COLON)) {
+                            bindingName = advance().lexeme();
+                            consume(COLON, "expected ':' after select binding name");
+                            bindingType = parseTypeRef();
+                            if (match(MUT)) {
+                                if (mutableReferent) throw error(previous(),
+                                        "duplicate mut modifier on select binding");
+                                mutableReferent = true;
+                            }
+                        } else {
+                            bindingType = parseTypeRef();
+                            if (match(MUT)) {
+                                if (mutableReferent) throw error(previous(),
+                                        "duplicate mut modifier on select binding");
+                                mutableReferent = true;
+                            }
+                            bindingName = consume(IDENT,
+                                    "typed select binding requires a name").lexeme();
+                        }
                     }
+                    match(SEMICOLON);
                 } else if (match(WRITECH)) {
                     operation = Ast.ChannelOperation.WRITE;
                     channel = parseExpression();
@@ -1797,8 +1829,11 @@ public final class Parser {
                     operation = Ast.ChannelOperation.READ;
                 }
 
+                // Canonical when-branches use ->; brace-only legacy form is
+                // still accepted. The arrow is syntax, never a new channel read.
+                match(ARROW);
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select arm requires a braced body '{ ... }'");
+                    throw error(peek(), "select arm requires '-> { ... }' or legacy '{ ... }'");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 arms.add(new Ast.SelectArm(
@@ -1808,7 +1843,10 @@ public final class Parser {
                         bindingKind,
                         bindingName,
                         body,
-                        mutableReferent));
+                        mutableReferent,
+                        bindingType,
+                        destructureKind,
+                        destructureBindings));
                 continue;
             }
 
@@ -1833,6 +1871,45 @@ public final class Parser {
 
         consume(RBRACE, "expected '}' after select");
         return new Ast.SelectStmt(mode, policy, arms, explicitDo);
+    }
+
+    /**
+     * The select winner owns the channel result; these declarations are
+     * arm-local projections of that result, not additional readch operations.
+     * Prefix tuple projection and per-field type checking share the ordinary
+     * destructuring rules.
+     */
+    private List<Ast.DestructureBinding> parseSelectDestructureBindings(
+            Ast.DestructureKind kind, Ast.BindingKind inheritedKind,
+            boolean inheritedMutableReferent) {
+        Token.Type close = kind == Ast.DestructureKind.SEQUENCE ? RBRACKET : RBRACE;
+        consume(kind == Ast.DestructureKind.SEQUENCE ? LBRACKET : LBRACE,
+                "expected '[' or '{' to start select destructure");
+        if (check(close)) throw error(peek(), "select destructure cannot be empty");
+        List<Ast.DestructureBinding> bindings = new ArrayList<>();
+        Ast.BindingKind currentKind = inheritedKind;
+        boolean currentMutableReferent = inheritedMutableReferent;
+        do {
+            if (isBindingKind(peek().type())) {
+                currentKind = parseBindingKind();
+                currentMutableReferent = parseReferentMutability(currentKind);
+            }
+            boolean rest = match(ELLIPSIS);
+            if (isDiscardToken(peek())) {
+                if (rest || kind == Ast.DestructureKind.OBJECT) {
+                    throw error(peek(), "select object/rest destructure cannot discard '_'");
+                }
+                advance();
+                bindings.add(Ast.DestructureBinding.discard());
+            } else {
+                bindings.add(parseTypedDestructureBinding(
+                        currentKind, currentMutableReferent, rest));
+            }
+            if (rest && check(COMMA)) throw error(peek(),
+                    "select rest destructure must be final");
+        } while (match(COMMA));
+        consume(close, "unterminated select destructure");
+        return List.copyOf(bindings);
     }
 
     private Ast.SelectPolicy parseSelectPolicy() {
