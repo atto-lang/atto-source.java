@@ -1118,6 +1118,36 @@ public final class TypeChecker {
         // child to declare an explicit local override/hide for that slot.
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
+        // Declaration-site initialization may read constructor arguments in
+        // the declaring class. Unlike constructor-body assignment, the
+        // initialized final slot becomes immutable before any body executes.
+        // This scope is local to klass; inherited initializers are validated
+        // against their own declaring class and cannot capture child params.
+        Ast.ConstructorDecl constructor = klass.constructor();
+        Env fieldInitializerEnv = new Env(null);
+        if (constructor != null) {
+            // The field-initializer ownership checker does not yet prove
+            // moves, borrows or alias lifetime across the constructor boundary.
+            // Admit only independent scalar argument values here. In
+            // particular, never expose the implicit `arguments` tuple:
+            // it can contain an unchecked reference-valued constructor arg.
+            for (Ast.Param param : constructor.parameters()) {
+                Ast.TypeRef paramRef = param.type();
+                String paramName = paramRef.name();
+                boolean scalar = !paramRef.isBorrow()
+                        && paramRef.arguments().isEmpty()
+                        && !param.structural()
+                        && (paramName.equals("int") || paramName.equals("bool")
+                                || paramName.equals("float") || paramName.equals("string"));
+                if (scalar) {
+                    Type parameterType = resolveParam(param, classGenerics, self);
+                    fieldInitializerEnv.define(
+                            param.name(), parameterType,
+                            param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+            }
+        }
+
         for (Ast.FieldDecl field : klass.fields()) {
             if (klass.actorKind() == Ast.ActorKind.NONE
                     && field.initializer() != null
@@ -1138,7 +1168,7 @@ public final class TypeChecker {
                 currentClassOwner = klass;
                 lexicalClassOrigin = klass;
                 try {
-                    Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
+                    Type actual = typeOf(field.initializer(), fieldInitializerEnv, classGenerics, self);
                     requireReadonlyCapabilityPreserved(
                             actual,
                             fieldType,
@@ -1155,7 +1185,6 @@ public final class TypeChecker {
             }
         }
 
-        Ast.ConstructorDecl constructor = klass.constructor();
         if (constructor != null) {
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
