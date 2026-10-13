@@ -54,6 +54,22 @@ final class StructuralReadViewCoercionHardeningTest {
     }
 
     @Test
+    void unknownOrGenericCannotProveRecordHiddenInUnion() {
+        Types.Record record = new Types.Record(Map.of("foo", Types.Primitive.INT), true);
+        Types.Type union = Types.unionOf(record, Types.Primitive.STRING);
+        assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, union),
+                "Unknown is not proof of a structural union alternative");
+        assertFalse(Types.isAssignable(new Types.Generic("Unbound"), union),
+                "unbound generic is not proof of a structural union alternative");
+        assertTrue(Types.isAssignable(record, union),
+                "a proven record still satisfies its explicit union arm");
+        assertTrue(Types.isAssignable(Types.Primitive.STRING, union),
+                "known non-record variants retain their valid union arm");
+        assertTrue(Types.isAssignable(Types.Unknown.INSTANCE, Types.Primitive.STRING),
+                "unrelated legacy inference behavior remains unchanged");
+    }
+
+    @Test
     void readonlyCovarianceStillAllowsSafeWidthAndUnionViews() {
         Types.Record actual = new Types.Record(
                 Map.of("foo", Types.Primitive.INT, "bar", Types.Primitive.STRING), true);
