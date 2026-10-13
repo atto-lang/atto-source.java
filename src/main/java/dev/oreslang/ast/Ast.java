@@ -726,7 +726,7 @@ public final class Ast {
         public LoopStmt { body = List.copyOf(body); }
     }
 
-    public enum ChannelOperation { READ, WRITE, DEFAULT }
+    public enum ChannelOperation { READ, WRITE, AWAIT, DEFAULT }
     public enum WaitMode { BLOCKING, NONBLOCKING, IMMEDIATE }
     public enum SelectPolicy { FAIR, PRIORITY, RANDOM }
 
@@ -749,8 +749,8 @@ public final class Ast {
                 }
             } else {
                 if (channel == null) throw new IllegalArgumentException("channel select arm requires a channel");
-                if (operation == ChannelOperation.READ && value != null) {
-                    throw new IllegalArgumentException("read select arm cannot carry a write value");
+                if ((operation == ChannelOperation.READ || operation == ChannelOperation.AWAIT) && value != null) {
+                    throw new IllegalArgumentException("read/await select arm cannot carry a write value");
                 }
                 if (operation == ChannelOperation.WRITE && value == null) {
                     throw new IllegalArgumentException("write select arm requires a value");
@@ -873,8 +873,8 @@ public final class Ast {
             boolean callback,
             List<Stmt> callbackBody) implements Expr {
         public ChannelOpExpr {
-            if (operation == ChannelOperation.DEFAULT) {
-                throw new IllegalArgumentException("default is not a standalone channel operation");
+            if (operation != ChannelOperation.READ && operation != ChannelOperation.WRITE) {
+                throw new IllegalArgumentException("only readch/writech are standalone channel operations");
             }
             if (channel == null) throw new IllegalArgumentException("channel operation requires a channel");
             if (operation == ChannelOperation.READ && value != null) {
