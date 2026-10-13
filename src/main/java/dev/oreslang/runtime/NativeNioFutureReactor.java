@@ -85,8 +85,12 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         thread.start();
     }
 
-    public int localPort() throws IOException {
-        return ((InetSocketAddress) listener.getLocalAddress()).getPort();
+    public int localPort() {
+        try {
+            return ((InetSocketAddress) listener.getLocalAddress()).getPort();
+        } catch (IOException failure) {
+            throw new IllegalStateException("TCP listener is closed", failure);
+        }
     }
 
     int outstandingFutures() { return pending.get(); }
