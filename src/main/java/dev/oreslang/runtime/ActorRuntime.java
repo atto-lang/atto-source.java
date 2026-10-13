@@ -7362,14 +7362,20 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
+                Throwable fatalCleanup = null;
                 if (turnActive && stopped.get()) {
                     try {
                         runFinalCleanupIfNeeded();
                     } catch (Throwable cleanupFailure) {
-                        // Cleanup is the final guest action. Higher-priority
-                        // cleanup failures supersede prior failures, preserving
-                        // one typed secondary cause without exporting Throwable.
-                        recordCleanupFailure(cleanupFailure);
+                        // Higher-priority cleanup failure must win. Fatal JVM
+                        // failures must NOT be swallowed just because cleanup
+                        // runs in a finally block.
+                        recordTerminalFailure(cleanupFailure);
+                        if (cleanupFailure instanceof VirtualMachineError
+                                || cleanupFailure instanceof ThreadDeath
+                                || cleanupFailure instanceof LinkageError) {
+                            fatalCleanup = cleanupFailure;
+                        }
                     }
                 }
                 try {
@@ -7383,6 +7389,9 @@ public final class ActorRuntime implements AutoCloseable {
                     CURRENT_ACTOR_EXECUTION.remove();
                     currentActor.remove();
                 }
+                if (fatalCleanup instanceof VirtualMachineError fatal) throw fatal;
+                if (fatalCleanup instanceof ThreadDeath fatal) throw fatal;
+                if (fatalCleanup instanceof LinkageError fatal) throw fatal;
                 // scheduled/finalization/rescheduling belong to runBatch(),
                 // after TurnExecutor.execute(...) has returned.
             }
@@ -7409,25 +7418,26 @@ public final class ActorRuntime implements AutoCloseable {
             activeMail = null;
         }
 
-        private void recordCleanupFailure(Throwable cleanupFailure) {
-            var cleanup = actorTerminalOf(cleanupFailure);
+        private void recordTerminalFailure(Throwable failure) {
+            final var incoming = actorTerminalOf(failure);
             while (true) {
                 Throwable prior = ref.terminationCause.get();
+                if (prior == failure) return; // same exception rethrown by carrier
                 if (prior == null) {
-                    if (ref.terminationCause.compareAndSet(null, cleanupFailure)) {
-                        return;
-                    }
+                    if (ref.terminationCause.compareAndSet(null, failure)) return;
                     continue;
                 }
-                var original = actorTerminalOf(prior);
-                if (effectPriority(cleanup.origin()) > effectPriority(original.origin())) {
-                    if (ref.terminationCause.compareAndSet(prior, cleanupFailure)) {
+                final var original = actorTerminalOf(prior);
+                if (effectPriority(incoming.origin()) > effectPriority(original.origin())) {
+                    if (ref.terminationCause.compareAndSet(prior, failure)) {
+                        // Bounded diagnostics: one typed displaced cause.
                         ref.secondaryFailure.compareAndSet(null, original);
                         return;
                     }
                     continue;
                 }
-                ref.secondaryFailure.compareAndSet(null, cleanup);
+                // Equal-priority failures preserve the original primary.
+                ref.secondaryFailure.compareAndSet(null, incoming);
                 return;
             }
         }
@@ -7450,7 +7460,10 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
-                    ref.terminationCause.compareAndSet(null, cause);
+                    // Cancellation can race with an in-flight guest exception
+                    // and fatal host failures may arrive during cleanup. Rank
+                    // all terminal publications, not just cleanup failures.
+                    recordTerminalFailure(cause);
                 }
                 stopped.set(true);
                 if (cause == null) mailbox.close();
