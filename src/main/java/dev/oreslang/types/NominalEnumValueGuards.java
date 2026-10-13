@@ -34,6 +34,18 @@ public final class NominalEnumValueGuards {
                 new IdentityHashMap<>(), new int[]{0}, 0);
     }
 
+    /**
+     * A reusable compiler/runtime guard for statically known literal values.
+     * Unlike checking normalized Types.Primitive.INT, this retains the exact
+     * source spelling (u8, i16, u64, etc.) and rejects impossible values.
+     */
+    public static void requireValue(TaggedMessageContracts.Registry types,
+                                    Ast.TypeRef type, Object value) {
+        Objects.requireNonNull(types, "enum registry");
+        Objects.requireNonNull(type, "enum payload type");
+        validate(types, type, value, new IdentityHashMap<>(), new int[]{0}, 0);
+    }
+
     private static void validate(TaggedMessageContracts.Registry types, Ast.TypeRef expected,
                                  Object actual, IdentityHashMap<Object, Boolean> visiting,
                                  int[] nodes, int depth) {
