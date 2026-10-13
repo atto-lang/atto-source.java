@@ -384,7 +384,31 @@ A bare `_` is a sequence discard pattern: it consumes that array/tuple position 
 
 `_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding; unlike a standalone `const x = ...` declaration, the aggregate being destructured does not need to be a compile-time constant.
 
-Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type. Object destructuring requires a record/map-like value and every requested key must exist. If the returned type is a union, destructuring is allowed only when every union alternative supports the requested pattern; each extracted binding receives the union of the corresponding alternative member types. Function-parameter destructuring is intentionally not part of this syntax yet.
+Sequence destructuring requires a returned tuple or array/list. **Tuple and
+sequence destructuring are prefix projections, not exact-arity matches**:
+`const [int id] = get_user()` accepts `Tuple[int, string]` and ignores the
+unselected tail. `const [_, string name] = get_user()` skips its first item.
+Every explicitly requested positional index must exist; a tuple with fewer
+members than the pattern is rejected, and an at-runtime-length array/list
+throws a length error if it contains too few elements. Only `...rest` captures
+the remaining tail. Fixed-arity tuple **types**, and `match` tuple patterns,
+still require exact arity; this prefix rule does not change them.
+
+Per-element `mut` can follow a type as in
+`[const int id, const string mut name] = get_user()`. It is equivalent to
+`[const int id, const mut string name]`. Type-adjacent `mut` applies to that
+single binding and does not implicitly grant mutation to later pattern items.
+The binding kind determines rebinding rights; `mut` grants referent mutation
+*only when the underlying type has a mutation operation*. In particular,
+today's `string`/`String` is an immutable, Copy string value; this grammar
+does not make `name[3] = "4"` legal. Writable character storage requires a
+separate owned mutable-text representation and Unicode-indexing contract.
+
+Object destructuring requires a record/map-like value and every requested key
+must exist. If the returned type is a union, destructuring is allowed only when
+every union alternative supports the requested pattern; each extracted binding
+receives the union of the corresponding alternative member types.
+Function-parameter destructuring is intentionally not part of this syntax yet.
 
 ## Assignment, equality, and identity
 
