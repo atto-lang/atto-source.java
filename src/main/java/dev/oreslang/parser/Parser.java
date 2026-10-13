@@ -2136,12 +2136,12 @@ public final class Parser {
                 advance();
                 bindings.add(Ast.DestructureBinding.discard());
             } else {
-                String name = consume(IDENT, "expected binding name in for-of destructure pattern").lexeme();
-                if (!names.add(name)) {
-                    throw error(previous(), "duplicate binding '" + name + "' in for-of destructure pattern");
+                Ast.DestructureBinding binding = parseTypedDestructureBinding(
+                        currentKind, currentMutableReferent, rest);
+                if (!names.add(binding.name())) {
+                    throw error(previous(), "duplicate binding '" + binding.name() + "' in for-of destructure pattern");
                 }
-                bindings.add(new Ast.DestructureBinding(
-                        currentKind, name, rest, currentMutableReferent));
+                bindings.add(binding);
             }
             if (rest && check(COMMA)) {
                 throw error(peek(), "rest destructure binding must be the final binding");
@@ -2305,6 +2305,38 @@ public final class Parser {
         }
     }
 
+    /**
+     * A destructured binding can infer its type, annotate it after the name,
+     * or declare it type-first: name, name: Type, or Type name.
+     * The existing binding kind and 'mut' propagation is unaffected.
+     */
+    private Ast.DestructureBinding parseTypedDestructureBinding(
+            Ast.BindingKind kind, boolean mutableReferent, boolean rest) {
+        int mark = current;
+        Ast.TypeRef declaredType = null;
+        String name = null;
+        if (check(IDENT) && checkNext(COLON)) {
+            name = advance().lexeme();
+            consume(COLON, "expected ':' after destructured binding name");
+            declaredType = parseTypeRef();
+        } else {
+            try {
+                Ast.TypeRef candidate = parseTypeRef();
+                if (check(IDENT)) {
+                    declaredType = candidate;
+                    name = advance().lexeme();
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Could be the existing untyped identifier spelling.
+            }
+            if (name == null) {
+                current = mark;
+                name = consume(IDENT, "expected destructure binding name or typed binding").lexeme();
+            }
+        }
+        return new Ast.DestructureBinding(kind, name, rest, mutableReferent, declaredType);
+    }
+
     private Ast.DestructureStmt parseDestructure(
             Ast.DestructureKind kind,
             Ast.BindingKind inheritedKind,
@@ -2346,9 +2378,7 @@ public final class Parser {
             if (currentKind == null) {
                 throw error(peek(), "destructure binding kind must be declared before the first binding");
             }
-            String name = consume(IDENT, "expected binding name in destructure").lexeme();
-            bindings.add(new Ast.DestructureBinding(
-                    currentKind, name, rest, currentMutableReferent));
+            bindings.add(parseTypedDestructureBinding(currentKind, currentMutableReferent, rest));
             if (rest && check(COMMA)) {
                 throw error(peek(), "rest destructure binding must be the final binding");
             }
