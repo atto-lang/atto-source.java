@@ -99,6 +99,12 @@ final class ErrorTraceSerializationTest {
                     return;
                   }
                   """)));
+        assertDoesNotThrow(() -> dev.oreslang.types.TypeChecker.check(
+                dev.oreslang.parser.Parser.parse(prelude + """
+                  fnc ephemeral(): Array<String> {
+                    return new LocalError().capture();
+                  }
+                  """)));
         assertThrows(IllegalArgumentException.class, () -> dev.oreslang.types.TypeChecker.check(
                 dev.oreslang.parser.Parser.parse(prelude + """
                   fnc bad(): void {
@@ -130,6 +136,9 @@ final class ErrorTraceSerializationTest {
                   stdio.stdout.write("|");
                   val frames = capture_trace_frames();
                   stdio.stdout.write(frames.size);
+                  stdio.stdout.write("|");
+                  val captured = new Error().capture_stack();
+                  stdio.stdout.write(captured.size);
                   return;
                 }
                 """);
