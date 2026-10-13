@@ -1097,7 +1097,16 @@ public final class OresEvalRootNode extends RootNode {
                     if (untrusted || (backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0) {
                         // Untrusted fuel is charged at EVERY loop backedge, not
                         // once per 32 iterations. Trusted tasks poll at 32.
-                        context.schedulerSafepoint();
+                        try {
+                            context.schedulerSafepoint();
+                        } catch (ActorRuntime.ActorCancellationSignal
+                                 | java.util.concurrent.CancellationException terminal) {
+                            // The trampoline has a heap-owned continuation
+                            // for this backedge. Feed the signal into it rather
+                            // than abandoning its enclosing finally/defer scopes.
+                            next.accept(this, null, terminal);
+                            return;
+                        }
                         // Issue #402: an UNTRUSTED carrier handoff can currently
                         // mint a fresh physical-turn quota, so fail closed.
                         // Never auto-cooperate while a live lexical mutex guard
@@ -1795,7 +1804,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = SourceFlow.afterCleanup(completed, SourceFlow.throwing(failure));
                 }
                 // The consumer owns any failure it throws. Do not call it twice.
                 continuation.accept(task, completed);
@@ -1823,7 +1832,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = SourceFlow.afterCleanup(completed, SourceFlow.throwing(failure));
                 }
                 continuation.accept(task, completed);
                 return;
@@ -1835,14 +1844,12 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
-                            if (currentFlow.failure() != null) {
-                                failure.addSuppressed(currentFlow.failure());
-                            }
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    SourceFlow.throwing(failure),
+                                    SourceFlow.afterCleanup(
+                                            currentFlow, SourceFlow.throwing(failure)),
                                     continuation);
                         } else {
                             runOneDefer(
@@ -2102,10 +2109,7 @@ public final class OresEvalRootNode extends RootNode {
                                                             (t3, finallyFlow) ->
                                                                     continuation.accept(
                                                                             t3,
-                                                                            finallyFlow.kind()
-                                                                                            != SourceFlowKind.NORMAL
-                                                                                    ? finallyFlow
-                                                                                    : catchFlow)));
+                                                                            SourceFlow.afterCleanup(catchFlow, finallyFlow))));
                                 } else {
                                     runBlock(
                                             t,
@@ -2114,10 +2118,7 @@ public final class OresEvalRootNode extends RootNode {
                                             (t2, finallyFlow) ->
                                                     continuation.accept(
                                                             t2,
-                                                            finallyFlow.kind()
-                                                                            != SourceFlowKind.NORMAL
-                                                                    ? finallyFlow
-                                                                    : flow));
+                                                            SourceFlow.afterCleanup(flow, finallyFlow)));
                                 }
                             });
                     return;
@@ -2536,9 +2537,8 @@ public final class OresEvalRootNode extends RootNode {
         private SourceFlow sourceLoopResumeFailure(Throwable failure) {
             Throwable cause = OresFuture.unwrap(
                     Objects.requireNonNull(failure, "failure"));
-            if (cause instanceof Error terminal) throw terminal;
-            if (cause instanceof java.util.concurrent.CancellationException cancellation)
-                throw cancellation;
+            // Do not throw here: the enclosing SourceFlow pipeline must run
+            // finally/defer/iterator cleanup. Guest catch matches THROW only.
             return SourceFlow.throwing(cause);
         }
 
