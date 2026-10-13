@@ -7460,20 +7460,85 @@ public final class TypeChecker {
             // Method identity comes from a compiler witness, not a string name.
             if (actual.methodKeys().contains(required.getKey())
                     != expected.methodKeys().contains(required.getKey())) return false;
-            if (!assignable(candidate, required.getValue())) return false;
+            boolean methodSlot = actual.methodKeys().contains(required.getKey())
+                    && expected.methodKeys().contains(required.getKey())
+                    && candidate instanceof Function && required.getValue() instanceof Function;
+            // A readonly view is a direct projection; ordinary numeric
+            // promotion only applies to evaluated scalar values, not a
+            // field accessed through a different declared representation.
+            if (expected.readOnly() && !methodSlot) {
+                if (!representationallyReadableField(candidate, required.getValue())) return false;
+            } else if (!assignable(candidate, required.getValue())) {
+                return false;
+            }
             // Writable slots must be genuinely invariant. Two-way assignability
             // is insufficient: Unknown, dynamic interop and permissive generic
             // relations can pass both directions without equal representations.
             // Compiler-owned callable selector slots are methods, not writable
             // fields; they retain contravariant parameters/covariant returns.
-            boolean methodSlot = actual.methodKeys().contains(required.getKey())
-                    && expected.methodKeys().contains(required.getKey())
-                    && candidate instanceof Function && required.getValue() instanceof Function;
             if (!expected.readOnly() && !methodSlot && !candidate.equals(required.getValue())) {
                 return false;
             }
         }
         return true;
+    }
+
+    /**
+     * A read-only structural field is a zero-copy projection, not an
+     * implicit conversion. Preserve nominal inheritance proofs for class
+     * references, but refuse numeric promotions and unresolved source
+     * Unknown/Generic claims inside recursively projected data.
+     */
+    private boolean representationallyReadableField(Type actual, Type expected) {
+        if (actual.equals(expected)) return true;
+        if (expected == Unknown.INSTANCE) return true; // opaque read
+        if (actual == Unknown.INSTANCE || actual instanceof Generic || expected instanceof Generic) return false;
+        if (actual instanceof Union source) {
+            return source.options().stream().allMatch(option -> representationallyReadableField(option, expected));
+        }
+        if (expected instanceof Union target) {
+            return target.options().stream().anyMatch(option -> representationallyReadableField(actual, option));
+        }
+        if (actual instanceof Record source && expected instanceof Record target) {
+            return structuralRecordAssignable(source, target);
+        }
+        if (actual instanceof Tuple source && expected instanceof Tuple target) {
+            if (source.kind() != target.kind() || source.elements().size() != target.elements().size()) return false;
+            for (int i = 0; i < source.elements().size(); i++) {
+                if (!representationallyReadableField(source.elements().get(i), target.elements().get(i))) return false;
+            }
+            return true;
+        }
+        if (actual instanceof Function source && expected instanceof Function target) {
+            if (source.async() != target.async()
+                    || !source.mutableParameters().equals(target.mutableParameters())
+                    || source.parameters().size() != target.parameters().size()) return false;
+            for (int i = 0; i < source.parameters().size(); i++) {
+                if (!representationallyReadableField(target.parameters().get(i), source.parameters().get(i))) return false;
+            }
+            return representationallyReadableField(source.result(), target.result());
+        }
+        if (actual instanceof Borrow source && expected instanceof Borrow target) {
+            if (target.mutable() && !source.mutable()) return false;
+            return representationallyReadableField(source.target(), target.target())
+                    && (!target.mutable() || representationallyReadableField(target.target(), source.target()));
+        }
+        if (actual instanceof ListType source && expected instanceof ListType target) {
+            // Mutable collections are invariant: do not reinterpret the
+            // element representation through a shape contract.
+            return source.element().equals(target.element());
+        }
+        if (actual instanceof Named source && expected instanceof Named target) {
+            if (source.name().equals(target.name())) {
+                // Generic argument containers are invariant unless proved
+                // otherwise by an explicit instantiation/witness.
+                return source.arguments().equals(target.arguments());
+            }
+            // Subclass/interface references have the same runtime reference
+            // representation; context-aware nominal checks prove the relation.
+            return assignable(actual, expected);
+        }
+        return actual instanceof StringLiteral && expected == Primitive.STRING;
     }
 
     private Named concreteClassReference(Ast.TypeRef ref, Ast.ClassDecl owner, Named ownerType) {
