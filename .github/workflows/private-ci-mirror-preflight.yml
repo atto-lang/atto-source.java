@@ -1,0 +1,22 @@
+name: Private CI destination policy self-test
+on:
+  pull_request:
+    paths:
+      - 'scripts/check-private-ci-destination.sh'
+      - 'scripts/test-private-ci-destination.sh'
+      - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
+  push:
+    paths:
+      - 'scripts/check-private-ci-destination.sh'
+      - 'scripts/test-private-ci-destination.sh'
+      - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
+permissions:
+  contents: read
+jobs:
+  preflight-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert private CI guard fail-closed behavior
+        run: bash scripts/test-private-ci-destination.sh
