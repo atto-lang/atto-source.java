@@ -354,6 +354,24 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Detached guest-facing actor failure. Never retains a raw exception,
+     * stack frame, cause chain or actor-owned mutable object.
+     */
+    public static final class ActorFailureSnapshotException extends RuntimeException {
+        private final ActorFailureNotice notice;
+
+        private ActorFailureSnapshotException(ActorFailureNotice notice) {
+            super("actor " + notice.actor() + " terminated: "
+                    + notice.terminal().delivered()
+                    + " (origin=" + notice.terminal().origin() + ")",
+                    null, false, false);
+            this.notice = notice;
+        }
+
+        public ActorFailureNotice notice() { return notice; }
+    }
+
     private static String boundedDiagnosticType(Throwable failure) {
         // Never call untrusted getMessage()/toString() while finalizing.
         // Keep the class name as a bounded host-owned ASCII string.
@@ -1923,6 +1941,13 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        // Lazily allocated, noncancellable sanitized views for actor, root
+        // scheduler and Mailman contexts. Trusted hosts retain the original
+        // diagnostics through their existing observer Future API.
+        private final AtomicReference<OresFuture<Void>> guestReadyView = new AtomicReference<>();
+        private final AtomicReference<OresFuture<ActorRef<M>>> guestReadyRefView =
+                new AtomicReference<>();
+        private final AtomicReference<OresFuture<Void>> guestDoneView = new AtomicReference<>();
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind) {
@@ -1962,6 +1987,43 @@ public final class ActorRuntime implements AutoCloseable {
             return Optional.ofNullable(terminalFailureNotice.get());
         }
 
+        private Throwable guestFailureSnapshot(Throwable failure) {
+            // A graceful stop before readiness is not a guest panic.
+            var terminal = failure instanceof ActorTerminatedException
+                    && failure.getCause() == null
+                    ? ExceptionBoundaryPolicy.actorTerminal(ExceptionBoundaryPolicy.Effect.CANCEL)
+                    : actorTerminalOf(OresFuture.unwrap(failure));
+            var current = terminalFailureNotice.get();
+            ActorFailureNotice notice = current != null
+                    ? current : new ActorFailureNotice(id, Optional.empty(), kind,
+                            terminal, Optional.empty(),
+                            boundedDiagnosticType(OresFuture.unwrap(failure)));
+            return new ActorFailureSnapshotException(notice);
+        }
+
+        private <T> OresFuture<T> observerView(
+                OresFuture<T> source,
+                AtomicReference<OresFuture<T>> guestCache) {
+            if (!inActorExecution()
+                    && !inActorGroupMailmanExecution()
+                    && OresScheduler.current() == null) {
+                return source;
+            }
+            OresFuture<T> cached = guestCache.get();
+            if (cached != null) return cached;
+            OresFuture<T> detached = new OresFuture<>(() -> false, () -> { });
+            if (guestCache.compareAndSet(null, detached)) {
+                // Runtime bookkeeping only. Never invoke guest user code on a
+                // failed child's carrier or completion thread.
+                source.whenCompleteRuntime((value, failure) -> {
+                    if (failure == null) detached.completeFromRuntime(value);
+                    else detached.failFromRuntime(guestFailureSnapshot(failure));
+                });
+                return detached;
+            }
+            return guestCache.get();
+        }
+
         /**
          * Actor initialization barrier. Accessing ready starts an unstarted
          * actor on its own dispatcher, even if no first message was sent.
@@ -1970,7 +2032,7 @@ public final class ActorRuntime implements AutoCloseable {
         public OresFuture<Void> ready() {
             ActorCell<?> cell = actors.get(id);
             if (cell != null && !cell.stopped.get()) cell.schedule();
-            return readyFuture;
+            return observerView(readyFuture, guestReadyView);
         }
 
         /**
@@ -1987,8 +2049,9 @@ public final class ActorRuntime implements AutoCloseable {
          * cancels the actor. Completion means on_start succeeded, not done.
          */
         public OresFuture<ActorRef<M>> readyRef() {
-            ready();
-            return readyRefFuture;
+            ActorCell<?> cell = actors.get(id);
+            if (cell != null && !cell.stopped.get()) cell.schedule();
+            return observerView(readyRefFuture, guestReadyRefView);
         }
 
         /**
@@ -1996,7 +2059,7 @@ public final class ActorRuntime implements AutoCloseable {
          * Exceptional termination is reported as a failed Future.
          */
         public OresFuture<Void> done() {
-            return doneFuture;
+            return observerView(doneFuture, guestDoneView);
         }
 
         /** Java host accessor corresponding to Oreslang's get_done(). */
