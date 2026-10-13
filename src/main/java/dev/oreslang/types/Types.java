@@ -9,7 +9,7 @@ public final class Types {
     private Types() { }
     private static final AtomicLong NEXT_HOLE_ID = new AtomicLong(1);
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Any, UnknownValue, Unknown, InferenceHole { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Any, UnknownValue, Unknown, InferenceHole { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -103,6 +103,90 @@ public final class Types {
 
     public record StringLiteral(String value) implements Type { }
 
+    /** Compile-time singleton boolean; unlike Primitive.BOOL it is not the entire boolean domain. */
+    public record BoolLiteral(boolean value) implements Type { }
+
+    /** The complement of excluded in the universe of Oreslang values. */
+    public record Not(Type excluded) implements Type {
+        public Not { Objects.requireNonNull(excluded, "excluded type"); }
+    }
+
+    public static Type notOf(Type type) {
+        Objects.requireNonNull(type, "type");
+        return type instanceof Not not ? not.excluded() : new Not(type);
+    }
+
+    /**
+     * A conservative disjointness proof, never a runtime guess.
+     *
+     * Unknown and generics must not pass a negative type merely because
+     * ordinary dynamic compatibility treats them permissively. Structural
+     * absence is not proof: a narrowed/widened record view may hide fields.
+     */
+    public static boolean areProvablyDisjoint(Type first, Type second) {
+        if (containsUncertainType(first) || containsUncertainType(second)) return false;
+        if (first.equals(second)) return false;
+        if (first instanceof Union union) {
+            return union.options().stream().allMatch(option -> areProvablyDisjoint(option, second));
+        }
+        if (second instanceof Union union) {
+            return union.options().stream().allMatch(option -> areProvablyDisjoint(first, option));
+        }
+        if (first instanceof Not not) {
+            return isAssignable(second, not.excluded()) && !containsUncertainType(second);
+        }
+        if (second instanceof Not not) {
+            return isAssignable(first, not.excluded()) && !containsUncertainType(first);
+        }
+        if (first instanceof BoolLiteral a && second instanceof BoolLiteral b) return a.value() != b.value();
+        if (first instanceof BoolLiteral) return second != Primitive.BOOL
+                && second != Primitive.VOID && second != Primitive.NULL
+                && !(second instanceof Not);
+        if (second instanceof BoolLiteral) return areProvablyDisjoint(second, first);
+        if (first instanceof StringLiteral && second instanceof StringLiteral) return !first.equals(second);
+        if (first instanceof StringLiteral) return second != Primitive.STRING;
+        if (second instanceof StringLiteral) return areProvablyDisjoint(second, first);
+        if (first instanceof Primitive a && second instanceof Primitive b) {
+            // Numeric widening makes primitive numeric domains potentially overlap.
+            return a != b && !(isNumeric(a) && isNumeric(b));
+        }
+        if (first instanceof Record a && second instanceof Record b) {
+            // Only conflicting *known* fields prove disjointness. Missing keys do not.
+            for (var entry : a.members().entrySet()) {
+                Type candidate = b.members().get(entry.getKey());
+                if (candidate != null && areProvablyDisjoint(entry.getValue(), candidate)) return true;
+            }
+            return false;
+        }
+        if (first instanceof Record && second instanceof Primitive
+                || second instanceof Record && first instanceof Primitive) return true;
+        if (first instanceof Named && second instanceof Primitive
+                || second instanceof Named && first instanceof Primitive) return true;
+        if (first instanceof ListType && second instanceof Primitive
+                || second instanceof ListType && first instanceof Primitive) return true;
+        if (first instanceof Tuple && second instanceof Primitive
+                || second instanceof Tuple && first instanceof Primitive) return true;
+        return false; // Not knowing if types overlap is NOT proof of exclusion.
+    }
+
+    private static boolean containsUncertainType(Type type) {
+        if (type == Unknown.INSTANCE || type == Any.INSTANCE
+                || type == UnknownValue.INSTANCE || type instanceof InferenceHole
+                || type instanceof Generic) return true;
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
+        if (type instanceof Not not) return containsUncertainType(not.excluded());
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUncertainType);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsUncertainType);
+        if (type instanceof ListType list) return containsUncertainType(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUncertainType);
+        if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUncertainType)
+                || containsUncertainType(function.result());
+        if (type instanceof Borrow borrow) return containsUncertainType(borrow.target());
+        if (type instanceof SelfType self) return containsUncertainType(self.bound());
+        return false;
+    }
+
+
     /**
      * A statically known Oreslang value whose concrete type is hidden from the
      * current scope. Any is NOT a dynamically unchecked operation permission.
@@ -163,7 +247,7 @@ public final class Types {
         if (type == Primitive.VOID || type == Primitive.NULL
                 || type == Unknown.INSTANCE || type == UnknownValue.INSTANCE
                 || type instanceof Generic || type instanceof InferenceHole
-                || type instanceof Borrow
+                || type instanceof Not || type instanceof Borrow
                 || type instanceof SelfType || type instanceof Function
                 || type instanceof ClassNamespace) return false;
         if (type instanceof ListType list) return safelyHideConcreteType(list.element());
@@ -196,6 +280,7 @@ public final class Types {
     public static boolean containsOpaqueTop(Type type) {
         if (type == Any.INSTANCE || type == UnknownValue.INSTANCE
                 || type instanceof InferenceHole) return true;
+        if (type instanceof Not not) return containsOpaqueTop(not.excluded());
         if (type instanceof SelfType self) return containsOpaqueTop(self.bound());
         if (type instanceof Borrow borrow) return containsOpaqueTop(borrow.target());
         if (type instanceof ListType list) return containsOpaqueTop(list.element());
@@ -213,6 +298,14 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        // Negative constraints must precede all inference, top-type and
+        // nominal widening cases. Only positive proof of disjointness passes.
+        if (to instanceof Not negative) {
+            if (from instanceof Not source) return source.excluded().equals(negative.excluded());
+            return areProvablyDisjoint(from, negative.excluded());
+        }
+        if (from instanceof Not) return false;
+        if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
         if (from.equals(to)) return true;
         // Inference identities never act as untyped values or wildcard type
         // witnesses. Contextual resolution is performed by the checker, not
