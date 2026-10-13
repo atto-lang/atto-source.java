@@ -22,6 +22,20 @@ public final class CriticalGate {
     private static final IdentityHashMap<Object, CriticalGate> WAITING_ON =
             new IdentityHashMap<>();
     public enum Mode { READ, WRITE }
+
+    // A throwing internal close observer cannot strand a granted successor
+    // or leave another actor's STOP/domain-close cleanup unfinished.
+    private static Throwable recordCleanupFailure(Throwable prior, Throwable next) {
+        if (prior == null) return next;
+        if (prior != next) prior.addSuppressed(next);
+        return prior;
+    }
+
+    private static void throwCleanupFailure(Throwable failure) {
+        if (failure instanceof Error error) throw error;
+        if (failure instanceof RuntimeException runtime) throw runtime;
+    }
+
     public static final int MAX_ACTIVE_READERS = MAX_WAITERS;
     private final ArrayDeque<Ticket> waiters = new ArrayDeque<>();
     private final IdentityHashMap<Ticket, Boolean> readers = new IdentityHashMap<>();
@@ -276,20 +290,39 @@ public final class CriticalGate {
                 }
                 wake = drainLocked();
             }
-            removeActorTracking.run();
-            notifyWrapper.run();
+            Throwable cleanupFailure = null;
+            try {
+                removeActorTracking.run();
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = recordCleanupFailure(cleanupFailure, failure);
+            }
+            try {
+                notifyWrapper.run();
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = recordCleanupFailure(cleanupFailure, failure);
+            }
             if (cancelledWaiter != null) cancelledWaiter.countDown();
-            if (!admitted.isDone()) {
-                admitted.failFromRuntime(new CancellationException("critical ticket released"));
+            try {
+                if (!admitted.isDone()) {
+                    admitted.failFromRuntime(new CancellationException("critical ticket released"));
+                }
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = recordCleanupFailure(cleanupFailure, failure);
             }
             for (Ticket candidate : wake) {
-                if (candidate.isHeld()) candidate.admitted.completeFromRuntime(null);
-                java.util.concurrent.CountDownLatch signal;
-                synchronized (COORDINATOR) {
-                    signal = candidate.synchronousWaiter;
+                try {
+                    if (candidate.isHeld()) candidate.admitted.completeFromRuntime(null);
+                } catch (RuntimeException | Error failure) {
+                    cleanupFailure = recordCleanupFailure(cleanupFailure, failure);
+                } finally {
+                    java.util.concurrent.CountDownLatch signal;
+                    synchronized (COORDINATOR) {
+                        signal = candidate.synchronousWaiter;
+                    }
+                    if (signal != null) signal.countDown();
                 }
-                if (signal != null) signal.countDown();
             }
+            throwCleanupFailure(cleanupFailure);
         }
     }
 
@@ -402,20 +435,45 @@ public final class CriticalGate {
         // Whole-domain shutdown bypasses Ticket.close(); otherwise actor
         // registration and RW facade wrappers would remain retained until
         // their owning actor eventually stopped.
-        for (Runnable deregister : deregisterActor) deregister.run();
-        for (Runnable notify : notifyWrappers) notify.run();
+        Throwable cleanupFailure = null;
+        for (Runnable deregister : deregisterActor) {
+            try {
+                deregister.run();
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = recordCleanupFailure(cleanupFailure, failure);
+            }
+        }
+        for (Runnable notify : notifyWrappers) {
+            try {
+                notify.run();
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = recordCleanupFailure(cleanupFailure, failure);
+            }
+        }
         // A STOP may close the core gate directly, bypassing the RW facade's
         // public close(). Invalidate that facade's owner registry before
         // publishing terminal futures, or a stale owner can block an entirely
         // different gate on the same logical task.
         CriticalRwGate facade;
         synchronized (this) { facade = rwFacade; }
-        if (facade != null) facade.onEngineClosed();
-        for (Ticket ticket : revoke) {
-            ticket.admitted.failFromRuntime(
-                    new CancellationException("critical domain closed"));
-            if (ticket.synchronousWaiter != null) ticket.synchronousWaiter.countDown();
+        if (facade != null) {
+            try {
+                facade.onEngineClosed();
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = recordCleanupFailure(cleanupFailure, failure);
+            }
         }
+        for (Ticket ticket : revoke) {
+            try {
+                ticket.admitted.failFromRuntime(
+                        new CancellationException("critical domain closed"));
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = recordCleanupFailure(cleanupFailure, failure);
+            } finally {
+                if (ticket.synchronousWaiter != null) ticket.synchronousWaiter.countDown();
+            }
+        }
+        throwCleanupFailure(cleanupFailure);
     }
 
     public int activeReaderCount() {
