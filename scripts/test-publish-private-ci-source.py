@@ -86,7 +86,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         def revoke_after_blob(route, method="GET", payload=None):
             result = original(route, method, payload)
             if route == "repos/trusted/ci/git/blobs":
-                self.approval.write_text("# approval revoked\\n")
+                self.approval.write_text("# approval revoked")
             return result
         with patch.object(pub, "gh_api", side_effect=revoke_after_blob):
             with self.assertRaisesRegex(pub.Denied, "approval policy changed"):
