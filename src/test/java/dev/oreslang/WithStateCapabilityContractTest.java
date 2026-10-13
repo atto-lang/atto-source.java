@@ -179,6 +179,38 @@ final class WithStateCapabilityContractTest {
         }
     }
 
+    @Test void unaryAndMutableBorrowCannotEscapeActorStateLoan() {
+        // 'rt borrow mut' lowers to UnaryExpr("&mut") rather than a
+        // RuntimeCallExpr("borrow"), so both AST spellings need a sealed gate.
+        for (String borrow : new String[] {
+            "rt borrow mut s.v", "&mut s.v", "&s.v"
+        }) {
+            for (String callback : new String[] {
+                "self.handle_state(|s| -> { " + borrow + "; return s.v; })",
+                "using state.read(|s| -> { " + borrow + "; return s.v; })",
+                "self.handle_state(critical |s| -> { " + borrow + "; return s.v; })",
+                "using state.write(critical |s| -> { " + borrow + "; return s.v; })"
+            }) {
+                String code = actor("with state.read, state.write", callback);
+                Ast.Program program = Parser.parse(code);
+                IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(program), callback);
+                assertTrue(denied.getMessage().contains("state-backed borrow"),
+                    denied::getMessage);
+            }
+        }
+    }
+
+    @Test void scopedStateLoanDoesNotRejectUnrelatedLocalBorrow() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { const local = 7; &local; return s.v; })",
+            "using state.read(|s| -> { const local = 7; &local; return s.v; })"
+        }) {
+            assertDoesNotThrow(() -> ActorStateContract.verify(
+                Parser.parse(actor("with state.read", callback))), callback);
+        }
+    }
+
     @Test void sealedCallbackEffectsFollowLoweringAndCannotBeForged() {
         Ast.Program p = Parser.parse(actor("with state.read",
                 "using state.read(|s| -> { return s.v; })"));
