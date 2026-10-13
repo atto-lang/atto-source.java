@@ -70,43 +70,54 @@ public final class OresMutex {
      * timeout-complete it, or obtrude a value. Otherwise a queued lock request
      * could be detached from the mutex's domain/permit accounting.</p>
      */
-    public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
-        private GuardFuture() { }
+    /**
+     * A runtime CompletionStage boundary that cannot park a scheduler carrier,
+     * including dependent stages returned by thenApply/thenCompose/etc.
+     * Never expose an ordinary pending CompletableFuture derived from an
+     * actor-owned lock operation as a blocking guest-accessible bridge.
+     */
+    public static class CarrierSafeFuture<T> extends CompletableFuture<T> {
+        protected CarrierSafeFuture() { }
 
-        // CompletableFuture is used as the public lock-async surface. Its
-        // inherited join/get blocking bridges must not bypass OresFuture's
-        // scheduler/actor carrier safety invariant.
+        @Override
+        public <U> CompletableFuture<U> newIncompleteFuture() {
+            return new CarrierSafeFuture<>();
+        }
+
         private void rejectBlockingCarrierRead() {
             if (!isDone() && (ActorRuntime.inActorExecution()
                     || OresScheduler.current() != null
                     || OresScheduler.isSchedulerCarrierThread())) {
                 throw new WrongMutexDomainException(
-                        "unresolved SharedMutex GuardFuture cannot block an actor/scheduler carrier; await lock_async() instead");
+                        "unresolved SharedMutex completion cannot block an actor/scheduler carrier; use await instead");
             }
         }
 
         @Override
-        public Guard<T> join() {
+        public T join() {
             rejectBlockingCarrierRead();
             return super.join();
         }
 
         @Override
-        public Guard<T> get()
+        public T get()
                 throws InterruptedException, java.util.concurrent.ExecutionException {
             rejectBlockingCarrierRead();
             return super.get();
         }
 
         @Override
-        public Guard<T> get(long timeout, TimeUnit unit)
+        public T get(long timeout, TimeUnit unit)
                 throws InterruptedException, java.util.concurrent.ExecutionException,
                 java.util.concurrent.TimeoutException {
             Objects.requireNonNull(unit, "unit");
-            // Zero-timeout polling performs no blocking wait.
             if (timeout > 0L) rejectBlockingCarrierRead();
             return super.get(timeout, unit);
         }
+    }
+
+    public static final class GuardFuture<T> extends CarrierSafeFuture<Guard<T>> {
+        private GuardFuture() { }
 
         private boolean completeFromRuntime(Guard<T> guard) {
             return super.complete(guard);
