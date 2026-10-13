@@ -5,8 +5,6 @@ pub fnc b_value(): String {
 }
 
 fnc init(): void {
-  stdio.stdout.write("init-b:");
-  stdio.stdout.write(a_value());
-  stdio.stdout.write("|");
+  stdio.stdout.write("init-b|");
   return;
 }
