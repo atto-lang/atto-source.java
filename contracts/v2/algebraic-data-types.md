@@ -178,6 +178,12 @@ cannot establish exclusive-case uniqueness, especially with suspension.
 Synchronous and suspendable execution must both check all explicit legacy
 arms before running the uniquely selected body. In contrast, ordered
 `match ... over` must stop at the first successful guard.
+Each suspendable guard resumes at most once. A duplicate or late callback
+must not reevaluate a later arm, run another branch body, or deliver a second
+completion. Once a match finishes or fails, its pending continuation work
+must be discarded. A failing guard terminates matching rather than silently
+falling through; fatal host JVM `Error` conditions must propagate rather
+than being converted into recoverable guest match failures.
 Because the guard proof uses
 floating-point bounds, wide integer guard literals above exact binary64
 range (absolute value greater than 2^53) cannot prove disjointness.
