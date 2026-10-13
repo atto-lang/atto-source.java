@@ -805,6 +805,8 @@ public final class Ast {
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
+    /** Immutable Symbol literal syntax carrier; no runtime allocation during AST parsing. */
+    public record Symbol(String name) { }
     public record Imaginary(double coefficient) { }
     public record NameExpr(String name) implements Expr { }
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
