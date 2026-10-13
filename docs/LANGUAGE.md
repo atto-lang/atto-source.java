@@ -537,6 +537,44 @@ end
 
 Anonymous structs and array literals are values, not classes, and cannot be inherited from.
 
+## Channel select/when typed projections
+
+The canonical static selection form uses `when` and `-> { ... }`:
+
+```ores
+fnc consume(Channel<int> messages, Channel<{foo: string, bar: int}> records): void {
+  select {
+    when readch messages: int value -> {
+      stdio.println(value);
+    }
+    when readch records: const {foo: string} -> {
+      stdio.println(foo);
+    }
+  }
+}
+```
+
+`when readch channel: T name` defaults to a fixed `const` binding.
+`when readch channel: const [int first]` accepts a typed tuple prefix,
+`[_, string second]` skips the first field, and
+`when readch channel: const {foo: string}` extracts a known record/struct
+field. For a whole typed record use
+`when readch channel: const payload: {foo: string}` instead.
+The select arm receives **one message**; the projection is checked against
+the channel's `Channel<T>` payload and binds only the winning arm's local
+variables. A mismatch is a type-check failure rather than a second read or
+an alternate case. `case` and brace-only arm bodies remain compatibility
+syntax. `nb select` still obeys deferred-closure ownership/borrow rules.
+
+Source `record` declarations are not yet implemented; the existing
+`{foo: string}` type is the structural record shape, while
+`infer struct{foo: "x"}` and `struct{foo: string}{foo: "x"}`
+construct closed inline aggregates. Planned owned mutable text
+`StringBuffer` is distinct from the currently immutable Copy
+`string`/`String` scalar. See
+[STRING_RECORD_STRUCT_SELECT_ADT_CONTRACT.md](STRING_RECORD_STRUCT_SELECT_ADT_CONTRACT.md)
+for the full parity and ownership contracts.
+
 ## Inline values
 
 Oreslang structs always have a compile-time-known, closed field shape. The
