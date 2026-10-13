@@ -154,9 +154,7 @@ final class IntersectionTypeHardeningTest {
                 fnc consume({loan: &int} & {id: int} payload): void { return; }
                 """,
                 """
-                fnc passThrough({loan: &int} & {id: int} payload): {loan: &int} & {id: int} {
-                    return payload;
-                }
+                fnc consumeReverse({id: int} & {loan: &int} payload): void { return; }
                 """)) {
             IllegalArgumentException problem = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(source)));
