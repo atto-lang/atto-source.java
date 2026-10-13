@@ -2297,9 +2297,11 @@ public final class OresEvalRootNode extends RootNode {
                             if (completed.get()) continue;
                             try {
                                 work.run();
-                            } catch (RuntimeException | Error failure) {
-                                // Only the first failure can finish the match.
-                                // Do not keep dispatching arms after it fails.
+                            } catch (RuntimeException failure) {
+                                // Guest runtime failures terminate this match
+                                // exactly once. Fatal JVM Errors must propagate
+                                // to the carrier/supervisor, not masquerade as
+                                // recoverable guest match failures.
                                 if (completed.get()) throw failure;
                                 complete(task, SourceFlow.throwing(failure));
                             }
