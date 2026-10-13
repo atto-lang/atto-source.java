@@ -1265,6 +1265,10 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorOutputStream<M> {
         private final ActorId actorId;
         private final ChannelRuntime.Channel<ActorOutputEnvelope> channel;
+        // Fixed before channel.close(error) wakes cross-actor readers.
+        // Never place the producer's raw Throwable/cause graph in a guest
+        // task's output-stream Future.
+        private volatile ActorFailureSnapshotException detachedCloseFailure;
 
         private ActorOutputStream(
                 ActorId actorId,
@@ -1282,6 +1286,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> next() {
+            // Capture caller authority NOW, not on the producer's completion
+            // carrier. A Future callback can run after this actor/task exits.
+            final boolean guestReader = inActorExecution()
+                    || inActorGroupMailmanExecution()
+                    || OresScheduler.current() != null;
             OresFuture<ActorOutputEnvelope> read = channel.readAsync();
             OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> result =
                     new OresFuture<>(() -> read.cancel(false));
@@ -1295,11 +1304,20 @@ public final class ActorRuntime implements AutoCloseable {
                     } else if (terminal instanceof java.util.concurrent.CancellationException) {
                         result.cancel(false);
                     } else {
-                        result.failFromRuntime(
-                                terminal instanceof ChannelRuntime.ChannelClosedException
-                                        && terminal.getCause() != null
-                                                ? terminal.getCause()
-                                                : terminal);
+                        Throwable raw = terminal instanceof ChannelRuntime.ChannelClosedException
+                                && terminal.getCause() != null
+                                        ? terminal.getCause() : terminal;
+                        if (guestReader) {
+                            // Fail closed if an exceptional close somehow
+                            // lacked an admitted actor ownership snapshot.
+                            ActorFailureSnapshotException detached = detachedCloseFailure;
+                            result.failFromRuntime(detached == null
+                                    ? new IllegalStateException(
+                                            "actor output closed with an unavailable failure snapshot")
+                                    : detached);
+                        } else {
+                            result.failFromRuntime(raw);
+                        }
                     }
                     if (isDone()) actorOutputStreams.remove(this);
                     return;
@@ -1316,6 +1334,25 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void close(Throwable cause) {
+            if (cause != null) {
+                ActorCell<?> source = actors.get(actorId);
+                if (source != null) {
+                    ActorFailureNotice notice = source.ref.terminalFailureNotice.get();
+                    if (notice == null) {
+                        notice = new ActorFailureNotice(
+                                actorId,
+                                source.parent == null
+                                        ? Optional.empty() : Optional.of(source.parent.ref.id()),
+                                source.kind,
+                                actorTerminalOf(cause),
+                                Optional.ofNullable(source.ref.secondaryFailure.get()),
+                                boundedDiagnosticType(cause));
+                    }
+                    detachedCloseFailure = new ActorFailureSnapshotException(notice);
+                }
+            }
+            // The detached snapshot is visible before waking any guest
+            // listener: no callback may race ahead with a raw cause graph.
             channel.close(cause);
         }
 
