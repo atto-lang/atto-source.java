@@ -51,6 +51,21 @@ public final class NativeHttp implements AutoCloseable {
     }
 
     /**
+     * Serialize completion removal with registration on the same worker key.
+     * ConcurrentHashMap.newKeySet().size() is not a stable admission check
+     * when another thread removes directly from the set at the same time.
+     * The per-worker map compute boundary also orders worker death/removal.
+     */
+    static <K, V> void releasePoolAdmission(
+            ConcurrentHashMap<K, Set<V>> pendingByWorker,
+            K worker, V exchange) {
+        pendingByWorker.computeIfPresent(worker, (id, pending) -> {
+            pending.remove(exchange);
+            return pending;
+        });
+    }
+
+    /**
      * Select a worker slot with available capacity, rotating the start slot
      * after every successful selection. A saturated slot must not cause a
      * spurious 503 while another registered worker has free space.
@@ -249,8 +264,7 @@ public final class NativeHttp implements AutoCloseable {
             }
         }
         private void untrack(State state, ActorRuntime.ActorRef<?> worker) {
-            Set<State> pending = inFlight.get(worker);
-            if (pending != null) pending.remove(state);
+            releasePoolAdmission(inFlight, worker, state);
         }
         private synchronized void shutdownFor(Server listener) {
             if (server != listener || stopped) return;
