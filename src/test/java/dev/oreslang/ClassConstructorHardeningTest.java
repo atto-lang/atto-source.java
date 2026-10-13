@@ -196,6 +196,37 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void referenceValuedConstructorArgumentCannotEnterFieldInitializerWithoutOwnershipProof() {
+        String bad = """
+                define class Resource as
+                  final int id: 1;
+                end
+                define class Holder as
+                  final Resource resource: supplied_resource;
+                  constructor(Resource supplied_resource) { return; }
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(bad)));
+        assertTrue(failure.getMessage().contains("supplied_resource"));
+    }
+
+    @Test
+    void implicitConstructorArgumentsTupleCannotBypassFieldInitializerAdmission() {
+        String bad = """
+                define class Resource as
+                  final int id: 1;
+                end
+                define class Holder as
+                  final Resource resource: arguments[0];
+                  constructor(Resource supplied_resource) { return; }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(bad)));
+    }
+
+    @Test
     void constructorCannotOverwriteDeclarationInitializedParameterField() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
