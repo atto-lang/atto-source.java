@@ -386,6 +386,14 @@ public final class OwnershipChecker {
                 return;
             }
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
+            // The general destructuring path synthesizes independently owned
+            // bindings. It currently cannot track lifetimes for projections
+            // from a borrowed aggregate. Fail closed rather than silently
+            // converting the borrow into owned tuple/record components.
+            if (isBorrowValue(source)) {
+                throw error("destructuring a borrowed aggregate needs provenance-aware"
+                        + " field projection; use an explicit copy or borrow-aware binding");
+            }
             for (int i = 0; i < destructure.bindings().size(); i++) {
                 Ast.DestructureBinding binding = destructure.bindings().get(i);
                 if (binding.isDiscard()) continue;
@@ -829,6 +837,14 @@ public final class OwnershipChecker {
         }
 
         value = retainBorrowForBinding(value);
+        // A user-supplied type annotation cannot erase the lifetime of a
+        // borrowed initializer, even when the annotation happens to name the
+        // same readonly record fields. Unannotated aliases retain their loan.
+        if (binding.declaredType() != null && isBorrowValue(value)
+                && !binding.declaredType().isBorrow()) {
+            throw error("borrowed structural view cannot be rebound as an owned value;"
+                    + " preserve the explicit borrow type or construct an owned copy");
+        }
         Ast.TypeRef storedType = binding.declaredType() == null ? value.type : binding.declaredType();
         if (binding.inferredTypeName() != null) {
             // The fresh type name does not exist at runtime. Preserve the concrete
@@ -2145,6 +2161,7 @@ public final class OwnershipChecker {
         return value != null
                 && (value.kind == ValueKind.IMM_BORROW
                     || value.kind == ValueKind.MUT_BORROW
+                    || value.borrowSource != null
                     || (value.type != null && value.type.isBorrow()));
     }
 
