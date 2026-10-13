@@ -101,6 +101,47 @@ final class ExplicitVisibilityContractTest {
     }
 
     @Test
+    void unmarkedClassFieldsAndMethodsArePrivate() {
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class, onlyDeclaration("""
+                define pub class Vault as
+                  val int secret = 3;
+                  pub val int count = 5;
+                  get_secret(): int { return self.secret; }
+                  pub get_count(): int { return self.count; }
+                  static fnc hidden(): int { return 7; }
+                  pub static fnc visible(): int { return 8; }
+                end
+                """));
+        assertEquals(Ast.Visibility.PRIVATE, klass.fields().get(0).visibility());
+        assertEquals(Ast.Visibility.PUBLIC, klass.fields().get(1).visibility());
+        assertEquals(Ast.Visibility.PRIVATE, klass.methods().get(0).visibility());
+        assertEquals(Ast.Visibility.PUBLIC, klass.methods().get(1).visibility());
+        assertEquals(Ast.Visibility.PRIVATE, klass.methods().get(2).visibility());
+        assertEquals(Ast.Visibility.PUBLIC, klass.methods().get(3).visibility());
+    }
+
+    @Test
+    void implicitPrivateFieldAndMethodAreNotCallableFromOtherClass() {
+        IllegalArgumentException field = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.check(Parser.parse("""
+                        define pub class Vault as
+                          val int secret = 7;
+                        end
+                        fnc steal(Vault item): int { return item.secret; }
+                        """)));
+        assertTrue(field.getMessage().contains("private field"), field.getMessage());
+
+        IllegalArgumentException method = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.check(Parser.parse("""
+                        define pub class Vault as
+                          hidden(): int { return 42; }
+                        end
+                        fnc steal(Vault item): int { return item.hidden(); }
+                        """)));
+        assertTrue(method.getMessage().contains("private method"), method.getMessage());
+    }
+
+    @Test
     void conflictingPublicPrivateModifiersFailClosed() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("define pub private class Vault as end"));
