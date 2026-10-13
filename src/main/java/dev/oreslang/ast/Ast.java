@@ -737,10 +737,14 @@ public final class Ast {
             BindingKind bindingKind,
             String bindingName,
             List<Stmt> body,
-            boolean mutableReferent) {
+            boolean mutableReferent,
+            TypeRef bindingType) {
         public SelectArm {
             if (operation == ChannelOperation.DEFAULT && mutableReferent) {
                 throw new IllegalArgumentException("default select arm cannot carry mutable binding");
+            }
+            if (bindingType != null && (bindingName == null || operation == ChannelOperation.DEFAULT || operation == ChannelOperation.WRITE)) {
+                throw new IllegalArgumentException("typed select binding requires a readable arm and a name");
             }
             body = List.copyOf(body);
             if (operation == ChannelOperation.DEFAULT) {
@@ -764,9 +768,14 @@ public final class Ast {
             }
         }
         public SelectArm(ChannelOperation operation, Expr channel, Expr value,
+                         BindingKind bindingKind, String bindingName, List<Stmt> body,
+                         boolean mutableReferent) {
+            this(operation, channel, value, bindingKind, bindingName, body, mutableReferent, null);
+        }
+        public SelectArm(ChannelOperation operation, Expr channel, Expr value,
                          BindingKind bindingKind, String bindingName, List<Stmt> body) {
             this(operation, channel, value, bindingKind, bindingName, body,
-                    bindingKind == BindingKind.VAL);
+                    bindingKind == BindingKind.VAL, null);
         }
     }
 
