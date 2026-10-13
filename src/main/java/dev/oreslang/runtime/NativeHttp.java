@@ -89,6 +89,10 @@ public final class NativeHttp implements AutoCloseable {
         private final ActorRuntime.ActorKind kind;
         private final int poolSize;
         private final List<ActorRuntime.ActorRef<Object>> workers;
+        // One completion listener per worker, not one listener per request.
+        // Completed exchanges are removed so a long-lived worker cannot retain
+        // every historical HTTP request until its eventual termination.
+        private final Map<ActorRuntime.ActorRef<?>, Set<State>> inFlight = new ConcurrentHashMap<>();
         private long nextSlot;
         private final AtomicLong created = new AtomicLong(), reused = new AtomicLong();
         private volatile Server server;
@@ -122,6 +126,14 @@ public final class NativeHttp implements AutoCloseable {
                     actor = context.actors().spawnCodeActor(kind, code, type);
                     CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
                     workers.set(slot, actor);
+                    var registeredWorker = actor;
+                    inFlight.put(registeredWorker, ConcurrentHashMap.newKeySet());
+                    registeredWorker.done().whenCompleteRuntime((ignored, failure) -> {
+                        Set<State> pending = inFlight.remove(registeredWorker);
+                        if (pending != null) {
+                            for (State state : pending) state.abort(500);
+                        }
+                    });
                     created.incrementAndGet();
                     exchange.state.server.pooledCreated.incrementAndGet();
                 }
@@ -135,7 +147,14 @@ public final class NativeHttp implements AutoCloseable {
                             }
                     });
                 }
-                actor.send(exchange.moveToPooled(actor));
+                String token = exchange.moveToPooled(actor);
+                Set<State> pending = inFlight.computeIfPresent(actor, (key, current) -> {
+                    current.add(exchange.state);
+                    return current;
+                });
+                if (pending == null) throw new IllegalStateException("pooled actor terminated during dispatch");
+                exchange.state.poolHandler = this;
+                actor.send(token);
             } catch (RuntimeException failure) {
                 // A dispatch failure belongs to this exchange. In particular,
                 // never cancel an existing pooled worker that may have other
@@ -144,6 +163,10 @@ public final class NativeHttp implements AutoCloseable {
                 if (fresh || actor == null || !context.actors().isAlive(actor)) workers.set(slot, null);
                 exchange.state.abort(500);
             }
+        }
+        private void untrack(State state, ActorRuntime.ActorRef<?> worker) {
+            Set<State> pending = inFlight.get(worker);
+            if (pending != null) pending.remove(state);
         }
         private synchronized void shutdownFor(Server listener) {
             if (server != listener || stopped) return;
@@ -367,6 +390,7 @@ public final class NativeHttp implements AutoCloseable {
         final Map<String, List<String>> params = new LinkedHashMap<>();
         ScheduledFuture<?> deadline;
         ActorRuntime.ActorRef<?> actor;
+        Handler poolHandler;
         boolean pooled;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
@@ -404,6 +428,7 @@ public final class NativeHttp implements AutoCloseable {
                 if (deadline != null) deadline.cancel(false);
             }
             if (server.active.remove(this)) {
+                if (poolHandler != null && actor != null) poolHandler.untrack(this, actor);
                 if (CorePerf.enabled()) {
                     CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
                 }
@@ -446,7 +471,9 @@ public final class NativeHttp implements AutoCloseable {
                 String token = UUID.randomUUID().toString(); state.ticket = token;
                 Exchange moved = new Exchange(state, destination.id(), state.generation);
                 transfers.put(token, moved);
-                destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
+                // Pooled workers have one shared done-listener in Handler,
+                // which aborts only their still-active registered exchanges.
+                if (!pooled) destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
                 return token;
             }
         }
