@@ -187,6 +187,28 @@ final class ModuleVisibilityProofTest {
     }
 
     @Test
+    void editingPrivateModuleDoesNotInvalidateASeparatePublicImport() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        String entry = "import fnc exposed from './lib';\n"
+                + "pub fnc main(): int { return exposed(); }\n";
+        String publicApi = "pub fnc exposed(): int { return 1; }\n";
+        String hiddenBefore = "define module Internal as\n"
+                + "  pub fnc secret(): int { return 3; }\nend\n";
+        String hiddenAfter = "define private module Internal as\n"
+                + "  pub fnc secret(): int { return 4; }\nend\n";
+        Map<String, String> original = Map.of(
+                "pkg/lib.ores", publicApi + hiddenBefore,
+                "pkg/main.ores", entry);
+        compiler.compile(original);
+        var updated = compiler.compile(Map.of(
+                "pkg/lib.ores", publicApi + hiddenAfter,
+                "pkg/main.ores", entry));
+        assertTrue(updated.rebuilt().contains("pkg/lib.ores"));
+        assertTrue(updated.reused().contains("pkg/main.ores"),
+                "private named module edits must not change public ABI");
+    }
+
+    @Test
     void explicitlyPublicFileRootMembersRemainImportable() {
         Map<String, String> files = Map.of(
                 "pkg/lib.ores",
