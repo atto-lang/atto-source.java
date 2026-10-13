@@ -95,8 +95,11 @@ disjointness from identical/overlapping structural shapes.
    tuple cross-products, and finite enum payloads. It rejects arms
    collectively made unreachable by earlier unconditional arms.
    Infinite, oversized, opaque and unresolved domains use a
-   conservative constructor/payload check instead. These checks
-   are not yet a general symbolic decision-matrix solver.
+   conservative constructor/payload check instead. Java constructs the
+   finite witness set only once per match and maintains incremental
+   unguarded-arm coverage. It caps match bodies at 4096 arms to prevent
+   unbounded compiler work. These checks are not yet a general symbolic
+   decision-matrix solver.
 8. Enum growth changes the resolved domain of `...Enum`; downstream
    exhaustive match compilation must be invalidated. Wire schema
    compatibility and deployed sender/receiver negotiation are
@@ -153,6 +156,43 @@ implemented. Standalone `Option` and `Result` remain ADT match subjects.
 - Equality and hashing depend on nominal identity and recursively
   equality-comparable payloads; hash-map admission needs immutable
   `Hash`/`Eq` keys. Do not hash only wire tags.
+
+## Ordered versus exclusive match safety
+
+Canonical `match value over` is an ordered first-match decision and may
+contain intentionally overlapping patterns (subject to unreachable-arm
+diagnostics). The legacy bare `match value` form is **exclusive**: exactly
+one non-fallback arm may succeed for each value. The Java runtime already
+enforces this with an ambiguous-match exception, so its type checker must
+prove explicit arms pairwise disjoint rather than treating them as ordered.
+
+Distinct registered nominal enum case tags, disjoint finite literals,
+and disjoint tuple/product projections can establish this proof.
+Numeric literals must compare with runtime equality semantics:
+`1` and `1.0` can match the same value, including nested literal
+constructor patterns. Guard-range disjointness is permitted only for
+identical patterns binding the same projection. Because the proof uses
+floating-point bounds, wide integer guard literals above exact binary64
+range (absolute value greater than 2^53) cannot prove disjointness.
+Opaque, imprecise, or overlapping cases fail closed; use `match ... over`
+when precedence is intentional.
+
+Both parser and type checker limit match bodies to 4096 arms. Parser-side
+admission prevents oversized source programs from forcing AST allocation
+before the semantic pass. These limits and guard restrictions are language
+safety contracts, not proof that full Java/Graal or LLVM tests have passed.
+
+## Executable differential corpus
+
+`contracts/v2/adt-conformance/cases.toml` is the versioned canonical
+Java/LLVM fixture manifest; `AdtConformanceCorpusTest` runs it under
+GraalVM (with compiler rejection and guest-stdout expectations). The
+manifest explicitly marks LLVM `pending` until native lowering and
+execution are verified. The corpus and exact-source Git tree identity
+are necessary integration assets, **not** evidence of passed tests.
+Recent external workflow runs failed with `startup_failure` before any
+JVM/Maven/JUnit step. The Java PR stays draft and must not be merged on
+source review alone.
 
 ## Required conformance matrix before language-level ADT parity
 

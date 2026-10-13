@@ -267,14 +267,14 @@ final class AlgebraicDataTypeMatchTest {
         // The two leading-bit patterns partition the entire product.
         String members = String.join(", ", java.util.Collections.nCopies(12, "bool"));
         String suffix = ", " + String.join(", ", java.util.Collections.nCopies(11, "_"));
-        String prefix = "fnc classify(Tuple[" + members + "] input): int {\\n"
-                + "match input over\\n";
-        String arms = "on (true" + suffix + ") -> { return 1; }\\n"
-                + "on (false" + suffix + ") -> { return 0; }\\n";
+        String prefix = "fnc classify(Tuple[" + members + "] input): int {\n"
+                + "match input over\n";
+        String arms = "on (true" + suffix + ") -> { return 1; }\n"
+                + "on (false" + suffix + ") -> { return 0; }\n";
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
-                prefix + arms + "end\\n}")));
+                prefix + arms + "end\n}")));
         assertTrue(rejects(prefix + arms
-                + "on _ -> { return -1; }\\nend\\n}")
+                + "on _ -> { return -1; }\nend\n}")
                 .getMessage().contains("unreachable match arm"));
     }
 
@@ -283,26 +283,30 @@ final class AlgebraicDataTypeMatchTest {
         // 13 bools = 8192 values; do not truncate to the first 4096.
         String members = String.join(", ", java.util.Collections.nCopies(13, "bool"));
         String suffix = ", " + String.join(", ", java.util.Collections.nCopies(12, "_"));
-        String prefix = "fnc classify(Tuple[" + members + "] input): int {\\n"
-                + "match input over\\n";
-        String arms = "on (true" + suffix + ") -> { return 1; }\\n"
-                + "on (false" + suffix + ") -> { return 0; }\\n";
-        assertTrue(rejects(prefix + arms + "end\\n}")
+        String prefix = "fnc classify(Tuple[" + members + "] input): int {\n"
+                + "match input over\n";
+        String arms = "on (true" + suffix + ") -> { return 1; }\n"
+                + "on (false" + suffix + ") -> { return 0; }\n";
+        assertTrue(rejects(prefix + arms + "end\n}")
                 .getMessage().contains("non-exhaustive match"));
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
-                prefix + arms + "on _ -> { return -1; }\\nend\\n}")));
+                prefix + arms + "on _ -> { return -1; }\nend\n}")));
     }
 
     @Test
     void oversizedMatchArmMatrixFailsBeforeQuadraticProofWork() {
         StringBuilder source = new StringBuilder(
-                "fnc classify(bool input): int {\\nmatch input over\\n");
+                "fnc classify(bool input): int {\nmatch input over\n");
         for (int i = 0; i <= 4096; i++) {
-            source.append("on true -> { return 1; }\\n");
+            source.append("on true -> { return 1; }\n");
         }
-        source.append("end\\n}");
-        assertTrue(rejects(source.toString())
-                .getMessage().contains("match exceeds 4096 arms"));
+        source.append("end\n}");
+        // Bound the parser itself; accepting 100k arms before TypeChecker
+        // notices the quota would still be an untrusted-source DoS.
+        IllegalArgumentException parsed = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(source.toString()));
+        assertTrue(parsed.getMessage().contains("match exceeds 4096 arms"),
+                parsed.toString());
     }
 
     @Test
@@ -344,7 +348,7 @@ final class AlgebraicDataTypeMatchTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(source);
         }
-        assertEquals("0\\n1\\n2\\n3\\n4\\n5".replace("\\n", "\n"),
+        assertEquals("0\n1\n2\n3\n4\n5",
                 output.toString(StandardCharsets.UTF_8).strip().replace("\r\n", "\n"));
     }
 
