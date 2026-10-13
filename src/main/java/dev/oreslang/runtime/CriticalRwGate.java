@@ -193,7 +193,9 @@ public final class CriticalRwGate implements AutoCloseable {
 
         public boolean isHeld() {
             synchronized (coordinator) {
-                return state == State.GRANTED && !closed;
+                // Closing the gate forbids *new* admission, but does not revoke
+                // a running owner's grant before its execution has unwound.
+                return state == State.GRANTED;
             }
         }
 
@@ -228,6 +230,26 @@ public final class CriticalRwGate implements AutoCloseable {
                 return;
             }
             finishClose();
+        }
+
+        /**
+         * Gate shutdown is not an ordinary lexical close: even if invoked
+         * *inside* the owning guest turn it cannot free a permit while that
+         * turn's instructions remain live. Only its terminal owner barrier
+         * can finish an active logical grant.
+         */
+        private void closeAfterOwnerUnwind() {
+            FencedLogicalOwner owner;
+            synchronized (coordinator) {
+                if (state == State.CLOSED || externalCloseRequested) return;
+                if (!(domain instanceof FencedLogicalOwner fenced)) {
+                    throw new IllegalStateException(
+                            "RW shutdown needs a fenced logical owner for deferred release");
+                }
+                externalCloseRequested = true;
+                owner = fenced;
+            }
+            owner.cancelAndReleaseAfterUnwind(this::finishClose);
         }
 
         private void finishClose() {
@@ -340,30 +362,59 @@ public final class CriticalRwGate implements AutoCloseable {
         synchronized (coordinator) { return writer != null; }
     }
 
-    /** Revoke every outstanding grant, pending waiter and future resume. */
+    /**
+     * Seal admissions immediately, but never release an active logical owner
+     * before its guest-turn unwind barrier. Pending waiters cannot execute guest
+     * code, so they may be revoked right away. A synchronous host thread has no
+     * runtime terminal Future; its grant remains held until that thread exits
+     * the lexical critical region and closes its own ticket.
+     *
+     * Shutdown does not park a scheduler/actor carrier. It may finish with
+     * active permits whose owners still need to unwind.
+     */
     @Override
     public void close() {
         List<Ticket> revoke = new ArrayList<>();
+        List<Ticket> deferred = new ArrayList<>();
         synchronized (coordinator) {
             if (closed) return;
             closed = true;
-            revoke.addAll(readers.keySet());
-            if (writer != null) revoke.add(writer);
             revoke.addAll(waiters);
-            readers.clear();
-            writer = null;
             WAITING_COUNT.addAndGet(-waiters.size());
             waiters.clear();
+            // Removing an active ticket from this registry is safe only
+            // after its owning execution barrier, not at shutdown request.
+            for (Ticket ticket : readers.keySet()) {
+                if (ticket.domain instanceof FencedLogicalOwner) {
+                    deferred.add(ticket);
+                } else if (!(ticket.domain instanceof Thread)) {
+                    revoke.add(ticket);
+                }
+            }
+            if (writer != null) {
+                if (writer.domain instanceof FencedLogicalOwner) {
+                    deferred.add(writer);
+                } else if (!(writer.domain instanceof Thread)) {
+                    revoke.add(writer);
+                }
+            }
             synchronized (DOMAIN_COORDINATOR) {
                 for (Ticket ticket : revoke) {
                     ticket.state = State.CLOSED;
                     if (ticket.domain != null) DOMAINS.remove(ticket.domain, ticket);
+                    if (ticket.mode == Mode.READ) readers.remove(ticket);
+                    else if (writer == ticket) writer = null;
                 }
             }
         }
         for (Ticket ticket : revoke) {
             ticket.admitted.failFromRuntime(
                     new CancellationException("RW gate closed during admission"));
+        }
+        // Never call owner cancellation under metadata/domain locks. A
+        // synchronous completion callback may run immediately on this caller.
+        for (Ticket ticket : deferred) {
+            ticket.closeAfterOwnerUnwind();
         }
     }
 }
