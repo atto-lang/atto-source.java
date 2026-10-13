@@ -13,38 +13,41 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/** Local channels carry owned callables; actor wire envelopes never do. */
+/** Channels are data-only transports, never executable callable envelopes. */
 final class ChannelCallableTransportTest {
     @Test
-    void localChannelsAdmitOwnedFunctionsAndNestedCallablePayloads() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc twice(int value): int { return value * 2; }
-                fnc ok(): void {
+    void localChannelsRejectFunctionsAndClassesEvenWhenOwned() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(): void {
                   val Channel<Fnc<int, int>> handlers = Channel.new<Fnc<int, int>>(1);
-                  val Fnc<int, int> callback = |x| -> { return x * 2; };
-                  writech handlers, callback;
                   return;
                 }
                 """)));
 
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define class HandlerBox as
                   val Fnc<int, int> callback;
                 end
-                fnc ok(Channel<HandlerBox> handlers): void { return; }
+                fnc bad(Channel<HandlerBox> handlers): void { return; }
+                """)));
+
+        // A class without a method or a callable field still has nominal
+        // identity and is not a statically closed data-only struct/record.
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class PlainBox as
+                  val int value;
+                end
+                fnc bad(Channel<PlainBox> handlers): void { return; }
                 """)));
     }
 
     @Test
-    void transferredCallableCannotBeUsedAgainBySender() {
+    void nestedCallablesNeverBecomeChannelDataThroughAnAggregate() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
-                  val Channel<Fnc<int, int>> handlers = Channel.new<Fnc<int, int>>(1);
-                  val Fnc<int, int> callback = |x| -> { return x * 2; };
-                  writech handlers, callback;
-                  callback(2);
-                  return;
-                }
+                fnc bad(Channel<{callback: Fnc<int, int>}> c): void { return; }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<Array<Option<Fnc<int, int>>>> c): void { return; }
                 """)));
     }
 
@@ -127,26 +130,13 @@ final class ChannelCallableTransportTest {
     }
 
     @Test
-    void localChannelCarriesCallableAtRuntime() throws Exception {
-        String program = """
+    void callableChannelIsRejectedBeforeRuntimeCreation() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 pub routine main(): void {
                   val Channel<Fnc<int, int>> handlers = Channel.new<Fnc<int, int>>(1);
-                  val Fnc<int, int> twice = |value| -> { return value * 2; };
-                  writech handlers, twice;
-                  val Fnc<int, int> received = readch handlers;
-                  stdio.stdout.write(received(21));
                   return;
                 }
-                """;
-        TypeChecker.check(Parser.parse(program));
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, program, "callable-channel.ores")
-                .mimeType(OresLanguage.MIME_TYPE).build();
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false).out(output).build()) {
-            context.eval(source);
-        }
-        assertEquals("42", output.toString(StandardCharsets.UTF_8));
+                """)));
     }
 
 }
