@@ -87,10 +87,20 @@ public final class FreeCallableOverloads {
         return null;
     }
 
+    private static String parameterTag(
+            Ast.FunctionDecl owner, int index, Set<String> enumOwners) {
+        Ast.TypeRef parameter = owner.parameters().get(index).type();
+        // The function's type parameters have lexical precedence over root
+        // enum names in TypeChecker.resolve(). A generic named "A" must NEVER
+        // be mistaken for root enum A merely because the spellings match.
+        if (owner.genericParameters().contains(parameter.name())) return null;
+        return declaredTag(parameter, enumOwners);
+    }
+
     private static boolean disjoint(Ast.FunctionDecl left, Ast.FunctionDecl right, Set<String> enumOwners) {
         for (int i = 0; i < left.parameters().size(); i++) {
-            String a = declaredTag(left.parameters().get(i).type(), enumOwners);
-            String b = declaredTag(right.parameters().get(i).type(), enumOwners);
+            String a = parameterTag(left, i, enumOwners);
+            String b = parameterTag(right, i, enumOwners);
             if (a != null && b != null && !a.equals(b)) return true;
         }
         return false;
@@ -171,7 +181,7 @@ public final class FreeCallableOverloads {
             if (candidate.parameters().size() != tags.size()) continue;
             boolean matches = true;
             for (int i = 0; i < tags.size(); i++) {
-                String declared = declaredTag(candidate.parameters().get(i).type(), enumOwners);
+                String declared = parameterTag(candidate, i, enumOwners);
                 // An unconstrained position is irrelevant to overload selection.
                 if (declared != null && !declared.equals(tags.get(i))) {
                     matches = false;
