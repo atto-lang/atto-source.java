@@ -4075,6 +4075,11 @@ public final class TypeChecker {
      * state field or a nested container cannot evade it by changing syntax.
      */
     private static void requireDetachedActorStateCallbackResult(Type result) {
+        // The synchronous interpreter's SealedActorState boundary now
+        // supports only flat List[int] detached copies. All other reference
+        // graphs still fail closed. This is not a general rt copy contract.
+        if (result instanceof ListType list
+                && list.element() == Primitive.INT) return;
         if (result instanceof Primitive) return;
         if (result instanceof StringLiteral) return;
         if (result instanceof Union union
