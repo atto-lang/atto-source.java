@@ -87,7 +87,7 @@ def check():
         pass
     else:
         raise AssertionError("duplicate nested JSON key escaped admission")
-    print("AOT manifest V1 schema: valid fixture and 30 negative checks passed")
+    print("AOT manifest V1 schema: valid fixture and 29 negative checks passed")
 
 if __name__ == "__main__":
     check()
