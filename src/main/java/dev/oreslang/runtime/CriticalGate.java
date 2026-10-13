@@ -109,6 +109,15 @@ public final class CriticalGate {
             return admitted;
         }
 
+        /** Admission observation is valid only once requested or revoked. */
+        public OresFuture<Void> admission() {
+            synchronized (COORDINATOR) {
+                if (!requested && !closed)
+                    throw new IllegalStateException("critical admission was not requested");
+            }
+            return admitted;
+        }
+
         /** Synchronous callers cannot suspend; never park an actor or ROOT carrier. */
         public void enterSync() {
             OresFuture<Void> ready = request(true);
