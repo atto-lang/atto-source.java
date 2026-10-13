@@ -75,7 +75,18 @@ public final class OresMutex {
 
         private boolean failQueuedFromRuntime(Throwable failure) {
             java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
-            return revoke != null && revoke.getAsBoolean() && super.completeExceptionally(failure);
+            if (revoke == null || !revoke.getAsBoolean()) return false;
+            try {
+                return super.completeExceptionally(failure);
+            } finally {
+                // A caller may retain a completed Future long after its mutex
+                // has been collected. Do not pin the AsyncWaiter, mutex payload,
+                // or former actor domain through the revocation closure.
+                // Only clear AFTER public terminal state is committed: clearing
+                // during deferred handoff would allow a late cancellation to
+                // destroy ownership of a guard not yet delivered.
+                if (super.isDone()) revokeQueuedWaiter = null;
+            }
         }
 
         @Override
@@ -86,15 +97,27 @@ public final class OresMutex {
                 // noncancellable until the resulting Guard is published.
                 return false;
             }
-            return super.cancel(mayInterruptIfRunning);
+            try {
+                return super.cancel(mayInterruptIfRunning);
+            } finally {
+                if (super.isDone()) revokeQueuedWaiter = null;
+            }
         }
 
         private boolean completeFromRuntime(Guard<T> guard) {
-            return super.complete(guard);
+            try {
+                return super.complete(guard);
+            } finally {
+                if (super.isDone()) revokeQueuedWaiter = null;
+            }
         }
 
         private boolean failFromRuntime(Throwable failure) {
-            return super.completeExceptionally(failure);
+            try {
+                return super.completeExceptionally(failure);
+            } finally {
+                if (super.isDone()) revokeQueuedWaiter = null;
+            }
         }
 
         @Override
