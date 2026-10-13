@@ -77,3 +77,18 @@ Legacy uninitialized val constructor filling and some positional field
 construction remain as explicit migration compatibility. Native LLVM does
 not yet support constructor-parameter initializers. Real Maven, AOT/hybrid,
 LLVM, sanitizer, and formatter results are still required before merging.
+
+## Audit hardening: initializer execution boundary
+
+Java does not bind self inside ordinary class field initializers.
+An unfinished object is not a legal initializer value. Initializer
+parameter frames contain copy-valued scalars only and carry no
+constructor-write authority.
+
+The ownership checker now visits ordinary class field initializer
+expressions, including borrowed results and mutex guard storage.
+The type checker rejects directly nested await, channel/select and
+other suspension operations during field initialization.
+
+Indirect calls with transitive effects, failed-initializer cleanup,
+and non-scalar transfer proofs still need end-to-end verification.
