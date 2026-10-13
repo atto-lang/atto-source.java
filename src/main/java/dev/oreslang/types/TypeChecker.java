@@ -69,6 +69,9 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
+    // Only an actual constructor may initialize an otherwise fixed, initially
+    // absent class field. Class methods never inherit constructor privileges.
+    private Ast.ClassDecl currentConstructorOwner;
     // Unlike private-member access, declaration origin must survive nlex.
     private Ast.ClassDecl lexicalClassOrigin;
     // Source modules have their own lexical value namespace. File-level
@@ -1028,14 +1031,17 @@ public final class TypeChecker {
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
+            Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
             currentActorKind = Ast.ActorKind.NONE;
             currentClassOwner = klass;
+            currentConstructorOwner = klass;
             lexicalClassOrigin = klass;
             try {
                 checkBlock(constructor.body(), constructorEnv, classGenerics, Primitive.VOID, self);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
+                currentConstructorOwner = previousConstructorOwner;
                 lexicalClassOrigin = previousLexicalClass;
             }
         }
@@ -4447,9 +4453,20 @@ public final class TypeChecker {
                     requireClassMemberVisible(
                             field.field().visibility(), field.owner(), "field", field.field().name());
                     if (writing && field.field().bindingKind() != Ast.BindingKind.LET) {
-                        throw new IllegalArgumentException(
-                                "cannot reassign final/fixed class field '"
-                                        + field.owner().name() + "." + field.field().name() + "'");
+                        // Preserve the pre-existing constructor assignment path
+                        // for fields declared without an initializer. A field
+                        // initialized in its declaration is NEVER writable
+                        // through that exception (including new 'final' fields).
+                        boolean initializingInConstructor =
+                                currentConstructorOwner == klass
+                                && field.field().initializer() == null
+                                && member.receiver() instanceof Ast.NameExpr root
+                                && root.name().equals("self");
+                        if (!initializingInConstructor) {
+                            throw new IllegalArgumentException(
+                                    "cannot reassign final/fixed class field '"
+                                            + field.owner().name() + "." + field.field().name() + "'");
+                        }
                     }
                     Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
