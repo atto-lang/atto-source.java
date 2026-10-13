@@ -48,8 +48,17 @@ public final class SourceCooperationQuantum {
      * Absolutely no clock reads or scheduler calls on the usual fast path.
      */
     public boolean completedBackedgeNeedsCheck() {
-        long completed = ++backedgesThisDispatch;
-        return (completed & (LOOP_CHECK_INTERVAL - 1)) == 0;
+        // Once a no-yield region has consumed the soft reduction budget,
+        // poll EVERY subsequent committed backedge. Otherwise a guard that
+        // closes between ordinary 64-backedge polls could delay an already
+        // overdue handoff, and a wrapped signed counter could erase the cap.
+        // Saturate at Long.MAX_VALUE rather than wrapping to a negative value.
+        long completed = backedgesThisDispatch;
+        if (completed != Long.MAX_VALUE) {
+            completed = ++backedgesThisDispatch;
+        }
+        return completed >= MAX_BACKEDGES_PER_DISPATCH
+                || (completed & (LOOP_CHECK_INTERVAL - 1)) == 0;
     }
 
     /** Slow path only: reduction cap, watchdog request, or active dispatch time.
