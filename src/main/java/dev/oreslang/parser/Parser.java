@@ -1557,6 +1557,11 @@ public final class Parser {
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
         if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
+        if (check(DO) && checkNext(MATCH)) {
+            advance();
+            consume(MATCH, "expected 'match' after 'do'");
+            return parseMatch(true);
+        }
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
         if (check(CB) && checkNext(SELECT)) {
@@ -1670,7 +1675,7 @@ public final class Parser {
             return new Ast.ForStmt(null, condition, null, parseLoopBody());
         }
         if (match(IF)) return parseIf();
-        if (match(MATCH)) return parseMatch();
+        if (match(MATCH)) return parseMatch(false);
         if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
@@ -1852,6 +1857,7 @@ public final class Parser {
 
             if (match(DEFAULT)) {
                 consume(COLON, "select default arm requires ':'");
+                match(ARROW);
                 if (!check(LBRACE)) {
                     throw error(peek(), "select default arm requires a braced body '{ ... }'");
                 }
@@ -2627,7 +2633,7 @@ public final class Parser {
         return expr;
     }
 
-    private Ast.MatchStmt parseMatch() {
+    private Ast.MatchStmt parseMatch(boolean explicitDo) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
         //     on Pattern -> { ... }
@@ -2686,7 +2692,7 @@ public final class Parser {
         // Canonical match is source-ordered. Legacy bare match retains the
         // old exclusivity/proof semantics unless explicitly written
         // `match first ...`.
-        return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms);
+        return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms, explicitDo);
     }
 
     private Ast.Pattern parsePattern() {
@@ -2752,6 +2758,10 @@ public final class Parser {
             }
             // Upper-case bare names are zero-arity constructors; lower-case names bind.
             if (!name.isEmpty() && Character.isUpperCase(name.charAt(0))) {
+                if (match(AS)) {
+                    return new Ast.ConstructorPattern(
+                            name, List.of(parseMatchRecordProjection()));
+                }
                 return new Ast.ConstructorPattern(name, List.of());
             }
             return new Ast.BindingPattern(name);
@@ -2761,6 +2771,29 @@ public final class Parser {
             throw error(peek(), "list patterns are not supported; use tuples for fixed structural matching");
         }
         throw error(peek(), "expected match pattern");
+    }
+
+    /**
+     * Constructor payload projection: on Some as {v, name} -> { ... }
+     * This is not a structural type inference or method lookup. Every
+     * projected key must be a statically declared field of the payload.
+     */
+    private Ast.RecordPattern parseMatchRecordProjection() {
+        consume(LBRACE, "match constructor 'as' requires record projection '{...}'");
+        if (check(RBRACE)) {
+            throw error(peek(), "match record projection must bind at least one field");
+        }
+        List<String> fields = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        do {
+            Token field = consume(IDENT, "match record projection requires a field name");
+            if (field.lexeme().equals("_") || !seen.add(field.lexeme())) {
+                throw error(field, "duplicate or invalid match record field '" + field.lexeme() + "'");
+            }
+            fields.add(field.lexeme());
+        } while (match(COMMA) && !check(RBRACE));
+        consume(RBRACE, "expected '}' after match record projection");
+        return new Ast.RecordPattern(fields);
     }
 
     private Ast.SwitchStmt parseSwitch() {
