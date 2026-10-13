@@ -380,12 +380,18 @@ remain unfinished. No guest code may execute during constant folding.
 Symbol literal `#ready` can be used in a `match` arm or `switch` case.
 Both dispatch using nominal Symbol identity and do not coerce Strings:
 ```ores
-return match status over
+do match status over
   on #ready -> { return 1; }
   on #'needs attention' -> { return 2; }
   on _ -> { return 0; }
 end
 ```
+The `return match`/`return switch`/blocking `return select` value forms
+are reserved but rejected in Java integration #892 until ARM_RESULT typing,
+cleanup and suspension lowering are integrated. They must not be reinterpreted
+as procedural function returns. Use `do match`/`do switch`/`do select`
+for currently supported procedural dispatch.
+
 Because `Symbol` is open-ended, an unguarded fallback is required unless
 the compiler can otherwise prove the match exhaustive.
 
