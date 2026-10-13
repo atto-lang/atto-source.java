@@ -140,10 +140,16 @@ the winning continuation and cannot be captured as outer references.
 The Java guest evaluator additionally rejects non-data runtime payloads
 before ordinary `writech`, static select registration and
 `SelectCase.write`, guarding against host/cast runtime injection.
-`Channel.new<T>` also constructs a **sealed data-only runtime channel**
-that carries the same guard: `tryWrite`, `writeAsync`, and even direct
-`ChannelRuntime.write(channel, value)` select-case construction validate
-payloads before registration/publication. An internal privileged
+`Channel.new<T>` also constructs a **sealed typed runtime channel**
+that retains its explicitly declared payload type. Every `tryWrite`,
+`writeAsync`, and direct `ChannelRuntime.write(channel, value)`
+select-case construction first rejects executable/capability objects and
+then validates the actual scalar/tuple/record/list/Option/Result shape
+against `T` before registration/publication. A differently shaped
+*data-only* value cannot silently masquerade as the declared `T`.
+The checks also apply when a runtime host attempts a forged write through
+a guest-created typed channel. Erased/indirect invocations of the channel
+factory without an explicit `T` are rejected. An internal privileged
 `ChannelRuntime.Channel<T>` without this validator still exists for
 supervisor/actor envelopes; direct untrusted host access to that
 constructor must not be exposed as the guest `Channel.new<T>` API.
