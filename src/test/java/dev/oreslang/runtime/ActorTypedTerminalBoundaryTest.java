@@ -479,6 +479,45 @@ final class ActorTypedTerminalBoundaryTest {
     }
 
     @Test
+    void outputReadStartedInGuestBeforeProducerFailureNeverLeaksRawCause() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var producer = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        throw ActorRuntime.GuestEffectSignal.raising(2030);
+                    });
+            var readStarted = new java.util.concurrent.CountDownLatch(1);
+            var observed = new java.util.concurrent.atomic.AtomicReference<OresFuture<?>>();
+            var reader = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        observed.set(producer.outputs().next());
+                        readStarted.countDown();
+                        context.self().stop();
+                    });
+
+            reader.send("read-before-crash");
+            assertTrue(readStarted.await(5, TimeUnit.SECONDS));
+            assertTrue(reader.awaitTermination(5, TimeUnit.SECONDS));
+            assertNotNull(observed.get());
+            assertFalse(observed.get().isDone(),
+                    "output read must remain pending until producer emits or terminates");
+
+            // Failure completes on the producer carrier after the reader has
+            // left its own guest turn, so callback-time authority is wrong.
+            producer.send("crash");
+            assertTerminated(producer, RAISE, 2030);
+            var failed = assertThrows(java.util.concurrent.CompletionException.class,
+                    () -> observed.get().join());
+            var snapshot = assertInstanceOf(
+                    ActorRuntime.ActorFailureSnapshotException.class, failed.getCause());
+            assertEquals(PANIC, snapshot.notice().terminal().delivered());
+            assertEquals(RAISE, snapshot.notice().terminal().origin());
+            assertEquals(2030, snapshot.notice().terminal().originCode());
+            assertNull(snapshot.getCause());
+            assertEquals(0, snapshot.getSuppressed().length);
+        }
+    }
+
+    @Test
     void compilerEffectSignalRejectsOutOfRangeCodes() {
         assertThrows(IllegalArgumentException.class,
                 () -> ActorRuntime.GuestEffectSignal.throwing(-1));
