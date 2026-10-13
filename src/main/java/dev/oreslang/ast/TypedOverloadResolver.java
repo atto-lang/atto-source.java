@@ -34,7 +34,8 @@ public final class TypedOverloadResolver {
                 throw new IllegalArgumentException("unsupported overload primitive: " + identity);
             }
             if (kind == Kind.NOMINAL_ENUM && (!identity.contains(".")
-                    || identity.startsWith(".") || identity.endsWith("."))) {
+                    || identity.startsWith(".") || identity.endsWith(".")
+                    || identity.contains(".."))) {
                 throw new IllegalArgumentException(
                         "enum overload identity must be module-qualified, got: " + identity);
             }
