@@ -773,6 +773,17 @@ final class OresSchedulerQuiescenceTest {
         } finally {
             scheduler.close();
         }
+        // The quiescence callback counts down `retired` *before* the
+        // TaskRunner's finally block publishes deadlineQuiescenceRetired and
+        // releases its semaphore permit. A successful retired.await() is
+        // therefore not a release-barrier, even after close(). Give the
+        // physical retirement a bounded chance to complete; a real lost
+        // reservation must still fail rather than being hidden by a skip.
+        long permitsDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (OresScheduler.availableWallDeadlineAdmissions() != before
+                && System.nanoTime() < permitsDeadline) {
+            Thread.sleep(1);
+        }
         assertEquals(before, OresScheduler.availableWallDeadlineAdmissions(),
                 "all deadline reservations must be released across races");
     }
