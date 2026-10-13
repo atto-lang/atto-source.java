@@ -447,7 +447,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             List<Ast.FieldDecl> classFields =
-                    effectiveFields(klass, new LinkedHashSet<>());
+                    effectiveFields(klass, declarationIdentitySet());
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             for (Ast.FieldDecl field : classFields) {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
@@ -460,7 +460,7 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.FieldDecl field : classFields) {
                 if (field.initializer() == null) continue;
                 OwnedField owned =
-                        findField(klass, field.name(), new LinkedHashSet<>());
+                        findField(klass, field.name(), declarationIdentitySet());
                 Ast.ClassDecl fieldOwner =
                         owned == null ? klass : owned.owner();
                 Env initializerEnv =
@@ -475,7 +475,7 @@ public final class OresEvalRootNode extends RootNode {
                     findMethod(
                             klass,
                             CallableSelector.instance("on_start", 0),
-                            new LinkedHashSet<>());
+                            declarationIdentitySet());
             if (startup != null) {
                 if (methodContainsPotentialSuspension(startup)) {
                     throw new IllegalStateException(
@@ -521,7 +521,7 @@ public final class OresEvalRootNode extends RootNode {
                     findMethod(
                             state.object().klass,
                             CallableSelector.instance("receive", 1),
-                            new LinkedHashSet<>());
+                            declarationIdentitySet());
             if (receive == null) {
                 throw new IllegalStateException(
                         "actor '" + state.object().klass.name()
@@ -2609,7 +2609,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator = findMethod(object.klass,
-                        CallableSelector.instance("Symbol.asyncIterator", 0), new LinkedHashSet<>());
+                        CallableSelector.instance("Symbol.asyncIterator", 0), declarationIdentitySet());
                 if (iterator != null) {
                     object.owner.requireClassMemberVisible(iterator.visibility(),
                             object.owner.declaringClass(iterator), env.accessClass(), "method", iterator.name());
@@ -4037,7 +4037,7 @@ public final class OresEvalRootNode extends RootNode {
                         object.owner.findMethod(
                                 object.klass,
                                 CallableSelector.instance(member.member(), args.size()),
-                                new LinkedHashSet<>());
+                                declarationIdentitySet());
                 if (method != null) {
                     object.owner.requireClassMemberVisible(
                             method.visibility(),
@@ -4052,7 +4052,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 OwnedField ownedField = object.owner.findField(
-                        object.klass, member.member(), new LinkedHashSet<>());
+                        object.klass, member.member(), declarationIdentitySet());
                 if (ownedField != null) {
                     object.owner.requireClassMemberVisible(
                             ownedField.field().visibility(), ownedField.owner(),
@@ -4075,7 +4075,7 @@ public final class OresEvalRootNode extends RootNode {
                         klass.owner().findStaticFunction(
                                 klass.klass(),
                                 CallableSelector.staticFunction(member.member(), args.size()),
-                                new LinkedHashSet<>());
+                                declarationIdentitySet());
                 if (method == null) {
                     throw new IllegalArgumentException(
                             "no static function " + klass.klass().name()
@@ -4165,7 +4165,7 @@ public final class OresEvalRootNode extends RootNode {
                             object.owner.findField(
                                     object.klass,
                                     member.member(),
-                                    new LinkedHashSet<>());
+                                    declarationIdentitySet());
                     if (targetField == null) {
                         throw new IllegalArgumentException(
                                 "unknown field " + member.member());
@@ -5388,7 +5388,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
 
                     Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
+                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), declarationIdentitySet());
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -5400,7 +5400,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
 
                     OwnedField ownedField = object.owner.findField(
-                            object.klass, methodCall.member(), new LinkedHashSet<>());
+                            object.klass, methodCall.member(), declarationIdentitySet());
                     if (ownedField != null) {
                         object.owner.requireClassMemberVisible(
                                 ownedField.field().visibility(),
@@ -5430,7 +5430,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof ClassFacade klass) {
                     Ast.MethodDecl fn = klass.owner().findStaticFunction(
-                            klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()), new LinkedHashSet<>());
+                            klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()), declarationIdentitySet());
                     if (fn == null) {
                         throw new IllegalArgumentException(
                                 "no static function " + klass.klass().name() + "." + methodCall.member()
@@ -5455,7 +5455,7 @@ public final class OresEvalRootNode extends RootNode {
                         && !methodCall.member().equals("is_released")
                         && guard.value() instanceof OresObject object) {
                     Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
+                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), declarationIdentitySet());
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -5725,7 +5725,7 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("unknown field " + target.member());
                         }
                         OwnedField ownedField = object.owner.findField(
-                                object.klass, target.member(), new LinkedHashSet<>());
+                                object.klass, target.member(), declarationIdentitySet());
                         if (ownedField == null) {
                             throw new IllegalArgumentException("unknown field " + target.member());
                         }
@@ -6612,7 +6612,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ImportedNamespace namespace) return namespace.owner().exportValue(namespace.kind(), name);
             if (receiver instanceof ModuleFacade namespace) return namespace.owner().moduleMember(namespace.module(), name);
             if (receiver instanceof ClassFacade klass) {
-                List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
+                List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, declarationIdentitySet());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
                     klass.owner().requireClassMemberVisible(
@@ -6636,7 +6636,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) {
                     OwnedField ownedField = object.owner.findField(
-                            object.klass, name, new LinkedHashSet<>());
+                            object.klass, name, declarationIdentitySet());
                     if (ownedField != null) {
                         object.owner.requireClassMemberVisible(
                                 ownedField.field().visibility(),
@@ -6653,7 +6653,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return value;
                 }
-                if (object.owner.hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
+                if (object.owner.hasInstanceMethodNamed(object.klass, name, declarationIdentitySet())) {
                     return new BoundMethod(object, name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
@@ -6908,7 +6908,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareBoundMethodInvocation(OresObject receiver, String name, List<Object> args, Ast.ClassDecl accessClass) {
             CallableSelector selector = CallableSelector.instance(name, args.size());
-            Ast.MethodDecl method = findMethod(receiver.klass, selector, new LinkedHashSet<>());
+            Ast.MethodDecl method = findMethod(receiver.klass, selector, declarationIdentitySet());
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
             requireClassMemberVisible(method.visibility(), declaringClass(method), accessClass, "method", name);
             if (!method.genericParameters().isEmpty()) throw new IllegalArgumentException("generic method values require direct-call specialization");
@@ -6917,7 +6917,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareStaticValueInvocation(Ast.ClassDecl klass, String name, List<Object> args, Ast.ClassDecl accessClass) {
             CallableSelector selector = CallableSelector.staticFunction(name, args.size());
-            Ast.MethodDecl fn = findStaticFunction(klass, selector, new LinkedHashSet<>());
+            Ast.MethodDecl fn = findStaticFunction(klass, selector, declarationIdentitySet());
             if (fn == null) throw new IllegalArgumentException("no static function " + klass.name() + "." + name + " with arity " + args.size());
             requireClassMemberVisible(fn.visibility(), declaringClass(fn), accessClass, "static function", name);
             if (!fn.genericParameters().isEmpty()) throw new IllegalArgumentException("generic static function values require direct-call specialization");
@@ -7187,7 +7187,7 @@ public final class OresEvalRootNode extends RootNode {
                 // Compatibility path for classes authored before explicit
                 // constructor syntax: positional fields form a synthesized
                 // constructor whose visibility follows the class.
-                List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
+                List<Ast.FieldDecl> classFields = effectiveFields(klass, declarationIdentitySet());
                 if (args.size() > classFields.size()) {
                     throw new IllegalArgumentException(
                             "too many constructor arguments for " + klass.name());
@@ -7199,7 +7199,7 @@ public final class OresEvalRootNode extends RootNode {
                     Object value;
                     if (i < args.size()) value = args.get(i);
                     else if (field.initializer() != null) {
-                        OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
+                        OwnedField owned = findField(klass, field.name(), declarationIdentitySet());
                         Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
                         Env initializerEnv = new Env(null, false, fieldOwner);
                         initializerEnv.define("self", object, Ast.BindingKind.VAL);
@@ -7224,7 +7224,7 @@ public final class OresEvalRootNode extends RootNode {
                                 + constructor.arity() + " argument(s), got " + args.size());
             }
 
-            List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
+            List<Ast.FieldDecl> classFields = effectiveFields(klass, declarationIdentitySet());
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             for (Ast.FieldDecl field : classFields) {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
@@ -7235,7 +7235,7 @@ public final class OresEvalRootNode extends RootNode {
             // declaring class's private-member authority.
             for (Ast.FieldDecl field : classFields) {
                 if (field.initializer() == null) continue;
-                OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
+                OwnedField owned = findField(klass, field.name(), declarationIdentitySet());
                 Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
                 Env initializerEnv = new Env(null, false, fieldOwner);
                 initializerEnv.define("self", object, Ast.BindingKind.VAL);
@@ -7338,6 +7338,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object invokeModuleFunction(Ast.ModuleDecl module, String name, List<Object> args) {
             return invoke(prepareModuleInvocation(module, name, args));
+        }
+
+        // Declaration-cycle guards compare AST identity, never record structure.
+        private static <T> Set<T> declarationIdentitySet() {
+            return java.util.Collections.newSetFromMap(new IdentityHashMap<>());
         }
 
         private boolean hasInstanceMethodNamed(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
@@ -7509,7 +7514,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl iterator = findMethod(
                         object.klass,
                         CallableSelector.instance("Symbol.iterator", 0),
-                        new LinkedHashSet<>());
+                        declarationIdentitySet());
                 if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
                 object.owner.requireClassMemberVisible(
                         iterator.visibility(),
@@ -7526,7 +7531,7 @@ public final class OresEvalRootNode extends RootNode {
         private Iterable<?> asyncIterableValues(Object value, Env env) {
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator =
-                        findMethod(object.klass, CallableSelector.instance("Symbol.asyncIterator", 0), new LinkedHashSet<>());
+                        findMethod(object.klass, CallableSelector.instance("Symbol.asyncIterator", 0), declarationIdentitySet());
                 if (iterator == null) {
                     return asyncSynchronousIterableValues(value, env);
                 }
@@ -7712,7 +7717,7 @@ public final class OresEvalRootNode extends RootNode {
                     value,
                     iface,
                     bindings,
-                    new LinkedHashSet<>());
+                    declarationIdentitySet());
         }
 
         private boolean structuralRecordMatches(Object value, Ast.TypeRef recordType) {
@@ -7734,7 +7739,7 @@ public final class OresEvalRootNode extends RootNode {
                 // erased into an ordinary structural object view.
                 if (object.klass.actorKind() != Ast.ActorKind.NONE) return Env.MISSING;
                 OwnedField owned = object.owner.findField(
-                        object.klass, name, new LinkedHashSet<>());
+                        object.klass, name, declarationIdentitySet());
                 if (owned == null
                         || owned.field().visibility() != Ast.Visibility.PUBLIC) {
                     return Env.MISSING;
@@ -7790,7 +7795,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl method = object.owner.findMethod(
                         object.klass,
                         CallableSelector.instance(fn.name(), fn.parameters().size()),
-                        new LinkedHashSet<>());
+                        declarationIdentitySet());
                 if (method == null
                         || method.visibility() != Ast.Visibility.PUBLIC
                         || method.isStatic()
@@ -7878,10 +7883,10 @@ public final class OresEvalRootNode extends RootNode {
 
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
-                if (targetClass != null) return object.owner.classIsA(object.klass, targetClass, new LinkedHashSet<>());
+                if (targetClass != null) return object.owner.classIsA(object.klass, targetClass, declarationIdentitySet());
                 Ast.InterfaceDecl targetInterface = findInterface(name);
                 if (targetInterface != null) {
-                    return object.owner.classImplements(object.klass, targetInterface, new LinkedHashSet<>(), new LinkedHashSet<>());
+                    return object.owner.classImplements(object.klass, targetInterface, declarationIdentitySet(), declarationIdentitySet());
                 }
             }
 
@@ -8196,7 +8201,7 @@ public final class OresEvalRootNode extends RootNode {
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
         private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
-            return shapeReturnedValue(declared, value, callable, new LinkedHashSet<>());
+            return shapeReturnedValue(declared, value, callable, declarationIdentitySet());
         }
 
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable, Set<Ast.TypeAliasDecl> resolving) {
@@ -8371,7 +8376,7 @@ public final class OresEvalRootNode extends RootNode {
         private Object destructureMember(Object value, String name, Env env) {
             if (value instanceof OresObject object) {
                 OwnedField ownedField = object.owner.findField(
-                        object.klass, name, new LinkedHashSet<>());
+                        object.klass, name, declarationIdentitySet());
                 if (ownedField != null) {
                     object.owner.requireClassMemberVisible(
                             ownedField.field().visibility(),
