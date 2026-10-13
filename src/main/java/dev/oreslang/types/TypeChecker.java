@@ -646,9 +646,10 @@ public final class TypeChecker {
         } catch (IllegalArgumentException notEligible) {
             // Existing same-arity rejection remains authoritative.
         }
-        return "same-arity overloading is restricted to eligible distinct nominal "
-                + "enums; primitive differences, structural fields, generic parameters, "
-                + "return types and runtime type inspection never select an overload";
+        return "overload identity is name + arity only; parameter types and return types do not participate "
+                + "in current executable dispatch; future same-arity overloading is restricted to eligible "
+                + "distinct nominal enums, never primitive differences, structural fields, "
+                + "generic parameters or runtime type inspection";
     }
 
     private record MethodOrigin(Ast.ClassDecl owner, Named ownerType) { }
