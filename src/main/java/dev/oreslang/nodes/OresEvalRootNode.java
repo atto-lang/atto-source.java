@@ -6199,6 +6199,29 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.MemberExpr factory
+                        && factory.receiver() instanceof Ast.NameExpr ns
+                        && ns.name().equals("Symbol")
+                        && env.lookup("Symbol") == Env.MISSING) {
+                    if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                        throw new IllegalArgumentException("Symbol factory requires exactly one String");
+                    }
+                    if (!Set.of("process", "stable").contains(factory.member())) {
+                        throw new IllegalArgumentException("unknown Symbol factory " + factory.member());
+                    }
+                    Object raw = eval(call.arguments().getFirst(), env);
+                    if (!(raw instanceof String name)) {
+                        throw new IllegalArgumentException("Symbol factory name must be String");
+                    }
+                    IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+                    if (context.isolatePolicy().adversarial()
+                            || actorPolicy != null && actorPolicy.adversarial()) {
+                        throw new SecurityException("dynamic Symbol construction is not available to untrusted code");
+                    }
+                    return factory.member().equals("stable")
+                            ? dev.oreslang.runtime.OresSymbol.stable(name)
+                            : dev.oreslang.runtime.OresSymbol.process(name);
+                }
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
