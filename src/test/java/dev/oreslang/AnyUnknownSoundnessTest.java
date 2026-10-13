@@ -93,12 +93,27 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void nestedLegacyHolesCannotImpersonateConcreteGenericTypes() {
+        assertFalse(Types.isAssignable(
+                new Types.ListType(Types.Unknown.INSTANCE),
+                new Types.ListType(Types.Primitive.INT)));
+        assertFalse(Types.isAssignable(
+                new Types.Named("Option", List.of(Types.Unknown.INSTANCE)),
+                new Types.Named("Option", List.of(Types.Primitive.INT))));
+        assertFalse(Types.isAssignable(
+                new Types.Record(Map.of("payload", Types.Unknown.INSTANCE)),
+                new Types.Record(Map.of("payload", Types.Primitive.INT))));
+    }
+
+    @Test
     void sourceTopsAreNotTheInternalInferenceHole() {
         assertNotEquals(Types.Any.INSTANCE, Types.Unknown.INSTANCE);
         assertNotEquals(Types.UnknownValue.INSTANCE, Types.Unknown.INSTANCE);
         assertEquals("Any", Types.Any.INSTANCE.toString());
         assertEquals("Unknown", Types.UnknownValue.INSTANCE.toString());
         assertEquals("<incomplete compiler inference>", Types.Unknown.INSTANCE.toString());
+        assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, Types.Primitive.INT));
+        assertTrue(Types.isAssignable(Types.Primitive.INT, Types.Unknown.INSTANCE));
         assertTrue(Types.isAssignable(Types.Primitive.INT, Types.Any.INSTANCE));
         assertTrue(Types.isAssignable(Types.Primitive.INT, Types.UnknownValue.INSTANCE));
         assertTrue(Types.isAssignable(Types.Any.INSTANCE, Types.UnknownValue.INSTANCE));

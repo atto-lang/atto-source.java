@@ -35,6 +35,12 @@ public final class AnyUnknownJavaSmoke {
         check(!Types.isAssignable(opaque, integer), "Unknown cannot narrow to int");
         check(!Types.isAssignable(opaque, any), "Unknown cannot narrow to Any");
         check(Types.Unknown.INSTANCE != opaque, "source Unknown distinct from inference hole");
+        check(!Types.isAssignable(Types.Unknown.INSTANCE, integer),
+                "legacy unresolved source cannot impersonate int");
+        check(!Types.isAssignable(
+                new Types.ListType(Types.Unknown.INSTANCE),
+                new Types.ListType(integer)),
+                "nested unresolved source cannot impersonate Array<int>");
         var holeA = Types.newInferenceHole(Types.HoleOrigin.EMPTY_ARRAY);
         var holeB = Types.newInferenceHole(Types.HoleOrigin.EMPTY_ARRAY);
         check(!holeA.equals(holeB), "empty array inference holes have distinct ids");

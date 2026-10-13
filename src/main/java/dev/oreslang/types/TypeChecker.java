@@ -6866,6 +6866,9 @@ public final class TypeChecker {
         // Recurse through known constructor payloads and infer from them;
         // an unresolved complementary sum arm contributes no constraint.
         if (pattern instanceof Generic generic) {
+            // Do not bind T to an aggregate with unresolved element proofs.
+            // Other concrete sum-constructor positions recurse below.
+            if (containsUnknown(actual)) return;
             if (fixedBindings.contains(generic.name())) return;
             Type previous = bindings.putIfAbsent(generic.name(), actual);
             if (previous != null) {
@@ -7604,9 +7607,9 @@ public final class TypeChecker {
             }
             return true;
         }
-        // A *value* with an unresolved internal type cannot prove a concrete
-        // contract. The reverse legacy wildcard is retained temporarily for
-        // contextual builtin/inference holes (None/Ok/Err/empty collections).
+        // Unresolved legacy values cannot prove concrete types. The old
+        // sentinel remains expected-only for unmigrated builtins/imports;
+        // None, Ok, Err and empty arrays use identified contextual holes.
         if (actual == Unknown.INSTANCE && expected != Unknown.INSTANCE) return false;
         // Safe source-level top types must not inherit the permissive internal
         // Unknown inference-sentinel behavior.

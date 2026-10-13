@@ -108,9 +108,17 @@ Their identities unify only within the corresponding `Option<T>` or
 but the absent arm cannot invent one. Shared aliases cannot resolve one
 `None` value as two conflicting types.
 
+Legacy `Types.Unknown.INSTANCE` is now **directional**: an unresolved
+source type cannot satisfy any concrete target. The marker is retained only
+as an expected-side placeholder in unmigrated builtin/import contracts.
+Nested containers cannot gain concrete element type proofs from it.
+Generic inference skips unresolved aggregate bindings while preserving
+constraints contributed by known constructor fields.
+
 This is an incremental migration, not a complete inference solver:
 imported ABI gaps, builtins and some inferred type references still carry
-the older sentinel; they must migrate before removing the final wildcard.
+the older sentinel; they must migrate before removing the final expected-only
+placeholder.
 
 ## Conditional joins and nested structural record aliases
 

@@ -224,9 +224,10 @@ public final class Types {
         if (from == UnknownValue.INSTANCE) return false;
         if (to == Any.INSTANCE) return safelyHideConcreteType(from);
         if (from == Any.INSTANCE) return false;
-        // Legacy incomplete inference types are a separate compiler concern;
-        // they must not be confused with the named source type Unknown.
-        if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
+        // Legacy unresolved inference is now expected-only. A value whose
+        // type is incomplete cannot prove an arbitrary concrete contract.
+        if (from == Unknown.INSTANCE) return false;
+        if (to == Unknown.INSTANCE) return true;
         // Unbound generic parameters are rigid, not an implicit any.
         if (to instanceof Generic || from instanceof Generic) return false;
         if (from instanceof SelfType source) {
