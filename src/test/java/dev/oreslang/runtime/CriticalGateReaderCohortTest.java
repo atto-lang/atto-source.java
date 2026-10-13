@@ -48,6 +48,39 @@ final class CriticalGateReaderCohortTest {
         assertEquals(0, CriticalGate.waitingLogicalDomains());
     }
 
+
+    @Test void legacyCriticalTicketCannotBindTwoTerminalOwners() {
+        var gate = new CriticalGate();
+        var ticket = gate.newTicket();
+        var realCompletion = new OresFuture<Void>();
+        var unrelatedCompletion = new OresFuture<Void>();
+
+        ticket.enterAsync();
+        ticket.releaseOnCompletion(realCompletion);
+        var denial = assertThrows(IllegalStateException.class,
+                () -> ticket.releaseOnCompletion(unrelatedCompletion));
+        assertTrue(denial.getMessage().contains("already bound"));
+
+        // An unrelated completion must never release the live writer.
+        unrelatedCompletion.completeFromRuntime(null);
+        assertTrue(ticket.isHeld());
+        assertTrue(gate.hasWriter());
+
+        realCompletion.completeFromRuntime(null);
+        assertFalse(ticket.isHeld());
+        assertFalse(gate.held());
+    }
+
+    @Test void legacyCriticalTicketRejectsLateCompletionBindingAfterRelease() {
+        var gate = new CriticalGate();
+        var ticket = gate.newTicket(CriticalGate.Mode.READ);
+        ticket.enterAsync();
+        ticket.close();
+        assertThrows(IllegalStateException.class,
+                () -> ticket.releaseOnCompletion(OresFuture.completed(42)));
+        assertEquals(0, gate.activeReaderCount());
+    }
+
     @Test void recursiveReaderUpgradeFailsClosed() {
         var domain = new CriticalGate();
         try (var scheduler = new OresScheduler(1)) {
