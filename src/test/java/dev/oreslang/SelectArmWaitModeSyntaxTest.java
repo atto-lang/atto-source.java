@@ -71,7 +71,7 @@ final class SelectArmWaitModeSyntaxTest {
     void acceptsUnqualifiedReadArmsAndStandaloneNonblockingRead() {
         var typed = assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc receive(Channel<int> messages): void {
-                  select {
+                  do select {
                     when readch messages: val msg {
                       stdio.println(msg);
                     }
@@ -105,7 +105,7 @@ final class SelectArmWaitModeSyntaxTest {
     void permitsStandaloneNbReadchInsideSelectedArmBody() {
         assertDoesNotThrow(() -> Parser.parse("""
                 fnc example(Channel<int> messages, Channel<int> other): void {
-                  select {
+                  do select {
                     when readch messages: val msg {
                       val Future<int> pending = nb readch other;
                       stdio.println(msg);
