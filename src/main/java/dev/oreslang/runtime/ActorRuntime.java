@@ -1368,6 +1368,26 @@ public final class ActorRuntime implements AutoCloseable {
 
 
     /**
+     * Keep an actor-owned runtime capability alive until the actor stops.
+     * Registration is atomic with STOP admission; callers must close the
+     * capability on normal completion and invoke the returned deregistration.
+     * Never execute close() while holding the actor lifecycle monitor.
+     */
+    public Runnable trackCurrentActorResource(AutoCloseable resource) {
+        Objects.requireNonNull(resource, "resource");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) return () -> { };
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized) {
+                throw new java.util.concurrent.CancellationException(
+                        "cannot acquire an actor-owned resource after STOP");
+            }
+            cell.ownedResources.add(resource);
+        }
+        return () -> cell.ownedResources.remove(resource);
+    }
+
+    /**
      * Gracefully terminate the actor whose source turn is currently executing.
      * This is the lowering target for actor-local `self.end()`; it carries no
      * authority to stop siblings or unrelated actors.
@@ -6404,6 +6424,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** Tickets, guards and other capabilities revoked at STOP. */
+        private final Set<AutoCloseable> ownedResources = ConcurrentHashMap.newKeySet();
+        /** Delays DONE publication until revocation callbacks finish off-lock. */
+        private boolean resourceRevocationActive;
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
@@ -6704,6 +6728,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
+                    || resourceRevocationActive
                     || !children.isEmpty()) return;
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
@@ -7277,6 +7302,8 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            List<AutoCloseable> revoke;
+            boolean ownsRevocation;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -7290,8 +7317,39 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
+                // Only one concurrent STOP owns resource teardown; all
+                // other STOP callers observe a still-active finalization fence.
+                ownsRevocation = !resourceRevocationActive;
+                if (ownsRevocation) {
+                    resourceRevocationActive = true;
+                    revoke = List.copyOf(ownedResources);
+                    ownedResources.clear();
+                } else {
+                    revoke = List.of();
+                }
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
+            }
+
+            // Closing a ticket settles Futures and can invoke callbacks.
+            // Never execute this work under lifecycleLock or the gate's
+            // global metadata coordinator.
+            if (ownsRevocation) {
+                try {
+                    for (AutoCloseable resource : revoke) {
+                        try {
+                            resource.close();
+                        } catch (Exception ignored) {
+                            // STOP must still revoke the remaining resources.
+                        }
+                    }
+                } finally {
+                    synchronized (lifecycleLock) {
+                        resourceRevocationActive = false;
+                        finalizeStopLocked();
+                        lifecycleLock.notifyAll();
+                    }
+                }
             }
 
             // Cancellation removes channel/select waiter registrations before
