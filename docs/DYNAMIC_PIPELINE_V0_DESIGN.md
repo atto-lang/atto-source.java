@@ -328,3 +328,41 @@ from constructing a separately declared nominal value named
 `PipelineDeliveryReceipt` and attempting to pass it through the
 runtime-issued receipt type contract. Guest negative regression tests
 cover the enum/pattern/function declaration paths explicitly.
+
+
+## Typed guest result follow-up (2026-10-12; supersedes earlier receipt-only sections)
+
+The Java host adapter no longer synthesizes `DeliveryReceipt` as the value of
+`runner.send`. On the source actor's final admitted backward receive turn,
+`ActorRuntime.endCurrentActor()` obtains the actual compiler-codec-decoded
+nominal tagged message, re-encodes it under the route's immutable closed-domain
+codec, and retains an owned frame. The runtime requires that frame **and**
+whole-route physical DONE before the result is observable. Decoding is
+scheduled on the trusted host CONTROL executor, off actor DATA carriers.
+
+Guest syntax now additionally accepts the **explicit expected reply case**:
+
+```oreslang
+val reply = await runner.send<Signal.Result>(Signal.Data(5));
+```
+
+The compiler checks that both the sent and expected reply cases are portable
+nominal enum variants sharing a declared closed domain. The runtime independently
+compares the *actual* returned tagged case against the expected qualified enum
+case; a mismatched reply fails the guest future. Bare `runner.send(...)` has
+a sealed opaque `PipelineTypedReply` result, not `Future<Unknown>` and not
+a fabricated delivery receipt. The old `PipelineDeliveryReceipt` name remains
+reserved against source forgery but is no longer the send-result contract.
+
+This is an explicitly typed expected-result **v0** API, not inference from an
+outbound `Signal.Data` into a `Signal.Result` without an annotation. The
+compiled provider domains are checked again on actual `ActorRuntime` binding.
+Request correlation for multiple concurrent flows is not yet supported.
+
+**Release evidence:** the host implementation and guest positive/negative tests
+are committed on PR #779, but no passing Maven or GraalVM native-image run has
+been obtained for these new commits. The earlier receipt-only exact-tree CI
+runs cited above validate their older trees only and must not be relabeled as
+proof of this typed-result change. True state-preserving pause/resume is also
+not implemented: current `pause` retires the stage generation and `resume`
+spawns replacements. Source-compiled LLVM parity remains a separate gate.
