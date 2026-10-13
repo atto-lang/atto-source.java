@@ -127,6 +127,7 @@ public final class OwnershipChecker {
      */
     private void validateIntersectionFields(
             Ast.TypeRef ref, boolean insideIntersection, Set<String> visitedAliases) {
+        if (ref == null) return; // implicit/inferred types carry no intersection
         if (ref.isIntersection()) {
             for (Ast.TypeRef part : ref.arguments()) {
                 validateIntersectionFields(part, true, visitedAliases);
@@ -2234,7 +2235,12 @@ public final class OwnershipChecker {
             }
         }
 
-        for (Ast.Param param : lambda.parameters()) closure.define(param.name(), stateForParam(param));
+        // Lambda parameters are executable type boundaries too; checking only
+        // top-level functions would permit borrowed fields through inline ADTs.
+        for (Ast.Param param : lambda.parameters()) {
+            validateIntersectionFields(param.type(), false, new HashSet<>());
+            closure.define(param.name(), stateForParam(param));
+        }
         defineImplicitArguments(closure, lambda.parameters());
         int previousLoopDepth = loopDepth;
         boolean previousDiscard = discardingSelectReturn;
