@@ -16,14 +16,14 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ArityDispatchTableRuntimeTest {
 
     @Test
-    void unrelatedModulesWithSameParentNameDispatchLexically() throws Exception {
+    void fullyQualifiedParentsWithSameSimpleNameDispatchIndependently() throws Exception {
         String source = """
                 define module alpha
                   pub define class Base as
                     pub pick(): int { return 10; }
                     pub pick(int value): int { return value + 10; }
                   end
-                  pub define class Child extends Base as
+                  pub define class Child extends alpha.Base as
                     pub pick(int value): int { return value + 20; }
                   end
                 end
@@ -32,7 +32,7 @@ final class ArityDispatchTableRuntimeTest {
                     pub pick(): int { return 30; }
                     pub pick(int value): int { return value + 30; }
                   end
-                  pub define class Child extends Base as
+                  pub define class Child extends beta.Base as
                     pub pick(int value): int { return value + 40; }
                   end
                 end
