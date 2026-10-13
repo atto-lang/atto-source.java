@@ -2121,7 +2121,9 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr ns
                     && ns.name().equals("Symbol")
-                    && env.lookup("Symbol") == null) {
+                    && env.lookup("Symbol") == null
+                    && findClass("Symbol") == null
+                    && !modules.containsKey("Symbol")) {
                 if (!Set.of("process", "stable").contains(member.member())) {
                     throw new IllegalArgumentException("unknown Symbol factory " + member.member());
                 }
@@ -3259,7 +3261,7 @@ public final class TypeChecker {
                 }
                 return resolve(created.type(), generics, self);
             }
-            if (created.type().name().equals("Symbol")) {
+            if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
                 throw new IllegalArgumentException(
                         "Symbol is an immutable value, not a class constructor; "
                                 + "use #name or trusted Symbol.process(name)");
@@ -7230,6 +7232,12 @@ public final class TypeChecker {
                 yield new Named("Map", List.of(key, value));
             }
             case "Symbol" -> {
+                Ast.ClassDecl userSymbol = findClass("Symbol");
+                if (userSymbol != null) {
+                    validateGenericArity(ref, userSymbol.genericParameters(), "class Symbol");
+                    yield new Named(qualifiedClassName(userSymbol),
+                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                }
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol is not generic");
                 }
