@@ -161,6 +161,7 @@ final class ImportGraph {
                             && fn.genericParameters().isEmpty()
                             && fn.name().equals(name);
                     case ACTOR -> decl instanceof Ast.ClassDecl klass
+                            && klass.visibility() == Ast.Visibility.PUBLIC
                             && klass.actorKind() != Ast.ActorKind.NONE
                             && klass.name().equals(name);
                     case CLASS -> decl instanceof Ast.ClassDecl klass
