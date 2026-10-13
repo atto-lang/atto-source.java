@@ -89,6 +89,62 @@ final class StructuralReadViewCoercionHardeningTest {
     }
 
     @Test
+    void invariantMutableListsCannotSmuggleUnknownOrGenericElementTypes() {
+        Types.ListType unknown = new Types.ListType(Types.Unknown.INSTANCE);
+        Types.ListType concrete = new Types.ListType(Types.Primitive.INT);
+        Types.ListType generic = new Types.ListType(new Types.Generic("T"));
+        assertFalse(Types.isAssignable(unknown, concrete));
+        assertFalse(Types.isAssignable(concrete, unknown));
+        assertFalse(Types.isAssignable(generic, concrete));
+        assertFalse(Types.isAssignable(concrete, generic));
+        assertTrue(Types.isAssignable(concrete, new Types.ListType(Types.Primitive.INT)));
+    }
+
+    @Test
+    void genericContainersCannotForgeUnknownOrNumericParameterRepresentations() {
+        Types.Named unknown = new Types.Named("Option", java.util.List.of(Types.Unknown.INSTANCE));
+        Types.Named concrete = new Types.Named("Option", java.util.List.of(Types.Primitive.INT));
+        Types.Named generic = new Types.Named("Option", java.util.List.of(new Types.Generic("T")));
+        assertFalse(Types.isAssignable(unknown, concrete));
+        assertFalse(Types.isAssignable(concrete, unknown));
+        assertFalse(Types.isAssignable(generic, concrete));
+        assertFalse(Types.isAssignable(
+                concrete, new Types.Named("Option", java.util.List.of(Types.Primitive.FLOAT))));
+        assertTrue(Types.isAssignable(concrete,
+                new Types.Named("Option", java.util.List.of(Types.Primitive.INT))));
+    }
+
+    @Test
+    void borrowedAliasesRequireExactTargetTypeProof() {
+        Types.Borrow borrowUnknown = new Types.Borrow(Types.Unknown.INSTANCE, false);
+        Types.Borrow borrowInt = new Types.Borrow(Types.Primitive.INT, false);
+        Types.Borrow borrowMutInt = new Types.Borrow(Types.Primitive.INT, true);
+        assertFalse(Types.isAssignable(borrowUnknown, borrowInt));
+        assertFalse(Types.isAssignable(borrowInt, borrowUnknown));
+        assertFalse(Types.isAssignable(borrowInt, borrowMutInt),
+                "shared borrow cannot gain mutable authority");
+        assertTrue(Types.isAssignable(borrowMutInt, borrowInt),
+                "mutable borrow can lose, but never gain, write authority");
+        assertTrue(Types.isAssignable(borrowInt, new Types.Borrow(Types.Primitive.INT, false)));
+    }
+
+    @Test
+    void tupleViewsCannotSilentlyApplyNumericConversions() {
+        Types.Tuple source = new Types.Tuple(java.util.List.of(Types.Primitive.INT));
+        Types.Tuple widenedScalar = new Types.Tuple(java.util.List.of(Types.Primitive.FLOAT));
+        Types.Tuple unionView = new Types.Tuple(java.util.List.of(
+                Types.unionOf(Types.Primitive.INT, Types.Primitive.STRING)));
+        assertFalse(Types.isAssignable(source, widenedScalar),
+                "a tuple retyping is not an element-by-element numeric adapter");
+        assertTrue(Types.isAssignable(source, unionView));
+        assertFalse(Types.isAssignable(
+                new Types.Tuple(java.util.List.of(Types.Primitive.INT), Types.TupleKind.FIXED_ARRAY),
+                new Types.Tuple(java.util.List.of(
+                        Types.unionOf(Types.Primitive.INT, Types.Primitive.STRING)), Types.TupleKind.FIXED_ARRAY)),
+                "writable fixed array slots are invariant");
+    }
+
+    @Test
     void readonlyCovarianceStillAllowsSafeWidthAndUnionViews() {
         Types.Record actual = new Types.Record(
                 Map.of("foo", Types.Primitive.INT, "bar", Types.Primitive.STRING), true);
