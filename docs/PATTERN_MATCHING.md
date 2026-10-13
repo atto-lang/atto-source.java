@@ -3,6 +3,14 @@
 Oreslang deliberately separates type refinement, full pattern matching, and
 value-case dispatch.
 
+**Current implementation note (October 2026):** canonical `match value over`
+with `on` arms is source-ordered and subject to exhaustiveness checks. The
+legacy bare `match value` spelling retains the older disjointness proof
+contract, with `match first value` explicitly enabling priority. This
+difference is deliberate in the current parser; the contracts must be
+reconciled before 1.0. The exclusive proof below describes the *legacy*
+unmarked match, not canonical `match ... over`.
+
 ## Surface syntax
 
 ```ores
@@ -17,9 +25,9 @@ fi
 val dog = animal as Dog;
 val maybeDog = animal as? Dog;
 
-match result
-  Some(value) -> { use(value); }
-  None -> { recover(); }
+match result over
+  on Some(value) -> { use(value); }
+  on None -> { recover(); }
 end
 
 switch status
@@ -43,18 +51,21 @@ function types and interface callable signatures.
   successful control-flow edge.
 - `x as T` is a checked cast. A failed runtime cast raises `CastError`.
 - `x as? T` is a non-panicking cast with type `Option<T>`.
-- `match x` is proof-checked pattern partitioning.
-- `match first x` is the explicit ordered/priority escape hatch.
+- `match x` without `over` is the legacy proof-checked pattern partition.
+- `match x over` with `on` arms is canonical source-ordered matching, with
+  exhaustiveness and unreachable-arm checking.
+- `match first x` is the explicit ordered/priority escape hatch for legacy
+  bare-match syntax.
 - `switch x` is constant/equality dispatch and never performs destructuring.
 
 A refinement binding is not a copy. If `dog` is introduced by
 `animal is type Dog dog`, both names identify the same ownership place. Moving
 through either name consumes the same move-only value.
 
-## Exclusive match proof obligation
+## Exclusive legacy-match proof obligation
 
-For a scrutinee domain `D`, each explicit arm is normalized to a predicate
-`P_i(x)`. A normal match is admitted only when the checker establishes:
+For a legacy bare-match scrutinee domain `D`, each explicit arm is normalized to a predicate
+`P_i(x)`. An exclusive legacy match is admitted only when the checker establishes:
 
 ```text
 for every i != j:  D(x) && P_i(x) && P_j(x) is UNSAT
@@ -65,7 +76,7 @@ An unguarded final `else`, `_`, or catch-all binding is not treated as an
 ordinary universal arm. It denotes the complement of all preceding explicit
 arms.
 
-The first proof engine is intentionally conservative. It has exact reasoning
+The exclusive-match proof engine is intentionally conservative. It has exact reasoning
 for:
 
 - booleans and literal equality;
@@ -75,9 +86,11 @@ for:
 - simple numeric guard intervals using `< <= == >= >`;
 - wildcard/catch-all coverage.
 
-If disjointness cannot be proved, ordinary `match` is rejected rather than
-silently using source order. Code that deliberately needs priority semantics
-must say `match first`.
+If disjointness cannot be proved, *legacy bare* `match` is rejected rather
+than silently using source order. Code using legacy syntax that deliberately
+needs priority semantics must say `match first`. Canonical `match ... over`
+is already source-ordered but remains subject to reachability and
+exhaustiveness validation.
 
 This is the important semantic distinction:
 
