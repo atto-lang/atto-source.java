@@ -407,3 +407,39 @@ phase admission is still not wired as a reservation/commit at the actual
 mailbox publication linearization point. State-preserving `pause()/resume()`,
 source-final produced results, LLVM guest codegen, and cross-backend traces
 remain release blockers.
+
+## Publication and public typed-result closure (2026-10-13)
+
+**Java scheduler publication:** Both root and directional messages now use an
+explicit provisional phase `-2 - expected`. A directional publication
+reserves that phase while serializing the nominal MessagePack frame and
+performs the advancing CAS **only after** `cell.mailbox.tryWrite(envelope)`
+succeeds. Both mailbox publication and CAS run while holding the recipient
+`lifecycleLock`; its dispatcher obtains the same lock before `tryRead`,
+so a newly enqueued DATA envelope cannot execute before its claimed route
+phase is committed. The single-flow provisional claim also rejects
+concurrent/replayed publications before encoding. Prepublication root
+rejections CAS their own reservation back to 0, never reviving an aborted
+route. Failed directional publications and ambiguous failures after a
+successful write permanently poison the route. A successfully enqueued
+envelope becomes mailbox-owned immediately, including if a fatal stage
+cancels the claim before phase commit; the exception path must never
+release the already-queued envelope twice.
+
+**Host type attestation:** `PipelineRunner.sendExpected` now validates the
+*actual* terminal tagged reply inside `PipelineController.submit(...)`
+before completing the public Future. A wrong in-domain result marks the
+entire generation `FAILED` rather than leaving a physically retired
+pipeline `RUNNING` and returning a false typed success. This complements
+the guest evaluator's independent checked case comparison.
+
+The dynamic integration regression now includes both a fatal transform
+after a successful downstream publication and an actual in-domain
+`Signal.Result` returned against an expected `Signal.Data`. Neither
+is allowed to settle typed success.
+
+**Verification:** Latest Java PR #779 requires exact-source Maven and Graal
+Native Image AOT/hybrid CI. Source-org GitHub Actions report failure
+without available steps. The Java changes above are committed but **not
+yet empirically verified** by successful latest-head CI. Do not infer
+Java correctness from LLVM native contract CI.
