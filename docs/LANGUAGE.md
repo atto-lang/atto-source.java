@@ -71,13 +71,12 @@ The selected name (`ArrayList`) must match the Java simple class name; `JArrayLi
 
 ### Circular imports and file initialization
 
-**Migration warning (not yet implemented end to end):** The current Java loader
-still runs imported `init()` hooks eagerly as described below. The accepted
-target contract requires inert imports and independent read-only constant data.
-Draft Java PR #857 replaces eager imported startup with lazy first execution,
-while draft Java PR #884 adds file/module `const` syntax and export checks.
-Neither branch has passing compiler/runtime parity verification; do not treat
-the legacy eager-init description below as the desired semantics.
+**Draft integration status:** PR #892 combines lazy first-use initialization
+with compiler-folded file/module constants and public-module visibility.
+Linking and reading a static constant do not trigger imported `init()`
+hooks. The originating Java CI jobs have not executed actual test steps, so
+these semantics remain **unverified**, and Java host-import `<clinit>`
+side effects remain an open audit item (#866).
 
 Import cycles are legal. Oreslang does not reject a program merely because its
 file/module graph contains a cycle such as `a.ores -> b.ores -> a.ores`.
@@ -88,8 +87,11 @@ The loader uses a staged lifecycle:
 2. resolve/link imports for every code unit;
 3. compute strongly connected components (SCCs) of the import graph;
 4. for each dependency-first SCC, verify that **all** members are linked;
-5. run each member's optional file init hook;
-6. after initialization, invoke the entry unit's `main`.
+5. invoke the **entry** unit's optional `init()` hook, then its `main`;
+6. initialize each imported unit at its first explicit imported callable
+   invocation or constructor execution, not when linked or when a static
+   exported `const` is read. An unsupported nonstatic const is rejected,
+   never reinterpreted as executable import-time initialization.
 
 A file init hook has the exact shape:
 
@@ -102,15 +104,12 @@ fnc init(): void {
 
 It is private, synchronous, non-actor, non-generic, takes no parameters, and
 returns `void`. The hook runs at most once for that loaded code-unit
-generation. Inside a cycle, init hooks execute in deterministic normalized
-code-unit-id order, but code must rely only on the stronger barrier guarantee:
-**every peer in the cycle is already linked before any peer's init begins**.
-
-This means an init hook may call exported declarations from a cyclic peer
-without observing an "unloaded module" state. If application state requires a
-specific sequencing relationship *between* two init hooks in the same cycle,
-that relationship should be made explicit in application code rather than
-inferred from the import edges.
+generation. Every reachable member of an import cycle is **linked** before
+the entrypoint starts, but a member's `init()` executes only on first
+explicit use. Reentrant import initialization (A.init -> B.init -> A.init)
+fails closed rather than exposing a partially initialized module. Concurrent
+first-use callers currently use fail-fast contention handling pending
+scheduler-aware rendezvous and retry semantics.
 
 ## Module contracts
 
@@ -362,8 +361,8 @@ is exported to other files; a `pub` class, function, or constant inside a
 private named module does not bypass that module's privacy boundary. The
 file-root module retains individually exported `pub` declarations.
 
-At file root and inside a named module, `define pub const T name = literal;`
-and `pub const T name = literal;` are permitted; `define` is optional.
+At file root and inside a named module, `define pub const T name = expression;`
+and `pub const T name = expression;` are permitted; `define` is optional.
 `pub define const` is accepted as compatibility input but should format to
 `define pub const`. These declarations are immutable data rather than
 executable module startup requests. `String` is the canonical String type;
@@ -371,19 +370,29 @@ assigning a String literal to an `int` constant is a type error.
 
 `Symbol.for("literal")` is a special compiler-folded spelling for a global
 Symbol constant. Dynamic `Symbol.for(name)` and arbitrary call expressions
-are refused as file/module constant initializers. Current Java implementation
-does not yet resolve all constant-to-constant references, fold arbitrary
-finite constant aggregates, or implement the complete compile-time evaluation
-and ABI fingerprint contract. Those omissions must not be mistaken for
-full implementation.
+are refused as file/module constant initializers. The draft compiler folds
+bounded scalar operations and same-file constant references (including
+references from named modules to file-level consts), with circular dependency,
+overflow and depth diagnostics. Cross-file const references, immutable
+aggregate evaluation and complete hot-reload generation fingerprinting
+remain unfinished. No guest code may execute during constant folding.
 
-**Status / incompatibility:** this parser/typechecker admission work is only
-the first phase. The current Java linked-program loader still eagerly executes
-dependency `init()` and runtime binding initializers; its separate lazy-import
-work is tracked in draft PR #857 and issue #860. Reading a cross-file constant
-without any user execution is a **target guarantee**, not currently proven.
-Full native LLVM parity is also pending. The normative target design is in
-common-source PR #24 and issue #23.
+Symbol literal `#ready` can be used in a `match` arm or `switch` case.
+Both dispatch using nominal Symbol identity and do not coerce Strings:
+```ores
+match status over
+  on #ready -> { return 1; }
+  on #'needs attention' -> { return 2; }
+  on _ -> { return 0; }
+end
+```
+Because `Symbol` is open-ended, an unguarded fallback is required unless
+the compiler can otherwise prove the match exhaustive.
+
+**Status:** source changes are combined on draft PR #892, but full Java
+and GraalVM Native Image test execution has not been verified. Native LLVM
+parity and Java host-import `<clinit>` non-execution remain pending.
+The normative target design is in common-source PR #24 and issue #23.
 
 ## Bindings
 
