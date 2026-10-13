@@ -287,6 +287,45 @@ final class WithStateCapabilityContractTest {
         }
     }
 
+    @Test void referenceStateCannotEscapeThroughCallsOrIndirectAssignmentTargets() {
+        // An int result is insufficient proof: a call may retain its argument,
+        // and indexing a foreign destination with s.count does not make that
+        // destination part of the actor-owned state aggregate.
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { consume(s.items); return s.count; })",
+            "using state.read(|s| -> { consume([s.items]); return s.count; })",
+            "self.handle_state(critical |s| -> { s.items.append(1); return s.count; })",
+            "using state.write(critical |s| -> { consume(s.items); return s.count; })",
+            "self.handle_state(critical |s| -> { stash[s.count] = s.items; return s.count; })",
+            "using state.write(critical |s| -> { stash[s.count] = s.items; return s.count; })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; count: int = 0; } "
+                    + "get(): int with state.read, state.write { return "
+                    + callback + "; } end";
+            var denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(Parser.parse(source)), callback);
+            assertTrue(denied.getMessage().contains("actor state-backed reference"),
+                    denied::getMessage);
+        }
+    }
+
+    @Test void scalarCallArgumentsAndDirectActorOwnedAssignmentsRemainAdmissible() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { consume(s.count); return s.count; })",
+            "using state.read(|s| -> { consume(s.count); return s.count; })",
+            "self.handle_state(critical |s| -> { s.items = s.items; return s.count; })",
+            "using state.write(critical |s| -> { s.items = s.items; return s.count; })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; count: int = 0; } "
+                    + "get(): int with state.read, state.write { return "
+                    + callback + "; } end";
+            assertDoesNotThrow(
+                    () -> ActorStateContract.verify(Parser.parse(source)), callback);
+        }
+    }
+
     @Test void sealedCallbackEffectsFollowLoweringAndCannotBeForged() {
         Ast.Program p = Parser.parse(actor("with state.read",
                 "using state.read(|s| -> { return s.v; })"));
