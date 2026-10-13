@@ -247,12 +247,15 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     private record WriteOp(OresFuture<Integer> future, ByteBuffer bytes) { }
 
     private <T> void succeed(OresFuture<T> future, T value) {
-        future.completeFromRuntime(value);
+        // Release admission *before* publishing completion. Awaiting guest
+        // continuations can immediately submit their next operation; they must
+        // not race an already-completed predecessor's stale quota count.
         pending.decrementAndGet();
+        future.completeFromRuntime(value);
     }
     private <T> void fail(OresFuture<T> future, Throwable failure) {
-        future.failFromRuntime(failure);
         pending.decrementAndGet();
+        future.failFromRuntime(failure);
     }
 
     private void updateAcceptInterest() {

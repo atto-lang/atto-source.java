@@ -30,14 +30,19 @@ final class NativeNetStdlibTest {
             Files.writeString(entry, """
                 import module net_core from "std/net";
                 pub async routine main(): void {
-                  val listener = net_core.listen_loopback(0, 32, 4, 16);
+                  val NioTcpListener listener = net_core.listen_loopback(0, 32, 4, 16);
                   stdio.println(listener.port);
-                  val peer = await net_core.accept(listener);
-                  val bytes = await net_core.read(peer, 64);
-                  val int sent = await net_core.write(peer, bytes);
+                  val Future<NioTcpConnection> pending_accept = net_core.accept(listener);
+                  val NioTcpConnection peer = await pending_accept;
+                  val Future<Array<int>> pending_read = net_core.read(peer, 64);
+                  val Array<int> bytes = await pending_read;
+                  val Future<int> pending_write = net_core.write(peer, bytes);
+                  val int sent = await pending_write;
                   stdio.println(sent);
-                  await net_core.close_connection(peer);
-                  await net_core.close_listener(listener);
+                  val Future<void> pending_close = net_core.close_connection(peer);
+                  await pending_close;
+                  val Future<void> pending_shutdown = net_core.close_listener(listener);
+                  await pending_shutdown;
                   return;
                 }
                 """);
