@@ -34,6 +34,9 @@ public final class ChannelRuntime {
 
     private static final ReentrantLock COORDINATOR = new ReentrantLock(true);
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
+    /** Bound descriptors and pending waiters before scheduling guest continuations. */
+    private static final int MAX_SELECT_CASES = 256;
+    private static final int MAX_PENDING_SELECTS = 4_096;
     private static long nextTicket;
 
     public enum SelectPolicy {
@@ -67,6 +70,12 @@ public final class ChannelRuntime {
 
     public static final class ChannelClosedException extends IllegalStateException {
         public ChannelClosedException(String message) {
+            super(message);
+        }
+    }
+
+    public static final class SelectAdmissionException extends IllegalStateException {
+        public SelectAdmissionException(String message) {
             super(message);
         }
     }
@@ -286,6 +295,10 @@ public final class ChannelRuntime {
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
+            }
+            if (cases.size() > MAX_SELECT_CASES) {
+                throw new SelectAdmissionException(
+                        "select case descriptor quota exceeded: " + MAX_SELECT_CASES);
             }
             this.cases = List.copyOf(cases);
             this.fairCursor.set(initialFairCursor);
@@ -544,6 +557,16 @@ public final class ChannelRuntime {
                 if (!decided && immediateOnly) {
                     decided = true;
                     unregisterLocked(this);
+                }
+                if (!decided && ACTIVE.size() > MAX_PENDING_SELECTS) {
+                    // Try all immediately committable channel/Future cases
+                    // before rejecting registration. A full pending budget must
+                    // not prevent progress for an already-ready operation.
+                    decided = true;
+                    unregisterLocked(this);
+                    completions.add(() -> future.failFromRuntime(
+                            new SelectAdmissionException(
+                                    "pending select registration quota exceeded")));
                 }
             } finally {
                 COORDINATOR.unlock();
