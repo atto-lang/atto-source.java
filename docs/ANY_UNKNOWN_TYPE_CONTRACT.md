@@ -87,6 +87,20 @@ capability; otherwise they fail at compile time. A constant tuple index checks
 bounds and uses the exact slot type. Dynamic indexing into an empty closed
 tuple/record is rejected.
 
+## Identifiable inference holes — first producer migrated
+
+The empty array literal now has a unique `InferenceHole(id, EMPTY_ARRAY)`
+instead of using the global compiler `Unknown.INSTANCE` wildcard. It is not
+assignable to ordinary types, other inference identities or `Any`.
+Only an expected `Array<T>` with a known element contract may resolve an
+empty array literal, since no existing element can contradict the type.
+An empty array alone cannot infer an unconstrained `T` in a generic call;
+the other call arguments must supply a binding first.
+
+This is the first migration step, not a complete inference solver:
+`None`, `Ok`, `Err`, imported ABI gaps and several builtins still carry
+the older sentinel; all must be migrated before removing the final wildcard.
+
 ## Conditional joins and nested structural record aliases
 
 A conditional with distinct known branch types now joins to their explicit

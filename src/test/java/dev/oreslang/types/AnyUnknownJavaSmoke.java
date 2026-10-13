@@ -35,6 +35,13 @@ public final class AnyUnknownJavaSmoke {
         check(!Types.isAssignable(opaque, integer), "Unknown cannot narrow to int");
         check(!Types.isAssignable(opaque, any), "Unknown cannot narrow to Any");
         check(Types.Unknown.INSTANCE != opaque, "source Unknown distinct from inference hole");
+        var holeA = Types.newInferenceHole(Types.HoleOrigin.EMPTY_ARRAY);
+        var holeB = Types.newInferenceHole(Types.HoleOrigin.EMPTY_ARRAY);
+        check(!holeA.equals(holeB), "empty array inference holes have distinct ids");
+        check(!Types.isAssignable(holeA, integer), "unresolved empty array element cannot narrow");
+        check(!Types.isAssignable(integer, holeA), "unresolved empty array is not wildcard sink");
+        check(!Types.isAssignable(holeA, any), "inference hole cannot be boxed into Any");
+        check(Types.containsOpaqueTop(new Types.ListType(holeA)), "nested inference hole is opaque");
         check(any.toString().equals("Any"), "Any has unambiguous diagnostic label");
         check(opaque.toString().equals("Unknown"), "Unknown has unambiguous diagnostic label");
         check(Types.Unknown.INSTANCE.toString().contains("incomplete"),

@@ -3,11 +3,13 @@ package dev.oreslang.types;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class Types {
     private Types() { }
+    private static final AtomicLong NEXT_HOLE_ID = new AtomicLong(1);
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Any, UnknownValue, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Any, UnknownValue, Unknown, InferenceHole { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -131,6 +133,28 @@ public final class Types {
     }
 
     /**
+     * An identifiable unresolved compiler constraint, not an assignable value.
+     * The EMPTY_ARRAY origin can be satisfied by an explicitly known expected
+     * element type because the literal has no elements to contradict it.
+     * Other origins will be migrated separately from legacy Unknown.INSTANCE.
+     */
+    public enum HoleOrigin { EMPTY_ARRAY }
+
+    public record InferenceHole(long id, HoleOrigin origin) implements Type {
+        public InferenceHole {
+            if (id <= 0) throw new IllegalArgumentException("inference hole id must be positive");
+            Objects.requireNonNull(origin, "inference hole origin");
+        }
+        @Override public String toString() {
+            return "<unresolved " + origin + " #" + id + ">";
+        }
+    }
+
+    public static InferenceHole newInferenceHole(HoleOrigin origin) {
+        return new InferenceHole(NEXT_HOLE_ID.getAndIncrement(), origin);
+    }
+
+    /**
      * Until the runtime carries full type/ownership witnesses, hiding borrowed,
      * callable, receiver-polymorphic or unresolved values behind a top type
      * would allow the compiler to lose enforcement evidence.
@@ -138,7 +162,8 @@ public final class Types {
     private static boolean safelyHideConcreteType(Type type) {
         if (type == Primitive.VOID || type == Primitive.NULL
                 || type == Unknown.INSTANCE || type == UnknownValue.INSTANCE
-                || type instanceof Generic || type instanceof Borrow
+                || type instanceof Generic || type instanceof InferenceHole
+                || type instanceof Borrow
                 || type instanceof SelfType || type instanceof Function
                 || type instanceof ClassNamespace) return false;
         if (type instanceof ListType list) return safelyHideConcreteType(list.element());
@@ -169,7 +194,8 @@ public final class Types {
     }
 
     public static boolean containsOpaqueTop(Type type) {
-        if (type == Any.INSTANCE || type == UnknownValue.INSTANCE) return true;
+        if (type == Any.INSTANCE || type == UnknownValue.INSTANCE
+                || type instanceof InferenceHole) return true;
         if (type instanceof SelfType self) return containsOpaqueTop(self.bound());
         if (type instanceof Borrow borrow) return containsOpaqueTop(borrow.target());
         if (type instanceof ListType list) return containsOpaqueTop(list.element());
@@ -188,6 +214,10 @@ public final class Types {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
         if (from.equals(to)) return true;
+        // Inference identities never act as untyped values or wildcard type
+        // witnesses. Contextual resolution is performed by the checker, not
+        // through this general assignability relation.
+        if (from instanceof InferenceHole || to instanceof InferenceHole) return false;
         // Unknown is a safe, opaque destination; only an explicit runtime
         // validation can establish the stronger Any/concrete invariant.
         if (to == UnknownValue.INSTANCE) return safelyHideConcreteType(from);

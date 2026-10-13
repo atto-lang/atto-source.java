@@ -24,6 +24,31 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void emptyArraysCarryDistinctUnresolvedIdentities() {
+        Types.InferenceHole a = Types.newInferenceHole(Types.HoleOrigin.EMPTY_ARRAY);
+        Types.InferenceHole b = Types.newInferenceHole(Types.HoleOrigin.EMPTY_ARRAY);
+        assertNotEquals(a, b);
+        assertFalse(Types.isAssignable(a, Types.Primitive.INT));
+        assertFalse(Types.isAssignable(Types.Primitive.INT, a));
+        assertFalse(Types.isAssignable(a, Types.Any.INSTANCE));
+        assertTrue(Types.containsOpaqueTop(new Types.ListType(a)));
+    }
+
+    @Test
+    void emptyArrayInferenceRequiresConcreteContext() {
+        accept("fnc empty(): Array<int> { return []; }");
+        accept("fnc empty(): Array<string> { return []; }");
+        reject("fnc bad(): int { return []; }", "return value");
+        reject("""
+                fnc bad(): void {
+                    val xs = [];
+                    xs.add(77);
+                    return;
+                }
+                """, "collection member argument");
+    }
+
+    @Test
     void sourceTopsAreNotTheInternalInferenceHole() {
         assertNotEquals(Types.Any.INSTANCE, Types.Unknown.INSTANCE);
         assertNotEquals(Types.UnknownValue.INSTANCE, Types.Unknown.INSTANCE);

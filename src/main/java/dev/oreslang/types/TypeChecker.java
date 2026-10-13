@@ -3456,7 +3456,9 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.ListExpr list) {
-            if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
+            if (list.elements().isEmpty()) {
+                return new ListType(Types.newInferenceHole(Types.HoleOrigin.EMPTY_ARRAY));
+            }
             Type element = widenCollectionElement(requireKnownLiteralValue(
                     typeOf(list.elements().getFirst(), env, generics, self), "array/list element"));
             for (int i = 1; i < list.elements().size(); i++) {
@@ -4720,6 +4722,7 @@ public final class TypeChecker {
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
         if (type == Unknown.INSTANCE || type == Types.Any.INSTANCE
                 || type == Types.UnknownValue.INSTANCE
+                || type instanceof Types.InferenceHole
                 || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
@@ -6918,7 +6921,7 @@ public final class TypeChecker {
     }
 
     private boolean containsUnknown(Type type) {
-        if (type == Unknown.INSTANCE) return true;
+        if (type == Unknown.INSTANCE || type instanceof Types.InferenceHole) return true;
         if (type instanceof SelfType receiverSelf) return containsUnknown(receiverSelf.bound());
         if (type instanceof Borrow borrow) return containsUnknown(borrow.target());
         if (type instanceof ListType list) return containsUnknown(list.element());
@@ -7523,6 +7526,23 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        // An empty array has no values that could violate an expected element
+        // contract. Resolve its isolated inference identity only when that
+        // context is fully known; do not let ordinary List<T> invariance become
+        // covariant and do not infer a type parameter from an empty literal.
+        if (actual instanceof ListType empty
+                && empty.element() instanceof Types.InferenceHole hole
+                && hole.origin() == Types.HoleOrigin.EMPTY_ARRAY
+                && expected instanceof ListType typed
+                && !containsUnknown(typed.element())
+                && !(typed.element() instanceof Generic)
+                && typed.element() != Primitive.VOID
+                && typed.element() != Primitive.NULL) {
+            return true;
+        }
+        if (actual instanceof Types.InferenceHole || expected instanceof Types.InferenceHole) {
+            return actual.equals(expected);
+        }
         // A *value* with an unresolved internal type cannot prove a concrete
         // contract. The reverse legacy wildcard is retained temporarily for
         // contextual builtin/inference holes (None/Ok/Err/empty collections).
