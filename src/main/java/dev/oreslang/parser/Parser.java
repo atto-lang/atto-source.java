@@ -3413,9 +3413,10 @@ public final class Parser {
         if (check(FNC)) return true;
         if (!check(IDENT)) return false;
         String word = peek().lexeme();
-        return (word.equals("suspend") || word.equals("method")
+        return ((word.equals("suspend") || word.equals("method")
                 || word.equals("final") || word.equals("critical"))
-                && (checkNext(IDENT) || checkNext(FNC) || checkNext(LPAREN));
+                && (checkNext(IDENT) || checkNext(FNC) || checkNext(LPAREN)))
+                || looksLikeTypeFirstClassField();
     }
 
     private boolean hasAnnotation(List<Ast.Annotation> annotations, String name) {
