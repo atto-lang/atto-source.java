@@ -388,6 +388,9 @@ public final class ActorRuntime implements AutoCloseable {
         if (failure instanceof GuestEffectSignal effect) {
             return ExceptionBoundaryPolicy.actorTerminal(effect.effect(), effect.originCode());
         }
+        if (failure instanceof ActorFailureSnapshotException delegated) {
+            return delegated.notice().terminal();
+        }
         if (failure instanceof CancellationException
                 || failure instanceof ActorCancellationSignal) {
             return ExceptionBoundaryPolicy.actorTerminal(ExceptionBoundaryPolicy.Effect.CANCEL);
@@ -527,6 +530,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
+    /** Host-visible fail-closed root sink; every actor reserves a generation slot at spawn. */
+    private final ActorSupervisorControlLane rootSupervisionControl;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
 
     /**
@@ -543,6 +548,22 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
+
+    /** Host-only root CONTROL sink; events are pre-reserved per actor generation. */
+    public Optional<ActorFailureNotice> pollRootSupervisionControl() {
+        requireSupervisorContext("poll root supervisor CONTROL events");
+        if (OresScheduler.current() != null) {
+            throw new SecurityException("Oreslang root scheduler cannot poll host CONTROL events");
+        }
+        Optional<ActorFailureNotice> notice = rootSupervisionControl.poll();
+        notice.ifPresent(n -> rootSupervisionControl.ack(n.actor()));
+        return notice;
+    }
+
+    public int rootSupervisionPendingCount() {
+        requireSupervisorContext("inspect root CONTROL events");
+        return rootSupervisionControl.pendingCount();
+    }
     private final AtomicLong watchdogNoticesDropped = new AtomicLong();
     private final ArrayBlockingQueue<WatchdogNotice> watchdogNotices =
             new ArrayBlockingQueue<>(1024);
@@ -591,6 +612,7 @@ public final class ActorRuntime implements AutoCloseable {
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
+        this.rootSupervisionControl = new ActorSupervisorControlLane(dispatcherConfig.maxActors());
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
         ExecutorService privatePool = null;
@@ -1390,6 +1412,17 @@ public final class ActorRuntime implements AutoCloseable {
     @FunctionalInterface
     public interface Behavior<M> {
         void onMessage(M message, ActorContext<M> context) throws Exception;
+
+        /**
+         * Parent-only priority CONTROL callback. The default is fail-closed:
+         * an unsupervised child failure escalates the parent rather than being
+         * mistaken for a normal mailbox message or silently acknowledged.
+         * The compiler has not admitted a source-level handler yet.
+         */
+        default void onChildFailure(ActorFailureNotice notice, ActorContext<M> context)
+                throws Exception {
+            throw new ActorFailureSnapshotException(notice);
+        }
     }
 
     /**
@@ -1440,6 +1473,15 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorOwnedGuestState state,
                 ActorInboxMail<Object> mail,
                 ActorContext<Object> context) throws Exception;
+
+        /** Compiler-owned priority supervisor handler; unimplemented hooks fail closed. */
+        default void onChildFailure(
+                String actorTypeName,
+                ActorOwnedGuestState state,
+                ActorFailureNotice notice,
+                ActorContext<Object> context) throws Exception {
+            throw new ActorFailureSnapshotException(notice);
+        }
     }
 
     public interface ActorContext<M> {
@@ -4295,6 +4337,14 @@ public final class ActorRuntime implements AutoCloseable {
             reserveActorSlot();
 
             ActorId id = ActorId.create();
+            // Reserve root fallback before admission, so parent shutdown or a
+            // missing handler never needs to allocate CONTROL queue capacity.
+            try {
+                rootSupervisionControl.reserve(id);
+            } catch (RuntimeException reservationFailure) {
+                actorCount.decrementAndGet();
+                throw reservationFailure;
+            }
             ActorRef<M> ref = new ActorRef<>(id, kind);
             ActorCell<M> cell = null;
             boolean linkedToParent = false;
@@ -4319,6 +4369,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     "cannot spawn a child from a stopping or force-fenced actor "
                                             + parent.ref.id());
                         }
+                        parent.childControl.reserve(id);
                         parent.children.add(cell);
                         linkedToParent = true;
                         actors.put(id, cell);
@@ -4328,7 +4379,13 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 return ref;
             } catch (RuntimeException | Error failure) {
-                if (linkedToParent && cell != null) parent.children.remove(cell);
+                if (linkedToParent && cell != null) {
+                    synchronized (parent.lifecycleLock) {
+                        parent.children.remove(cell);
+                        parent.childControl.retireGracefully(id);
+                    }
+                }
+                rootSupervisionControl.retireGracefully(id);
                 actorCount.decrementAndGet();
                 throw failure;
             }
@@ -6665,6 +6722,9 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
+        /** Pre-reserved per-child CONTROL slots; never share ordinary inbox capacity. */
+        private final ActorSupervisorControlLane childControl =
+                new ActorSupervisorControlLane(dispatcherConfig.maxActors());
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
@@ -6858,7 +6918,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean hasQueuedWorkLocked() {
-            return !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
+            return childControl.pendingCount() != 0
+                    || !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
         }
 
         private OresScheduler sourceScheduler() {
@@ -7008,7 +7069,13 @@ public final class ActorRuntime implements AutoCloseable {
                 // are best-effort and retryable by the process collector.
             }
             unregisterActor(this);
-            if (parent != null) parent.childFinalized(this);
+            if (parent != null) {
+                parent.childFinalized(this);
+            } else if (ref.terminalFailureNotice.get() != null) {
+                rootSupervisionControl.publish(ref.terminalFailureNotice.get());
+            } else {
+                rootSupervisionControl.retireGracefully(ref.id());
+            }
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
                 // Preserve the initializer failure as the direct cause of
@@ -7027,10 +7094,26 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void childFinalized(ActorCell<?> child) {
             synchronized (lifecycleLock) {
-                children.remove(child);
+                if (!children.remove(child)) {
+                    throw new IllegalStateException("duplicate or foreign child finalization");
+                }
+                ActorFailureNotice notice =
+                        child.ref.terminalFailureNotice.get();
+                if (notice == null) {
+                    childControl.retireGracefully(child.ref.id());
+                    rootSupervisionControl.retireGracefully(child.ref.id());
+                } else if (stopped.get() || finalized || forceKillFenced) {
+                    // The parent cannot admit another guest turn. Preserve
+                    // the child's event in the independently reserved root sink.
+                    childControl.retireGracefully(child.ref.id());
+                    rootSupervisionControl.publish(notice);
+                } else {
+                    childControl.publish(notice);
+                }
                 if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
+            if (!stopped.get()) schedule();
         }
 
         private boolean finalized() {
@@ -7595,6 +7678,12 @@ public final class ActorRuntime implements AutoCloseable {
                     recordTerminalFailure(cause);
                 }
                 stopped.set(true);
+                // A parent shutting down cannot process CONTROL. Forward
+                // queued/in-flight child failures to root without dropping
+                // their original typed provenance.
+                for (ActorFailureNotice childFailure : childControl.drainPublished()) {
+                    rootSupervisionControl.publish(childFailure);
+                }
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
