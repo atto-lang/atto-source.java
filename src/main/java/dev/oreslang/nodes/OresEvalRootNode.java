@@ -2048,8 +2048,7 @@ public final class OresEvalRootNode extends RootNode {
                             env,
                             (t, flow) -> {
                                 if (flow.kind() == SourceFlowKind.THROW
-                                        && !(flow.failure() instanceof ProcessExitSignal)
-                                        && !(flow.failure() instanceof OresPanic)) {
+                                        && isGuestCatchableFailure(flow.failure())) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
@@ -4603,6 +4602,14 @@ public final class OresEvalRootNode extends RootNode {
                     && !isTrappableFailure(runtime);
         }
 
+        // Explicit guest catch is intentionally broader than trap: callers
+        // may handle a denied operation without weakening its authority.
+        // Fatal panic and scheduler cancellation remain uncatchable.
+        private boolean isGuestCatchableFailure(Throwable failure) {
+            return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
+                    failure, OresPanic.class);
+        }
+
         private Object callFunctionBodyUnchecked(Ast.FunctionDecl fn, List<?> args) {
             if (fn.async() || functionContainsPotentialSuspension(fn)) {
                 OresFuture<Object> future =
@@ -4998,6 +5005,9 @@ public final class OresEvalRootNode extends RootNode {
                     catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
                     catch (OresPanic panic) { throw panic; }
                     catch (RuntimeException failure) {
+                        // Guest catch may recover explicit denials and other ordinary
+                        // errors, but must never consume panic or scheduler control.
+                        if (!isGuestCatchableFailure(failure)) throw failure;
                         Env catchEnv = new Env(env);
                         catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
                         executeBlock(tried.catchBody(), catchEnv, true);

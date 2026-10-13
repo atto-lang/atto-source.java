@@ -271,6 +271,99 @@ final class CoreAssertTest {
         }
     }
 
+    @Test void explicitGuestCatchCanRecoverDeniedOperationAcrossSuspension() throws Exception {
+        Path blocked = Files.createTempFile("ores-assert-catch-denied-", ".txt");
+        Path entry = Files.createTempFile("ores-assert-catch-policy-", ".ores");
+        try {
+            Files.delete(blocked);
+            for (boolean resumed : new boolean[]{false, true}) {
+                Files.writeString(entry, """
+                    import module Assert from "std/assert";
+                    trap fnc guarded(): bool {
+                        %s
+                        try {
+                            fs.write_text("%s", "forbidden");
+                        } catch (error) {
+                            stdio.stdout.write("caught-denial");
+                        } finally {
+                            stdio.stdout.write("finally");
+                        }
+                        return true;
+                    }
+                    pub %s main(): void {
+                        val Option<bool> handled = guarded();
+                        stdio.stdout.write(handled.is_some());
+                        return;
+                    }
+                    """.formatted(
+                        resumed ? "rt cooperate;" : "",
+                        blocked.toString().replace("\\", "\\\\").replace("\"", "\\\""),
+                        resumed ? "async fnc" : "routine"));
+                var out = new ByteArrayOutputStream();
+                LinkedProgramRunner.run(
+                        entry,
+                        IsolatePolicy.developer().withCapabilities(
+                                IsolatePolicy.Capability.FILESYSTEM_WRITE),
+                        RuntimePermissions.denyAll(),
+                        PermissionCheckMode.RUNTIME,
+                        ExecutionProfile.serverJit(),
+                        java.util.Set.of(),
+                        System.getenv(),
+                        out,
+                        new ByteArrayOutputStream());
+                assertEquals("caught-denialfinallytrue",
+                        out.toString(StandardCharsets.UTF_8).trim(),
+                        "explicit guest catch is permitted to recover a denied operation");
+                assertFalse(Files.exists(blocked), "catch must not grant the denied write");
+            }
+        } finally {
+            Files.deleteIfExists(entry);
+            Files.deleteIfExists(blocked);
+        }
+    }
+
+    @Test void panicCannotBeCaughtOrMaskedByFinallyAcrossSuspension() {
+        for (boolean resumed : new boolean[]{false, true}) {
+            Exception failure = assertThrows(Exception.class, () -> run("""
+                trap fnc check(): bool {
+                    %s
+                    try {
+                        val Option<bool> absent = None;
+                        return absent.unwrap();
+                    } catch (error) {
+                        stdio.stdout.write("caught-panic");
+                        return true;
+                    } finally {
+                        Assert.fail("ordinary cleanup");
+                    }
+                }
+                pub %s main(): void {
+                    check();
+                    stdio.stdout.write("unreachable");
+                    return;
+                }
+                """.formatted(resumed ? "rt cooperate;" : "",
+                        resumed ? "async fnc" : "routine")));
+            assertTrue(failure.getMessage().contains("Option::unwrap"),
+                    () -> "panic must bypass catch and remain authoritative: " + failure);
+        }
+    }
+
+    @Test void ordinaryAssertionFailureStillCanBeCaughtInSyncAndResumedTry() throws Exception {
+        for (boolean resumed : new boolean[]{false, true}) {
+            assertEquals("caughtfinally", run("""
+                pub %s main(): void {
+                    %s
+                    try { Assert.fail("ordinary"); }
+                    catch (error) { stdio.stdout.write("caught"); }
+                    finally { stdio.stdout.write("finally"); }
+                    return;
+                }
+                """.formatted(resumed ? "async fnc" : "routine",
+                        resumed ? "rt cooperate;" : "")));
+        }
+    }
+
     @Test void failurePrimitiveChecksMessageTypeAndArity() {
         for (String expression : new String[]{"rt fail(1)", "rt fail()", "rt fail(\"a\", \"b\")"}) {
             assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(

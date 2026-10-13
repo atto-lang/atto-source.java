@@ -70,6 +70,34 @@ final class TrapFailurePolicyTest {
         assertFalse(TrapFailurePolicy.isTrappable(chain, GuestPanic.class));
     }
 
+    @Test void explicitGuestCatchCanRecoverDenialAndTimeout() {
+        assertTrue(TrapFailurePolicy.isGuestCatchable(
+                new SecurityException("denied"), GuestPanic.class));
+        assertTrue(TrapFailurePolicy.isGuestCatchable(
+                new CompletionException(new SecurityException("wrapped denial")),
+                GuestPanic.class));
+        assertTrue(TrapFailurePolicy.isGuestCatchable(
+                new CompletionException(new TimeoutException("request timed out")),
+                GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isTrappable(
+                new CompletionException(new SecurityException("wrapped denial")),
+                GuestPanic.class));
+    }
+
+    @Test void explicitGuestCatchCannotConsumeSchedulerControl() {
+        for (Throwable control : new Throwable[]{
+                new CancellationException("cancelled"),
+                new RejectedExecutionException("scheduler closed"),
+                new InterruptedException("interrupted"),
+                new AssertionError("host failure"),
+                new GuestPanic()
+        }) {
+            assertFalse(TrapFailurePolicy.isGuestCatchable(
+                    new CompletionException(control), GuestPanic.class),
+                    control::toString);
+        }
+    }
+
     @Test void excessivelyWideSuppressedGraphsFailClosed() {
         RuntimeException failure = new IllegalStateException("root");
         for (int index = 0; index < 65; index++) {
