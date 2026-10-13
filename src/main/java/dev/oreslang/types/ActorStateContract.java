@@ -453,7 +453,7 @@ public final class ActorStateContract {
     }
 
     private static boolean detachedScalarStateType(Ast.TypeRef type) {
-        if (!type.arguments().isEmpty() || type.isBorrow()) return false;
+        if (type == null || !type.arguments().isEmpty() || type.isBorrow()) return false;
         return switch (type.name()) {
             case "int", "uint", "float", "decimal", "complex",
                  "bool", "boolean", "string", "String" -> true;
