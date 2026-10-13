@@ -236,6 +236,35 @@ public final class ActorStateContract {
                 throw new IllegalArgumentException(
                         "actor state-backed reference alias requires verified snapshot lowering");
             }
+            if (node instanceof Ast.AssignExpr assignment
+                    && isDirectStateFieldTarget(assignment.target(), activeAccess)
+                    && !detachedScalarStateType(keys.get(
+                            ((Ast.MemberExpr) assignment.target()).member()))
+                    && !isDirectActorOwnedStateValue(
+                            assignment.value(), activeAccess, keys)) {
+                // An exclusive write loan protects the actor's state, but
+                // cannot adopt an arbitrary external reference into its heap.
+                // Reference-valued field writes must originate in the same
+                // scoped actor-owned map until owned allocation/move lowering
+                // can prove detached storage at this exact assignment.
+                throw new IllegalArgumentException(
+                        "actor state reference write requires verified owned-value lowering");
+            }
+            if (node instanceof Ast.NewExpr allocation
+                    && containsReferenceBearingStateProjection(
+                            allocation.arguments(), activeAccess, keys)) {
+                // Constructor/FFI code may retain or publish the arguments.
+                throw new IllegalArgumentException(
+                        "actor state-backed reference construction requires verified no-escape lowering");
+            }
+            if (node instanceof Ast.RuntimeCallExpr runtime
+                    && containsReferenceBearingStateProjection(
+                            runtime.arguments(), activeAccess, keys)) {
+                // Never silently trust a new or unknown rt intrinsic to
+                // detach, read-only-wrap, or avoid retaining an actor ref.
+                throw new IllegalArgumentException(
+                        "actor state-backed runtime reference requires verified no-escape lowering");
+            }
             if (node instanceof Ast.CallExpr call
                     && (containsReferenceBearingStateProjection(
                                 call.callee(), activeAccess, keys)
@@ -363,6 +392,17 @@ public final class ActorStateContract {
                 }
             }
         }
+    }
+
+    /** A direct sibling state field is already actor-owned; an arbitrary
+     * local, call result, constructor, or expression is not proven owned. */
+    private static boolean isDirectActorOwnedStateValue(
+            Object value, String access, Map<String, Ast.TypeRef> keys) {
+        if (!(value instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr receiver)
+                || !receiver.name().equals(access)) return false;
+        Ast.TypeRef sourceType = keys.get(member.member());
+        return sourceType != null && !detachedScalarStateType(sourceType);
     }
 
     /** Only the actor's own direct state key is an authorized assignment sink. */
