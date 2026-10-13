@@ -2319,15 +2319,32 @@ public final class Parser {
             name = advance().lexeme();
             consume(COLON, "expected ':' after destructured binding name");
             declaredType = parseTypeRef();
+            if (match(MUT)) {
+                if (mutableReferent) {
+                    throw error(previous(), "duplicate mut modifier on destructure binding '" + name + "'");
+                }
+                mutableReferent = true;
+            }
         } else {
             try {
                 Ast.TypeRef candidate = parseTypeRef();
+                // Allow either 'const mut Type name' (existing) or the
+                // type-adjacent spelling 'const Type mut name'. A local
+                // type-adjacent mut changes this binding only.
+                boolean typeAdjacentMut = match(MUT);
                 if (check(IDENT)) {
                     declaredType = candidate;
                     name = advance().lexeme();
+                    if (typeAdjacentMut) {
+                        if (mutableReferent) {
+                            throw error(previous(), "duplicate mut modifier on destructure binding '" + name + "'");
+                        }
+                        mutableReferent = true;
+                    }
                 }
             } catch (IllegalArgumentException ignored) {
                 // Could be the existing untyped identifier spelling.
+                // Roll back and parse it without type speculation.
             }
             if (name == null) {
                 current = mark;
