@@ -366,3 +366,44 @@ runs cited above validate their older trees only and must not be relabeled as
 proof of this typed-result change. True state-preserving pause/resume is also
 not implemented: current `pause` retires the stage generation and `resume`
 spawns replacements. Source-compiled LLVM parity remains a separate gate.
+
+## Security audit: exact bound-domain result admission (2026-10-12)
+
+The explicit result-case checker previously accepted two cases from the same
+enum even if they were not jointly present in any closed mailbox pattern.
+It now requires an explicitly declared common closed pattern. Runtime proof is
+stronger: `PipelineRunner.sendExpected(message, case)` invokes a side-effect-
+free `Session.requireExpectedReplyCase` against the **actual bound**
+`TaggedMessageCodec`, *before* reserving the single-flow ingress. An engine
+without such a compiler-codec attestation fails closed. The controller
+rechecks the generation and running state after external validation, so
+a concurrent pause/restart cannot publish into a retired actor generation.
+Invalid expected cases leave the controller RUNNING and preserve admission
+credit; valid explicit result requests still check the final actual tagged
+case after whole-route physical DONE.
+
+The return-type AST rejects inferred/nested arguments such as
+`send<Signal.Result<>>`. Bare `runner.send(message)` produces the sealed
+opaque `PipelineTypedReply`; member access is rejected rather than falling
+through to dynamic `Unknown` member typing.
+
+**Semantics:** This v0 result is exactly the authenticated **backward mailbox
+message received by the source**, not any new value that the source computes
+while handling that message. For the existing 3-stage source fixture, the
+typed returned frames are `Signal.Result(14)` and `Signal.Result(19)`,
+while the source separately prints totals 19 and 24. A final value produced
+*by* the source requires a separate explicit authenticated source-completion
+intrinsic/protocol; inferring it from prints or state would be unsound.
+
+The guest tests now distinguish the backward frames from the derived output,
+reject a same-enum-but-out-of-domain result case, reject inferred/forged
+result types, reject opaque member inspection, and assert invalid bound
+reply cases never publish DATA or consume ingress credit.
+
+**Evidence status:** these hardening changes are committed but still have no
+passing exact-source Maven or GraalVM Native Image AOT/hybrid CI evidence.
+The earlier green runs validate earlier receipt-only trees. Java directional
+phase admission is still not wired as a reservation/commit at the actual
+mailbox publication linearization point. State-preserving `pause()/resume()`,
+source-final produced results, LLVM guest codegen, and cross-backend traces
+remain release blockers.
