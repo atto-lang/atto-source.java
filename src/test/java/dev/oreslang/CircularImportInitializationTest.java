@@ -225,6 +225,72 @@ final class CircularImportInitializationTest {
     }
 
     @Test
+    void extractingImportedFunctionValueIsInertUntilInvoked() throws Exception {
+        Path a = tempDir.resolve("a.ores");
+        Path b = tempDir.resolve("b.ores");
+        Files.writeString(a, """
+                import fnc b_value from "./b.ores";
+                pub fnc a_value(): void { return; }
+                pub routine main(): void {
+                  val callback = b_value;
+                  stdio.stdout.write("before|");
+                  callback();
+                  return;
+                }
+                """);
+        Files.writeString(b, """
+                import fnc a_value from "./a.ores";
+                fnc init(): void {
+                  stdio.stdout.write("init-b|");
+                  return;
+                }
+                pub fnc b_value(): void {
+                  stdio.stdout.write("called");
+                  return;
+                }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                a, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                output, new ByteArrayOutputStream());
+        assertEquals("before|init-b|called", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void constructingImportedClassTriggersInitializationOnlyWhenConstructed() throws Exception {
+        Path a = tempDir.resolve("a.ores");
+        Path b = tempDir.resolve("b.ores");
+        Files.writeString(a, """
+                import class Box from "./b.ores";
+                pub fnc a_value(): void { return; }
+                pub routine main(): void {
+                  stdio.stdout.write("before|");
+                  val Box box = new Box();
+                  stdio.stdout.write("after");
+                  return;
+                }
+                """);
+        Files.writeString(b, """
+                import fnc a_value from "./a.ores";
+                fnc init(): void {
+                  stdio.stdout.write("init-b|");
+                  return;
+                }
+                pub define class Box as
+                  pub constructor() {
+                    stdio.stdout.write("constructed|");
+                    return;
+                  }
+                end
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                a, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                output, new ByteArrayOutputStream());
+        assertEquals("before|init-b|constructed|after", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void recursiveInitializationViaCycleFailsClosed() throws Exception {
         Path a = tempDir.resolve("a.ores");
         Path b = tempDir.resolve("b.ores");
