@@ -42,6 +42,10 @@ final class ResultMustUseProof {
     }
 
     private static int step(Ast.Stmt statement, int state, String variable) {
+        if (state == PENDING && shadowsResult(statement, variable)) {
+            throw new IllegalArgumentException(
+                    "must-use Result '" + variable + "' is shadowed before handling");
+        }
         if (statement instanceof Ast.ReturnStmt ret) {
             if (state == PENDING && !isVariable(ret.value(), variable)) {
                 throw new IllegalArgumentException(
@@ -59,6 +63,15 @@ final class ResultMustUseProof {
             int exits = 0;
             // The normal type checker first proves exhaustiveness and arm types.
             for (Ast.MatchArm arm : matched.arms()) {
+                // A pattern binder can introduce a new local with the same
+                // spelling as the pending Result. It cannot discharge the
+                // outer Result merely because an inner variable is matched.
+                if (!consumes && state == PENDING
+                        && patternBinds(arm.pattern(), variable)) {
+                    throw new IllegalArgumentException(
+                            "must-use Result '" + variable
+                                    + "' is shadowed by a match pattern");
+                }
                 exits |= walk(arm.body(), incoming, variable);
             }
             return exits;
@@ -83,6 +96,36 @@ final class ResultMustUseProof {
                             + "' crosses control flow without a handling proof");
         }
         return state;
+    }
+
+    private static boolean shadowsResult(Ast.Stmt statement, String variable) {
+        if (statement instanceof Ast.BindingStmt binding) {
+            return binding.name().equals(variable);
+        }
+        if (statement instanceof Ast.DestructureStmt destructure) {
+            return destructure.bindings().stream().anyMatch(
+                    binding -> !binding.isDiscard() && binding.name().equals(variable));
+        }
+        return false;
+    }
+
+    private static boolean patternBinds(Ast.Pattern pattern, String variable) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            return binding.name().equals(variable);
+        }
+        if (pattern instanceof Ast.TypePattern typed) {
+            return variable.equals(typed.binding());
+        }
+        if (pattern instanceof Ast.StructuralPattern structural) {
+            return variable.equals(structural.binding());
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            return tuple.elements().stream().anyMatch(part -> patternBinds(part, variable));
+        }
+        if (pattern instanceof Ast.ConstructorPattern constructor) {
+            return constructor.arguments().stream().anyMatch(part -> patternBinds(part, variable));
+        }
+        return false;
     }
 
     private static boolean simpleFallthrough(Ast.Stmt statement) {
