@@ -6,6 +6,105 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class CriticalGateTest {
     @Test
+    void foreignTicketCloseCannotReleaseGrantedWriterDuringGuestTurn() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<CriticalGate.Ticket> owned =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            try {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        CriticalGate.Ticket writer = gate.newTicket();
+                        owned.set(writer);
+                        assertTrue(writer.enterAsync().isDone());
+                        entered.countDown();
+                        assertTrue(release.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                        assertTrue(writer.isHeld(),
+                                "foreign close must not revoke a live actor writer");
+                    } catch (Throwable e) {
+                        failure.compareAndSet(null, e);
+                    } finally {
+                        entered.countDown();
+                    }
+                });
+                actor.send("hold");
+                assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertNull(failure.get());
+                var reader = gate.newTicket(CriticalGate.Mode.READ);
+                var admission = reader.enterAsync();
+                assertFalse(admission.isDone());
+                Thread closer = Thread.ofVirtual().start(owned.get()::close);
+                closer.join(5_000);
+                assertFalse(closer.isAlive(), "foreign close may not block an actor");
+                assertTrue(owned.get().isHeld());
+                assertFalse(admission.isDone(), "foreign close must not admit a reader early");
+                assertEquals(1, runtime.trackedActorResourceCount(actor));
+                release.countDown();
+                long deadline = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                while ((!admission.isDone()
+                        || runtime.trackedActorResourceCount(actor) != 0)
+                        && System.nanoTime() < deadline) Thread.onSpinWait();
+                assertTrue(admission.isDone(), "reader must wake after guest carrier exit");
+                assertTrue(reader.isHeld());
+                assertFalse(owned.get().isHeld());
+                assertEquals(0, runtime.trackedActorResourceCount(actor));
+                reader.close();
+                runtime.stop(actor);
+            } finally {
+                release.countDown();
+            }
+        }
+        assertNull(failure.get());
+        assertEquals(0, gate.queuedCount());
+        assertFalse(gate.held());
+    }
+
+    @Test
+    void guestOwnedExplicitTicketCloseReleasesAtItsLexicalBoundary() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        java.util.concurrent.CountDownLatch released = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch exitTurn = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            try {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        var writer = gate.newTicket();
+                        assertTrue(writer.enterAsync().isDone());
+                        writer.close();
+                        assertFalse(writer.isHeld(), "owning guest may end its lexical scope");
+                        released.countDown();
+                        assertTrue(exitTurn.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                    } catch (Throwable e) {
+                        failure.compareAndSet(null, e);
+                    } finally {
+                        released.countDown();
+                    }
+                });
+                actor.send("close");
+                assertTrue(released.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertNull(failure.get());
+                var next = gate.newTicket(CriticalGate.Mode.READ);
+                assertTrue(next.enterAsync().isDone(),
+                        "logical owner release should not wait for whole actor turn");
+                assertTrue(next.isHeld());
+                next.close();
+                exitTurn.countDown();
+                runtime.stop(actor);
+            } finally {
+                exitTurn.countDown();
+            }
+        }
+        assertNull(failure.get());
+    }
+
+    @Test
     void domainCloseRunsOverOneHundredThousandAdmissionReleaseTransitions() {
         // 20,000 independently torn-down domains * at least six state
         // transitions each: grant, queue, queue, cancel/release, close, settle.
