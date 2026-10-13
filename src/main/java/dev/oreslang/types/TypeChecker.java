@@ -1016,7 +1016,11 @@ public final class TypeChecker {
         Ast.TypeRef returnType = null;
         if (call.callee() instanceof Ast.NameExpr name) {
             Ast.FunctionDecl fn = findFunction(name.name(), 0);
-            if (fn == null || fn.async() || fn.suspends() || fn.generator()
+            // A literal-looking body is not enough if the callable's
+            // invocation contract is trapped or actor-dispatched. Keep the
+            // initializer proof restricted to ordinary synchronous callables.
+            if (fn == null || fn.trapped() || fn.actorKind() != Ast.ActorKind.NONE
+                    || fn.async() || fn.suspends() || fn.generator()
                     || !fn.parameters().isEmpty() || !fn.genericParameters().isEmpty()) return false;
             body = fn.body();
             returnType = fn.returnType();
@@ -1031,7 +1035,8 @@ public final class TypeChecker {
                 if (candidate != null) return false;
                 candidate = method;
             }
-            if (candidate == null || candidate.async() || candidate.suspends()
+            if (candidate == null || candidate.isAbstract()
+                    || candidate.async() || candidate.suspends()
                     || !candidate.genericParameters().isEmpty()) return false;
             body = candidate.body();
             returnType = candidate.returnType();
