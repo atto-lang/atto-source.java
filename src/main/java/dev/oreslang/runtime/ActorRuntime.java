@@ -4352,18 +4352,22 @@ public final class ActorRuntime implements AutoCloseable {
         // barrier that can only complete when their own callback returns.
         if (currentActor.get() != null || finalizingOnThread.get() != null) return;
 
+        // The internal 'finalized' flag is published before READY and DONE
+        // callbacks, so it is not a public host-stop completion barrier.
+        // Await the actor-owned terminal receipt instead, including when
+        // registry removal races with a concurrently stopping host.
         try {
-            cell.awaitFinalized(CLOSE_WAIT_NANOS);
+            if (!ref.awaitTermination(CLOSE_WAIT_NANOS, TimeUnit.NANOSECONDS)) {
+                throw new IllegalStateException(
+                        "actor " + ref.id()
+                                + " or one of its child actors did not publish DONE "
+                                + "within the stop deadline");
+            }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(
-                    "interrupted while waiting for actor " + ref.id() + " to finalize",
+                    "interrupted while awaiting DONE for actor " + ref.id(),
                     interrupted);
-        }
-        if (!cell.finalized()) {
-            throw new IllegalStateException(
-                    "actor " + ref.id()
-                            + " or one of its child actors did not finalize within the stop deadline");
         }
     }
 
