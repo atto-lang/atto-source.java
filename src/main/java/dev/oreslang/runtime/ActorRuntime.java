@@ -427,7 +427,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     /** An actor retirement/cancellation callback may run nested host code;
      * it must never synchronously await DONE or close the runtime on its stack. */
-    private final ThreadLocal<ActorCell<?>> finalizingOnThread = new ThreadLocal<>();
+    private static final ThreadLocal<ActorCell<?>> finalizingOnThread = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
@@ -3273,6 +3273,12 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException(
                     "actor code cannot " + operation + "; this operation belongs to the host/supervisor");
         }
+    }
+
+    /** Runtime callbacks on a retirement/cancellation stack cannot park waiting
+     * for any pending Future, including the DONE they are responsible for publishing. */
+    static boolean inActorRetirementCallback() {
+        return finalizingOnThread.get() != null;
     }
 
     private void requireBlockingHostContext(String operation) {
