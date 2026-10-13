@@ -6773,8 +6773,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof CompletionStage<?> stage) {
                 return OresFuture.from(stage);
             }
-            if (value instanceof Long || value instanceof Double || value instanceof Integer
-                    || value instanceof Float || value instanceof Short || value instanceof Byte || value instanceof Boolean || value instanceof String
+            if (value instanceof Number || value instanceof Boolean || value instanceof String
                     || value instanceof Character || value instanceof OresFuture<?>) {
                 return value;
             }
