@@ -115,6 +115,16 @@ final class StdErrorCatalogTest {
                             Boolean.parseBoolean(catalog.group(4)), iface)));
         }
         assertEquals(parsed, expected, "manifest/source drift or malformed catalog record");
+        assertEquals(expected.size(),
+                dev.oreslang.runtime.CoreErrorDescriptors.size(),
+                "generated runtime descriptor count must equal the std/error manifest");
+        for (Map.Entry<String, Entry> row : expected.entrySet()) {
+            var descriptor = dev.oreslang.runtime.CoreErrorDescriptors.requireKnown(row.getKey());
+            assertEquals(row.getValue().code(), descriptor.code(), row.getKey());
+            assertEquals(row.getValue().abstractClass(), descriptor.abstractType(), row.getKey());
+            assertSame(descriptor,
+                    dev.oreslang.runtime.CoreErrorDescriptors.requireKnownCode(descriptor.code()));
+        }
         // Preserve legacy actor-adjacent core codes and subtype ancestry.
         assertEquals(new Entry("StateError", 2012, false, "ActorApiError"), parsed.get("ProcessNotFoundError"));
         assertEquals(new Entry("StateError", 2013, false, "ActorApiError"), parsed.get("MailboxFullError"));
