@@ -44,7 +44,24 @@ final class DynamicPipelineGuestSourceTest {
                 "    await second.send(Signal.Data(5));",
                 "    val reply2 = await second.send<Signal.Result>(Signal.Data(5));");
         assertNotEquals(source(), guest);
-        assertEquals("DYNAMIC_PIPELINE_V1_19|DYNAMIC_PIPELINE_V2_24",
+        // A runner returns the actual typed backward mail observed by Source:
+        // Result(14) and Result(19), not Source's independently updated
+        // state/output count (19 and 24). This is an essential semantic
+        // distinction until explicit source-produced completion is designed.
+        guest = guest.replace(
+                "    await controller.pause();",
+                "    if reply1 == Signal.Result(14) then "
+                        + "stdio.stdout.write(\"|REPLY_V1_14\"); "
+                        + "else stdio.stdout.write(\"|BAD_REPLY_V1\"); fi\n"
+                        + "    await controller.pause();")
+                .replace(
+                "    await controller.close();",
+                "    if reply2 == Signal.Result(19) then "
+                        + "stdio.stdout.write(\"|REPLY_V2_19\"); "
+                        + "else stdio.stdout.write(\"|BAD_REPLY_V2\"); fi\n"
+                        + "    await controller.close();");
+        assertEquals("DYNAMIC_PIPELINE_V1_19|REPLY_V1_14"
+                        + "|DYNAMIC_PIPELINE_V2_24|REPLY_V2_19",
                 execute(guest));
     }
 
