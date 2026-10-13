@@ -8572,15 +8572,6 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.DestructureBinding> bindings,
                 Env destination,
                 String label) {
-            List<Object> items = new ArrayList<>();
-            try {
-                for (Object value : values) {
-                    context.schedulerSafepoint();
-                    items.add(value);
-                }
-            } finally {
-                closeIterable(values);
-            }
             int restIndex = -1;
             for (int i = 0; i < bindings.size(); i++) {
                 if (bindings.get(i).rest()) {
@@ -8588,8 +8579,20 @@ public final class OresEvalRootNode extends RootNode {
                     break;
                 }
             }
-
             int fixedArity = restIndex >= 0 ? restIndex : bindings.size();
+            List<Object> items = new ArrayList<>();
+            try {
+                // A prefix projection on a custom iterable must not exhaust a
+                // potentially unbounded iterator. When rest exists we must
+                // consume the full tail; otherwise stop at the last selected slot.
+                for (Object value : values) {
+                    if (restIndex < 0 && items.size() == fixedArity) break;
+                    context.schedulerSafepoint();
+                    items.add(value);
+                }
+            } finally {
+                closeIterable(values);
+            }
             if (items.size() < fixedArity) {
                 throw new IllegalArgumentException(label + " arity mismatch: value has " + items.size()
                         + " element(s), pattern requires at least " + fixedArity
