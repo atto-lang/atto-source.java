@@ -1903,6 +1903,9 @@ public final class Parser {
         }
 
         Ast.Expr expression = parseExpression();
+        if (expression instanceof Ast.DynamicSelectExpr) {
+            throw error(previous(), "result-valued select cannot be discarded as a bare statement; use 'return select from cases' or bind the result");
+        }
         consumeExpressionStatementTerminator(expression, "expression statement should end with ';'");
         return new Ast.ExprStmt(expression);
     }
