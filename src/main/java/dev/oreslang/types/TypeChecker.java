@@ -218,12 +218,18 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("Map")) throw new IllegalArgumentException(
+                            "Map is a reserved built-in collection type");
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    if (iface.name().equals("Map")) throw new IllegalArgumentException(
+                            "Map is a reserved built-in collection type");
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    if (alias.name().equals("Map")) throw new IllegalArgumentException(
+                            "Map is a reserved built-in collection type");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
@@ -1923,11 +1929,18 @@ public final class TypeChecker {
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
-                requireAssignable(index, Primitive.INT, "array/list index");
-                if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException(
-                        "indexed assignment requires an array/list or tuple; structs have a closed static field set");
+                if (receiver instanceof Named map
+                        && map.name().equals("$builtin$Map")
+                        && map.arguments().size() == 2) {
+                    requireAssignable(index, map.arguments().getFirst(), "Map key");
+                    targetType = map.arguments().get(1);
+                } else {
+                    requireAssignable(index, Primitive.INT, "array/list index");
+                    if (receiver instanceof ListType list) targetType = list.element();
+                    else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                    else throw new IllegalArgumentException(
+                            "indexed assignment requires an array/list, tuple, or typed Map; structs have a closed static field set");
+                }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
@@ -3223,6 +3236,12 @@ public final class TypeChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
             Type index = typeOf(indexed.index(), env, generics, self);
+            if (receiver instanceof Named map
+                    && map.name().equals("$builtin$Map")
+                    && map.arguments().size() == 2) {
+                requireAssignable(index, map.arguments().getFirst(), "Map key");
+                return map.arguments().get(1);
+            }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "object/map key");
                 if (index instanceof StringLiteral key) {
@@ -3252,6 +3271,12 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Map")) {
+                if (!created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("new Map<K,V>() takes no constructor arguments");
+                }
+                return resolve(created.type(), generics, self);
+            }
             // Guest Symbols are immutable keys, not fresh reference capabilities.
             // Do not silently reinterpret the historical STABLE constructor.
             if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
@@ -7383,6 +7408,24 @@ public final class TypeChecker {
                 yield new Named("$builtin$Symbol", List.of());
             }
             case "void" -> Primitive.VOID;
+            case "Map" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 2) {
+                    throw new IllegalArgumentException("Map<K,V> requires exactly two explicit type arguments");
+                }
+                // Runtime reification currently supports direct String, Symbol,
+                // and the two-member union only. Generic or aliased key types
+                // must wait until they can be reified without accidental widening.
+                if (!isRuntimeMapKeySource(ref.arguments().getFirst())) {
+                    throw new IllegalArgumentException(
+                            "Map key type must be String, Symbol or String | Symbol");
+                }
+                Type key = resolve(ref.arguments().getFirst(), generics, self);
+                Type value = resolve(ref.arguments().get(1), generics, self);
+                if (value == Primitive.VOID || value instanceof Borrow) {
+                    throw new IllegalArgumentException("Map value type must be owned and non-void");
+                }
+                yield new Named("$builtin$Map", List.of(key, value));
+            }
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
                 if (!Set.of("Array", "List").contains(ref.name()) && declared != null
@@ -7780,9 +7823,34 @@ public final class TypeChecker {
         return typeAliases.get(name);
     }
 
+    private boolean isRuntimeMapKeyAtom(Ast.TypeRef ref) {
+        return !ref.inferArguments() && ref.arguments().isEmpty()
+                && (ref.name().equals("Symbol")
+                        || ref.name().equals("String")
+                        || ref.name().equals("string"));
+    }
+
+    private boolean isRuntimeMapKeySource(Ast.TypeRef ref) {
+        if (!ref.isUnion()) return isRuntimeMapKeyAtom(ref);
+        if (ref.arguments().size() != 2) return false;
+        Ast.TypeRef a = ref.arguments().get(0);
+        Ast.TypeRef b = ref.arguments().get(1);
+        return (a.name().equals("Symbol") && isRuntimeMapKeyAtom(a)
+                    && (b.name().equals("String") || b.name().equals("string"))
+                    && isRuntimeMapKeyAtom(b))
+                || (b.name().equals("Symbol") && isRuntimeMapKeyAtom(b)
+                    && (a.name().equals("String") || a.name().equals("string"))
+                    && isRuntimeMapKeyAtom(a));
+    }
+
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
-        for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        for (String name : names) {
+            if (name.equals("Map")) {
+                throw new IllegalArgumentException("generic 'Map' shadows the built-in Map type in " + owner);
+            }
+            if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        }
         return result;
     }
 
