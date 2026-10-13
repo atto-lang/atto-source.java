@@ -240,9 +240,14 @@ public final class LinkedProgramRunner {
                         }
                     }
 
+                    // Import discovery and linking are inert. Executable
+                    // Ores entrypoints initialize their own unit before main;
+                    // dependencies initialize on the first imported call.
+                    // Java entrypoints trigger Ores startup through their
+                    // explicit mixed-interop invocations below.
                     for (String id : ids) parsedUnits.get(id).execute(OresEvalRootNode.LINK_ONLY_COMMAND);
-                    for (List<String> group : build.initializationGroups()) {
-                        for (String id : group) parsedUnits.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+                    if (entryUnit.primaryLanguage() != MixedSourceUnit.PrimaryLanguage.JAVA) {
+                        parsedUnits.get(entryId).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
                     }
 
                     LinkedHashMap<String, MixedInteropBridge.Invoker> bridgeInvokers = new LinkedHashMap<>();
@@ -250,6 +255,9 @@ public final class LinkedProgramRunner {
                         Value unit = parsed.getValue();
                         bridgeInvokers.put(parsed.getKey(), (function, arguments) -> {
                             Object[] invocation = new Object[2 + arguments.length];
+                            // A Java-to-Ores call is an explicit execution
+                            // edge and must honor the same lazy startup gate.
+                            unit.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
                             invocation[0] = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
                             invocation[1] = function;
                             System.arraycopy(arguments, 0, invocation, 2, arguments.length);
