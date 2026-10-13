@@ -852,6 +852,17 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
+                    if (argument instanceof Ast.MemberExpr member) {
+                        Ast.ClassDecl ownerClass = classOfReceiver(member.receiver(), scope);
+                        if (ownerClass != null) {
+                            Ast.FieldDecl slot = findField(
+                                    ownerClass, member.member(), new LinkedHashSet<>());
+                            if (slot != null && slot.bindingKind() != Ast.BindingKind.LET) {
+                                throw error("cannot rt take immutable/final class field '"
+                                        + ownerClass.name() + "." + member.member() + "'");
+                            }
+                        }
+                    }
                     ValueInfo taken = checkExpr(argument, scope, true);
                     if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
                             || (taken.type != null && taken.type.isBorrow())) {
