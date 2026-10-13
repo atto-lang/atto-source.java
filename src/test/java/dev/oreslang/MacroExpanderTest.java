@@ -52,12 +52,14 @@ final class MacroExpanderTest {
     }
 
     @Test
-    void controlFlowWhileTokenCannotBeHiddenInUnusedExpressionTemplate() {
-        // Macro definitions are validated even when not invoked. A new
-        // statement keyword must not silently bypass expression-only hygiene.
+    void unsafeControlFlowAndEffectKeywordsCannotBeHiddenInUnusedTemplate() {
+        // Macro definitions are validated even when not invoked.
+        // New statement, supervisor effect, and async-selection keywords
+        // must not silently bypass expression-only hygiene.
         for (String body : new String[] {
-                "while",
-                "while (true) do 1; done"
+                "while", "while (true) do 1; done",
+                "throw", "raise", "panic", "recover",
+                "nb", "cb", "from"
         }) {
             String source = "macro_rules! forbidden { () => { " + body
                     + " }; }\ndefine module app as end";
