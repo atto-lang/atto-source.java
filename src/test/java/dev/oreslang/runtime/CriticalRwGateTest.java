@@ -9,6 +9,42 @@ import org.junit.jupiter.api.Test;
 
 final class CriticalRwGateTest {
     @Test
+    void deniedNestedAdmissionsDoNotAccumulateTicketsOrRevokeLiveGrant() {
+        CriticalRwGate gate = new CriticalRwGate();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            scheduler.startSync(() -> {
+                var owner = gate.newTicket(CriticalRwGate.Mode.READ);
+                assertTrue(owner.enterAsync().isDone());
+                assertTrue(owner.isHeld());
+                assertEquals(1, gate.trackedTicketCount());
+
+                for (int n = 0; n < 256; n++) {
+                    var deniedAsync = gate.newTicket(CriticalRwGate.Mode.WRITE);
+                    assertThrows(IllegalStateException.class, deniedAsync::enterAsync);
+                    var deniedSync = gate.newTicket(CriticalRwGate.Mode.WRITE);
+                    assertThrows(IllegalStateException.class, deniedSync::enterSync);
+                    assertEquals(1, gate.trackedTicketCount(),
+                            "denied tickets must not accumulate in the facade");
+                    assertTrue(owner.isHeld(), "denial must not revoke existing owner");
+                }
+
+                // A second admission call on this exact ticket is also invalid,
+                // but cannot prematurely release the already-live first grant.
+                assertThrows(IllegalStateException.class, owner::enterAsync);
+                assertThrows(IllegalStateException.class, owner::enterSync);
+                assertTrue(owner.isHeld());
+                assertEquals(1, gate.activeReaderCount());
+                owner.close();
+                assertEquals(0, gate.trackedTicketCount());
+                return null;
+            }).join();
+        } finally {
+            gate.close();
+        }
+        assertEquals(0, gate.activeReaderCount());
+    }
+
+    @Test
     void concurrentReadersExcludeWritersAndPreserveWriterQueueOrder() {
         CriticalRwGate gate = new CriticalRwGate();
         var first = gate.newTicket(CriticalRwGate.Mode.READ);
