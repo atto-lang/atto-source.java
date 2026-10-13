@@ -4342,9 +4342,12 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException("untrusted actors cannot stop other actors");
         }
         ActorCell<?> cell = actors.get(ref.id());
-        if (cell == null) return;
-
-        cell.stop();
+        // ActorCell.unregisterActor() removes the registry entry before READY
+        // and DONE are published. A racing host may therefore see no cell
+        // while the prior finalizer is still delivering completion callbacks.
+        // Stop the cell if discoverable, but always use the ActorRef receipt
+        // for external stop synchronization even after registry retirement.
+        if (cell != null) cell.stop();
 
         // Only an ordinary host/supervisor stop is a synchronization
         // point. Actor turns and callback-capable finalization hooks may
