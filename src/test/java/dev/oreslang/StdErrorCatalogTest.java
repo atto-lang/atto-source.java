@@ -98,18 +98,36 @@ final class StdErrorCatalogTest {
                 import class IOError from "std/error";
                 import class FileSystemError from "std/error";
                 import class FileNotFoundError from "std/error";
+                import class NetworkError from "std/error";
+                import class ConnectionRefusedError from "std/error";
+                import class ArgumentError from "std/error";
+                import class InvalidArgumentError from "std/error";
+
+                define class CustomAppError extends Error as
+                  pub code(): int { return 9001; }
+                end
 
                 fnc classify(Error error): int {
                   match error over
                     on FileNotFoundError specific -> { return specific.code(); }
                     on FileSystemError file -> { return -10; }
+                    on ConnectionRefusedError refused -> { return refused.code(); }
+                    on NetworkError network -> { return -11; }
                     on IOError io -> { return -20; }
+                    on InvalidArgumentError invalid -> { return invalid.code(); }
+                    on ArgumentError argument -> { return -12; }
                     on Error other -> { return -30; }
                   end
                 }
 
                 pub routine main(): void {
                   stdio.stdout.write(classify(new FileNotFoundError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new ConnectionRefusedError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new InvalidArgumentError()));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(classify(new CustomAppError()));
                   return;
                 }
                 """);
@@ -117,7 +135,7 @@ final class StdErrorCatalogTest {
         LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
                 ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
                 new ByteArrayOutputStream());
-        assertEquals("3001", out.toString(StandardCharsets.UTF_8));
+        assertEquals("3001|4002|1001|-30", out.toString(StandardCharsets.UTF_8));
     }
 
     @Test
@@ -134,6 +152,22 @@ final class StdErrorCatalogTest {
                     }
                     """)));
         assertTrue(failure.getMessage().contains("unreachable match arm"), failure::getMessage);
+    }
+
+    @Test
+    void openErrorFamiliesNeedAProvableFallback() throws Exception {
+        String source = CoreLibrarySources.source("std/error");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source + """
+                    
+                    fnc incomplete(Error failure): int {
+                      match failure over
+                        on FileNotFoundError missing -> { return 1; }
+                        on NetworkError network -> { return 2; }
+                      end
+                    }
+                    """)));
+        assertTrue(failure.getMessage().contains("non-exhaustive match"), failure::getMessage);
     }
 
     @Test
