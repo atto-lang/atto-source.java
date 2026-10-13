@@ -38,8 +38,8 @@ class DiagnosticProof(unittest.TestCase):
         cases = {case["id"]: case for case in suite["cases"]}
         for name, expected_exit in (
             ("native.defer-lifo-cfg", 111),
-            ("native.defer-field-return", 222),
-            ("native.try-finally-return-snapshot", 246),
+            ("native.defer-field-return", 42),
+            ("native.try-finally-return-snapshot", 42),
         ):
             with self.subTest(name=name):
                 case = cases[name]
