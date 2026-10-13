@@ -113,12 +113,45 @@ val Channel<int> input = Channel.new<int>(64);
 
 Capacity zero is a rendezvous/unbuffered channel.
 
-Channel payloads are data, not executable capabilities. `Fnc<...>` / function
-values cannot be channel element types, including when nested inside Options,
-tuples, records, collections, or nominal objects with callable state. A closure
-may capture execution-domain-local authority, so moving it through a channel
-would make the transport boundary depend on hidden capture state. Keep callbacks
-local and send explicit data describing the requested operation instead.
+**Public `Channel<T>` values carry recursively data-only payloads.**
+Admitted types: concrete primitive scalars (`int`, `bool`, `string`, etc.),
+finite tuples, statically closed records/explicit inline structs, typed
+arrays/lists, and `Option`/`Result` tagged data whose fields also pass this
+policy. A future user-defined enum/ADT may be admitted only once its compiler
+proves that **every** payload variant is data-only.
+
+Rejected at the channel's type declaration and `Channel.new<T>`: all
+`Fnc<...>`/first-class callables, ordinary classes **including method-free
+classes**, interfaces/traits, actors, `ActorRef`, `ActorId`, mail/stream
+capabilities, nested `Channel`, `Future`, `Mutex`, `SharedMutex`,
+`Iterator`, host objects, borrowed references, unbound generic parameters,
+and any aggregate recursively containing one of those types. `Channel<void>`
+is invalid; use a concrete signal/unit-data type.
+
+A channel does not erase class identity to mimic a struct. To send information
+from a class instance, explicitly snapshot/convert only its needed fields
+into an owned struct/record **before** the write. Do not send its methods,
+reflection surface, mutable aliases or hidden closures. `select` read/write
+cases inherit the same element-type restriction; successful selection
+transports one data value without turning a failed projection into a second
+receive. For `nb select`, all arm-local destructured names remain local to
+the winning continuation and cannot be captured as outer references.
+
+The Java guest evaluator additionally rejects non-data runtime payloads
+before ordinary `writech`, static select registration and
+`SelectCase.write`, guarding against host/cast runtime injection. This
+runtime validator is an execution-boundary defense, not proof that arbitrary
+host use of `ChannelRuntime.Channel<Object>` is safe: that internal API
+needs separate capabilities/type-descriptor sealing before exposure.
+
+**Internal actor mailbox channels are not public generic channels.** They
+transport trusted runtime-only envelopes with scheduler and supervision
+metadata, and have a separate reserved CONTROL lane. That private internal
+envelope representation is *not* a license to declare user
+`Channel<ActorRef<T>>`, `Channel<ActorMail<T>>`, or a callable channel.
+
+A closure may capture execution-domain-local authority; keep callbacks
+inside the owning actor and send explicit data describing an action instead.
 
 ### Blocking/suspending forms
 
