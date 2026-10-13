@@ -52,6 +52,25 @@ final class MacroExpanderTest {
     }
 
     @Test
+    void controlFlowWhileTokenCannotBeHiddenInUnusedExpressionTemplate() {
+        // Macro definitions are validated even when not invoked. A new
+        // statement keyword must not silently bypass expression-only hygiene.
+        for (String body : new String[] {
+                "while",
+                "while (true) do 1; done"
+        }) {
+            String source = "macro_rules! forbidden { () => { " + body
+                    + " }; }\\ndefine module app as end";
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(source).scan()),
+                    body);
+            assertTrue(rejected.getMessage().contains("only expression macro bodies"),
+                    () -> "unexpected admission diagnostic: " + rejected.getMessage());
+        }
+    }
+
+    @Test
     void macroCallsInsideWhileConditionAndBackedgePreserveBothFeatures() {
         // Regression for the simultaneous pre-1.0 macro and heap-owned
         // while-loop integration. Expanded expressions must be parsed before
