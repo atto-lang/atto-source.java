@@ -942,12 +942,12 @@ public final class TypeChecker {
                     || fieldInitializerMaySuspend(op.whenTrue())
                     || fieldInitializerMaySuspend(op.whenFalse());
         }
-        if (expr instanceof Ast.CallExpr) {
-            // No verified transitive non-suspension/escape summary exists for
-            // arbitrary dynamic or named calls during object construction.
-            // In particular, checking only call operands misses awaited or
-            // callback-publishing effects inside the callee.
-            return true;
+        if (expr instanceof Ast.CallExpr call) {
+            // Constructor-safe calls must resolve to a statically known,
+            // synchronous zero-argument function whose *entire* body is one
+            // return of a primitive scalar expression. No user callbacks,
+            // mutations, dynamic dispatch, suspension or partial-self escape.
+            return !isConstructorSafeScalarCall(call);
         }
         if (expr instanceof Ast.NewExpr created) {
             // Nested construction is itself a transitive initialization
@@ -955,6 +955,8 @@ public final class TypeChecker {
             // only zero-argument ctorless objects with literal-only fields:
             // no methods execute, no owned resources are acquired, and no
             // partially initialized child can escape into user callbacks.
+            if (created.type().name().equals("Array") && created.arguments().isEmpty())
+                return false; // existing built-in zero-arg collection allocator
             if (!created.arguments().isEmpty() || !created.type().arguments().isEmpty())
                 return true;
             Ast.ClassDecl nested = findClass(created.type().name());
@@ -980,6 +982,63 @@ public final class TypeChecker {
             return object.fields().stream().anyMatch(field ->
                     fieldInitializerMaySuspend(field.value()));
         // Merely constructing a lambda does not execute its deferred body.
+        return false;
+    }
+
+    /**
+     * Narrow constructor-effect proof: a known zero-argument function may
+     * initialize a scalar only when its complete body is a single primitive
+     * return expression. This is independent of the function's name or
+     * visibility; it never assumes that a routine is pure by default.
+     */
+    private boolean isConstructorSafeScalarCall(Ast.CallExpr call) {
+        if (!call.arguments().isEmpty() || call.typeArgumentsPresent()) return false;
+        List<Ast.Stmt> body = null;
+        Ast.TypeRef returnType = null;
+        if (call.callee() instanceof Ast.NameExpr name) {
+            Ast.FunctionDecl fn = findFunction(name.name(), 0);
+            if (fn == null || fn.async() || fn.suspends() || fn.generator()
+                    || !fn.parameters().isEmpty() || !fn.genericParameters().isEmpty()) return false;
+            body = fn.body();
+            returnType = fn.returnType();
+        } else if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr name) {
+            Ast.ClassDecl owner = findClass(name.name());
+            if (owner == null) return false;
+            Ast.MethodDecl candidate = null;
+            for (Ast.MethodDecl method : owner.methods()) {
+                if (!method.isStatic() || !method.name().equals(member.member())
+                        || !method.parameters().isEmpty()) continue;
+                if (candidate != null) return false;
+                candidate = method;
+            }
+            if (candidate == null || candidate.async() || candidate.suspends()
+                    || !candidate.genericParameters().isEmpty()) return false;
+            body = candidate.body();
+            returnType = candidate.returnType();
+        } else {
+            return false;
+        }
+        if (returnType == null || returnType.isBorrow()
+                || !returnType.arguments().isEmpty()
+                || !(returnType.name().equals("int") || returnType.name().equals("bool")
+                        || returnType.name().equals("float")
+                        || returnType.name().equals("string")
+                        || returnType.name().equals("String"))) return false;
+        return body.size() == 1 && body.getFirst() instanceof Ast.ReturnStmt returned
+                && constructorSafeScalarExpression(returned.value());
+    }
+
+    private boolean constructorSafeScalarExpression(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr) return true;
+        if (expr instanceof Ast.UnaryExpr unary)
+            return (unary.operator().equals("-") || unary.operator().equals("+"))
+                    && constructorSafeScalarExpression(unary.operand());
+        if (expr instanceof Ast.BinaryExpr binary)
+            return (binary.operator().equals("+") || binary.operator().equals("-")
+                        || binary.operator().equals("*"))
+                    && constructorSafeScalarExpression(binary.left())
+                    && constructorSafeScalarExpression(binary.right());
         return false;
     }
 
