@@ -9,6 +9,100 @@ import org.junit.jupiter.api.Test;
 
 final class CriticalRwGateTest {
     @Test
+    void nestedForeignCloseDuringExitDrainCannotAdmitNextTurnOrPublishDone()
+            throws Exception {
+        CriticalGate gate = new CriticalGate();
+        CountDownLatch guestEntered = new CountDownLatch(1);
+        CountDownLatch guestRelease = new CountDownLatch(1);
+        CountDownLatch firstCloseEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirstClose = new CountDownLatch(1);
+        CountDownLatch nestedCloseEntered = new CountDownLatch(1);
+        CountDownLatch releaseNestedClose = new CountDownLatch(1);
+        CountDownLatch secondTurnEntered = new CountDownLatch(1);
+        AtomicReference<java.util.function.Consumer<Runnable>> registerAfterExit =
+                new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread externalClose = null;
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            try {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        if ("first".equals(message)) {
+                            registerAfterExit.set(runtime.captureCurrentActorCarrierExit());
+                            var ticket = gate.newTicket();
+                            assertTrue(ticket.enterAsync().isDone());
+                            ticket.onClose(() -> {
+                                firstCloseEntered.countDown();
+                                try {
+                                    assertTrue(releaseFirstClose.await(5, TimeUnit.SECONDS));
+                                } catch (InterruptedException interrupted) {
+                                    Thread.currentThread().interrupt();
+                                    throw new AssertionError(interrupted);
+                                }
+                            });
+                            guestEntered.countDown();
+                            assertTrue(guestRelease.await(5, TimeUnit.SECONDS));
+                        } else if ("second".equals(message)) {
+                            secondTurnEntered.countDown();
+                        }
+                    } catch (Throwable error) {
+                        failure.compareAndSet(null, error);
+                    } finally {
+                        if ("first".equals(message)) guestEntered.countDown();
+                    }
+                });
+                actor.send("first");
+                assertTrue(guestEntered.await(5, TimeUnit.SECONDS));
+                assertNotNull(registerAfterExit.get());
+                gate.closeAll();
+                guestRelease.countDown();
+                assertTrue(firstCloseEntered.await(5, TimeUnit.SECONDS));
+                // Simulate another protection domain closing from an external
+                // thread while the first domain's exit callback is executing.
+                externalClose = Thread.ofVirtual().start(() -> {
+                    try {
+                        registerAfterExit.get().accept(() -> {
+                            nestedCloseEntered.countDown();
+                            try {
+                                assertTrue(releaseNestedClose.await(5, TimeUnit.SECONDS));
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(interrupted);
+                            }
+                        });
+                    } catch (Throwable error) {
+                        failure.compareAndSet(null, error);
+                    }
+                });
+                // Wait until external close is queued or begins in the old
+                // implementation, then allow the first callback to finish.
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (externalClose.getState() == Thread.State.NEW
+                        && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+                releaseFirstClose.countDown();
+                assertTrue(nestedCloseEntered.await(5, TimeUnit.SECONDS));
+                actor.send("second");
+                assertFalse(secondTurnEntered.await(150, TimeUnit.MILLISECONDS),
+                        "nested foreign domain-close callback must fence next actor turn");
+                releaseNestedClose.countDown();
+                assertTrue(secondTurnEntered.await(5, TimeUnit.SECONDS));
+                runtime.stop(actor);
+                assertNull(failure.get());
+            } finally {
+                guestRelease.countDown();
+                releaseFirstClose.countDown();
+                releaseNestedClose.countDown();
+                if (externalClose != null) externalClose.join(5_000);
+            }
+        }
+        assertNull(failure.get());
+        assertEquals(0, gate.queuedCount());
+        assertFalse(gate.hasWriter());
+    }
+
+    @Test
     void deferredDomainCloseBlocksNextActorTurnUntilCallbacksFinish() throws Exception {
         CriticalGate gate = new CriticalGate();
         CountDownLatch firstEntered = new CountDownLatch(1);
