@@ -34,6 +34,56 @@ final class ActorRuntimePipelineEngineAdmissionTest {
         }
     }
 
+    @Test void providerThrowingAfterSpawnCannotOrphanUnreturnedActor() {
+        java.util.concurrent.atomic.AtomicReference<ActorRuntime.ActorRef<Object>>
+                captured = new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            PipelinePlan.ActorProvider crashing = () -> {
+                captured.set(runtime.spawn(() -> (message, context) -> { }));
+                throw new IllegalStateException("constructor failed after spawning");
+            };
+            PipelinePlan plan = new PipelinePlanner()
+                    .add("source", "R", "M", crashing)
+                    .add("sink", "R", "M", crashing).build();
+            ActorRuntimePipelineEngine engine = new ActorRuntimePipelineEngine(
+                    runtime, Runnable::run, Map.of("R", crashing));
+            IllegalStateException thrown =
+                    assertThrows(IllegalStateException.class, () -> engine.open(plan));
+            assertTrue(thrown.toString().contains("constructor failed after spawning"));
+            assertNotNull(captured.get());
+            assertTrue(captured.get().done().isDone(),
+                    "throw-before-return leaked an untracked provisioned actor");
+            assertFalse(captured.get().isAlive());
+        }
+    }
+
+    @Test void providerThatSpawnsExtraActorIsRejectedAndBothAreRetired() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            java.util.List<ActorRuntime.ActorRef<Object>> created =
+                    new java.util.ArrayList<>();
+            PipelinePlan.ActorProvider greedy = () -> {
+                ActorRuntime.ActorRef<Object> one = runtime.spawn(
+                        () -> (message, context) -> { });
+                ActorRuntime.ActorRef<Object> two = runtime.spawn(
+                        () -> (message, context) -> { });
+                created.add(one);
+                created.add(two);
+                return one;
+            };
+            PipelinePlan plan = new PipelinePlanner()
+                    .add("source", "R", "M", greedy)
+                    .add("sink", "R", "M", greedy).build();
+            ActorRuntimePipelineEngine engine = new ActorRuntimePipelineEngine(
+                    runtime, Runnable::run, Map.of("R", greedy));
+            SecurityException rejected =
+                    assertThrows(SecurityException.class, () -> engine.open(plan));
+            assertTrue(rejected.getMessage().contains("exactly its own single stage"));
+            assertEquals(2, created.size());
+            assertTrue(created.stream().allMatch(ref -> ref.done().isDone()),
+                    "extra actors created by a provider bypassed physical rollback");
+        }
+    }
+
     @Test void partialProviderFailureWaitsForPhysicalRollback() {
         java.util.concurrent.atomic.AtomicReference<ActorRuntime.ActorRef<Object>>
                 provisional = new java.util.concurrent.atomic.AtomicReference<>();

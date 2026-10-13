@@ -345,6 +345,57 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicLong actorRefBirthSequence = new AtomicLong();
+
+    // Scoped, trusted-host provisioning audit. A constructor that creates an
+    // actor and throws BEFORE returning its ActorRef must not escape rollback.
+    private final ThreadLocal<ActorProvisioningScope> activeActorProvisioning =
+            new ThreadLocal<>();
+
+    public final class ActorProvisioningScope implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
+        private final ArrayList<ActorRef<?>> created = new ArrayList<>();
+        private boolean open = true;
+
+        private ActorProvisioningScope() { }
+
+        private void requireOwner() {
+            if (Thread.currentThread() != ownerThread ||
+                    activeActorProvisioning.get() != this || !open) {
+                throw new SecurityException("actor provisioning scope is not active on its owner thread");
+            }
+        }
+
+        private void capture(ActorRef<?> actor) {
+            requireOwner();
+            created.add(actor);
+        }
+
+        /** All *successfully registered* actor generations allocated inside
+         * the scope, including allocations by providers that later throw. */
+        public List<ActorRef<?>> acquiredActors() {
+            requireOwner();
+            return List.copyOf(created);
+        }
+
+        @Override
+        public void close() {
+            requireOwner();
+            open = false;
+            activeActorProvisioning.remove();
+        }
+    }
+
+    /** Only trusted host CONTROL code can create a provisioning scope.
+     * Nested scopes are rejected to avoid losing any actor allocation receipts. */
+    public ActorProvisioningScope beginActorProvisioning() {
+        requireSupervisorContext("begin trusted actor provisioning");
+        if (activeActorProvisioning.get() != null) {
+            throw new IllegalStateException("nested actor provisioning scopes are forbidden");
+        }
+        ActorProvisioningScope scope = new ActorProvisioningScope();
+        activeActorProvisioning.set(scope);
+        return scope;
+    }
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -4067,6 +4118,8 @@ public final class ActorRuntime implements AutoCloseable {
                 } else {
                     actors.put(id, cell);
                 }
+                ActorProvisioningScope provisioning = activeActorProvisioning.get();
+                if (provisioning != null) provisioning.capture(ref);
                 return ref;
             } catch (RuntimeException | Error failure) {
                 if (linkedToParent && cell != null) parent.children.remove(cell);

@@ -69,8 +69,13 @@ public final class ActorRuntimePipelineEngine implements PipelineController.Engi
         }
         List<ActorRuntime.ActorRef<?>> refs = new ArrayList<>();
         ActorRuntime.ActorStream stream;
-        try {
+        // Captures all successful allocations on the provider CONTROL thread,
+        // including providers that allocate then throw without returning.
+        try (ActorRuntime.ActorProvisioningScope allocation =
+                     runtime.beginActorProvisioning()) {
+            try {
             for (PipelinePlan.Stage stage : plan.stages()) {
+                int before = allocation.acquiredActors().size();
                 long allocationMark = runtime.actorAllocationMark();
                 Object created = stage.provider().spawn();
                 if (!(created instanceof ActorRuntime.ActorRef<?> ref)) {
@@ -87,6 +92,12 @@ public final class ActorRuntimePipelineEngine implements PipelineController.Engi
                     throw new SecurityException(
                             "pipeline actor provider must create a fresh actor for each stage");
                 }
+                List<ActorRuntime.ActorRef<?>> observed = allocation.acquiredActors();
+                if (observed.size() != before + 1 ||
+                        observed.getLast() != ref) {
+                    throw new SecurityException(
+                            "pipeline provider must allocate exactly its own single stage");
+                }
                 refs.add(ref);
             }
             // Atomically bind live unused same-runtime compiler-owned mailboxes.
@@ -94,9 +105,10 @@ public final class ActorRuntimePipelineEngine implements PipelineController.Engi
             if (!stream.nominalDomainIdentity().equals(plan.nominalDomain())) {
                 throw new SecurityException("planner nominal domain differs from compiler-owned runtime domain");
             }
-        } catch (RuntimeException | Error failure) {
-            rollbackStartup(refs, failure);
-            throw failure;
+            } catch (RuntimeException | Error failure) {
+                rollbackStartup(allocation.acquiredActors(), failure);
+                throw failure;
+            }
         }
         return new BoundSession(plan, stream, List.copyOf(refs));
     }

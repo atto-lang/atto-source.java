@@ -212,14 +212,20 @@ references in quarantine and refuses further opens. In that case it raises
 a distinct incomplete-rollback failure rather than claiming successful
 cleanup or retrying possibly live actors.
 
-This closes the standard source-provider-fails-while-creating-sink gap,
-but a provider function that allocates an actor and throws **without
-returning its ActorRef** cannot be completely tracked by this host contract.
-Fully atomic provider construction should introduce a runtime-owned
-provisioning scope that records every allocation at creation time and
-performs generation-aware cleanup even when a provider throws before
-returning. True precompiled provider registration and a signed plugin
-manifest remain separate security/release gates.
+A runtime-owned `ActorProvisioningScope` now records every successfully
+registered actor created on the trusted provider-control thread. Thus
+providers that allocate then throw before returning the `ActorRef` cannot
+orphan an actor: rollback collects all scope allocations, not just values
+returned to the planner. Each provider must allocate exactly one fresh actor;
+extra actors are rejected and physically retired. Nested provisioning scopes
+are rejected, and scope closure clears the thread-local capture authority.
+
+**Scope limit:** providers that spawn asynchronously on another thread are
+not supported by this synchronous AOT provider protocol; they must instead
+provide a separate tracked asynchronous factory API. The isolation proof
+relies on a trusted CONTROL executor and the runtime-owned actor allocation
+registry. Signed component manifests and guest plugin loading remain separate
+release gates.
 
 The controller's public completion observations remain non-authoritative.
 Tests distinguish partial-start physically acknowledged cleanup, a
