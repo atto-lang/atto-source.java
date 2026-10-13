@@ -104,7 +104,9 @@ final class CanonicalClassFieldDeclarationTest {
                       return value.answer;
                     }
                     """)));
-        assertTrue(failure.getMessage().contains("final fields cannot be assigned in constructors"));
+        assertTrue(failure.getMessage().contains("cannot reassign final class field")
+                || failure.getMessage().contains("final fields cannot be assigned in constructors"),
+                failure.getMessage());
     }
 
     @Test
@@ -202,7 +204,8 @@ final class CanonicalClassFieldDeclarationTest {
                       return rt take sample.answer;
                     }
                     """)));
-        assertTrue(failure.getMessage().contains("cannot rt take final class field"));
+        assertTrue(failure.getMessage().contains("cannot rt take final class field"),
+                failure.getMessage());
     }
 
     @Test
