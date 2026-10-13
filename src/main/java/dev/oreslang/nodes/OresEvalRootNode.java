@@ -2271,21 +2271,37 @@ public final class OresEvalRootNode extends RootNode {
                         new java.util.concurrent.ConcurrentLinkedQueue<>();
                 private final java.util.concurrent.atomic.AtomicInteger workInProgress =
                         new java.util.concurrent.atomic.AtomicInteger();
+                private final java.util.concurrent.atomic.AtomicBoolean completed =
+                        new java.util.concurrent.atomic.AtomicBoolean();
+
+                // A guard or a suspended branch can invoke its callback late
+                // (or twice due to a buggy host future). Completion belongs
+                // to one match, never one callback invocation.
+                void complete(SourceTask active, SourceFlow flow) {
+                    if (!completed.compareAndSet(false, true)) return;
+                    pending.clear();
+                    continuation.accept(active, flow);
+                }
 
                 // Inline guard continuations only enqueue more work. The
                 // active drain then processes it without recursive calls;
                 // a truly suspended callback can schedule the next drain.
                 void enqueue(Runnable next) {
+                    if (completed.get()) return;
                     pending.add(next);
                     if (workInProgress.getAndIncrement() != 0) return;
                     int missed = 1;
                     do {
                         Runnable work;
                         while ((work = pending.poll()) != null) {
+                            if (completed.get()) continue;
                             try {
                                 work.run();
                             } catch (RuntimeException | Error failure) {
-                                continuation.accept(task, SourceFlow.throwing(failure));
+                                // Only the first failure can finish the match.
+                                // Do not keep dispatching arms after it fails.
+                                if (completed.get()) throw failure;
+                                complete(task, SourceFlow.throwing(failure));
                             }
                         }
                         missed = workInProgress.addAndGet(-missed);
@@ -2293,7 +2309,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 void failure(SourceTask active, RuntimeException error) {
-                    continuation.accept(active, SourceFlow.throwing(error));
+                    complete(active, SourceFlow.throwing(error));
                 }
 
                 void scan(
@@ -2305,6 +2321,7 @@ public final class OresEvalRootNode extends RootNode {
                     // A loop, not recursion, handles all unguarded and
                     // nonmatching arms (including the 4096-arm upper bound).
                     for (int i = nextIndex; i < matched.arms().size(); i++) {
+                        if (completed.get()) return;
                         Ast.MatchArm arm = matched.arms().get(i);
                         boolean catchAll = arm.guard() == null
                                 && (arm.pattern() instanceof Ast.WildcardPattern
@@ -2322,7 +2339,7 @@ public final class OresEvalRootNode extends RootNode {
 
                         if (arm.guard() == null) {
                             if (matched.ordered()) {
-                                runBlock(active, arm.body(), armEnv, continuation);
+                                runBlock(active, arm.body(), armEnv, this::complete);
                                 return;
                             }
                             if (selected != null) {
@@ -2344,15 +2361,18 @@ public final class OresEvalRootNode extends RootNode {
                         final Map<String, Object> capturedBindings = selectedBindings;
                         final Ast.MatchArm guardedArm = arm;
                         final Map<String, Object> guardBindings = new LinkedHashMap<>(bindings);
+                        final java.util.concurrent.atomic.AtomicBoolean guardSettled =
+                                new java.util.concurrent.atomic.AtomicBoolean();
                         evalSuspendableExpr(active, arm.guard(), armEnv, (t, guard, error) -> {
+                            if (!guardSettled.compareAndSet(false, true)) return;
                             enqueue(() -> {
                                 if (error != null) {
-                                    continuation.accept(t, SourceFlow.throwing(error));
+                                    complete(t, SourceFlow.throwing(error));
                                 } else if (!truth(guard)) {
                                     scan(t, continuationIndex, capturedFallback,
                                             capturedSelected, capturedBindings);
                                 } else if (matched.ordered()) {
-                                    runBlock(t, guardedArm.body(), armEnv, continuation);
+                                    runBlock(t, guardedArm.body(), armEnv, this::complete);
                                 } else if (capturedSelected != null) {
                                     failure(t, new IllegalStateException(
                                             "exclusive match invariant violated at runtime: "
@@ -2386,7 +2406,7 @@ public final class OresEvalRootNode extends RootNode {
                     Env selectedEnv = new Env(env);
                     bindings.forEach((name, value) ->
                             selectedEnv.define(name, value, Ast.BindingKind.VAL));
-                    runBlock(active, winner.body(), selectedEnv, continuation);
+                    runBlock(active, winner.body(), selectedEnv, this::complete);
                 }
             }
 
