@@ -237,12 +237,27 @@ public final class CriticalGate {
 
         @Override
         public void close() {
+            closeTicket(false);
+        }
+
+        /**
+         * STOP may retract an admission that has not yet been granted without
+         * waiting for its actor's active physical turn to unwind. Decide and
+         * close atomically with queue-to-grant handoff under COORDINATOR:
+         * observing a pending ticket and later calling close() separately
+         * would incorrectly revoke a permit granted in between.
+         */
+        void retractPendingAtStop() {
+            closeTicket(true);
+        }
+
+        private void closeTicket(boolean pendingOnly) {
             java.util.List<Ticket> wake;
             java.util.concurrent.CountDownLatch cancelledWaiter = null;
             Runnable removeActorTracking;
             Runnable notifyWrapper;
             synchronized (COORDINATOR) {
-                if (closed) return;
+                if (closed || (pendingOnly && granted)) return;
                 closed = true;
                 synchronousOwner = null;
                 cancelledWaiter = synchronousWaiter;
