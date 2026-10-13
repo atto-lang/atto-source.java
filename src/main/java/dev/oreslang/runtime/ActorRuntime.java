@@ -6949,9 +6949,11 @@ public final class ActorRuntime implements AutoCloseable {
             if (memorySlice != null) memorySlice.close();
             Throwable terminalForNotice = ref.terminationCause.get();
             if (terminalForNotice != null) {
-                // Frozen primitive/host-owned metadata only. The original
-                // Throwable remains local to ActorRef.failure()/done(), and
-                // never crosses into the supervisor CONTROL record.
+                // Frozen primitive/host-owned metadata only. Raw Throwable
+                // diagnostics remain available to trusted-host accessors,
+                // while actor/task Future views receive cause-free snapshots.
+                // Neither guest Future nor future supervisor CONTROL may
+                // export a mutable exception graph across actor boundaries.
                 ref.terminalFailureNotice.compareAndSet(null,
                         new ActorFailureNotice(
                                 ref.id(), parent == null
