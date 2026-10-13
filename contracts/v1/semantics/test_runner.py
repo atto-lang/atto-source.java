@@ -67,6 +67,19 @@ class DiagnosticProof(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "duplicate fixture source"):
                     run.validate_suite()
 
+    def test_nested_unregistered_ores_files_cannot_escape_inventory(self):
+        import shutil
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shutil.copytree(run.ROOT, root, dirs_exist_ok=True)
+            nested = root / "fixtures" / "unreviewed" / "hidden.ores"
+            nested.parent.mkdir(parents=True)
+            nested.write_text("pub fnc main(): int { return 0; }\n")
+            with patch.object(run, "ROOT", root):
+                with self.assertRaisesRegex(ValueError, "orphan or missing fixtures"):
+                    run.validate_suite()
+
     def test_mutating_fixture_or_schema_changes_suite_identity(self):
         import shutil
         import tempfile

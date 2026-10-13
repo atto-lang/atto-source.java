@@ -63,7 +63,10 @@ def validate_suite():
             raise ValueError("pending requires reason and resolved cases cannot retain one: " + case["id"])
         if all(s == "pending" for s in case["backends"].values()):
             raise ValueError("a case cannot be pending on both backends: " + case["id"])
-    on_disk = {"fixtures/" + f.name for f in (ROOT / "fixtures").glob("*.ores")}
+    # Include nested programs: a top-level-only glob lets unregistered
+    # fixtures hide underneath subdirectories while claiming suite completeness.
+    on_disk = {path.relative_to(ROOT).as_posix()
+               for path in (ROOT / "fixtures").rglob("*.ores")}
     if files != on_disk:
         raise ValueError("orphan or missing fixtures: " + str(sorted(files ^ on_disk)))
     # Bind the suite identity to the actual programs and normative contracts.
