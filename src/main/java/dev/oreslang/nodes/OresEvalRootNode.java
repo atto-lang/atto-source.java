@@ -2770,14 +2770,17 @@ public final class OresEvalRootNode extends RootNode {
                 int index,
                 SourceFlowCont continuation) {
             // Iterator operations can fail on a later carrier, after the
-            // original caller's exception scope has already unwound. Report
+            // original caller's exception scope has already unwound. Only
+            // ordinary runtime exceptions become guest flow failures; Error
+            // (including the actor cancellation control signal) stays terminal.
+            // Report
             // the failure through the enclosing close/cleanup continuation.
             boolean available;
             Object item;
             try {
                 available = items.hasNext();
                 item = available ? items.next() : null;
-            } catch (RuntimeException | Error iteratorFailure) {
+            } catch (RuntimeException iteratorFailure) {
                 continuation.accept(task, SourceFlow.throwing(iteratorFailure));
                 return;
             }
@@ -2789,7 +2792,7 @@ public final class OresEvalRootNode extends RootNode {
             Env iteration = new Env(env);
             try {
                 iteration.define(loop.bindingName(), item, loop.bindingKind());
-            } catch (RuntimeException | Error bindingFailure) {
+            } catch (RuntimeException bindingFailure) {
                 continuation.accept(task, SourceFlow.throwing(bindingFailure));
                 return;
             }
@@ -2833,7 +2836,7 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 available = items.hasNext();
                 parts = available ? asSequence(items.next()) : null;
-            } catch (RuntimeException | Error iteratorFailure) {
+            } catch (RuntimeException iteratorFailure) {
                 continuation.accept(task, SourceFlow.throwing(iteratorFailure));
                 return;
             }
@@ -2858,7 +2861,7 @@ public final class OresEvalRootNode extends RootNode {
                         iteration.define(binding.name(), parts.get(i), binding.kind());
                     }
                 }
-            } catch (RuntimeException | Error bindingFailure) {
+            } catch (RuntimeException bindingFailure) {
                 continuation.accept(task, SourceFlow.throwing(bindingFailure));
                 return;
             }
