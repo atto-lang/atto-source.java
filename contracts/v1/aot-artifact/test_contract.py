@@ -37,6 +37,16 @@ def check():
     rejected("unknown backend", lambda x: x["compiler"].update(backend="jit"))
     rejected("uppercase digest", lambda x: x.update(source_sha256="A" * 64))
     rejected("short digest", lambda x: x["artifact"].update(file_sha256="bad"))
+    # JSON Schema's ordinary $ anchor also matches before a final newline.
+    # Exact digests, commit IDs and signatures MUST reject those aliases.
+    rejected("digest final newline", lambda x: x.update(source_sha256="1" * 64 + "\n"))
+    rejected("expanded digest final newline", lambda x: x.update(expanded_sha256="2" * 64 + "\n"))
+    rejected("AST digest final newline", lambda x: x.update(generated_ast_sha256="3" * 64 + "\n"))
+    rejected("artifact hash final newline", lambda x: x["artifact"].update(file_sha256="4" * 64 + "\n"))
+    rejected("Git commit final newline", lambda x: x["compiler"].update(git_commit="a" * 40 + "\n"))
+    rejected("signature final newline", lambda x: x["provenance"]["signature"].update(
+        value_base64="A" * 86 + "==\n"))
+
     rejected("zero-size artifact", lambda x: x["artifact"].update(size_bytes=0))
     rejected("fractional artifact size", lambda x: x["artifact"].update(size_bytes=1.5))
     rejected("non-lossless artifact size", lambda x: x["artifact"].update(size_bytes=9007199254740992))
@@ -57,7 +67,7 @@ def check():
         pass
     else:
         raise AssertionError("duplicate JSON key escaped input admission")
-    print("AOT manifest V1 schema: valid fixture and 19 negative checks passed")
+    print("AOT manifest V1 schema: valid fixture and 25 negative checks passed")
 
 if __name__ == "__main__":
     check()
