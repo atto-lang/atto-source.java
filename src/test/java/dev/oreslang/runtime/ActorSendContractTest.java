@@ -878,4 +878,71 @@ final class ActorSendContractTest {
         }
     }
 
+    @Test
+    void rejectedSuspendedReceiveFinalizesOutsideActorMonitor() throws Exception {
+        OresFuture<Void> resume = new OresFuture<>();
+        CountDownLatch suspended = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                context.runtime().suspendCurrentUserMailboxUntil(resume);
+                suspended.countDown();
+            });
+            actor.send(1);
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((java.util.Map<?, ?>) actorsField.get(runtime)).get(actor.id());
+            assertNotNull(cell);
+            var monitorField = cell.getClass().getDeclaredField("lifecycleLock");
+            monitorField.setAccessible(true);
+            Object monitor = monitorField.get(cell);
+            var activeTurnsField = cell.getClass().getDeclaredField("activeTurns");
+            activeTurnsField.setAccessible(true);
+            var carrierActiveField = cell.getClass().getDeclaredField("carrierActive");
+            carrierActiveField.setAccessible(true);
+            var scheduledField = cell.getClass().getDeclaredField("scheduled");
+            scheduledField.setAccessible(true);
+            var scheduled = (java.util.concurrent.atomic.AtomicBoolean) scheduledField.get(cell);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            synchronized (monitor) {
+                while (activeTurnsField.getInt(cell) != 0
+                        || carrierActiveField.getBoolean(cell)
+                        || scheduled.get()) {
+                    long remaining = deadline - System.nanoTime();
+                    assertTrue(remaining > 0, "suspended receive must exit its carrier");
+                    TimeUnit.NANOSECONDS.timedWait(monitor, remaining);
+                }
+            }
+
+            CountDownLatch observed = new CountDownLatch(1);
+            AtomicInteger callbackUnderMonitor = new AtomicInteger();
+            actor.getDone().whenCompleteRuntime((value, failure) -> {
+                if (Thread.holdsLock(monitor)) callbackUnderMonitor.incrementAndGet();
+                observed.countDown();
+            });
+
+            // Simulate the admission race where the runtime has shut its
+            // continuation gate while this suspended actor is still alive.
+            // Restore the test-only flag before closing the runtime normally.
+            var closedField = ActorRuntime.class.getDeclaredField("closed");
+            closedField.setAccessible(true);
+            var closed = (java.util.concurrent.atomic.AtomicBoolean) closedField.get(runtime);
+            assertFalse(closed.get());
+            try {
+                closed.set(true);
+                assertTrue(resume.completeFromRuntime(null));
+            } finally {
+                closed.set(false);
+            }
+
+            assertTrue(observed.await(5, TimeUnit.SECONDS),
+                    "failed continuation admission must not strand DONE");
+            assertEquals(0, callbackUnderMonitor.get(),
+                    "source receive fail-stop must publish DONE after releasing lifecycleLock");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class, () -> actor.getDone().get(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
