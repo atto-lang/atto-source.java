@@ -959,8 +959,8 @@ public final class TypeChecker {
             }
         }
 
-        validateFieldLayout(klass);
         validateNoInheritedFinalFieldShadowing(klass);
+        validateFieldLayout(klass);
 
         Set<String> effectiveFieldNames = new LinkedHashSet<>();
         for (ResolvedField field : effectiveFieldTargets(
