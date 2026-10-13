@@ -609,6 +609,51 @@ final class PatternMatchingHardeningTest {
     }
 
     @Test
+    void runtimeDispatchAgreesWithFiniteAdtAndNumericUnionCoverage() throws Exception {
+        // Exercise source parse/type/ownership/lowering and the real Truffle
+        // interpreter, not only the static coverage proof.
+        String program = """
+                fnc classify(int | float value): int {
+                  match value over
+                    on float f -> { return 20; }
+                    on int n -> { return 10; }
+                  end
+                }
+
+                fnc optionCase(Option<bool> value): int {
+                  match value over
+                    on Some(true) -> { return 31; }
+                    on Some(false) -> { return 32; }
+                    on None -> { return 33; }
+                  end
+                }
+
+                pub fnc main(): void {
+                  stdio.println(classify(7));
+                  stdio.println(classify(1.5));
+                  stdio.println(optionCase(Some(true)));
+                  stdio.println(optionCase(Some(false)));
+                  stdio.println(optionCase(None));
+                  return;
+                }
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "adt-runtime-coverage.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertEquals("10\\n20\\n31\\n32\\n33",
+                output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+    }
+
+    @Test
     void refinementAliasCannotDuplicateMoveOnlyOwnership() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> {
             var typed = TypeChecker.check(Parser.parse("""
