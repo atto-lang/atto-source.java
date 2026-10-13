@@ -22,6 +22,7 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    private boolean foldedSymbolFactoryConstant;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -173,6 +174,7 @@ public final class Parser {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
+        if (foldedSymbolFactoryConstant) rejectShadowedSymbolFactory(imports, modules);
         return new Ast.Program(namespace, imports, modules);
     }
 
@@ -1020,7 +1022,38 @@ public final class Parser {
                 || !(literal.value() instanceof String name)) {
             throw error(previous(), "file/module const Symbol.for requires exactly one constant string literal");
         }
+        foldedSymbolFactoryConstant = true;
         return new Ast.LiteralExpr(dev.oreslang.runtime.OresSymbol.process(name));
+    }
+
+    /**
+     * Eager compiler folding is only sound when Symbol denotes the intrinsic
+     * namespace, never a user-defined class/function/binding/import alias.
+     * Reject shadowing across the whole compilation unit, independent of order.
+     */
+    private void rejectShadowedSymbolFactory(List<Ast.ImportDecl> imports,
+                                             List<Ast.ModuleDecl> modules) {
+        for (Ast.ImportDecl imported : imports) {
+            if ("Symbol".equals(imported.namespace()) || imported.names().contains("Symbol")) {
+                throw error(peek(), "Symbol.for constant intrinsic cannot be shadowed by an import named Symbol");
+            }
+        }
+        for (Ast.ModuleDecl module : modules) {
+            if (module.name().equals("Symbol")) {
+                throw error(peek(), "Symbol.for constant intrinsic cannot be shadowed by a module named Symbol");
+            }
+            for (Ast.Decl declaration : module.declarations()) {
+                String name = null;
+                if (declaration instanceof Ast.FieldDecl field) name = field.name();
+                else if (declaration instanceof Ast.FunctionDecl fn) name = fn.name();
+                else if (declaration instanceof Ast.ClassDecl klass) name = klass.name();
+                else if (declaration instanceof Ast.InterfaceDecl iface) name = iface.name();
+                else if (declaration instanceof Ast.TypeAliasDecl alias) name = alias.name();
+                if ("Symbol".equals(name)) {
+                    throw error(peek(), "Symbol.for constant intrinsic cannot be shadowed by a declaration named Symbol");
+                }
+            }
+        }
     }
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
