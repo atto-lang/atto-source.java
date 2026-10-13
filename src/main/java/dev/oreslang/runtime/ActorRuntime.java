@@ -1373,7 +1373,7 @@ public final class ActorRuntime implements AutoCloseable {
      * capability on normal completion and invoke the returned deregistration.
      * Never execute close() while holding the actor lifecycle monitor.
      */
-    public Runnable trackCurrentActorResource(AutoCloseable resource) {
+    Runnable trackCurrentActorResource(AutoCloseable resource) {
         Objects.requireNonNull(resource, "resource");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) return () -> { };
@@ -1381,6 +1381,14 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.stopped.get() || cell.finalized) {
                 throw new java.util.concurrent.CancellationException(
                         "cannot acquire an actor-owned resource after STOP");
+            }
+            // Per-gate waiter limits alone cannot bound an actor that opens
+            // thousands of independent gates. Count live actor-held
+            // capabilities, including granted tickets, not just waiters.
+            if (!cell.ownedResources.contains(resource)
+                    && cell.ownedResources.size() >= 16_384) {
+                throw new IllegalStateException(
+                        "actor-owned runtime resource limit exceeded");
             }
             cell.ownedResources.add(resource);
         }
