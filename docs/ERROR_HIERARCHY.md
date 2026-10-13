@@ -43,7 +43,7 @@ Multiple class inheritance is allowed in Oreslang, but `std/error` deliberately
 uses **at most one concrete/abstract class parent** per type. This prevents
 ambiguous inherited state, constructor paths and name-plus-arity method slots.
 The abstract root has a **pure virtual** `code(): int` slot; other abstract
-group classes implement their reserved codes, while the 64 leaf classes
+group classes implement their reserved codes, while the 74 leaf classes
 override `code()` with stable, unique core codes.
 
 `CodedError` is an exported interface with `fnc code() => int`.
