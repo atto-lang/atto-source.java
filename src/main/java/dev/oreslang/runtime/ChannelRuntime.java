@@ -635,6 +635,15 @@ public final class ChannelRuntime {
             }
             for (CaseRegistration registration : pending) {
                 if (!(registration.selectCase instanceof FutureCase<?> candidate)) continue;
+                // Registration can settle while we are attaching an earlier
+                // Future listener. Do not execute guest-controlled callback
+                // registration for operations that have already lost.
+                COORDINATOR.lock();
+                try {
+                    if (decided) return;
+                } finally {
+                    COORDINATOR.unlock();
+                }
                 OresFuture.RuntimeWaiterRegistration<?> waiter =
                         candidate.future().whenCompleteRuntimeCancellable(
                                 (ignored, failure) -> futureBecameReady());
