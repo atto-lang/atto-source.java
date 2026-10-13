@@ -24,6 +24,16 @@ public final class CriticalGate {
     private final ArrayDeque<Ticket> waiters = new ArrayDeque<>();
     private Ticket owner;
 
+    // Shared admission engine: legacy critical and explicit RW modes on this
+    // protection domain MUST use the same instance. The old exclusive
+    // coordinator below is retained only during migration and not used for
+    // ticket admission.
+    private final CriticalRwGate unified = new CriticalRwGate();
+
+    public CriticalRwGate rwGate() {
+        return unified;
+    }
+
     public final class Ticket implements AutoCloseable {
         // Cancellation of a pending admission retracts its queue slot. A granted
         // admission is already settled and therefore cannot be cancelled.
