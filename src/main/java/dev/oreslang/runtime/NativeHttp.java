@@ -320,7 +320,15 @@ public final class NativeHttp implements AutoCloseable {
                     else { OresFuture<Object> next = waiter; waiter = null; next.completeFromRuntime(exchange); }
                 }
             } catch (IllegalArgumentException invalid) {
-                admission.release(); reject(raw, invalid.getMessage().equals("body too large") ? 413 : 400);
+                if (state != null) {
+                    // The exchange has already entered the accepted lifecycle.
+                    // It owns admission and must abort through State.release;
+                    // manually releasing here would duplicate the permit.
+                    state.abort(500);
+                } else {
+                    admission.release();
+                    reject(raw, "body too large".equals(invalid.getMessage()) ? 413 : 400);
+                }
             } catch (RuntimeException failure) {
                 // An accepted State owns its admission release even if another
                 // thread has already removed it from active. Testing membership
