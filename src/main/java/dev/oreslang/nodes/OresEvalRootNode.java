@@ -3983,10 +3983,6 @@ public final class OresEvalRootNode extends RootNode {
                 Object result = invoke(invocation);
                 if (result instanceof OresFuture<?> future
                         && !declaredFuture) {
-                    if (!ActorRuntime.inActorExecution() && future.isDone()) {
-                        continuation.accept(task, future.join(), null);
-                        return;
-                    }
                     task.suspend(
                             future,
                             (t, value, failure) ->
