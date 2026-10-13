@@ -271,4 +271,26 @@ final class NominalEnumOverloadsTest {
         }
         assertEquals("55", output.toString(java.nio.charset.StandardCharsets.UTF_8));
     }
+
+    @Test
+    void onlyProvenNominalEnumOwnersSupplyStaticArgumentProofs() {
+        Ast.Program program = Parser.parse(ENUMS);
+        var registry = dev.oreslang.types.TaggedMessageContracts.forTypes(program);
+        var eligible = NominalEnumOverloads.eligibleEnumSymbols(program);
+        assertEquals(eligible.get("Color"), NominalEnumOverloads.staticEnumArgumentSymbol(
+                new dev.oreslang.types.Types.Named("Color.Red", List.of()), registry, eligible));
+        assertEquals(eligible.get("Mode"), NominalEnumOverloads.staticEnumArgumentSymbol(
+                new dev.oreslang.types.Types.Named("Mode", List.of()), registry, eligible));
+        assertNull(NominalEnumOverloads.staticEnumArgumentSymbol(
+                new dev.oreslang.types.Types.Named("Color.NotACase", List.of()), registry, eligible));
+        assertNull(NominalEnumOverloads.staticEnumArgumentSymbol(
+                new dev.oreslang.types.Types.Named("Unsupported", List.of()), registry, eligible));
+        assertNull(NominalEnumOverloads.staticEnumArgumentSymbol(
+                dev.oreslang.types.Types.Unknown.INSTANCE, registry, eligible));
+        assertNull(NominalEnumOverloads.staticEnumArgumentSymbol(
+                dev.oreslang.types.Types.unionOf(
+                        new dev.oreslang.types.Types.Named("Color", List.of()),
+                        new dev.oreslang.types.Types.Named("Mode", List.of())),
+                registry, eligible));
+    }
 }
