@@ -1394,9 +1394,11 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor pipeline aborted before physical DONE"));
                     }
                     if (outstanding.decrementAndGet() == 0) {
-                        if (route.phase().get() != 2 * route.count()) {
+                        if (route.phase().get() != 2 * route.count()
+                                || route.completedReplyFrame().get() == null) {
                             physicalDone.failFromRuntime(new IllegalStateException(
-                                    "actor pipeline finished without the complete typed round trip"));
+                                    "actor pipeline finished without an authenticated typed reply"
+                                    + " and the complete physical DONE barrier"));
                         } else {
                             physicalDone.completeFromRuntime(null);
                         }
