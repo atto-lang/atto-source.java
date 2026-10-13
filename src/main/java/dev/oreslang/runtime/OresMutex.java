@@ -731,8 +731,14 @@ public final class OresMutex {
         public Optional<Guard<T>> lockFor(Duration timeout) {
             Objects.requireNonNull(timeout, "timeout");
             if (timeout.isNegative()) throw new IllegalArgumentException("timeout must not be negative");
-            // A zero deadline is a poll, not a blocking acquisition.
-            if (timeout.isZero()) return tryLock();
+            // Language-level actor code explicitly forbids lock_for(),
+            // including a zero timeout; actors must use try_lock(). A plain
+            // scheduler task can safely use a zero-timeout poll because it
+            // cannot park a carrier.
+            if (timeout.isZero()) {
+                if (ActorRuntime.inActorExecution()) rejectBlockingActorAcquisition();
+                return tryLock();
+            }
             rejectBlockingActorAcquisition();
             Object ownerDomain = reserveDomain(true);
             if (ownerDomain == null) return Optional.empty();
