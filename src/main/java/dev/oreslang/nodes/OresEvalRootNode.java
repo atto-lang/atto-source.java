@@ -4337,18 +4337,19 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object indexValue(Object receiver, Object index) {
             if (receiver instanceof Map<?, ?> map) {
-                if (!(index instanceof String key)) {
-                    throw new IllegalArgumentException(
-                            "struct/map key must be a string");
+                // String fields and Symbol keys remain nominally disjoint.
+                // Existing structs contain only String fields; Symbol lookup
+                // cannot accidentally alias a same-spelled dot member.
+                if (!(index instanceof String) && !(index instanceof dev.oreslang.runtime.OresSymbol)) {
+                    throw new IllegalArgumentException("map key must be String or Symbol");
                 }
-                if (!map.containsKey(key)) {
-                    throw new IllegalArgumentException(
-                            "unknown struct/map key " + key);
+                if (!map.containsKey(index)) {
+                    throw new IllegalArgumentException("unknown struct/map key " + index);
                 }
-                Object value = map.get(key);
+                Object value = map.get(index);
                 if (value == UNINITIALIZED_FIELD) {
                     throw new IllegalArgumentException(
-                            "explicit struct field '" + key + "' is read before initialization");
+                            "explicit struct field '" + index + "' is read before initialization");
                 }
                 return value;
             }
@@ -6198,16 +6199,16 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
                 if (receiver instanceof Map<?, ?> map) {
-                    if (!(index instanceof String key)) {
-                        throw new IllegalArgumentException("struct/map key must be a string");
+                    if (!(index instanceof String) && !(index instanceof dev.oreslang.runtime.OresSymbol)) {
+                        throw new IllegalArgumentException("map key must be String or Symbol");
                     }
-                    if (!map.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown struct/map key " + key);
+                    if (!map.containsKey(index)) {
+                        throw new IllegalArgumentException("unknown struct/map key " + index);
                     }
-                    Object value = map.get(key);
+                    Object value = map.get(index);
                     if (value == UNINITIALIZED_FIELD) {
                         throw new IllegalArgumentException(
-                                "explicit struct field '" + key + "' is read before initialization");
+                                "explicit struct field '" + index + "' is read before initialization");
                     }
                     return value;
                 }
