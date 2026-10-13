@@ -172,14 +172,18 @@ final class AnyUnknownSoundnessTest {
 
     @Test
     void directInternalInferenceHoleDoesNotImpersonateKnownValue() {
-        reject("fnc bad(int value): int { return unrelated(value); }", "unknown name");
+        // Unknown stdlib attributes currently produce a legacy inference
+        // sentinel; they cannot be silently returned as a proven int.
+        reject("fnc bad(): int { return std.not_a_declared_field; }", "return");
         assertFalse(Types.isAssignable(Types.UnknownValue.INSTANCE, Types.Primitive.INT));
     }
 
     @Test
-    void sourceTopsCannotBeShadowedByGenericParameters() {
+    void sourceTopsCannotBeShadowedByAliasesOrGenericParameters() {
         reject("fnc identity<Any>(Any value): Any { return value; }", "reserved type name");
         reject("fnc identity<Unknown>(Unknown value): Unknown { return value; }", "reserved type name");
+        reject("type Any = int; fnc ok(): void { return; }", "reserved type name");
+        reject("type Unknown = int; fnc ok(): void { return; }", "reserved type name");
     }
 
     @Test

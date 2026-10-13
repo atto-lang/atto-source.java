@@ -169,7 +169,7 @@ public final class TypeChecker {
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
-                "self", "null"));
+                "Any", "Unknown", "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
@@ -215,6 +215,10 @@ public final class TypeChecker {
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    if (alias.name().equals("Any") || alias.name().equals("Unknown")) {
+                        throw new IllegalArgumentException(
+                                "reserved type name '" + alias.name() + "' cannot be redeclared as a type alias");
+                    }
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
@@ -1488,6 +1492,7 @@ public final class TypeChecker {
                                 "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
                                 "int", "uint", "bigint", "f32", "f64", "float", "decimal",
                                 "complex64", "complex128", "complex", "bool", "Bool",
+                                "Any", "Unknown",
                                 "boolean", "string", "String", "void", "null", "self",
                                 "Tuple", "Array", "List", "Vector", "Slice",
                                 "FixedArray", "FixedList", "DynamicStruct", "Option",
