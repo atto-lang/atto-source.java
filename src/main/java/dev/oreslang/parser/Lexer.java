@@ -209,6 +209,22 @@ public final class Lexer {
     private void identifier() {
         while (isIdentPart(peek())) advance();
         String text = source.substring(start, current);
+
+        // Both 'nb' and 'select' are already reserved, so this spelling cannot
+        // change the meaning of a legal subtraction expression. Critical and
+        // pipeline compounds are instead recognized only in declaration
+        // context by the parser: both halves may be ordinary variable names.
+        if (text.equals("nb") && source.startsWith("-select", current)
+                && (current + 7 == source.length()
+                    || (source.charAt(current + 7) != '-'
+                        && !isIdentPart(source.charAt(current + 7))))) {
+            add(NB);
+            advance(); // ASCII hyphen-minus, U+002D
+            int keywordColumn = column;
+            for (int i = 0; i < 6; i++) advance();
+            tokens.add(new Token(SELECT, "select", line, keywordColumn));
+            return;
+        }
         add(KEYWORDS.getOrDefault(text, IDENT));
     }
 
