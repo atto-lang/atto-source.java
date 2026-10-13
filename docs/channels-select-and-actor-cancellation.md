@@ -139,10 +139,14 @@ the winning continuation and cannot be captured as outer references.
 
 The Java guest evaluator additionally rejects non-data runtime payloads
 before ordinary `writech`, static select registration and
-`SelectCase.write`, guarding against host/cast runtime injection. This
-runtime validator is an execution-boundary defense, not proof that arbitrary
-host use of `ChannelRuntime.Channel<Object>` is safe: that internal API
-needs separate capabilities/type-descriptor sealing before exposure.
+`SelectCase.write`, guarding against host/cast runtime injection.
+`Channel.new<T>` also constructs a **sealed data-only runtime channel**
+that carries the same guard: `tryWrite`, `writeAsync`, and even direct
+`ChannelRuntime.write(channel, value)` select-case construction validate
+payloads before registration/publication. An internal privileged
+`ChannelRuntime.Channel<T>` without this validator still exists for
+supervisor/actor envelopes; direct untrusted host access to that
+constructor must not be exposed as the guest `Channel.new<T>` API.
 
 **Internal actor mailbox channels are not public generic channels.** They
 transport trusted runtime-only envelopes with scheduler and supervision
