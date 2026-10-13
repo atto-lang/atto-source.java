@@ -73,6 +73,24 @@ final class ActorFailureNoticeTest {
     }
 
     @Test
+    void finalCleanupFailureUsesSameSingleReceiptPublication() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor = runtime.spawnSharedTrusted(
+                    context -> (message, turn) -> turn.runtime()
+                            .endCurrentActorWithCleanup(
+                                    () -> { throw new IllegalStateException("cleanup failed"); }));
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("shutdown");
+            assertThrows(ExecutionException.class,
+                    () -> actor.done().get(5, TimeUnit.SECONDS));
+            ActorRuntime.ActorFailureNotice receipt = actor.failureNotice().orElseThrow();
+            assertEquals(ActorRuntime.ActorFailureCategory.HOST_FAILURE, receipt.category());
+            assertSame(receipt, actor.failureNotice().orElseThrow());
+            assertTrue(receipt.guestError().isEmpty());
+        }
+    }
+
+    @Test
     void actorCannotInspectItsOwnSupervisorReceipt() throws Exception {
         CountDownLatch rejected = new CountDownLatch(1);
         try (ActorRuntime runtime = new ActorRuntime()) {

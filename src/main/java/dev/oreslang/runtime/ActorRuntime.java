@@ -7276,9 +7276,7 @@ public final class ActorRuntime implements AutoCloseable {
                     } catch (Throwable cleanupFailure) {
                         // Cleanup is the final guest action. Preserve its
                         // failure for ActorRef.failure/done before finalization.
-                        ref.terminationCause.compareAndSet(
-                                null,
-                                cleanupFailure);
+                        recordFirstTerminalCause(cleanupFailure);
                     }
                 }
                 try {
@@ -7318,6 +7316,27 @@ public final class ActorRuntime implements AutoCloseable {
             activeMail = null;
         }
 
+        /**
+         * All terminal causes, including final-cleanup failures, pass through
+         * this single atomic publication path. Never inspect arbitrary guest
+         * or host exception methods while preparing the supervisor receipt.
+         * Reentrant locking is intentional for terminateTree().
+         */
+        private void recordFirstTerminalCause(Throwable cause) {
+            Objects.requireNonNull(cause, "terminal cause");
+            synchronized (lifecycleLock) {
+                if (ref.terminationCause.compareAndSet(null, cause)) {
+                    ActorFailureCategory category =
+                            cause instanceof ActorCancelledException
+                                    ? ActorFailureCategory.STRUCTURED_CANCELLATION
+                                    : ActorFailureCategory.HOST_FAILURE;
+                    ref.terminationNotice.compareAndSet(null,
+                            new ActorFailureNotice(ref.id(), ref.generation,
+                                    kind, category, Optional.empty()));
+                }
+            }
+        }
+
         private void fail(Throwable failure) {
             terminateTree(failure, true);
         }
@@ -7335,18 +7354,8 @@ public final class ActorRuntime implements AutoCloseable {
             List<OresFuture<?>> pending;
             synchronized (lifecycleLock) {
                 if (finalized) return;
-                if (recordCause && cause != null
-                        && ref.terminationCause.compareAndSet(null, cause)) {
-                    ActorFailureCategory category =
-                            cause instanceof ActorCancelledException
-                                    ? ActorFailureCategory.STRUCTURED_CANCELLATION
-                                    : ActorFailureCategory.HOST_FAILURE;
-                    // Never inspect Throwable.getMessage(), getCause(),
-                    // getStackTrace(), toString(), or any guest object.
-                    // No actor CONTROL authority is created from error text.
-                    ref.terminationNotice.compareAndSet(null,
-                            new ActorFailureNotice(ref.id(), ref.generation,
-                                    kind, category, Optional.empty()));
+                if (recordCause && cause != null) {
+                    recordFirstTerminalCause(cause);
                 }
                 stopped.set(true);
                 if (cause == null) mailbox.close();
