@@ -78,12 +78,12 @@ final class NativeNetStdlibTest {
                     """);
             for (int i = 0; i < 20; i++) {
                 source.append("  val NioTcpListener l").append(i)
-                        .append(" = net_core.listen_loopback(0, 8, 1, 4);\\n");
+                        .append(" = net_core.listen_loopback(0, 8, 1, 4);\n");
                 source.append("  val Future<void> stop").append(i)
-                        .append(" = net_core.close_listener(l").append(i).append(");\\n");
-                source.append("  await stop").append(i).append(";\\n");
+                        .append(" = net_core.close_listener(l").append(i).append(");\n");
+                source.append("  await stop").append(i).append(";\n");
             }
-            source.append("  stdio.println(777);\\n  return;\\n}\\n");
+            source.append("  stdio.println(777);\n  return;\n}\n");
             Files.writeString(entry, source.toString());
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             LinkedProgramRunner.run(entry,
