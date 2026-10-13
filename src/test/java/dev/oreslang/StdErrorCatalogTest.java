@@ -28,9 +28,9 @@ final class StdErrorCatalogTest {
     // Keep this deliberately simple/explicit: no host reflection or Java
     // exception classes may silently define guest error type identity.
     private static final Pattern TYPE = Pattern.compile(
-            "(?m)^pub define (abstract )?class (\\w+)(?: extends (\\w+))?(?: implements (\\w+))? as\\R"
-            + "  pub code\\(\\): int(?: \\{ return (\\d+); \\}|;)\\R"
-            + "(?:  pub retry_hint\\(\\): bool \\{ return true; \\}\\R)?end$");
+            "(?ms)^pub define (abstract )?class (\\w+)(?: extends (\\w+))?(?: implements (\\w+(?:, \\w+)*))? as\\R(.*?)^end$");
+    private static final Pattern CODE = Pattern.compile(
+            "pub code\\(\\): int \\{ return (\\d+); \\}");
     private static final Pattern CATALOG_ENTRY = Pattern.compile(
             "\"name\"\\s*:\\s*\"(\\w+)\"\\s*,\\s*\"parent\"\\s*:\\s*(null|\"\\w+\")"
             + "\\s*,\\s*\"code\"\\s*:\\s*(\\d+)\\s*,\\s*\"abstract\"\\s*:\\s*(true|false)"
@@ -49,6 +49,9 @@ final class StdErrorCatalogTest {
         assertTrue(source.contains("pub define interface CodedError as"));
         assertTrue(source.contains("pub define interface RetryAdvisory extends CodedError as"));
         assertTrue(source.contains("pub define interface ActorApiError extends CodedError as"));
+        assertTrue(source.contains("pub define interface Serializable as"));
+        assertTrue(CoreLibrarySources.packagedSourcePaths().contains("tracing.ores"));
+        TypeChecker.check(Parser.parse(CoreLibrarySources.source("std/tracing")));
         TypeChecker.check(Parser.parse(source));
 
         Map<String, Entry> parsed = new HashMap<>();
@@ -57,14 +60,17 @@ final class StdErrorCatalogTest {
         while (declarations.find()) {
             String name = declarations.group(2);
             String parent = declarations.group(3);
-            int code = declarations.group(5) == null ? 0 : Integer.parseInt(declarations.group(5));
+            Matcher implementation = CODE.matcher(declarations.group(5));
+            assertTrue(implementation.find(), "missing code() method: " + name);
+            int code = Integer.parseInt(implementation.group(1));
             boolean abstractClass = declarations.group(1) != null;
-            String iface = declarations.group(4);
+            String iface = declarations.group(4) == null ? null
+                    : declarations.group(4).replace(" ", "");
             assertNull(parsed.put(name, new Entry(parent, code, abstractClass, iface)), name);
             assertTrue(codes.add(code), "duplicate error code " + code);
         }
         assertEquals(99, parsed.size(), "every catalog type must have an executable Oreslang code method");
-        assertEquals(new Entry(null, 0, true, "CodedError"), parsed.get("Error"));
+        assertEquals(new Entry(null, 0, false, "CodedError,Serializable"), parsed.get("Error"));
         assertEquals(new Entry("IOError", 3090, true, null), parsed.get("FileSystemError"));
         assertEquals(new Entry("IOError", 4000, true, null), parsed.get("NetworkError"));
         assertEquals(new Entry("Error", 9000, true, "ActorApiError"), parsed.get("ActorError"));
@@ -74,12 +80,12 @@ final class StdErrorCatalogTest {
                 "ActorSupervisorRestartLimitError", "ActorControlEnvelope"}) {
             assertFalse(parsed.containsKey(controlOnly), controlOnly);
         }
-        assertEquals(11, parsed.values().stream().filter(Entry::abstractClass).count());
+        assertEquals(10, parsed.values().stream().filter(Entry::abstractClass).count());
         assertEquals(5, parsed.values().stream().filter(e -> "RetryAdvisory".equals(e.iface())).count());
         long leaves = parsed.keySet().stream().filter(name ->
                 parsed.keySet().stream().noneMatch(child -> name.equals(parsed.get(child).parent()))
                 ).count();
-        assertEquals(88, leaves);
+        assertEquals(88, leaves); // Error is now concrete but not a leaf; descendants unchanged
         for (String name : parsed.keySet()) {
             Set<String> visited = new HashSet<>();
             String current = name;
@@ -99,8 +105,10 @@ final class StdErrorCatalogTest {
         while (catalog.find()) {
             String parent = catalog.group(2);
             String interfaces = catalog.group(5).trim();
-            assertTrue(interfaces.isEmpty() || interfaces.matches("\"[A-Za-z][A-Za-z0-9]*\""), interfaces);
-            String iface = interfaces.isEmpty() ? null : interfaces.substring(1, interfaces.length() - 1);
+            String normalized = interfaces.replaceAll("[\\\"\\s]", "");
+            assertTrue(normalized.isEmpty() ||
+                    normalized.matches("[A-Za-z][A-Za-z0-9]*(?:,[A-Za-z][A-Za-z0-9]*)*"), interfaces);
+            String iface = normalized.isEmpty() ? null : normalized;
             assertNull(expected.put(catalog.group(1),
                     new Entry(parent.equals("null") ? null : parent.substring(1, parent.length() - 1),
                             Integer.parseInt(catalog.group(3)),
@@ -413,6 +421,35 @@ final class StdErrorCatalogTest {
         assertEquals("9003|2013|-1", output.toString(StandardCharsets.UTF_8));
     }
 
+
+    @Test
+    void errorConstructionIsTraceFreeAndJsonCompactIsExplicit() throws Exception {
+        Path entry = temp.resolve("error-serialization.ores");
+        Files.writeString(entry, """
+                import class Error from "std/error";
+                import class ActorAskTimeoutError from "std/error";
+
+                pub routine main(): void {
+                  val e = new Error();
+                  stdio.stdout.write(e.to_json());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(new Error(false, false, "private").to_json());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(new ActorAskTimeoutError(true, true, "delayed").to_json());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
+                new ByteArrayOutputStream());
+        assertEquals(
+                "{\"schema\":1,\"code\":0,\"name\":\"Error\",\"message\":\"\",\"stack\":[]}"
+                + "|{\"schema\":1,\"code\":0,\"name\":\"Error\"}"
+                + "|{\"schema\":1,\"code\":9007,\"name\":\"ActorAskTimeoutError\",\"message\":\"delayed\",\"stack\":[]}",
+                out.toString(StandardCharsets.UTF_8));
+    }
+
     @Test
     void ancestorFirstMatchingIsRejectedRatherThanSilentlyShadowingLeaf() throws Exception {
         String source = CoreLibrarySources.source("std/error");
@@ -448,7 +485,7 @@ final class StdErrorCatalogTest {
     @Test
     void abstractErrorCategoriesCannotBeConstructed() throws Exception {
         String source = CoreLibrarySources.source("std/error");
-        for (String category : new String[]{"Error", "ArgumentError", "IOError",
+        for (String category : new String[]{"ArgumentError", "IOError",
                 "FileSystemError", "NetworkError", "TimingError", "ActorError"}) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(source + "\nfnc bad(): void { val x = new "
