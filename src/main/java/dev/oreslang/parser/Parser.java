@@ -547,6 +547,14 @@ public final class Parser {
                 fields.add(parseColonField(annotations, mods.visibility));
                 continue;
             }
+            // Type-first fields accept ':' canonically and '=' for compatibility.
+            // 'final' is contextual, so final(...) remains an ordinary method.
+            if ((isContextualIdentifier("final") && (checkNext(IDENT) || checkNext(MUT)))
+                    || looksLikeTypeFirstClassField()) {
+                validateClassFieldModifiers(mods);
+                fields.add(parseTypeFirstClassField(annotations, mods.visibility));
+                continue;
+            }
 
             boolean explicitFnc = match(FNC);
             boolean explicitMethod = matchExplicitMethodMarker();
@@ -905,6 +913,40 @@ public final class Parser {
         }
         consumeExpressionStatementTerminator(initializer, "field declaration should end with ';'");
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
+    }
+
+    private boolean looksLikeTypeFirstClassField() {
+        int mark = current;
+        try {
+            match(MUT); // Explicit mutable referent is independent of finality.
+            parseTypeRef();
+            if (!check(IDENT)) return false;
+            advance();
+            return check(COLON) || check(EQUAL);
+        } catch (IllegalArgumentException ex) {
+            return false;
+        } finally {
+            current = mark;
+        }
+    }
+
+    private Ast.FieldDecl parseTypeFirstClassField(
+            List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectCallableStructuralAnnotation(annotations, "fields");
+        boolean isFinal = matchContextualIdentifier("final");
+        boolean mutableReferent = match(MUT);
+        Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
+        String name = consume(IDENT, "expected class field name after type").lexeme();
+        if (!match(COLON, EQUAL)) {
+            throw error(peek(), "class field initializer requires ':' or '='");
+        }
+        Ast.Expr initializer = parseExpression();
+        consumeExpressionClassFieldTerminator(initializer, "field declaration should end with ';'");
+        // Slot reassignment and mutation through its stored referent are
+        // separate capabilities. 'final' does NOT silently grant mutable
+        // referent access; only an explicit 'mut' modifier requests it.
+        Ast.BindingKind kind = isFinal ? Ast.BindingKind.VAL : Ast.BindingKind.LET;
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
     }
 
@@ -3435,11 +3477,13 @@ public final class Parser {
     private boolean isNextContextualMemberLine() {
         if (current == 0 || previous().line() >= peek().line()) return false;
         if (check(FNC)) return true;
+        if (check(MUT)) return looksLikeTypeFirstClassField();
         if (!check(IDENT)) return false;
         String word = peek().lexeme();
-        return (word.equals("suspend") || word.equals("method")
+        return ((word.equals("suspend") || word.equals("method")
                 || word.equals("final") || word.equals("critical"))
-                && (checkNext(IDENT) || checkNext(FNC) || checkNext(LPAREN));
+                && (checkNext(IDENT) || checkNext(MUT) || checkNext(FNC) || checkNext(LPAREN)))
+                || looksLikeTypeFirstClassField();
     }
 
     private boolean hasAnnotation(List<Ast.Annotation> annotations, String name) {
