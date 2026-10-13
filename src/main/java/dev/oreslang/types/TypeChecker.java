@@ -5347,6 +5347,36 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * Compare statically known numerical pattern literals using the same
+     * carrier semantics as the interpreter, not Java wrapper equality:
+     * 1L matches 1.0 and -0.0 matches +0.0. Unknown Number subclasses
+     * return null, meaning that no disjointness/subsumption proof exists.
+     */
+    private static Boolean numericPatternLiteralEquality(Number a, Number b) {
+        boolean ai = a instanceof Byte || a instanceof Short
+                || a instanceof Integer || a instanceof Long;
+        boolean bi = b instanceof Byte || b instanceof Short
+                || b instanceof Integer || b instanceof Long;
+        if (ai && bi) return a.longValue() == b.longValue();
+
+        if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal
+                || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger) {
+            try {
+                return new java.math.BigDecimal(a.toString())
+                        .compareTo(new java.math.BigDecimal(b.toString())) == 0;
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        boolean af = a instanceof Float || a instanceof Double;
+        boolean bf = b instanceof Float || b instanceof Double;
+        if ((ai || af) && (bi || bf)) {
+            return a.doubleValue() == b.doubleValue();
+        }
+        return null;
+    }
+
     private boolean patternSubsumes(
             Ast.Pattern earlier,
             Ast.Pattern later,
@@ -5357,6 +5387,9 @@ public final class TypeChecker {
         if (later instanceof Ast.WildcardPattern || later instanceof Ast.BindingPattern) return false;
 
         if (earlier instanceof Ast.LiteralPattern a && later instanceof Ast.LiteralPattern b) {
+            if (a.value() instanceof Number x && b.value() instanceof Number y) {
+                return Boolean.TRUE.equals(numericPatternLiteralEquality(x, y));
+            }
             return java.util.Objects.equals(a.value(), b.value());
         }
 
@@ -5469,6 +5502,11 @@ public final class TypeChecker {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
                 || left instanceof Ast.BindingPattern || right instanceof Ast.BindingPattern) return false;
         if (left instanceof Ast.LiteralPattern a && right instanceof Ast.LiteralPattern b) {
+            if (a.value() instanceof Number x && b.value() instanceof Number y) {
+                // A proof of *difference* needs trusted runtime equality.
+                // Unknown numeric carriers are conservatively overlapping.
+                return Boolean.FALSE.equals(numericPatternLiteralEquality(x, y));
+            }
             return !java.util.Objects.equals(a.value(), b.value());
         }
         if (left instanceof Ast.ConstructorPattern a && right instanceof Ast.ConstructorPattern b) {
