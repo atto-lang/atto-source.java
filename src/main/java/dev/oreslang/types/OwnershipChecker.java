@@ -2450,6 +2450,18 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (pattern instanceof Ast.RecordPattern projection) {
+            Ast.TypeRef shape = subjectType;
+            if (shape != null && shape.isBorrow()) shape = shape.borrowedTarget();
+            Map<String, Ast.TypeRef> members =
+                    shape != null && shape.isRecordType()
+                            ? shape.recordMembers() : Map.of();
+            for (String field : projection.fields()) {
+                Ast.TypeRef declared = members.getOrDefault(field, Ast.TypeRef.inferred());
+                defineRefinementAlias(field, declared, source, destination);
+            }
+            return;
+        }
         if (pattern instanceof Ast.TuplePattern tuple) {
             List<Ast.TypeRef> elementTypes =
                     subjectType != null && subjectType.isTupleType()
@@ -2577,6 +2589,8 @@ public final class OwnershipChecker {
         else if (pattern instanceof Ast.TypePattern typed && typed.binding() != null) names.add(typed.binding());
         else if (pattern instanceof Ast.StructuralPattern structural && structural.binding() != null) {
             names.add(structural.binding());
+        } else if (pattern instanceof Ast.RecordPattern projection) {
+            names.addAll(projection.fields());
         } else if (pattern instanceof Ast.TuplePattern tuple) {
             for (Ast.Pattern nested : tuple.elements()) collectPatternBindingNames(nested, names);
         } else if (pattern instanceof Ast.ConstructorPattern constructor) {
