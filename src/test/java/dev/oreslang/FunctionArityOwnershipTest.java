@@ -3,6 +3,11 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -136,6 +141,31 @@ final class FunctionArityOwnershipTest {
                   return first.select(1, 2) + second.select(3);
                 }
                 """)));
+    }
+
+    @Test
+    void mixedFncAndRoutineOverloadsDispatchCorrectlyAtRuntime() throws Exception {
+        String program = """
+                fnc pick(int value): int { return value + 10; }
+                routine pick(int left, int right): int { return left + right; }
+
+                pub routine main(): void {
+                  stdio.stdout.write(pick(2));
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(pick(2, 5));
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, program, "mixed-fnc-routine-arity.ores")
+                    .mimeType(OresLanguage.MIME_TYPE)
+                    .build());
+        }
+        assertEquals("12:7", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
