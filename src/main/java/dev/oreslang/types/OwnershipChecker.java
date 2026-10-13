@@ -1682,8 +1682,15 @@ public final class OwnershipChecker {
         }
 
         // Unknown host/dynamic callables remain conservative and consuming.
+        // In particular ActorRef.send and self.send must not transport a
+        // borrowed view whose static record fields appear sendable. Only a
+        // known explicit borrow/structural formal grants non-consuming access.
         for (Ast.Expr arg : call.arguments()) {
             ValueInfo argument = checkExpr(arg, scope, true);
+            if (isBorrowValue(argument)) {
+                throw error("borrowed data cannot cross an unknown or actor send call boundary;"
+                        + " pass owned data or an explicit borrow-aware callable contract");
+            }
             if (containsMutexGuardType(argument.type)) {
                 throw error("guard-bearing values cannot cross an arbitrary call boundary");
             }
