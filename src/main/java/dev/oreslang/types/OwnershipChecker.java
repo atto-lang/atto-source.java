@@ -1865,7 +1865,9 @@ public final class OwnershipChecker {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
                 if (field == null) throw error("unknown field '" + member.member() + "' on " + klass.name());
                 if (field.bindingKind() != Ast.BindingKind.LET
-                        && !(klass == initializingClass && member.receiver() instanceof Ast.NameExpr name
+                        && !(field.initializer() == null
+                            && klass == initializingClass
+                            && member.receiver() instanceof Ast.NameExpr name
                             && name.name().equals("self"))) {
                     throw error("field '" + klass.name() + "." + member.member() + "' is immutable; declare the field with let to permit mutation");
                 }
