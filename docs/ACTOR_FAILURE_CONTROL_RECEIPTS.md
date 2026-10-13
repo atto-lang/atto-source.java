@@ -19,8 +19,10 @@ with a **private constructor**:
 
 A `ActorRef` retains at most **one** failure receipt for its generation.
 The first terminal cause wins under its `lifecycleLock`: publication uses
-atomic compare-and-set and never replaces an earlier notice. Graceful
-termination publishes no failure receipt. A structured cancellation is not
+atomic compare-and-set and never replaces an earlier notice. **Failures
+during final cleanup use the same publication routine**, rather than
+writing the terminal Throwable separately and omitting the notice.
+Graceful termination publishes no failure receipt. A structured cancellation is not
 a catchable `std/error.Error`.
 
 `ActorRef.failureNotice()` requires host/supervisor context. Actor code is
