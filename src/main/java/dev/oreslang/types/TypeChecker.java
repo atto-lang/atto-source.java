@@ -1801,7 +1801,7 @@ public final class TypeChecker {
         if (stmt instanceof Ast.ForStmt loop) {
             Env loopEnv = new Env(env);
             if (loop.initializer() != null) checkStatement(loop.initializer(), loopEnv, generics, expectedReturn, self);
-            if (loop.condition() != null) requireAssignable(typeOf(loop.condition(), loopEnv, generics, self), Primitive.BOOL, "for condition");
+            if (loop.condition() != null) requireAssignable(typeOfCondition(loop.condition(), loopEnv, generics, self), Primitive.BOOL, "for condition");
             Map<Env.Binding, Set<String>> afterEntryCheck = env.initializationSnapshot();
             if (loop.update() != null) typeOf(loop.update(), loopEnv, generics, self);
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
@@ -1940,7 +1940,7 @@ public final class TypeChecker {
             return targetType;
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
-            requireAssignable(typeOf(conditional.condition(), env, generics, self), Primitive.BOOL, "ternary condition");
+            requireAssignable(typeOfCondition(conditional.condition(), env, generics, self), Primitive.BOOL, "ternary condition");
             Map<Env.Binding, Set<String>> afterCondition = env.initializationSnapshot();
 
             env.restoreInitialization(afterCondition);
@@ -4738,7 +4738,75 @@ public final class TypeChecker {
         }
     }
 
+
+    /**
+     * Assignment is still an expression in legacy, non-conditional contexts.
+     * It is forbidden throughout a Boolean predicate, including parenthesized
+     * calls, comparisons and type tests. Checking only the root misses
+     * `if (x = y) eq true` and `if predicate(x = y)`.
+     *
+     * A lambda creates an independently checked callable body, not a
+     * conditional assignment expression. Unrecognized AST variants fail closed.
+     */
+    private static void rejectAssignmentInPredicate(Ast.Expr expr) {
+        if (expr instanceof Ast.AssignExpr) {
+            throw new IllegalArgumentException(
+                    "assignment '=' is not allowed in a condition; use 'eq' or '==' for equality");
+        }
+        if (expr instanceof Ast.BinaryExpr binary) {
+            rejectAssignmentInPredicate(binary.left());
+            rejectAssignmentInPredicate(binary.right());
+        } else if (expr instanceof Ast.UnaryExpr unary) {
+            rejectAssignmentInPredicate(unary.operand());
+        } else if (expr instanceof Ast.ConditionalExpr conditional) {
+            rejectAssignmentInPredicate(conditional.condition());
+            rejectAssignmentInPredicate(conditional.whenTrue());
+            rejectAssignmentInPredicate(conditional.whenFalse());
+        } else if (expr instanceof Ast.TypeTestExpr test) {
+            rejectAssignmentInPredicate(test.value());
+        } else if (expr instanceof Ast.PatternTestExpr test) {
+            rejectAssignmentInPredicate(test.value());
+        } else if (expr instanceof Ast.CastExpr cast) {
+            rejectAssignmentInPredicate(cast.value());
+        } else if (expr instanceof Ast.SpreadExpr spread) {
+            rejectAssignmentInPredicate(spread.expression());
+        } else if (expr instanceof Ast.CallExpr call) {
+            rejectAssignmentInPredicate(call.callee());
+            for (Ast.Expr argument : call.arguments()) rejectAssignmentInPredicate(argument);
+        } else if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            for (Ast.Expr argument : runtime.arguments()) rejectAssignmentInPredicate(argument);
+        } else if (expr instanceof Ast.MemberExpr member) {
+            rejectAssignmentInPredicate(member.receiver());
+        } else if (expr instanceof Ast.IndexExpr index) {
+            rejectAssignmentInPredicate(index.receiver());
+            rejectAssignmentInPredicate(index.index());
+        } else if (expr instanceof Ast.NewExpr constructor) {
+            for (Ast.Expr argument : constructor.arguments()) rejectAssignmentInPredicate(argument);
+        } else if (expr instanceof Ast.AwaitExpr awaited) {
+            rejectAssignmentInPredicate(awaited.expression());
+        } else if (expr instanceof Ast.TrapExpr trapped) {
+            rejectAssignmentInPredicate(trapped.expression());
+        } else if (expr instanceof Ast.ChannelOpExpr channel) {
+            rejectAssignmentInPredicate(channel.channel());
+            if (channel.value() != null) rejectAssignmentInPredicate(channel.value());
+        } else if (expr instanceof Ast.DynamicSelectExpr selected) {
+            rejectAssignmentInPredicate(selected.cases());
+        } else if (expr instanceof Ast.ListExpr list) {
+            for (Ast.Expr element : list.elements()) rejectAssignmentInPredicate(element);
+        } else if (expr instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr element : tuple.elements()) rejectAssignmentInPredicate(element);
+        } else if (expr instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) rejectAssignmentInPredicate(field.value());
+        } else if (!(expr instanceof Ast.NameExpr)
+                && !(expr instanceof Ast.LiteralExpr)
+                && !(expr instanceof Ast.LambdaExpr)) {
+            throw new IllegalArgumentException(
+                    "unhandled expression in Boolean predicate: " + expr.getClass().getSimpleName());
+        }
+    }
+
     private Type typeOfCondition(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        rejectAssignmentInPredicate(expr);
         if (expr instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
             requireAssignable(typeOfCondition(binary.left(), env, generics, self), Primitive.BOOL, "logical operand");
             Env rightEnv = new Env(env);
