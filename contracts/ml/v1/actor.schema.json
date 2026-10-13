@@ -1,0 +1,347 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oreslang.dev/contracts/ml/actor-v1.schema.json",
+  "title": "Oreslang ML actor envelope v1 (design stage)",
+  "description": "Cross-field tensor safety and authorization require independent runtime checks.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/result"
+    },
+    {
+      "$ref": "#/$defs/cancel"
+    },
+    {
+      "$ref": "#/$defs/error"
+    }
+  ],
+  "$defs": {
+    "actor_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenant",
+        "actor_id",
+        "incarnation",
+        "generation"
+      ],
+      "properties": {
+        "tenant": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "actor_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "incarnation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "tensor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dtype",
+        "shape",
+        "strides",
+        "byte_length",
+        "layout",
+        "device",
+        "ownership",
+        "lifetime"
+      ],
+      "properties": {
+        "dtype": {
+          "enum": [
+            "f32",
+            "f64",
+            "i32",
+            "i64",
+            "u8"
+          ]
+        },
+        "shape": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "strides": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "byte_length": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "layout": {
+          "enum": [
+            "row_major",
+            "column_major",
+            "strided"
+          ]
+        },
+        "device": {
+          "enum": [
+            "cpu",
+            "gpu"
+          ]
+        },
+        "ownership": {
+          "enum": [
+            "moved",
+            "frozen_shared",
+            "borrowed_local"
+          ]
+        },
+        "lifetime": {
+          "enum": [
+            "actor_turn",
+            "actor_incarnation",
+            "explicit_lease"
+          ]
+        }
+      }
+    },
+    "resource_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenant",
+        "cpu_millis",
+        "memory_bytes",
+        "device",
+        "numa_node",
+        "capability_id"
+      ],
+      "properties": {
+        "tenant": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "cpu_millis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "memory_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "device": {
+          "enum": [
+            "cpu",
+            "gpu"
+          ]
+        },
+        "numa_node": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capability_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "kind",
+        "actor",
+        "correlation_id",
+        "deadline_epoch_ms",
+        "model_revision",
+        "tensor"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "inference_request"
+        },
+        "actor": {
+          "$ref": "#/$defs/actor_ref"
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "deadline_epoch_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "model_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "tensor": {
+          "$ref": "#/$defs/tensor"
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "kind",
+        "actor",
+        "correlation_id",
+        "model_revision",
+        "tensor"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "inference_result"
+        },
+        "actor": {
+          "$ref": "#/$defs/actor_ref"
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "model_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "tensor": {
+          "$ref": "#/$defs/tensor"
+        }
+      }
+    },
+    "cancel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "kind",
+        "actor",
+        "correlation_id",
+        "reason"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "cancel"
+        },
+        "actor": {
+          "$ref": "#/$defs/actor_ref"
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "reason": {
+          "enum": [
+            "deadline",
+            "caller",
+            "shutdown"
+          ]
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "kind",
+        "actor",
+        "correlation_id",
+        "code",
+        "retryable"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "error"
+        },
+        "actor": {
+          "$ref": "#/$defs/actor_ref"
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "code": {
+          "enum": [
+            "UNSUPPORTED_BACKEND",
+            "INVALID_TENSOR",
+            "RESOURCE_DENIED",
+            "DEADLINE_EXCEEDED",
+            "STALE_GENERATION",
+            "CANCELLED",
+            "INTERNAL"
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

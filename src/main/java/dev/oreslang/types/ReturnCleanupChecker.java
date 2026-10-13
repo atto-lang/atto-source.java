@@ -288,6 +288,8 @@ public final class ReturnCleanupChecker {
         } else if (expr instanceof Ast.BinaryExpr binary) {
             expression(binary.left(), scope, inDefer, state);
             expression(binary.right(), scope, inDefer, state);
+        } else if (expr instanceof Ast.TrapExpr trapped) {
+            expression(trapped.expression(), scope, inDefer, state);
         } else if (expr instanceof Ast.UnaryExpr unary) {
             expression(unary.operand(), scope, inDefer, state);
         } else if (expr instanceof Ast.ConditionalExpr conditional) {

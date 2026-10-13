@@ -19,10 +19,10 @@ final class AbstractAritySignatureTest {
     void signatureOnlyDeclarationsInAbstractClassUseNameAndAritySlots() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define abstract class Foo as
-                  abc(): void;
-                  abc(int a): void;
-                  abc(int a, int b): void;
-                  abc(bool a, int b, bool c): void;
+                  pub abc(): void;
+                  pub abc(int a): void;
+                  pub abc(int a, int b): void;
+                  pub abc(bool a, int b, bool c): void;
                 end
                 """)));
     }
@@ -32,11 +32,11 @@ final class AbstractAritySignatureTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define abstract class Foo as
-                          abc(): void;
-                          abc(int a): void;
-                          abc(int a, int b): void;
-                          abc(bool a, int b, bool c): void;
-                          abc(int a, bool b): int;
+                          pub abc(): void;
+                          pub abc(int a): void;
+                          pub abc(int a, int b): void;
+                          pub abc(bool a, int b, bool c): void;
+                          pub abc(int a, bool b): int;
                         end
                         """)));
 
@@ -48,10 +48,10 @@ final class AbstractAritySignatureTest {
     void concreteSubclassCanImplementAllImplicitAbstractAritySlots() throws Exception {
         String source = """
                 define abstract class Foo as
-                  abc(): int;
-                  abc(int a): int;
-                  abc(int a, int b): int;
-                  abc(bool a, int b, bool c): int;
+                  pub abc(): int;
+                  pub abc(int a): int;
+                  pub abc(int a, int b): int;
+                  pub abc(bool a, int b, bool c): int;
                 end
 
                 define class Bar extends Foo as
@@ -109,8 +109,8 @@ final class AbstractAritySignatureTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define abstract class Foo as
-                          abc(): int;
-                          abc(int a): int;
+                          pub abc(): int;
+                          pub abc(int a): int;
                         end
                         define class Incomplete extends Foo as
                           pub abc(): int { return 0; }
@@ -125,8 +125,8 @@ final class AbstractAritySignatureTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define abstract class Foo as
-                          abc(int value): int;
-                          abc(int value, int delta): int;
+                          pub abc(int value): int;
+                          pub abc(int value, int delta): int;
                         end
                         define class Impl extends Foo as
                           pub abc(int value): int { return value; }
@@ -157,8 +157,8 @@ final class AbstractAritySignatureTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define abstract class Foo as
-                          abc(): void;
-                          abc(self Foo)(): void;
+                          pub abc(): void;
+                          pub abc(self Foo)(): void;
                         end
                         """)));
         assertTrue(error.getMessage().contains("already has arity 0"), error.getMessage());

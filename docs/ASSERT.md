@@ -32,9 +32,16 @@ pub routine main(): void {
 }
 ```
 
-`trap` is currently a callable modifier, not a call-site operator. It wraps normal
-returns in Some and ordinary runtime failures in None, without retaining error
-detail. Untrapped assertion failures retain the message and can be caught by
+Both `Assert.equal_throws(a, b)` and `Assert::equal_throws(a, b)`
+resolve the same source-owned module callable. The `::` separator is an
+explicit qualified-member spelling, not a host static call, reflection or a
+separate assertion implementation.
+
+The `trap` keyword may modify a function or prefix a call-site expression:
+`const result = trap Assert::equal_throws(10, 20);`.
+An expression-level trap yields `Some(value)` on success or `None` for an
+ordinary guest failure; the function modifier similarly wraps its return.
+No diagnostic error detail is retained by trap. Untrapped assertion failures retain the message and can be caught by
 ordinary try/catch. Panic, cancellation, process termination, and capability or
 permission denials must bypass trap: they are not assertion mismatches.
 
