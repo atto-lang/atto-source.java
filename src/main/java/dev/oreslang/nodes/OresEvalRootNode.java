@@ -336,6 +336,9 @@ public final class OresEvalRootNode extends RootNode {
                             "runtime image contains ambiguous same-arity enum overload ABI");
                 }
             }
+            if (declarations.size() >= NominalEnumOverloads.MAX_SAME_ARITY_CANDIDATES) {
+                throw new IllegalArgumentException("runtime image contains too many enum overloads");
+            }
             declarations.add(fn);
         }
 
