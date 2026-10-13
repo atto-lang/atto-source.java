@@ -50,6 +50,9 @@ public final class CriticalGate {
         private boolean completionAttached;
         private Thread synchronousOwner;
         private Object logicalOwner;
+        private Runnable deregisterActorResource = () -> { };
+        private Runnable onClose = () -> { };
+        private boolean closeListenerRegistered;
         // Only host/embedder synchronous callers may wait on a physical thread.
         // Per-ticket signaling avoids waking every queued host thread.
         private java.util.concurrent.CountDownLatch synchronousWaiter;
@@ -67,16 +70,24 @@ public final class CriticalGate {
         }
 
         private OresFuture<Void> request(boolean synchronous) {
+            ActorRuntime actor = ActorRuntime.currentActorRuntime();
+            // Register before admission, so STOP races with both queued and
+            // already-granted tickets and no actor can acquire after STOP.
+            Runnable revokeRegistration = actor == null
+                    ? () -> { }
+                    : actor.trackCurrentActorResource(this);
             Object domain = OresScheduler.currentTaskDomain();
             if (domain == null) domain = ActorRuntime.currentActorExecutionDomain();
             if (domain == null) domain = synchronous ? Thread.currentThread() : this;
             boolean completeNow = false;
+            try {
             synchronized (COORDINATOR) {
                 if (closed || requested || domainClosed) {
                     throw new IllegalStateException("critical ticket already used or released");
                 }
                 requested = true;
                 logicalOwner = domain;
+                deregisterActorResource = revokeRegistration;
                 if (heldByDomain(domain)) {
                     requested = false;
                     throw new IllegalStateException(
@@ -111,6 +122,10 @@ public final class CriticalGate {
                     WAITING_ON.put(domain, CriticalGate.this);
                     waiters.addLast(this);
                 }
+            }
+            } catch (RuntimeException | Error failure) {
+                revokeRegistration.run();
+                throw failure;
             }
             // Completing the Future may notify runtime callbacks; always do so
             // after releasing the metadata coordinator.
@@ -198,15 +213,36 @@ public final class CriticalGate {
             }
         }
 
+        /** Let an RW wrapper clean its separate logical-owner registry. */
+        void onClose(Runnable listener) {
+            Objects.requireNonNull(listener, "listener");
+            boolean alreadyClosed;
+            synchronized (COORDINATOR) {
+                if (closeListenerRegistered) {
+                    throw new IllegalStateException("critical ticket close listener already set");
+                }
+                closeListenerRegistered = true;
+                alreadyClosed = closed;
+                if (!alreadyClosed) onClose = listener;
+            }
+            if (alreadyClosed) listener.run();
+        }
+
         @Override
         public void close() {
             java.util.List<Ticket> wake;
             java.util.concurrent.CountDownLatch cancelledWaiter = null;
+            Runnable removeActorTracking;
+            Runnable notifyWrapper;
             synchronized (COORDINATOR) {
                 if (closed) return;
                 closed = true;
                 synchronousOwner = null;
                 cancelledWaiter = synchronousWaiter;
+                removeActorTracking = deregisterActorResource;
+                deregisterActorResource = () -> { };
+                notifyWrapper = onClose;
+                onClose = () -> { };
                 if (owner == this) {
                     owner = null;
                 } else if (mode == Mode.READ) {
@@ -218,6 +254,8 @@ public final class CriticalGate {
                 }
                 wake = drainLocked();
             }
+            removeActorTracking.run();
+            notifyWrapper.run();
             if (cancelledWaiter != null) cancelledWaiter.countDown();
             if (!admitted.isDone()) {
                 admitted.failFromRuntime(new CancellationException("critical ticket released"));
