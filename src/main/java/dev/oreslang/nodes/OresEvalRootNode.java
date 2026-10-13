@@ -4188,6 +4188,7 @@ public final class OresEvalRootNode extends RootNode {
                             + member.member() + "' is read before constructor initialization");
                 }
                 if (fieldValue instanceof Invokable invokable) {
+                    rejectUnboundNamedCall(call);
                     return object.owner.invokableInvocation(
                             invokable,
                             args);
@@ -4214,6 +4215,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (receiver instanceof ModuleFacade module) {
+                rejectUnboundNamedCall(call);
                 return module.owner().prepareModuleInvocation(
                         module.module(),
                         member.member(),
@@ -4221,12 +4223,14 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (receiver instanceof ImportedNamespace namespace) {
+                rejectUnboundNamedCall(call);
                 return namespace.owner().prepareImportedInvocation(
                         namespace.kind(),
                         member.member(),
                         args);
             }
 
+            rejectUnboundNamedCall(call);
             Object callee = member(receiver, member.member(), env);
             if (!(callee instanceof Invokable invokable)) {
                 throw new IllegalArgumentException(
@@ -5607,6 +5611,7 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' is read before constructor initialization");
                     }
                     if (fieldValue instanceof Invokable invokable) {
+                        rejectUnboundNamedCall(call);
                         return object.owner.invokableInvocation(invokable, args);
                     }
                     if (object.fields.containsKey(methodCall.member())) {
@@ -5638,6 +5643,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (receiver instanceof ModuleFacade module) {
+                    rejectUnboundNamedCall(call);
                     return module.owner().prepareModuleInvocation(
                             module.module(), methodCall.member(), args);
                 }
@@ -5661,10 +5667,12 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (receiver instanceof ImportedNamespace namespace) {
+                    rejectUnboundNamedCall(call);
                     return namespace.owner().prepareImportedInvocation(
                             namespace.kind(), methodCall.member(), args);
                 }
 
+                rejectUnboundNamedCall(call);
                 Object callee = member(receiver, methodCall.member(), env);
                 if (!(callee instanceof Invokable invokable)) {
                     throw new IllegalArgumentException("value is not callable: " + callee);
@@ -5676,6 +5684,7 @@ public final class OresEvalRootNode extends RootNode {
                 ImportedBinding directImport = namedImports.get(importedName.name());
                 if (directImport != null
                         && directImport.declaration().kind() == Ast.ImportKind.FUNCTION) {
+                    rejectUnboundNamedCall(call);
                     List<Object> args = evaluateArguments(call.arguments(), env);
                     return importedTarget(directImport.declaration()).prepareImportedInvocation(
                             Ast.ImportKind.FUNCTION,
@@ -5684,12 +5693,20 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
+            rejectUnboundNamedCall(call);
             Object callee = eval(call.callee(), env);
             List<Object> args = evaluateArguments(call.arguments(), env);
             if (!(callee instanceof Invokable invokable)) {
                 throw new IllegalArgumentException("value is not callable: " + callee);
             }
             return invokableInvocation(invokable, args);
+        }
+
+        private void rejectUnboundNamedCall(Ast.CallExpr call) {
+            if (NamedCallBinder.hasNamed(call.arguments())) {
+                throw new IllegalArgumentException(
+                        "named arguments require a statically resolved source callable");
+            }
         }
 
         private List<Object> bindCallArguments(
