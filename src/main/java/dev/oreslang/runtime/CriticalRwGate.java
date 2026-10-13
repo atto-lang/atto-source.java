@@ -163,15 +163,27 @@ public final class CriticalRwGate implements AutoCloseable {
         return CriticalGate.waitingLogicalDomains();
     }
 
-    @Override
-    public void close() {
+    /** Called when the owning core gate is retired directly by actor STOP. */
+    void onEngineClosed() {
         List<Ticket> revoked;
         synchronized (this) {
-            if (closed) return;
             closed = true;
             revoked = List.copyOf(tickets);
         }
-        engine.closeAll();
+        // Never call ticket callbacks under a facade or core monitor.
+        // Unregister logical ownership even for already-granted Futures:
+        // their successful completion cannot be turned into cancellation.
         for (Ticket ticket : revoked) ticket.close();
+    }
+
+    @Override
+    public void close() {
+        try {
+            engine.closeAll();
+        } finally {
+            // Standalone facades do not have a cached back-reference from
+            // their engine, so explicitly drain their owner registry too.
+            onEngineClosed();
+        }
     }
 }
