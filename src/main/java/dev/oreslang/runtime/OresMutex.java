@@ -73,6 +73,41 @@ public final class OresMutex {
     public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
         private GuardFuture() { }
 
+        // CompletableFuture is used as the public lock-async surface. Its
+        // inherited join/get blocking bridges must not bypass OresFuture's
+        // scheduler/actor carrier safety invariant.
+        private void rejectBlockingCarrierRead() {
+            if (!isDone() && (ActorRuntime.inActorExecution()
+                    || OresScheduler.current() != null
+                    || OresScheduler.isSchedulerCarrierThread())) {
+                throw new WrongMutexDomainException(
+                        "unresolved SharedMutex GuardFuture cannot block an actor/scheduler carrier; await lock_async() instead");
+            }
+        }
+
+        @Override
+        public Guard<T> join() {
+            rejectBlockingCarrierRead();
+            return super.join();
+        }
+
+        @Override
+        public Guard<T> get()
+                throws InterruptedException, java.util.concurrent.ExecutionException {
+            rejectBlockingCarrierRead();
+            return super.get();
+        }
+
+        @Override
+        public Guard<T> get(long timeout, TimeUnit unit)
+                throws InterruptedException, java.util.concurrent.ExecutionException,
+                java.util.concurrent.TimeoutException {
+            Objects.requireNonNull(unit, "unit");
+            // Zero-timeout polling performs no blocking wait.
+            if (timeout > 0L) rejectBlockingCarrierRead();
+            return super.get(timeout, unit);
+        }
+
         private boolean completeFromRuntime(Guard<T> guard) {
             return super.complete(guard);
         }
@@ -726,7 +761,8 @@ public final class OresMutex {
                         "SharedMutex process-wide async waiter limit exceeded: " + MAX_GLOBAL_ASYNC_WAITERS));
             }
 
-            boolean enforceOwnerDomain = ActorRuntime.inActorExecution();
+            boolean enforceOwnerDomain = ActorRuntime.inActorExecution()
+                    || OresScheduler.currentTaskDomain() != null;
             GuardFuture<T> future = new GuardFuture<>();
             AsyncWaiter waiter = new AsyncWaiter(
                     ownerDomain,
@@ -856,14 +892,16 @@ public final class OresMutex {
             boolean acquired = false;
             boolean waiting = false;
             try {
-                if (ActorRuntime.inActorExecution()) {
+                if (ActorRuntime.inActorExecution()
+                        || OresScheduler.current() != null
+                        || OresScheduler.isSchedulerCarrierThread()) {
                     // Recovery is expected to happen after the poisoning guard
                     // released its permit. Never block an actor if another
                     // recovery attempt is already in progress.
                     acquired = permit.tryAcquire();
                     if (!acquired) {
                         throw new WrongMutexDomainException(
-                                "SharedMutex recovery is busy; actor recovery never blocks, retry from a later mailbox turn");
+                                "SharedMutex recovery is busy; actor/scheduler recovery never blocks, retry from a later turn");
                     }
                 } else {
                     try {
