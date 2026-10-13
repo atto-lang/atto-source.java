@@ -87,6 +87,47 @@ final class WithStateCapabilityContractTest {
                 ActorStateContract.verify(Parser.parse(actor("with state.read",
                     "self.handle_state(|s| -> { self.handle_state(|t| -> { return t.v; }); return s.v; })"))));
     }
+    @Test void referenceBearingActorStateResultsNeedProvenDetachedSnapshot() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { return s.items; })",
+            "using state.read(|s| -> { return s.items; })",
+            "self.handle_state(critical read |s| -> { return s.items; })",
+            "using state.read(critical read |s| -> { return s.items; })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; } "
+                    + "get(): List[int] with state.read { return " + callback + "; } end";
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), callback);
+            assertTrue(denied.getMessage().contains("verified detached snapshot"),
+                    denied::getMessage);
+        }
+    }
+
+    @Test void scalarCallbackResultsRemainSupported() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { return s.v; })",
+            "using state.read(|s| -> { return s.v; })",
+            "self.handle_state(critical read |s| -> { return s.v; })"
+        }) {
+            assertDoesNotThrow(() -> TypeChecker.checkTypes(
+                    Parser.parse(actor("with state.read", callback))), callback);
+        }
+    }
+
+    @Test void referenceResultThroughLocalAliasAlsoFailsClosed() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { const alias = s.items; return alias; })",
+            "using state.read(|s| -> { const alias = s.items; return alias; })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; } "
+                    + "get(): List[int] with state.read { return " + callback + "; } end";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), callback);
+        }
+    }
+
     @Test void actorClassStorageMustBeStateMap() {
         assertThrows(IllegalArgumentException.class, () ->
                 ActorStateContract.verify(Parser.parse(
