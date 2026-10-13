@@ -7461,7 +7461,6 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
-            }
             case "Any", "Unknown" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException(ref.name() + " does not accept type arguments");
