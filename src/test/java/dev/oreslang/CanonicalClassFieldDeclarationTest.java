@@ -90,6 +90,24 @@ final class CanonicalClassFieldDeclarationTest {
     }
 
     @Test
+    void constructorCannotReassignAlreadyInitializedFinalField() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    define class Sample as
+                      final int answer: 42;
+                      constructor() {
+                        self.answer = 7;
+                      }
+                    end
+                    pub fnc main(): int {
+                      val Sample value = new Sample();
+                      return value.answer;
+                    }
+                    """)));
+        assertTrue(failure.getMessage().contains("final fields cannot be assigned in constructors"));
+    }
+
+    @Test
     void duplicateMutFieldQualifierIsRejected() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> parseClass("final mut mut int bad: 1;"));
