@@ -98,6 +98,56 @@ final class ModuleVisibilityProofTest {
     }
 
     @Test
+    void bothExplicitPrivateOrdersHaveExactlyTheSameAstAsImplicitPrivate() {
+        String implicit = "define module Internal as\\n"
+                + "  pub fnc visible(): int { return 1; }\\n"
+                + "end\\n";
+        Ast.Program baseline = Parser.parse(implicit);
+        for (String modifier : new String[] {
+                "private define module Internal as",
+                "define private module Internal as"
+        }) {
+            String variant = implicit.replace("define module Internal as", modifier);
+            assertEquals(baseline, Parser.parse(variant),
+                    "redundant private changes AST for " + modifier);
+        }
+        for (String modifier : new String[] {
+                "pub define module Internal as",
+                "define pub module Internal as"
+        }) {
+            Ast.Program pub = Parser.parse(implicit.replace("define module Internal as", modifier));
+            assertEquals(Ast.Visibility.PUBLIC, pub.modules().getFirst().visibility());
+            assertNotEquals(baseline, pub);
+        }
+    }
+
+    @Test
+    void allPrivateSpellingsRejectCrossFileModuleAndMemberImports() {
+        for (String header : new String[] {
+                "define module Internal as",
+                "private define module Internal as",
+                "define private module Internal as"
+        }) {
+            for (String selection : new String[] {
+                    "module Internal", "fnc visible"
+            }) {
+                Map<String, String> files = Map.of(
+                        "pkg/lib.ores",
+                        header + "\\n  pub fnc visible(): int { return 9; }\\nend\\n",
+                        "pkg/main.ores",
+                        "import " + selection + " from './lib';\\n"
+                                + "pub fnc main(): void { return; }\\n");
+                IllegalArgumentException failure = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> new IncrementalCompiler().compile(files),
+                        header + " / " + selection);
+                assertTrue(failure.getMessage().contains("does not match an exported declaration"),
+                        failure.getMessage());
+            }
+        }
+    }
+
+    @Test
     void namedSelectorsCannotBypassAnUnexportedModule() {
         String members = """
                 pub fnc f(): int { return 1; }
