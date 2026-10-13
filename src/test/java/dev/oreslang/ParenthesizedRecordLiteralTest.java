@@ -33,6 +33,20 @@ final class ParenthesizedRecordLiteralTest {
     }
 
     @Test
+    void recordIsOneValueWhenSpreadIsAbsent() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc total({a: int, b: int} values): int {
+                    return values.a + values.b;
+                }
+                pub routine main(): void {
+                    const result = total((b: 22, a: 20));
+                    stdio.stdout.write(result);
+                    return;
+                }
+                """)));
+    }
+
+    @Test
     void duplicateLiteralLabelsAreRejectedBeforeExecution() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
