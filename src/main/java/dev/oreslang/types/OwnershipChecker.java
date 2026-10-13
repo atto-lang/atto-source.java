@@ -827,6 +827,15 @@ public final class OwnershipChecker {
                         ValueKind.COPY,
                         null);
             }
+            if (runtime.operation().equals("trace_frames") || runtime.operation().equals("trace_string")) {
+                if (!runtime.arguments().isEmpty())
+                    throw error("rt trace capture expects no arguments");
+                return runtime.operation().equals("trace_string")
+                        ? new ValueInfo(Ast.TypeRef.simple("String"), ValueKind.COPY, null)
+                        : new ValueInfo(new Ast.TypeRef("Array",
+                                List.of(Ast.TypeRef.simple("String")), false),
+                                ValueKind.MOVE_ONLY, null);
+            }
             if (runtime.operation().equals("cooperate")) {
                 checkSuspensionBorrows(scope, "cooperate");
                 if (!runtime.arguments().isEmpty()) {
@@ -841,6 +850,20 @@ public final class OwnershipChecker {
             if (runtime.operation().equals("fail")) {
                 checkExpr(argument, scope, false);
                 return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+            }
+            if (runtime.operation().startsWith("error_to_")) {
+                // Read-only guest error encoding. It must not move, share, or retain
+                // the original mutable error object or a borrow of its trace.
+                checkExpr(argument, scope, false);
+                return switch (runtime.operation()) {
+                    case "error_to_string", "error_to_json" ->
+                            new ValueInfo(Ast.TypeRef.simple("String"), ValueKind.COPY, null);
+                    case "error_to_messagepack", "error_to_proto_buf" ->
+                            new ValueInfo(new Ast.TypeRef("Array",
+                                    List.of(Ast.TypeRef.simple("u8")), false),
+                                    ValueKind.MOVE_ONLY, null);
+                    default -> throw error("unknown rt error codec");
+                };
             }
             return switch (runtime.operation()) {
                 case "borrow" -> {

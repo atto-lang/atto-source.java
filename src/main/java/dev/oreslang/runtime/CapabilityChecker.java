@@ -403,7 +403,11 @@ public final class CapabilityChecker {
                 }
                 return;
             }
-            if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail").contains(runtime.operation())) {
+            if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail",
+                    "trace_frames", "trace_string",
+                    "error_to_string", "error_to_json",
+                    "error_to_messagepack", "error_to_proto_buf")
+                    .contains(runtime.operation())) {
                 throw new SecurityException(
                         "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
             }
