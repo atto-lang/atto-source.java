@@ -234,6 +234,19 @@ final class NominalFreeCallableOverloadTest {
     }
 
     @Test
+    void genericTypeParameterShadowingEnumCannotForgeDisjointness() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define enum A { Foo = 1 }
+                        define enum B { Foo = 1 }
+                        fnc pick<A>(A a): int { return 1; }
+                        fnc pick(B b): int { return 2; }
+                        """)));
+        assertTrue(error.getMessage().contains("already has arity 1"),
+                error::getMessage);
+    }
+
+    @Test
     void qualifiedCallsCannotReachPrivateModuleOverload() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
