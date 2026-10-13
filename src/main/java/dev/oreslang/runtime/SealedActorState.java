@@ -164,8 +164,15 @@ public final class SealedActorState {
         if (requiredBytes <= reservedPayloadBytes) return;
         ActorRuntime.MemoryReservation acquired =
                 memorySlice.reserveHeap(requiredBytes - reservedPayloadBytes);
-        reservations.add(acquired);
-        reservedPayloadBytes = requiredBytes;
+        try {
+            reservations.add(acquired);
+            reservedPayloadBytes = requiredBytes;
+        } catch (RuntimeException | Error failure) {
+            // Even ArrayList growth or metadata bookkeeping can fail after
+            // reserving actor memory. Never strand that quota reservation.
+            acquired.close();
+            throw failure;
+        }
     }
 
     public final class Access {
