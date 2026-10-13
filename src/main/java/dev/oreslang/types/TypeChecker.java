@@ -917,6 +917,58 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * Ordinary class construction is synchronous. Reject suspension anywhere
+     * in an eager initializer expression, including nested call operands,
+     * collection elements and branches. A stored lambda is not executed
+     * during construction; directly invoking a lambda initializer remains
+     * rejected until its body has a verified non-suspending effect bound.
+     */
+    private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
+        if (expr instanceof Ast.AwaitExpr
+                || expr instanceof Ast.ChannelOpExpr
+                || expr instanceof Ast.DynamicSelectExpr
+                || expr instanceof Ast.AssignExpr) return true;
+        if (expr instanceof Ast.RuntimeCallExpr call) {
+            if (call.operation().equals("cooperate") || call.operation().equals("spawn")) return true;
+            return call.arguments().stream().anyMatch(this::fieldInitializerMaySuspend);
+        }
+        if (expr instanceof Ast.BinaryExpr op) {
+            return fieldInitializerMaySuspend(op.left()) || fieldInitializerMaySuspend(op.right());
+        }
+        if (expr instanceof Ast.UnaryExpr op) return fieldInitializerMaySuspend(op.operand());
+        if (expr instanceof Ast.ConditionalExpr op) {
+            return fieldInitializerMaySuspend(op.condition())
+                    || fieldInitializerMaySuspend(op.whenTrue())
+                    || fieldInitializerMaySuspend(op.whenFalse());
+        }
+        if (expr instanceof Ast.CallExpr call) {
+            return call.callee() instanceof Ast.LambdaExpr
+                    || fieldInitializerMaySuspend(call.callee())
+                    || call.arguments().stream().anyMatch(this::fieldInitializerMaySuspend);
+        }
+        if (expr instanceof Ast.NewExpr created)
+            return created.arguments().stream().anyMatch(this::fieldInitializerMaySuspend);
+        if (expr instanceof Ast.MemberExpr member)
+            return fieldInitializerMaySuspend(member.receiver());
+        if (expr instanceof Ast.IndexExpr indexed)
+            return fieldInitializerMaySuspend(indexed.receiver())
+                    || fieldInitializerMaySuspend(indexed.index());
+        if (expr instanceof Ast.TypeTestExpr test) return fieldInitializerMaySuspend(test.value());
+        if (expr instanceof Ast.PatternTestExpr test) return fieldInitializerMaySuspend(test.value());
+        if (expr instanceof Ast.CastExpr cast) return fieldInitializerMaySuspend(cast.value());
+        if (expr instanceof Ast.SpreadExpr spread) return fieldInitializerMaySuspend(spread.expression());
+        if (expr instanceof Ast.ListExpr list)
+            return list.elements().stream().anyMatch(this::fieldInitializerMaySuspend);
+        if (expr instanceof Ast.TupleExpr tuple)
+            return tuple.elements().stream().anyMatch(this::fieldInitializerMaySuspend);
+        if (expr instanceof Ast.ObjectExpr object)
+            return object.fields().stream().anyMatch(field ->
+                    fieldInitializerMaySuspend(field.value()));
+        // Merely constructing a lambda does not execute its deferred body.
+        return false;
+    }
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
@@ -1005,6 +1057,13 @@ public final class TypeChecker {
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
+            if (klass.actorKind() == Ast.ActorKind.NONE
+                    && field.initializer() != null
+                    && fieldInitializerMaySuspend(field.initializer())) {
+                throw new IllegalArgumentException("class field initializer '"
+                        + klass.name() + "." + field.name()
+                        + "' cannot await, select, or suspend during object construction");
+            }
             // Parser checking is insufficient: generated/expanded ASTs must
             // not bypass the final/const member initialization contract.
             // Actor state has a distinct isolated initialization contract.
