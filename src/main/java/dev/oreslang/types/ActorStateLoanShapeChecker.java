@@ -3,6 +3,7 @@ package dev.oreslang.types;
 import dev.oreslang.ast.Ast;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -27,12 +28,31 @@ public final class ActorStateLoanShapeChecker {
 
     private ActorStateLoanShapeChecker() { }
 
+    /** Statically proven field effects for the restricted callback shape.
+     * This is only an input to future method-row checking, never guest
+     * execution authority or permission to mint a runtime state loan.
+     */
+    public record LoanEffects(Set<String> reads, Set<String> writes) {
+        public LoanEffects {
+            reads = Set.copyOf(reads);
+            writes = Set.copyOf(writes);
+        }
+    }
+
     public static void validate(Ast.ClassDecl actor, Ast.ActorStateAccessExpr access) {
+        analyze(actor, access);
+    }
+
+    public static LoanEffects analyze(Ast.ClassDecl actor, Ast.ActorStateAccessExpr access) {
         if (actor.actorKind() == Ast.ActorKind.NONE || actor.actorState() == null) {
             throw invalid("state callback requires a sealed actor state declaration");
         }
         Map<String, Ast.TypeRef> fields = new HashMap<>();
         for (Ast.FieldDecl field : actor.actorState().fields()) {
+            if (field.type() == null || !COPY_SCALARS.contains(field.type().name())
+                    || !field.type().arguments().isEmpty() || field.type().inferArguments()) {
+                throw invalid("sealed state field requires a proven Copy scalar: " + field.name());
+            }
             if (fields.putIfAbsent(field.name(), field.type()) != null) {
                 throw invalid("duplicate sealed actor state field: " + field.name());
             }
@@ -42,13 +62,15 @@ public final class ActorStateLoanShapeChecker {
             // The first scalar-only proof cannot inherit a closure, actor
             // message, native call, reference or other effect from actor
             // construction. There is no callback state loan at this point.
-            validateValue(field.initializer(), "", Map.of());
+            validateValue(field.initializer(), "", Map.of(), new HashSet<>());
         }
         String loan = access.callback().parameters().getFirst().name();
         Ast.LambdaExpr callback = access.callback();
+        Set<String> reads = new HashSet<>();
+        Set<String> writes = new HashSet<>();
         if (callback.expressionBody() != null) {
-            validateValue(callback.expressionBody(), loan, fields);
-            return;
+            validateValue(callback.expressionBody(), loan, fields, reads);
+            return new LoanEffects(reads, writes);
         }
         List<Ast.Stmt> body = callback.blockBody();
         if (body == null || body.isEmpty()) {
@@ -58,7 +80,7 @@ public final class ActorStateLoanShapeChecker {
             Ast.Stmt statement = body.get(i);
             if (statement instanceof Ast.ReturnStmt ret && i == body.size() - 1) {
                 if (ret.value() == null) throw invalid("state callback must return a scalar");
-                validateValue(ret.value(), loan, fields);
+                validateValue(ret.value(), loan, fields, reads);
             } else if (statement instanceof Ast.ExprStmt expr
                     && expr.expression() instanceof Ast.AssignExpr assign
                     && access.mode() == Ast.StateAccessMode.WRITE
@@ -69,7 +91,8 @@ public final class ActorStateLoanShapeChecker {
                     throw invalid("write must target the callback's own state field");
                 }
                 checkScalar(member.member(), fields);
-                validateValue(assign.value(), loan, fields);
+                writes.add(member.member());
+                validateValue(assign.value(), loan, fields, reads);
             } else if (access.mode() == Ast.StateAccessMode.READ
                     && statement instanceof Ast.ExprStmt) {
                 throw invalid("critical-read is read-only; mutation and side effects are forbidden");
@@ -77,10 +100,12 @@ public final class ActorStateLoanShapeChecker {
                 throw invalid("state callback supports only scoped writes and final scalar return");
             }
         }
+        return new LoanEffects(reads, writes);
     }
 
     private static void validateValue(Ast.Expr expression, String loan,
-                                      Map<String, Ast.TypeRef> fields) {
+                                      Map<String, Ast.TypeRef> fields,
+                                      Set<String> reads) {
         if (expression instanceof Ast.LiteralExpr literal) {
             if (!(literal.value() instanceof Number) && !(literal.value() instanceof Boolean)) {
                 throw invalid("state callback literal must be a Copy scalar");
@@ -91,17 +116,18 @@ public final class ActorStateLoanShapeChecker {
                 && member.receiver() instanceof Ast.NameExpr root
                 && root.name().equals(loan)) {
             checkScalar(member.member(), fields);
+            reads.add(member.member());
             return;
         }
         if (expression instanceof Ast.BinaryExpr binary
                 && PURE_BINARY.contains(binary.operator())) {
-            validateValue(binary.left(), loan, fields);
-            validateValue(binary.right(), loan, fields);
+            validateValue(binary.left(), loan, fields, reads);
+            validateValue(binary.right(), loan, fields, reads);
             return;
         }
         if (expression instanceof Ast.UnaryExpr unary
                 && PURE_UNARY.contains(unary.operator())) {
-            validateValue(unary.operand(), loan, fields);
+            validateValue(unary.operand(), loan, fields, reads);
             return;
         }
         if (expression instanceof Ast.NameExpr name && name.name().equals(loan)) {
