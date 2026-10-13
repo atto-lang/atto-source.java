@@ -159,7 +159,7 @@ public final class CriticalGate {
 
         @Override
         public void close() {
-            Ticket wake = null;
+            java.util.List<Ticket> wake;
             java.util.concurrent.CountDownLatch cancelledWaiter = null;
             synchronized (COORDINATOR) {
                 if (closed) return;
@@ -174,7 +174,7 @@ public final class CriticalGate {
                 if (waiters.remove(this)) {
                     WAITING_ON.remove(logicalOwner, CriticalGate.this);
                 }
-                wake = drainLocked().stream().findFirst().orElse(null);
+                wake = drainLocked();
             }
             if (cancelledWaiter != null) cancelledWaiter.countDown();
             if (!admitted.isDone()) {
