@@ -239,6 +239,29 @@ final class AlgebraicDataTypeMatchTest {
     }
 
     @Test
+    void combinedFiniteCoverageMakesLaterArmUnreachable() {
+        assertTrue(rejects("""
+                fnc dead(Option<bool> value): int {
+                  match value over
+                    on Some(true) -> { return 1; }
+                    on Some(false) -> { return 2; }
+                    on Some(_) -> { return 3; }
+                    on None -> { return 0; }
+                  end
+                }
+                """).getMessage().contains("unreachable match arm"));
+        assertTrue(rejects("""
+                fnc dead(bool value): int {
+                  match value over
+                    on true -> { return 1; }
+                    on false -> { return 0; }
+                    on _ -> { return 2; }
+                  end
+                }
+                """).getMessage().contains("unreachable match arm"));
+    }
+
+    @Test
     void guestRuntimeDistinguishesIdenticalPayloadShapes() throws Exception {
         String sourceText = """
                 define enum Signal as
