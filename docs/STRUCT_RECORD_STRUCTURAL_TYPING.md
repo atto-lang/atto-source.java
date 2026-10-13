@@ -185,3 +185,17 @@ restriction, not a claim that field reads on borrowed records are unsafe.
 The new and expanded tests are static regression fixtures only. Run an
 actual exact-head build, ownership tests, actor send/receive execution,
 Graal Native Image and LLVM parity before promoting PR #850.
+
+### Union admission is provenance-aware
+
+A nominal class value does not become a data-only record by entering a
+union containing `record{...}`. If a union is `record{foo: int} | string`,
+a matching class instance has no safe arm and is rejected. If the union
+is `Candidate | record{foo: int}`, the explicit nominal `Candidate` arm
+provides a sound alternative and remains usable, subject to normal
+non-sendability of class values at actor boundaries.
+
+For a union source, every possible variant must have a sound compatible
+target arm. Regression coverage verifies both rejection and admission;
+this avoids inadvertently turning nominal subtype identity into automatic
+structural ownership.
