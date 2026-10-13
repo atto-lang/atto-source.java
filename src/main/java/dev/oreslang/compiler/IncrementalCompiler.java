@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.VisibilityPolicy;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
@@ -169,6 +170,7 @@ public final class IncrementalCompiler {
                 Ast.ClassDecl resolved = null;
                 Map<String, Ast.TypeAliasDecl> classAliases = Map.of();
                 for (Ast.ModuleDecl module : source.modules()) {
+                    if (!VisibilityPolicy.permitsMemberExport(module)) continue;
                     for (Ast.Decl declaration : module.declarations()) {
                         if (declaration instanceof Ast.ClassDecl klass
                                 && klass.name().equals(name)
@@ -181,6 +183,7 @@ public final class IncrementalCompiler {
                             LinkedHashMap<String, Ast.TypeAliasDecl> moduleAliases = new LinkedHashMap<>();
                             for (Ast.Decl companion : module.declarations()) {
                                 if (companion instanceof Ast.TypeAliasDecl alias
+                                        && VisibilityPolicy.exports(module, alias.visibility())
                                         && moduleAliases.putIfAbsent(alias.name(), alias) != null) {
                                     throw new IllegalArgumentException(
                                             "duplicate type alias in linked class module: " + alias.name());
@@ -210,7 +213,11 @@ public final class IncrementalCompiler {
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
-            abi.append("module ").append(module.name()).append('\n');
+            // A private named module is not an exported API container.
+            // Its changes cannot invalidate an external ABI.
+            if (!VisibilityPolicy.permitsMemberExport(module)) continue;
+            abi.append(VisibilityPolicy.exportsModule(module) ? "pub module " : "module ")
+                    .append(module.name()).append('\n');
             for (Ast.Annotation annotation : module.annotations()) {
                 if (annotation.name().equals("AdheresTo")) {
                     abi.append(" module-annotation AdheresTo:");
