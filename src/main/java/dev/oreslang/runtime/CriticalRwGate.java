@@ -139,6 +139,7 @@ public final class CriticalRwGate implements AutoCloseable {
                 } else {
                     state = State.QUEUED;
                     waiters.addLast(this);
+                    WAITING_COUNT.incrementAndGet();
                 }
             }
             if (grantNow) admitted.completeFromRuntime(null);
@@ -198,7 +199,7 @@ public final class CriticalRwGate implements AutoCloseable {
                     }
                 }
                 if (former == State.QUEUED) {
-                    waiters.remove(this);
+                    if (waiters.remove(this)) WAITING_COUNT.decrementAndGet();
                     // A cancelled queued writer may have been the only
                     // barrier keeping later readers behind active readers.
                     // Re-evaluate the new FIFO head immediately, without
@@ -258,6 +259,7 @@ public final class CriticalRwGate implements AutoCloseable {
         if (waiters.peekFirst().mode == Mode.WRITE) {
             if (!readers.isEmpty()) return List.of();
             Ticket next = waiters.removeFirst();
+            WAITING_COUNT.decrementAndGet();
             grantLocked(next);
             return List.of(next);
         }
@@ -306,6 +308,7 @@ public final class CriticalRwGate implements AutoCloseable {
             revoke.addAll(waiters);
             readers.clear();
             writer = null;
+            WAITING_COUNT.addAndGet(-waiters.size());
             waiters.clear();
             synchronized (DOMAIN_COORDINATOR) {
                 for (Ticket ticket : revoke) {
