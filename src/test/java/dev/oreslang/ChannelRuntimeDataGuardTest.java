@@ -124,33 +124,26 @@ final class ChannelRuntimeDataGuardTest {
         rejects(withNull);
     }
     @Test
-    void guestChannelPolicyIsDistinctFromPrivilegedInternalMailboxChannel() {
+    void forgedPolicyCallbacksDoNotEstablishGuestChannelAuthority() {
         ChannelRuntime.Channel<Object> internal = new ChannelRuntime.Channel<>(1);
-        ChannelRuntime.Channel<Object> guest = new ChannelRuntime.Channel<>(
+        ChannelRuntime.Channel<Object> forged = new ChannelRuntime.Channel<>(
                 1, ChannelRuntimeDataGuardTest::check,
                 ChannelRuntimeDataGuardTest::snapshot);
+        Object interpreterSeal = new Object();
+        Object owner = new Object();
         assertFalse(internal.hasGuestDataPolicy());
-        assertTrue(guest.hasGuestDataPolicy());
-        assertThrows(SecurityException.class,
-                () -> checkGuestChannel(internal, "readch"));
-        assertDoesNotThrow(() -> checkGuestChannel(guest, "readch"));
-    }
+        assertTrue(forged.hasGuestDataPolicy());
+        assertFalse(internal.isAuthorizedGuestChannel(interpreterSeal, owner));
+        assertFalse(forged.isAuthorizedGuestChannel(interpreterSeal, owner));
 
-    private static void checkGuestChannel(
-            ChannelRuntime.Channel<?> channel, String operation) {
-        try {
-            Class<?> evaluator = Class.forName(
-                    "dev.oreslang.nodes.OresEvalRootNode$Evaluator");
-            Method method = evaluator.getDeclaredMethod(
-                    "requireGuestDataChannel", ChannelRuntime.Channel.class, String.class);
-            method.setAccessible(true);
-            method.invoke(null, channel, operation);
-        } catch (InvocationTargetException invocation) {
-            if (invocation.getCause() instanceof SecurityException denied) throw denied;
-            throw new AssertionError("unexpected guest-channel failure", invocation.getCause());
-        } catch (ReflectiveOperationException failure) {
-            throw new AssertionError("missing guest channel sealing gate", failure);
-        }
+        // A channel stamped for one execution owner cannot be reused by
+        // another interpreter context even when the seal matches.
+        ChannelRuntime.Channel<Object> stamped = new ChannelRuntime.Channel<>(
+                1, ChannelRuntimeDataGuardTest::check,
+                ChannelRuntimeDataGuardTest::snapshot, interpreterSeal, owner);
+        assertTrue(stamped.isAuthorizedGuestChannel(interpreterSeal, owner));
+        assertFalse(stamped.isAuthorizedGuestChannel(interpreterSeal, new Object()));
+        assertFalse(stamped.isAuthorizedGuestChannel(new Object(), owner));
     }
 
     @Test
