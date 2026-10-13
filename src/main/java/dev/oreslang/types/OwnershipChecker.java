@@ -2145,8 +2145,12 @@ public final class OwnershipChecker {
         defineImplicitArguments(closure, lambda.parameters());
         int previousLoopDepth = loopDepth;
         boolean previousDiscard = discardingSelectReturn;
+        Ast.ClassDecl previousInitializingClass = initializingClass;
         loopDepth = 0;
         discardingSelectReturn = false;
+        // Closures may execute after the class constructor returns; their
+        // bodies cannot write fixed slots through the ctor-only exception.
+        initializingClass = null;
         try {
             if (lambda.expressionBody() != null) {
                 // An expression body has return-value ownership semantics even
@@ -2163,6 +2167,7 @@ public final class OwnershipChecker {
         } finally {
             loopDepth = previousLoopDepth;
             discardingSelectReturn = previousDiscard;
+            initializingClass = previousInitializingClass;
             closure.close();
         }
         return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
