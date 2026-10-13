@@ -183,6 +183,66 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void pendingActorCompletionCannotParkWhileHoldingLiveMutexGuard() {
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                define actor Idle as
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val idle = spawn Idle();
+                  await idle.get_ready();
+                  val pending = idle.get_done();
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  await pending;
+                  guard.release();
+                  return;
+                }
+                """));
+        assertTrue(failure.getMessage().contains("MutexGuard"),
+                "a pending Future must not park with the lock held: " + failure.getMessage());
+    }
+
+    @Test
+    void settledActorCompletionIsAlsoRejectedByStaticNoYieldChecking() {
+        // Source ownership checking forbids await under a guard even when the
+        // Future is known to be settled at runtime. The runtime inline path
+        // remains relevant to host calls that have escaped source admission.
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                define actor Idle as
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val idle = spawn Idle();
+                  await idle.get_ready();
+                  idle.send("stop");
+                  await idle.get_done();
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  await idle.get_done();
+                  guard.release();
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """));
+        assertTrue(failure.getMessage().contains("MutexGuard"),
+                "static no-yield admission must reject even a settled await: "
+                        + failure.getMessage());
+    }
+
+    @Test
     void blockingChannelReadWriteRemainUsableAfterReleasingMutex()
             throws Exception {
         assertEquals("7", run("""
