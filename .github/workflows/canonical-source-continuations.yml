@@ -10,6 +10,8 @@ on:
       - "src/test/java/dev/oreslang/SourceContinuationSingleDeliveryTest.java"
       - "src/test/java/dev/oreslang/SourceInlineCriticalStateHandoffTest.java"
       - "src/test/java/dev/oreslang/WithUsingLoanSuspensionAuditTest.java"
+      - "src/test/java/dev/oreslang/SourceLoopSoftPreemptionTest.java"
+      - "src/test/java/dev/oreslang/GeneratorLanguageTest.java"
       - ".github/workflows/canonical-source-continuations.yml"
 
 permissions:
@@ -47,7 +49,7 @@ jobs:
       - name: Execute guest-source continuation and state-handoff regressions
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=SourceContinuationSingleDeliveryTest,SourceInlineCriticalStateHandoffTest,SourceCriticalActorStateTest,SourceLoopSoftPreemptionTest,WithUsingLoanSuspensionAuditTest,AsyncAwaitLanguageTest,AsyncChannelBoundaryTest \
+            -Dtest=SourceContinuationSingleDeliveryTest,SourceInlineCriticalStateHandoffTest,SourceCriticalActorStateTest,SourceLoopSoftPreemptionTest,WithUsingLoanSuspensionAuditTest,GeneratorLanguageTest,AsyncAwaitLanguageTest,AsyncChannelBoundaryTest \
             test
       - name: Execute full Maven regression suite
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
