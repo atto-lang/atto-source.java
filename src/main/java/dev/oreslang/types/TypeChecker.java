@@ -1553,6 +1553,10 @@ public final class TypeChecker {
             Type declared = declaredAhead == null
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
+            if (isMustUseVoidResult(actual) && !isMustUseVoidResult(declared)) {
+                throw new IllegalArgumentException(
+                        "must-use Result<void,E> cannot be erased by binding '" + binding.name() + "'");
+            }
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
@@ -1614,6 +1618,10 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
+            if (isMustUseVoidResult(actual) && !isMustUseVoidResult(expectedReturn)) {
+                throw new IllegalArgumentException(
+                        "must-use Result<void,E> cannot be erased by function return");
+            }
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
             return;
