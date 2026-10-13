@@ -896,6 +896,20 @@ public final class OresEvalRootNode extends RootNode {
                         || failure instanceof LinkageError;
             }
 
+            // Never allocate a suppressed-exception chain proportional to
+            // untrusted guest defers/cleanup failures. Keep a bounded sample
+            // while preserving the authoritative failure object and status.
+            private static final int MAX_CLEANUP_SUPPRESSED = 64;
+
+            private static void suppressCleanup(Throwable primary, Throwable secondary) {
+                if (primary == null || secondary == null || primary == secondary) return;
+                synchronized (primary) {
+                    if (primary.getSuppressed().length < MAX_CLEANUP_SUPPRESSED) {
+                        primary.addSuppressed(secondary);
+                    }
+                }
+            }
+
             /**
              * A terminal failure wins over ordinary catch/return/throw from
              * cleanup. Host-fatal errors retain higher priority. Guest catch
@@ -908,29 +922,19 @@ public final class OresEvalRootNode extends RootNode {
                 // linkage corruption or forced ThreadDeath from cleanup.
                 if (isHostFatal(pending.failure())) return pending;
                 if (isHostFatal(cleanup.failure())) {
-                    if (pending.failure() != null
-                            && pending.failure() != cleanup.failure()) {
-                        cleanup.failure().addSuppressed(pending.failure());
-                    }
+                    suppressCleanup(cleanup.failure(), pending.failure());
                     return cleanup;
                 }
                 if (pending.kind() == SourceFlowKind.TERMINAL) {
-                    if (cleanup.failure() != null && cleanup.failure() != pending.failure()) {
-                        pending.failure().addSuppressed(cleanup.failure());
-                    }
+                    suppressCleanup(pending.failure(), cleanup.failure());
                     return pending;
                 }
                 if (cleanup.kind() == SourceFlowKind.TERMINAL) {
-                    if (pending.failure() != null && pending.failure() != cleanup.failure()) {
-                        cleanup.failure().addSuppressed(pending.failure());
-                    }
+                    suppressCleanup(cleanup.failure(), pending.failure());
                     return cleanup;
                 }
                 if (cleanup.kind() == SourceFlowKind.NORMAL) return pending;
-                if (pending.failure() != null && cleanup.failure() != null
-                        && pending.failure() != cleanup.failure()) {
-                    cleanup.failure().addSuppressed(pending.failure());
-                }
+                suppressCleanup(cleanup.failure(), pending.failure());
                 return cleanup;
             }
         }
