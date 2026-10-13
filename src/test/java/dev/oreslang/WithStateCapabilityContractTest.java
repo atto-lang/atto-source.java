@@ -442,6 +442,38 @@ final class WithStateCapabilityContractTest {
         }
     }
 
+    @Test void actorStateReferenceDefaultsCannotCaptureExternalAliases() {
+        for (String initializer : new String[] {
+            "external",
+            "makeItems()",
+            "[external]",
+            "[makeItem()]"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = " + initializer + "; count: int = 0; } "
+                    + "get(): int with state.read { return self.handle_state(|s| -> { return s.count; }); } "
+                    + "end";
+            var denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(Parser.parse(source)), initializer);
+            assertTrue(denied.getMessage().contains("reference default requires verified owned"),
+                    denied::getMessage);
+        }
+    }
+
+    @Test void inlineLiteralActorStateDefaultsRemainAdmissible() {
+        for (String initializer : new String[] {
+            "[1, 2]",
+            "[[1, 2], [3, 4]]"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = " + initializer + "; count: int = 0; } "
+                    + "get(): int with state.read { return self.handle_state(|s| -> { return s.count; }); } "
+                    + "end";
+            assertDoesNotThrow(
+                    () -> ActorStateContract.verify(Parser.parse(source)), initializer);
+        }
+    }
+
     @Test void sealedCallbackEffectsFollowLoweringAndCannotBeForged() {
         Ast.Program p = Parser.parse(actor("with state.read",
                 "using state.read(|s| -> { return s.v; })"));
