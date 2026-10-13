@@ -291,6 +291,89 @@ final class ExclusiveAdtMatchSafetyTest {
     }
 
     @Test
+    void maximumOrderedGuardMatrixDoesNotRecurseOnCompletedGuards() throws Exception {
+        // 4095 guards that complete inline, then the 4096th fallback.
+        // A recursive callback chain can overflow the Java stack even if
+        // no source-level recursion exists.
+        StringBuilder source = new StringBuilder(
+                "pub async routine main(): void {\nmatch true over\n");
+        for (int i = 0; i < 4095; i++) {
+            source.append("on true when false -> { stdio.println(\"wrong\"); }\n");
+        }
+        source.append("on _ -> { stdio.println(\"tail\"); }\nend\nreturn;\n}");
+        String program = source.toString();
+        accepts(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source guest = Source.newBuilder(OresLanguage.ID,
+                program, "max-ordered-suspendable-guards.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(guest);
+        }
+        assertEquals("tail", output.toString(StandardCharsets.UTF_8).strip());
+    }
+
+    @Test
+    void maximumOrderedFailedPatternMatrixDoesNotRecurse() throws Exception {
+        // 4095 immediately rejected patterns must not create 4095 host
+        // frames before the final matching arm is reached.
+        StringBuilder source = new StringBuilder(
+                "pub async routine main(): void {\nmatch true over\n");
+        for (int i = 0; i < 4095; i++) {
+            source.append("on false when false -> { stdio.println(\"wrong\"); }\n");
+        }
+        source.append("on true -> { stdio.println(\"tail\"); }\nend\nreturn;\n}");
+        String program = source.toString();
+        accepts(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source guest = Source.newBuilder(OresLanguage.ID,
+                program, "max-ordered-suspendable-patterns.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(guest);
+        }
+        assertEquals("tail", output.toString(StandardCharsets.UTF_8).strip());
+    }
+
+    @Test
+    void synchronousAndSuspendableExclusiveMatchesProduceSameResults() throws Exception {
+        String matches = """
+                match true
+                    true -> { stdio.println("match"); }
+                    false -> { stdio.println("wrong"); }
+                end
+                match 5
+                    x when x < 0 -> { stdio.println("wrong"); }
+                    x when x >= 0 -> { stdio.println("guard"); }
+                    else -> { stdio.println("wrong"); }
+                end
+                match false
+                    true -> { stdio.println("wrong"); }
+                    else -> { stdio.println("fallback"); }
+                end
+                """;
+        String expected = "match\nguard\nfallback";
+        for (String declaration : new String[]{
+                "pub fnc main(): void {", "pub async routine main(): void {"}) {
+            String program = declaration + "\n" + matches + "\nreturn;\n}";
+            accepts(program);
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            Source guest = Source.newBuilder(OresLanguage.ID,
+                    program, "exclusive-sync-async-differential.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).out(output).build()) {
+                context.eval(guest);
+            }
+            assertEquals(expected,
+                    output.toString(StandardCharsets.UTF_8).strip()
+                            .replace("\r\n", "\n"), declaration);
+        }
+    }
+
+    @Test
     void exclusiveMatchesHaveAtMostOneFallbackArm() {
         String source = """
                 fnc classify(bool input): int {
