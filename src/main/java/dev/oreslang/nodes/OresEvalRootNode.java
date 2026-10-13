@@ -1446,6 +1446,9 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr expr,
                 Set<Object> seen) {
             if (expr == null) return false;
+            if (expr instanceof Ast.NamedArgumentExpr named) {
+                return expressionContainsPotentialSuspension(named.expression(), seen);
+            }
             if (expr instanceof Ast.AwaitExpr
                     || expr instanceof Ast.ChannelOpExpr channel
                         && channel.mode() == Ast.WaitMode.BLOCKING
