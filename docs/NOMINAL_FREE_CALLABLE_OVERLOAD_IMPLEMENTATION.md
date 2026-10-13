@@ -31,16 +31,23 @@ pub routine main(): void {
 - Static type-checking selects a unique declaration by primitive/enum
   signature before ordinary generic, parameter, effect and ownership checks.
   Unknown/generic/union static arguments require narrowing.
-- Java interpreter repeats the validated scalar/enum tag decision for
-  execution and validates variant construction at its boundary. It does not
-  compare member names, numeric wire tags or structural shapes.
+- Java/Graal frontend returns an immutable **identity-keyed source call
+  binding map**. OresLanguage passes that map to OresEvalRootNode, and the
+  evaluator executes only the already-selected declaration; it validates
+  runtime primitive/enum tags as a consistency check, never as a reason to
+  pick another target. Forged/stale enum case tags or payloads fail closed.
+- Unverified host/dynamic/imported nominal overload calls are rejected
+  because they lack a trusted static call binding and cross-file manifest.
+  Class/interface/trait method selectors are unchanged.
 
 ## Intentional blockers
 
-- The Java interpreter still mirrors the selection from runtime values:
-  native AOT, LLVM, Wasm and external imports must bind the statically chosen
-  target to one unambiguous compiled symbol. Do not characterize this as
-  machine-code static-link resolution or general constant-time native vtables.
+- Local Java execution now honors a compiler-provided source AST call
+  binding, but **LLVM, Native Image, Wasm and cross-file imports** still need
+  a canonical versioned symbol manifest with owner-qualified enum identities.
+  No evidence of native machine-code static-link dispatch is claimed.
+  A legacy evaluator constructor without compiler bindings rejects overloaded
+  calls rather than falling back to reflective runtime selection.
 - The tagged-enum branch currently accepts enums only at file root.
   Same-named enums in different files/modules do not yet have canonical
   **package/module-qualified** nominal IDs, import/export manifests or ABI
@@ -52,7 +59,11 @@ pub routine main(): void {
   need explicit desugaring and ABI verification first.
 - This subset uses Java's current erased primitive category model:
   `i8`/`i16`/`int` share the same tag. This is intentional and rejects
-  overloads that differ only by integer width.
+  overloads that differ only by integer width. Decimal/complex cannot yet
+  distinguish same-arity overloads because their static tags and runtime
+  representations are not proven equivalent. Each same-arity family is capped
+  at 256 declarations and 64 explicit arguments. Different scheduling/effect
+  envelopes (async, suspension, generator, trap, actor) are rejected.
 - No claim of passing CI is made until the exact source branch has run Java
   JDK 25 Maven and Native Image AOT/hybrid gates. LLVM's current native
   free-function AST supports restricted typed i64, not general enum values.
@@ -64,6 +75,8 @@ numeric values, 0-argument enum member syntax, constructor compatibility,
 root and module calls, mixed primitive/enum tags, typed variables, rejection
 of same-tag signatures, return-only overloads and generic overlaps.
 
-Further required: import/linker canonical enum ID, static resolved-symbol
-binding, mixed async/effect call preemption analysis, compiled-guest tests,
-sanitizer/native-image parity and ABI export versioning.
+Further required: import/linker canonical enum ID, a native compiled
+symbol selector, static slot binding for imported call sites, alias ABI rules,
+compiled-guest tests, sanitizer/native-image parity and ABI export versioning.
+A dedicated exact-blob LLVM selector-only proof is mirrored to a funded CI
+repository; this must **not** be treated as full LLVM guest execution.
