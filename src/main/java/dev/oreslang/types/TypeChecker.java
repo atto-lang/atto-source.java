@@ -1705,14 +1705,40 @@ public final class TypeChecker {
                                 typeOf(arm.value(), env, generics, self),
                                 element,
                                 "writech select value");
+                    } else if (arm.destructureKind() != null) {
+                        if (arm.destructureKind() == Ast.DestructureKind.SEQUENCE) {
+                            List<Type> members = sequenceDestructureTypes(
+                                    deref(element), arm.destructureBindings());
+                            for (int i = 0; i < arm.destructureBindings().size(); i++) {
+                                defineDestructureBinding(
+                                        armEnv, arm.destructureBindings().get(i),
+                                        members.get(i), generics, self);
+                            }
+                        } else {
+                            Set<String> selectedFields = new LinkedHashSet<>();
+                            for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                                if (!binding.rest()) selectedFields.add(binding.name());
+                            }
+                            for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                                Type projected = binding.rest()
+                                        ? objectDestructureRestType(deref(element), selectedFields)
+                                        : objectDestructureMemberType(deref(element), binding.name());
+                                defineDestructureBinding(
+                                        armEnv, binding, projected, generics, self);
+                            }
+                        }
                     } else if (arm.bindingName() != null) {
+                        Type bound = element;
+                        if (arm.bindingType() != null) {
+                            Type declared = resolve(arm.bindingType(), generics, self);
+                            bound = overlayReadonlyCapabilities(element, declared);
+                            requireAssignable(element, bound,
+                                    "select read binding '" + arm.bindingName() + "'");
+                        }
                         requireMutableReferentCompatible(
-                                element, arm.mutableReferent(),
+                                bound, arm.mutableReferent(),
                                 "select binding '" + arm.bindingName() + "'");
-                        armEnv.define(
-                                arm.bindingName(),
-                                element,
-                                arm.bindingKind());
+                        armEnv.define(arm.bindingName(), bound, arm.bindingKind());
                     }
                 }
                 if (selected.explicitDo()) {
