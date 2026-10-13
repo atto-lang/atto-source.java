@@ -41,6 +41,13 @@ public final class PipelineRunner {
         return controller.submit(generation, message);
     }
 
+    /** The engine must validate the expected case against its actual bound
+     * compiler-owned codec before it admits the initial DATA message. */
+    public CompletionStage<Object> sendExpected(Object message, String resultCase) {
+        return controller.submitExpected(generation, message,
+                Objects.requireNonNull(resultCase, "nominal result case"));
+    }
+
     /** Observe the engine-authenticated all-stage physical-DONE barrier. */
     public CompletionStage<Void> getDone() { return wholeDone; }
 }
