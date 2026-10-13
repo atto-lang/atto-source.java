@@ -72,6 +72,32 @@ final class CoreAssertTest {
         }
     }
 
+    @Test void callSiteTrapAfterCooperationPreservesSuccessAndAbsence() throws Exception {
+        assertEquals("truetrue", run("""
+            pub async fnc main(): void {
+                rt cooperate;
+                const success = trap Assert::equal_throws(10, 10);
+                const failure = trap Assert.equal_throws(10, 20);
+                stdio.stdout.write(success.is_some());
+                stdio.stdout.write(failure.is_none());
+                return;
+            }
+            """));
+    }
+
+    @Test void callSiteTrapAfterCooperationDoesNotMaskPanic() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+            pub async fnc main(): void {
+                rt cooperate;
+                const absent = trap Assert.equal_throws(10, 20);
+                const blocked = trap absent.unwrap();
+                stdio.stdout.write(blocked);
+                return;
+            }
+            """));
+        assertTrue(failure.getMessage().contains("Option::unwrap"), failure::toString);
+    }
+
     @Test void doubleColonDoesNotConfuseTypeAnnotationsOrTernary() throws Exception {
         assertEquals("true", run("""
             pub routine main(): void {
