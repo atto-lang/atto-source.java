@@ -989,6 +989,11 @@ public final class TypeChecker {
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
             Type fieldType = classFieldType(klass, field);
+            if (field.compileTimeRequired()) {
+                // Pure AST evaluation only. Never run guest methods, imports,
+                // type initializers, user-defined operators or host calls.
+                CompileTimeConstantEvaluator.evaluate(field.initializer());
+            }
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
                 Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
