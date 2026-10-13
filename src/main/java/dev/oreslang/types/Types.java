@@ -228,11 +228,35 @@ public final class Types {
         return numericWidening(from, to);
     }
 
-    /** Structural field obligations cannot be discharged by Unknown/Generic. */
+    /**
+     * An unproven whole value cannot establish a structural field contract,
+     * even if the obligation is inside a union or an owned generic carrier.
+     * This concerns *whole-value* Unknown/Generic inference only: ordinary
+     * opaque reads of proven fields remain legal.
+     */
     private static boolean containsRecordContract(Type type) {
         if (type instanceof Record) return true;
         if (type instanceof Union union) {
             return union.options().stream().anyMatch(Types::containsRecordContract);
+        }
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(Types::containsRecordContract);
+        }
+        if (type instanceof ListType list) {
+            return containsRecordContract(list.element());
+        }
+        if (type instanceof Named named) {
+            return named.arguments().stream().anyMatch(Types::containsRecordContract);
+        }
+        if (type instanceof Borrow loan) {
+            return containsRecordContract(loan.target());
+        }
+        if (type instanceof SelfType receiver) {
+            return containsRecordContract(receiver.bound());
+        }
+        if (type instanceof Function fn) {
+            return fn.parameters().stream().anyMatch(Types::containsRecordContract)
+                    || containsRecordContract(fn.result());
         }
         return false;
     }
