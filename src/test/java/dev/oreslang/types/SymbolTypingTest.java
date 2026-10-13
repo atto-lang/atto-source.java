@@ -57,7 +57,7 @@ class SymbolTypingTest {
                 Parser.parse("fnc identity<Symbol>(Symbol value) -> Symbol { return value; }")));
     }
 
-        @Test void historicalSymbolConstructorIsRejectedAtCompileTime() {
+    @Test void historicalSymbolConstructorIsRejectedAtCompileTime() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse(
                 "pub fnc bad() : Symbol { return new Symbol(\"ready\"); }")));
     }
