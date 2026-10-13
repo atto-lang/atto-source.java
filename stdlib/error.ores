@@ -42,6 +42,7 @@ pub define class Error implements CodedError, Serializable as
   pub val bool full_trace = true;
   pub val bool json_full = true;
   pub val String message = "";
+  pub val bool binary_full = true;
   pub let Array<String> stack = [];
 
   pub code(): int { return 0; }

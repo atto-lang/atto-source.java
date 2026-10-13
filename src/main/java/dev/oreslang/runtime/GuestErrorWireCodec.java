@@ -78,21 +78,27 @@ public final class GuestErrorWireCodec {
 
     /** Valid MessagePack v1 map: schema/code/name/message/stack. */
     public static List<Long> messagePack(String name, int code, String message, List<String> frames) {
+        return messagePack(name, code, message, frames, true);
+    }
+
+    public static List<Long> messagePack(String name, int code, String message, List<String> frames, boolean full) {
         validate(name, code, message, frames);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write(0x85);
+        out.write(full ? 0x85 : 0x83);
         writeMsgString(out, "schema");
         writeMsgInt(out, 1);
         writeMsgString(out, "code");
         writeMsgInt(out, code);
         writeMsgString(out, "name");
         writeMsgString(out, name);
-        writeMsgString(out, "message");
-        writeMsgString(out, message);
-        writeMsgString(out, "stack");
-        if (frames.size() <= 15) out.write(0x90 | frames.size());
-        else { out.write(0xdc); writeU16(out, frames.size()); }
-        for (String frame : frames) writeMsgString(out, frame);
+        if (full) {
+            writeMsgString(out, "message");
+            writeMsgString(out, message);
+            writeMsgString(out, "stack");
+            if (frames.size() <= 15) out.write(0x90 | frames.size());
+            else { out.write(0xdc); writeU16(out, frames.size()); }
+            for (String frame : frames) writeMsgString(out, frame);
+        }
         return unsignedBytes(out);
     }
 
@@ -123,13 +129,19 @@ public final class GuestErrorWireCodec {
 
     /** Wire-compatible with contracts/v1/guest-error.proto. */
     public static List<Long> protoBuf(String name, int code, String message, List<String> frames) {
+        return protoBuf(name, code, message, frames, true);
+    }
+
+    public static List<Long> protoBuf(String name, int code, String message, List<String> frames, boolean full) {
         validate(name, code, message, frames);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         writeVarint(out, 8); writeVarint(out, 1);  // schema=1, field 1
         writeVarint(out, 16); writeVarint(out, code); // code, field 2
         writeProtoString(out, 3, name);
-        writeProtoString(out, 4, message);
-        for (String frame : frames) writeProtoString(out, 5, frame);
+        if (full) {
+            writeProtoString(out, 4, message);
+            for (String frame : frames) writeProtoString(out, 5, frame);
+        }
         return unsignedBytes(out);
     }
 

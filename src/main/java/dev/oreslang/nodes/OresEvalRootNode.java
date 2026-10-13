@@ -5939,6 +5939,7 @@ public final class OresEvalRootNode extends RootNode {
                     || !object.fields.containsKey("full_trace")
                     || !object.fields.containsKey("json_full")
                     || !object.fields.containsKey("message")
+                    || !object.fields.containsKey("binary_full")
                     || !object.fields.containsKey("stack"))
                 throw new IllegalArgumentException("error codec requires a guest std/error value");
             Object codeValue = object.owner.invoke(object.owner.prepareBoundMethodInvocation(
@@ -5946,10 +5947,12 @@ public final class OresEvalRootNode extends RootNode {
             if (!(codeValue instanceof Number code)) throw new IllegalStateException("error code() must return int");
             Object fullTrace = object.fields.get("full_trace");
             Object jsonFull = object.fields.get("json_full");
+            Object binaryFull = object.fields.get("binary_full");
             Object message = object.fields.get("message");
             Object stack = object.fields.get("stack");
             if (!(fullTrace instanceof Boolean includeTrace)
                     || !(jsonFull instanceof Boolean includeJson)
+                    || !(binaryFull instanceof Boolean includeBinary)
                     || !(message instanceof String msg)
                     || !(stack instanceof List<?> frameList)
                     || frameList.stream().anyMatch(x -> !(x instanceof String)))
@@ -5960,8 +5963,8 @@ public final class OresEvalRootNode extends RootNode {
             return switch (operation) {
                 case "error_to_string" -> GuestErrorWireCodec.text(object.klass.name(), code.intValue(), msg, shown);
                 case "error_to_json" -> GuestErrorWireCodec.json(object.klass.name(), code.intValue(), msg, shown, includeJson);
-                case "error_to_messagepack" -> GuestErrorWireCodec.messagePack(object.klass.name(), code.intValue(), msg, shown);
-                case "error_to_proto_buf" -> GuestErrorWireCodec.protoBuf(object.klass.name(), code.intValue(), msg, shown);
+                case "error_to_messagepack" -> GuestErrorWireCodec.messagePack(object.klass.name(), code.intValue(), msg, shown, includeBinary);
+                case "error_to_proto_buf" -> GuestErrorWireCodec.protoBuf(object.klass.name(), code.intValue(), msg, shown, includeBinary);
                 default -> throw new IllegalArgumentException("unknown guest error encoding");
             };
         }
