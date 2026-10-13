@@ -1765,6 +1765,8 @@ final class MutexRuntimeTest {
                 var pending = contested.lockAsync();
                 assertTrue(hasQueuedWaiterRevocationAuthority(pending));
                 assertTrue(pending.cancel(false));
+                assertFalse(pending.cancel(false),
+                        "second cancel must not re-claim a terminal GuardFuture");
                 assertFalse(hasQueuedWaiterRevocationAuthority(pending),
                         "cancelled Future retained mutex and actor-domain authority");
             } catch (Throwable problem) {
