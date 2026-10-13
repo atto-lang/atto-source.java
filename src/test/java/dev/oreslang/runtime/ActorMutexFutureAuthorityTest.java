@@ -44,15 +44,17 @@ final class ActorMutexFutureAuthorityTest {
                     if ("queue".equals(message)) {
                         waitingDomain.set(ActorRuntime.currentExecutionDomain());
                         var stage = mutex.lockAsync();
-                        // Raw Java CompletionStage callbacks run on the producer
-                        // (here actor A's releasing carrier). They are HOST
-                        // callbacks, never actor B's authorized guest turn.
+                        // Raw CompletionStage callbacks are HOST work. They
+                        // must neither inherit actor A's releasing execution
+                        // authority nor run actor B's guest continuation.
                         stage.whenComplete((guard, completionError) -> {
                             try {
                                 assertNull(completionError);
-                                assertEquals(ownerDomain.get(),
-                                        ActorRuntime.currentExecutionDomain(),
-                                        "raw host callback unexpectedly ran as waiting actor B");
+                                assertNull(ActorRuntime.currentActorRuntime(),
+                                        "raw host callback inherited actor turn authority");
+                                assertTrue(Thread.currentThread().getName()
+                                                .startsWith("ores-shared-mutex-notifications-"),
+                                        "handoff completion ran on an actor carrier");
                                 assertThrows(OresMutex.WrongMutexDomainException.class,
                                         guard::release,
                                         "producer callback must not release B's guard");
