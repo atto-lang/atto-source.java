@@ -703,6 +703,26 @@ public final class TypeChecker {
                             throw new IllegalArgumentException("incompatible generic arity for method slot '"
                                     + klass.name() + "." + local.name() + "' with arity " + local.arity());
                         }
+                        // Named value argument labels are part of the inherited
+                        // source-call contract, even though the ABI selector
+                        // remains name + arity. A base-typed caller binds its
+                        // labels using the base declaration; a changed child
+                        // label would disagree with runtime virtual dispatch.
+                        for (int parameterIndex = 0; parameterIndex < local.parameters().size(); parameterIndex++) {
+                            String inheritedName = parentMethod.parameters().get(parameterIndex).name();
+                            String overridingName = local.parameters().get(parameterIndex).name();
+                            if (!inheritedName.equals(overridingName)) {
+                                throw new IllegalArgumentException(
+                                        "incompatible parameter label in inherited "
+                                                + (staticNamespace ? "static function" : "method")
+                                                + " slot '" + klass.name() + "." + local.name()
+                                                + "' at parameter " + (parameterIndex + 1)
+                                                + ": inherited '" + inheritedName
+                                                + "' from " + methodOriginLabel(origin)
+                                                + ", overriding '" + overridingName
+                                                + "'; named argument labels must remain stable");
+                            }
+                        }
                         // Dispatch selects the child's declaration, but inherited public
                         // contracts still advertise this slot to callers (including through
                         // a base-typed receiver). A private override would typecheck as
