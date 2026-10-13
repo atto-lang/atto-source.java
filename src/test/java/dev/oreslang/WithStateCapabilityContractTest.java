@@ -252,6 +252,41 @@ final class WithStateCapabilityContractTest {
         }
     }
 
+    @Test void referenceStateProjectionsCannotBeLaunderedThroughLocals() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { const alias = s.items; return s.count; })",
+            "using state.read(|s| -> { const alias = s.items; return s.count; })",
+            "self.handle_state(critical |s| -> { const alias = s.items; return s.count; })",
+            "using state.write(critical |s| -> { const alias = s.items; return s.count; })",
+            "self.handle_state(|s| -> { const wrapped = [s.items]; return s.count; })",
+            "using state.read(|s| -> { const wrapped = [s.items]; return s.count; })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; count: int = 0; } "
+                    + "get(): int with state.read, state.write { return "
+                    + callback + "; } end";
+            var denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(Parser.parse(source)), callback);
+            assertTrue(denied.getMessage().contains("reference alias"),
+                    denied::getMessage);
+        }
+    }
+
+    @Test void stateScalarSnapshotsMayUseLocalBindings() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { const snapshot = s.count; return snapshot; })",
+            "using state.read(|s| -> { const snapshot = s.count; return snapshot; })",
+            "self.handle_state(critical |s| -> { const snapshot = s.count; return snapshot; })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; count: int = 0; } "
+                    + "get(): int with state.read, state.write { return "
+                    + callback + "; } end";
+            assertDoesNotThrow(
+                    () -> ActorStateContract.verify(Parser.parse(source)), callback);
+        }
+    }
+
     @Test void sealedCallbackEffectsFollowLoweringAndCannotBeForged() {
         Ast.Program p = Parser.parse(actor("with state.read",
                 "using state.read(|s| -> { return s.v; })"));
