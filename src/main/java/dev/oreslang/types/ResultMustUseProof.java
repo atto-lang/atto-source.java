@@ -59,6 +59,14 @@ final class ResultMustUseProof {
         }
         if (statement instanceof Ast.MatchStmt matched) {
             boolean consumes = state == PENDING && isVariable(matched.subject(), variable);
+            // A wildcard-only match is a disguised discard of the Result.
+            // Stage one requires explicit Ok and Err arms (and the ordinary
+            // type checker independently proves all cases are exhaustive).
+            if (consumes && !explicitResultArms(matched.arms())) {
+                throw new IllegalArgumentException(
+                        "must-use Result '" + variable
+                                + "' requires explicit Ok and Err match arms");
+            }
             int incoming = consumes ? HANDLED : state;
             int exits = 0;
             // The normal type checker first proves exhaustiveness and arm types.
@@ -96,6 +104,20 @@ final class ResultMustUseProof {
                             + "' crosses control flow without a handling proof");
         }
         return state;
+    }
+
+    private static boolean explicitResultArms(List<Ast.MatchArm> arms) {
+        boolean ok = false;
+        boolean err = false;
+        for (Ast.MatchArm arm : arms) {
+            if (arm.guard() != null
+                    || !(arm.pattern() instanceof Ast.ConstructorPattern constructor)) {
+                continue;
+            }
+            if (constructor.constructor().equals("Ok")) ok = true;
+            if (constructor.constructor().equals("Err")) err = true;
+        }
+        return ok && err;
     }
 
     private static boolean shadowsResult(Ast.Stmt statement, String variable) {
