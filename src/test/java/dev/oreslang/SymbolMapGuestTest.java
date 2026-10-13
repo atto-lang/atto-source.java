@@ -18,7 +18,7 @@ final class SymbolMapGuestTest {
     void guestSymbolKeyedMapAndLegacyStructRunWithoutAliasing() throws Exception {
         String program = """
                 pub fnc main(): void {
-                  let m: Map<Symbol, int> = new Map<Symbol, int>();
+                  val m: Map<Symbol, int> = new Map<Symbol, int>();
                   m[#foo] = 42;
                   let answer: int = m[#foo];
                   let object = infer struct{foo: 1, status: #ready};
@@ -47,7 +47,7 @@ final class SymbolMapGuestTest {
                   let b: Symbol = Symbol.process("ready");
                   let c: Symbol = #'ready foo';
                   let d: Symbol = #"ready foo";
-                  let m: Map<Symbol, int> = new Map<Symbol, int>();
+                  val m: Map<Symbol, int> = new Map<Symbol, int>();
                   m[c] = 7;
                   if a == b && c == d then
                     stdio.stdout.write(m[d]);
@@ -72,7 +72,7 @@ final class SymbolMapGuestTest {
     void guestStringAndSymbolKeysRequireExplicitUnionMap() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
                 fnc accept(): void {
-                  let m: Map<String | Symbol, int> = new Map<String | Symbol, int>();
+                  val m: Map<String | Symbol, int> = new Map<String | Symbol, int>();
                   m["foo"] = 1;
                   m[#foo] = 2;
                   return;
@@ -80,7 +80,7 @@ final class SymbolMapGuestTest {
                 """)));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse("""
                 fnc reject(): void {
-                  let m: Map<String, int> = new Map<String, int>();
+                  val m: Map<String, int> = new Map<String, int>();
                   m[#foo] = 2;
                   return;
                 }
