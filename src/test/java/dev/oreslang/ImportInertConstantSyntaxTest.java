@@ -1,10 +1,13 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresSymbol;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -59,7 +62,7 @@ final class ImportInertConstantSyntaxTest {
                 end
                 """);
         Ast.FieldDecl fileConstant = (Ast.FieldDecl) program.modules().stream()
-                .filter(candidate -> candidate.name().equals("__file__"))
+                .filter(candidate -> candidate.name().equals(Parser.ROOT_MODULE))
                 .findFirst().orElse(program.modules().getLast())
                 .declarations().getFirst();
         assertEquals(Ast.Visibility.PRIVATE, fileConstant.visibility());
@@ -100,5 +103,86 @@ final class ImportInertConstantSyntaxTest {
                 () -> Parser.parse("define pub val int x = 5;"));
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("define pub let int x = 5;"));
+    }
+
+    @Test
+    void moduleHeaderVisibilityIsExplicitAndPrivateByDefault() {
+        Ast.Program program = Parser.parse("""
+                define pub module PublicData as
+                    pub const int answer = 42;
+                    const int hidden = 7;
+                end
+                define module PrivateData as
+                    pub const int misleadingExport = 1;
+                end
+                """);
+        assertEquals(Ast.Visibility.PUBLIC, program.modules().get(0).visibility());
+        assertEquals(Ast.Visibility.PRIVATE, program.modules().get(1).visibility());
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(program));
+    }
+
+    @Test
+    void namedImportsMustRejectPrivateModulesEvenWithPublicMembers() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("lib.ores", """
+                define module Hidden as
+                    pub const int answer = 42;
+                end
+                """);
+        sources.put("main.ores", """
+                import module Hidden from "./lib.ores";
+                pub fnc main(): void { return; }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(sources));
+        sources.put("lib.ores", """
+                define pub module Hidden as
+                    pub const int answer = 42;
+                end
+                """);
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(sources));
+    }
+
+    @Test
+    void publicConstantValueChangesInvalidateImportersButPrivateChangesDoNot() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> sources = new LinkedHashMap<>();
+        sources.put("lib.ores", """
+                define pub module Data as
+                    pub const int answer = 42;
+                    const int internal = 10;
+                end
+                """);
+        sources.put("main.ores", """
+                import module Data from "./lib.ores";
+                pub fnc main(): void { return; }
+                """);
+
+        var original = compiler.compile(sources);
+        assertTrue(original.rebuilt("lib.ores"));
+        assertTrue(original.rebuilt("main.ores"));
+        assertTrue(compiler.compile(sources).reused("main.ores"));
+
+        sources.put("lib.ores", """
+                define pub module Data as
+                    pub const int answer = 43;
+                    const int internal = 10;
+                end
+                """);
+        var updated = compiler.compile(sources);
+        assertTrue(updated.rebuilt("lib.ores"));
+        assertTrue(updated.rebuilt("main.ores"),
+                "an inlined public constant changes ABI even if type remains int");
+
+        sources.put("lib.ores", """
+                define pub module Data as
+                    pub const int answer = 43;
+                    const int internal = 11;
+                end
+                """);
+        var privateOnly = compiler.compile(sources);
+        assertTrue(privateOnly.rebuilt("lib.ores"));
+        assertTrue(privateOnly.reused("main.ores"),
+                "private constant changes must not invalidate external ABI");
     }
 }
