@@ -17,6 +17,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class SymbolKeyFoundationTest {
+    // Test-only host probes; untrusted actor behavior factories must not capture host state.
+    private static volatile CountDownLatch symbolDelivery;
+    private static final AtomicReference<Object> symbolObserved = new AtomicReference<>();
     @Test
     void canonicalNameAndKindDetermineIdentityWithoutPermanentInterning() {
         OresSymbol first = OresSymbol.process("café");
@@ -71,14 +74,14 @@ final class SymbolKeyFoundationTest {
 
     @Test
     void onlyPublicCoreSymbolsCrossUntrustedMailboxesIncludingNestedMaps() throws Exception {
-        CountDownLatch delivered = new CountDownLatch(1);
-        AtomicReference<Object> observed = new AtomicReference<>();
+        symbolDelivery = new CountDownLatch(1);
+        symbolObserved.set(null);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             ActorRuntime.ActorRef<Object> untrusted = runtime.spawnPrivate(
                     IsolatePolicy.strictFaas(),
                     factoryContext -> (message, turn) -> {
-                        observed.set(message);
-                        delivered.countDown();
+                        symbolObserved.set(message);
+                        symbolDelivery.countDown();
                         turn.self().stop();
                     });
             assertThrows(SecurityException.class, () ->
@@ -86,8 +89,8 @@ final class SymbolKeyFoundationTest {
             assertThrows(SecurityException.class, () ->
                     untrusted.send(Map.of("nested", List.of(OresSymbol.process("secret")))));
             untrusted.send(Map.of(OresSymbol.process("ready"), "ok"));
-            assertTrue(delivered.await(2, TimeUnit.SECONDS));
-            Map<?, ?> value = assertInstanceOf(Map.class, observed.get());
+            assertTrue(symbolDelivery.await(2, TimeUnit.SECONDS));
+            Map<?, ?> value = assertInstanceOf(Map.class, symbolObserved.get());
             assertEquals("ok", value.get(OresSymbol.process("ready")));
         }
     }
