@@ -464,14 +464,18 @@ public final class OresEvalRootNode extends RootNode {
                         dev.oreslang.types.ActorStateContract.keySchema(schemaField);
                 LinkedHashMap<String, String> typedKeys = new LinkedHashMap<>();
                 schemaType.recordMembers().forEach((name, type) -> {
-                    if (type.name().equals("List")
+                    // Oreslang supports both List<int> and the canonical
+                    // List[int] sequence-shape spelling. The latter parses
+                    // as a $shape$ TypeRef, not an ordinary type argument.
+                    boolean flatIntegerList = type.name().equals("List")
                             && type.arguments().size() == 1
-                            && type.arguments().getFirst().name().equals("int")
-                            && type.arguments().getFirst().arguments().isEmpty()) {
-                        typedKeys.put(name, "List[int]");
-                    } else {
-                        typedKeys.put(name, type.name());
-                    }
+                            && (type.arguments().getFirst().name().equals("int")
+                                && type.arguments().getFirst().arguments().isEmpty()
+                                || type.arguments().getFirst().isSequenceShape()
+                                && type.arguments().getFirst().arguments().size() == 1
+                                && type.arguments().getFirst().arguments().getFirst().name().equals("int")
+                                && type.arguments().getFirst().arguments().getFirst().arguments().isEmpty());
+                    typedKeys.put(name, flatIntegerList ? "List[int]" : type.name());
                 });
                 LinkedHashMap<String, Object> initial = new LinkedHashMap<>();
                 if (schemaField.initializer() instanceof Ast.ObjectExpr defaults) {
