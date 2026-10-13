@@ -248,6 +248,29 @@ final class TypedOverloadResolverTest {
     }
 
     @Test
+    void structuralParametersCannotBeMistakenForNominalEnumDiscriminants() {
+        Ast.Program program = dev.oreslang.parser.Parser.parse("""
+                fnc classify(structural Color value): int {
+                  return 1;
+                }
+
+                define class Container as
+                  pub classify(structural Color value): int {
+                    return 2;
+                  }
+                end
+                """);
+        var declarations = program.modules().getFirst().declarations();
+        var fn = (Ast.FunctionDecl) declarations.get(0);
+        var cls = (Ast.ClassDecl) declarations.get(1);
+        Map<String, String> spoof = Map.of("Color", "__root__.Color");
+        assertThrows(IllegalArgumentException.class, () ->
+                Signature.ofFunction("__root__", fn, spoof));
+        assertThrows(IllegalArgumentException.class, () ->
+                Signature.ofMethod("__root__", cls, cls.methods().getFirst(), spoof));
+    }
+
+    @Test
     void malformedUtf16CannotCollideUnderUtf8SymbolEncoding() {
         assertThrows(IllegalArgumentException.class, () ->
                 new Signature(Domain.MODULE, "module." + Character.toString((char) 0xD800), List.of()));
