@@ -82,6 +82,60 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void rejectConstructorDispatchOnUnpublishedSelf() {
+        String source = """
+                define class Unsafe as
+                  val int value;
+                  constructor(int input) {
+                    self.publish();
+                    self.value = input;
+                  }
+                  pub publish(): void {
+                    stdio.stdout.write(self.value);
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains(
+                "constructor cannot invoke methods on partially initialized self"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectConstructorSelfCopyAndShare() {
+        for (String operation : java.util.List.of("copy", "share", "take")) {
+            String source = """
+                    define class Unsafe as
+                      val int value;
+                      constructor(int input) {
+                        const leaked = rt %s self;
+                        self.value = input;
+                      }
+                    end
+                    """.formatted(operation);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(source)));
+            assertTrue(error.getMessage().contains(
+                    "constructor cannot apply runtime operation to partially initialized self"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void rejectInitializerCaptureOfUnpublishedSelf() {
+        String source = """
+                define class Unsafe as
+                  final int first: 1;
+                  final int second: self.first + 1;
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+    }
+
+    @Test
     void retainPlainScalarInitializer() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
                     define class Safe as
