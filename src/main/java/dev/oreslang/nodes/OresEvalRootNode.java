@@ -5527,14 +5527,38 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             String name = type.name();
-            if (name.equals("Tuple") && !type.arguments().isEmpty()) {
+            if (Set.of("Tuple", "FixedArray", "FixedList").contains(name)) {
+                List<Ast.TypeRef> positional = type.arguments().stream()
+                        .filter(argument -> !argument.isNamedParameter()).toList();
+                ArrayList<Ast.TypeRef> expected = new ArrayList<>();
+                if (positional.size() == 1 && positional.getFirst().isSequenceShape()) {
+                    for (Ast.TypeRef item : positional.getFirst().arguments()) {
+                        if (item.isRepeatMany()) {
+                            throw new IllegalArgumentException(
+                                    where + " finite tuple cannot have unbounded repeat");
+                        }
+                        if (item.isRepeatExact()) {
+                            long count = item.repeatExactCount();
+                            if (count > 1_000_000) {
+                                throw new IllegalArgumentException(where + " tuple too large");
+                            }
+                            for (long i = 0; i < count; i++) {
+                                expected.add(item.arguments().getFirst());
+                            }
+                        } else {
+                            expected.add(item);
+                        }
+                    }
+                } else {
+                    expected.addAll(positional);
+                }
                 List<?> items = asSequence(value);
-                if (items.size() != type.arguments().size()) {
+                if (items.size() != expected.size()) {
                     throw new IllegalArgumentException(where + " tuple length "
-                            + items.size() + " differs from declared " + type.arguments().size());
+                            + items.size() + " differs from declared " + expected.size());
                 }
                 for (int i = 0; i < items.size(); i++) {
-                    checkChannelTypeShape(type.arguments().get(i), items.get(i),
+                    checkChannelTypeShape(expected.get(i), items.get(i),
                             activeAliases, where + "[" + i + "]");
                 }
                 return;
@@ -5557,17 +5581,33 @@ public final class OresEvalRootNode extends RootNode {
                         activeAliases, where + (result.ok() ? ".Ok" : ".Err"));
                 return;
             }
-            if (Set.of("Array", "List", "Vector", "Slice",
-                    "FixedArray", "FixedList").contains(name)
-                    && type.arguments().size() == 1) {
-                if (!(value instanceof List<?> || value instanceof Object[])) {
-                    throw new IllegalArgumentException(where + " requires an array/list");
+            if (Set.of("Array", "List", "Vector", "Slice").contains(name)) {
+                List<Ast.TypeRef> positional = type.arguments().stream()
+                        .filter(argument -> !argument.isNamedParameter()).toList();
+                if (positional.isEmpty()) {
+                    throw new IllegalArgumentException(where + " collection type has no elements");
                 }
-                List<?> items = asSequence(value);
-                for (int i = 0; i < items.size(); i++) {
-                    checkChannelTypeShape(type.arguments().getFirst(), items.get(i),
-                            activeAliases, where + "[" + i + "]");
+                Ast.TypeRef element = positional.getFirst();
+                if (element.isSequenceShape()) {
+                    if (element.arguments().size() != 1) {
+                        throw new IllegalArgumentException(where + " invalid array element shape");
+                    }
+                    element = element.arguments().getFirst();
+                    if (element.isRepeatMany()) {
+                        element = Ast.TypeRef.union(element.arguments());
+                    }
                 }
+                int rank = positional.size();
+                for (Ast.TypeRef metadata : type.arguments()) {
+                    if (metadata.isNamedParameter() && metadata.namedParameterName().equals("rank")
+                            && metadata.namedParameterValue().isIntLiteral()) {
+                        rank = Math.toIntExact(metadata.namedParameterValue().intLiteralValue());
+                    }
+                }
+                if (rank < 1 || rank > 128) {
+                    throw new IllegalArgumentException(where + " invalid collection rank");
+                }
+                checkChannelListShape(element, value, rank, activeAliases, where);
                 return;
             }
             boolean valid = switch (name) {
@@ -5585,6 +5625,24 @@ public final class OresEvalRootNode extends RootNode {
             if (!valid) {
                 throw new IllegalArgumentException(where + " expected declared data type "
                         + type + ", got " + value.getClass().getSimpleName());
+            }
+        }
+
+        private void checkChannelListShape(
+                Ast.TypeRef element, Object value, int rank,
+                Set<String> activeAliases, String where) {
+            if (!(value instanceof List<?> || value instanceof Object[])) {
+                throw new IllegalArgumentException(where + " requires array/list data");
+            }
+            List<?> elements = asSequence(value);
+            for (int i = 0; i < elements.size(); i++) {
+                if (rank == 1) {
+                    checkChannelTypeShape(element, elements.get(i),
+                            activeAliases, where + "[" + i + "]");
+                } else {
+                    checkChannelListShape(element, elements.get(i), rank - 1,
+                            activeAliases, where + "[" + i + "]");
+                }
             }
         }
 
