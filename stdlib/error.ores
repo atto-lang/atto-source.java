@@ -47,7 +47,7 @@ pub define class Error implements CodedError, Serializable as
 
   pub code(): int { return 0; }
 
-  pub capture_stack(): Array<String> {
+  pub capture_stack(mut self)(): Array<String> {
     self.stack = rt trace_frames();
     return self.stack;
   }
