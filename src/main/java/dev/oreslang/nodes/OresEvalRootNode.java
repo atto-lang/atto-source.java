@@ -8358,6 +8358,31 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return true;
             }
+            if (pattern instanceof Ast.RecordPattern projection) {
+                if (!(value instanceof Map<?, ?> record)
+                        || !(value instanceof ReadonlyRecordValue
+                            || value.getClass() == LinkedHashMap.class
+                            || value.getClass().getName().startsWith("java.util.ImmutableCollections$"))) {
+                    return false;
+                }
+                // Stage all required fields before introducing any bound name.
+                // A failed field projection can never partially bind an arm.
+                LinkedHashMap<String, Object> staged = new LinkedHashMap<>();
+                for (String field : projection.fields()) {
+                    if (!record.containsKey(field)) return false;
+                    Object fieldValue = record.get(field);
+                    if (fieldValue == UNINITIALIZED_FIELD) return false;
+                    staged.put(field, fieldValue);
+                }
+                for (Map.Entry<String, Object> field : staged.entrySet()) {
+                    if (bindings.containsKey(field.getKey())) {
+                        throw new IllegalStateException(
+                                "pattern binds '" + field.getKey() + "' more than once");
+                    }
+                }
+                bindings.putAll(staged);
+                return true;
+            }
             if (pattern instanceof Ast.TuplePattern tuplePattern) {
                 if (!(value instanceof List<?> tuple)
                         || tuple.size() != tuplePattern.elements().size()) return false;
