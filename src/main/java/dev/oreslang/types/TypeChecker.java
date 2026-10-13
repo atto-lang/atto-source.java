@@ -1424,6 +1424,11 @@ public final class TypeChecker {
                 "module binding '" + field.name() + "'");
         if (field.type() != null) {
             Type expected = resolve(field.type(), Set.of(), null);
+            if (containsMustUseVoidResult(expected)) {
+                throw new IllegalArgumentException(
+                        "must-use Result<void,E> cannot be declared as module binding '"
+                                + field.name() + "' before global obligation tracking is implemented");
+            }
             requireReadonlyCapabilityPreserved(
                     actual,
                     expected,
