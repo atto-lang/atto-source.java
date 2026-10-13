@@ -250,4 +250,66 @@ final class OresFuturesTest {
 
         assertEquals(7, race.join());
     }
+    @Test
+    void repeatedTimedGetOnPendingDoneDetachesWaiters() throws Exception {
+        OresFuture<Void> done = new OresFuture<>(() -> false, () -> { });
+        for (int attempt = 0; attempt < 250; attempt++) {
+            assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> done.get(1, java.util.concurrent.TimeUnit.MILLISECONDS));
+            assertEquals(0, done.pendingRuntimeWaiterCount(),
+                    "timed-out host waits must detach the callback");
+            assertFalse(done.isDone(), "host polling must not forge DONE");
+        }
+        assertTrue(done.completeFromRuntime(null));
+        assertNull(done.get(1, java.util.concurrent.TimeUnit.SECONDS));
+        assertEquals(0, done.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void interruptedGetDetachesButDoesNotCancelFuture() throws Exception {
+        OresFuture<Integer> pending = new OresFuture<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> result =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread waiter = Thread.ofVirtual().start(() -> {
+            try {
+                pending.get();
+                result.set(new AssertionError("get unexpectedly completed"));
+            } catch (Throwable failure) {
+                result.set(failure);
+            }
+        });
+        try {
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (pending.pendingRuntimeWaiterCount() == 0 && waiter.isAlive()) {
+                assertTrue(System.nanoTime() < deadline, "host get did not register");
+                Thread.yield();
+            }
+            assertEquals(1, pending.pendingRuntimeWaiterCount());
+        } finally {
+            waiter.interrupt();
+            waiter.join(5_000);
+        }
+        assertFalse(waiter.isAlive());
+        assertInstanceOf(InterruptedException.class, result.get());
+        assertEquals(0, pending.pendingRuntimeWaiterCount());
+        assertFalse(pending.isDone(), "host interruption must not cancel the producer");
+        assertTrue(pending.completeFromRuntime(42));
+        assertEquals(42, pending.get(1, java.util.concurrent.TimeUnit.SECONDS));
+    }
+
+    @Test
+    void racingTimedGetAndCompletionNeverRetainWaiters() throws Exception {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            OresFuture<Integer> pending = new OresFuture<>();
+            Thread completer = Thread.ofVirtual().start(() -> pending.completeFromRuntime(9));
+            try {
+                assertEquals(9, pending.get(2, java.util.concurrent.TimeUnit.SECONDS));
+            } finally {
+                completer.join(5_000);
+            }
+            assertEquals(0, pending.pendingRuntimeWaiterCount(),
+                    "registration/settlement race must not leak host callbacks");
+        }
+    }
+
 }
