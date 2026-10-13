@@ -19,7 +19,7 @@ final class SymbolMatchPatternTest {
     void matchArmsParseToCanonicalNominalSymbolIdentity() {
         Ast.Program p = Parser.parse("""
                 fnc classify(Symbol value): int {
-                    match value over
+                    do match value over
                         on #connected -> { return 1; }
                         on #'hello world' -> { return 2; }
                         on _ -> { return 3; }
@@ -40,7 +40,7 @@ final class SymbolMatchPatternTest {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                     fnc invalid(Symbol state): int {
-                        match state over
+                        do match state over
                             on #connected -> { return 1; }
                         end
                     }
@@ -53,7 +53,7 @@ final class SymbolMatchPatternTest {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                     fnc invalid(Symbol state): int {
-                        match state over
+                        do match state over
                             on #ready -> { return 1; }
                             on #ready -> { return 2; }
                             on _ -> { return 3; }
@@ -69,7 +69,7 @@ final class SymbolMatchPatternTest {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                     fnc invalid(String state): int {
-                        match state over
+                        do match state over
                             on #ready -> { return 1; }
                             on _ -> { return 2; }
                         end
@@ -82,7 +82,7 @@ final class SymbolMatchPatternTest {
     void symbolArmsAndSwitchCasesAgreeAtRuntime() throws Exception {
         String program = """
                 fnc matchSymbol(Symbol state): int {
-                    match state over
+                    do match state over
                         on #ready -> { return 10; }
                         on #'two words' -> { return 20; }
                         on _ -> { return 30; }
@@ -90,7 +90,7 @@ final class SymbolMatchPatternTest {
                 }
 
                 fnc switchSymbol(Symbol state): int {
-                    switch state
+                    do switch state
                         case #ready -> { return 40; }
                         case #'two words' -> { return 50; }
                         default -> { return 60; }
@@ -120,11 +120,53 @@ final class SymbolMatchPatternTest {
     }
 
     @Test
+    void explicitReturnAndDoDispatchAreRequired() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc invalid(Symbol v): int {
+                    match v over
+                        on #ready -> { return 1; }
+                        on _ -> { return 0; }
+                    end
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc invalid(Symbol v): int {
+                    switch v
+                        case #ready -> { return 1; }
+                        default -> { return 0; }
+                    end
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc invalid(Any ch): void {
+                    select {
+                        default: { return; }
+                    }
+                }
+                """));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc status(Symbol v): int {
+                    return match v over
+                        on #ready -> { return 1; }
+                        on _ -> { return 2; }
+                    end
+                }
+                fnc code(Symbol v): int {
+                    return switch v
+                        case #ready -> { return 3; }
+                        default -> { return 4; }
+                    end
+                }
+                """)));
+    }
+
+    @Test
     void duplicateSwitchSymbolCaseRejected() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                     fnc invalid(Symbol state): int {
-                        switch state
+                        do switch state
                             case #ready -> { return 1; }
                             case #ready -> { return 2; }
                             default -> { return 3; }
