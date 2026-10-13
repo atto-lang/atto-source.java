@@ -4355,10 +4355,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object indexValue(Object receiver, Object index) {
             if (receiver instanceof Map<?, ?> map) {
-                if (!(index instanceof String key)) {
+                if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(
-                            "struct/map key must be a string");
+                            "indexed map key must be a String or Symbol");
                 }
+                Object key = index;
                 if (!map.containsKey(key)) {
                     throw new IllegalArgumentException(
                             "unknown struct/map key " + key);
@@ -6224,9 +6225,10 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
                 if (receiver instanceof Map<?, ?> map) {
-                    if (!(index instanceof String key)) {
-                        throw new IllegalArgumentException("struct/map key must be a string");
+                    if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
+                        throw new IllegalArgumentException("indexed map key must be a String or Symbol");
                     }
+                    Object key = index;
                     if (!map.containsKey(key)) {
                         throw new IllegalArgumentException("unknown struct/map key " + key);
                     }
@@ -8160,6 +8162,7 @@ public final class OresEvalRootNode extends RootNode {
                     || name.equals("decimal")) return value instanceof Float || value instanceof Double;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
+            if (name.equals("Symbol")) return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
@@ -8273,6 +8276,12 @@ public final class OresEvalRootNode extends RootNode {
             if (left == right) return true;
             if (left == null || right == null) return false;
 
+            if (left instanceof dev.oreslang.runtime.OresSymbol
+                    || right instanceof dev.oreslang.runtime.OresSymbol) {
+                return left instanceof dev.oreslang.runtime.OresSymbol
+                        && right instanceof dev.oreslang.runtime.OresSymbol
+                        && left.equals(right);
+            }
             if (left instanceof ActorRuntime.ActorId && right instanceof ActorRuntime.ActorId) {
                 return left.equals(right);
             }
@@ -8297,6 +8306,12 @@ public final class OresEvalRootNode extends RootNode {
             if (left == right) return true;
             if (left == null || right == null) return false;
 
+            if (left instanceof dev.oreslang.runtime.OresSymbol
+                    || right instanceof dev.oreslang.runtime.OresSymbol) {
+                return left instanceof dev.oreslang.runtime.OresSymbol
+                        && right instanceof dev.oreslang.runtime.OresSymbol
+                        && left.equals(right);
+            }
             if (left instanceof Number a && right instanceof Number b) {
                 return numericValueEquals(a, b);
             }
