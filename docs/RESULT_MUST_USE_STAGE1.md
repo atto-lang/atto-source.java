@@ -24,6 +24,9 @@ ownership/escape/liveness parity and not LLVM guest Result execution.
   rather than allowing false handling of the unrelated inner value.
 - Direct binding/return erasure from `Result<void,E>` to an unrelated
   destination type fails even if a dynamic type would otherwise accept it.
+- Rebinding `Result<void,E>` storage is currently rejected, even after
+  extraction: every write would create a new obligation and needs an SSA/CFG
+  per-version proof before it can safely be allowed.
 
 ## Deliberate limitations
 
