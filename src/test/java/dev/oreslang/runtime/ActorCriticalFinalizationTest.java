@@ -91,12 +91,36 @@ final class ActorCriticalFinalizationTest {
                 var queuedReader = state.gate.newTicket(CriticalRwGate.Mode.READ);
                 queuedReader.enterAsync();
                 assertFalse(queuedReader.isHeld());
-                actor.stop();
-                assertEquals(0, revocations.get(),
-                        "STOP revoked a permit before the active guest turn unwound");
-                assertTrue(currentWriter.get().isHeld());
-                assertFalse(queuedReader.isHeld());
-                finishGuest.countDown();
+                // Host STOP is deliberately synchronous: it must not return
+                // before finalization. Drive it on a separate host thread while
+                // this test still owns the latch that holds guest execution.
+                CountDownLatch stopStarted = new CountDownLatch(1);
+                AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+                Thread stopCaller = Thread.ofPlatform().name("critical-stop-host").start(() -> {
+                    stopStarted.countDown();
+                    try {
+                        actor.stop();
+                    } catch (Throwable failure) {
+                        stopFailure.set(failure);
+                    }
+                });
+                try {
+                    assertTrue(stopStarted.await(5, TimeUnit.SECONDS));
+                    long requestedBy = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                    while (actor.isAlive() && stopCaller.isAlive()
+                            && System.nanoTime() < requestedBy) Thread.yield();
+                    assertFalse(actor.isAlive(), "host STOP must publish the actor stop fence");
+                    assertEquals(0, revocations.get(),
+                            "STOP revoked a permit before the active guest turn unwound");
+                    assertTrue(currentWriter.get().isHeld());
+                    assertFalse(queuedReader.isHeld());
+                } finally {
+                    // Never deadlock this host test even if a STOP assertion fails.
+                    finishGuest.countDown();
+                }
+                stopCaller.join(TimeUnit.SECONDS.toMillis(5));
+                assertFalse(stopCaller.isAlive(), "host STOP failed to finish after guest unwind");
+                assertNull(stopFailure.get(), "host STOP should finalize after guest unwind");
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
                 assertEquals(1, revocations.get(), "gate must revoke exactly once at finalization");
                 assertFalse(queuedReader.isHeld(), "stale reader admitted after actor terminated");
