@@ -115,6 +115,32 @@ final class StructuralOwnershipBoundaryIntegrationTest {
     }
 
     @Test
+    void taggedOptionNeedsARealActorTransportCodec() {
+        String source = """
+                actor fnc deliver(Option<int> option): void { return; }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(error.getMessage().contains("canonical actor-safe tagged-value codec"),
+                error.getMessage());
+    }
+
+    @Test
+    void taggedResultCannotHideInNestedMailboxRecord() {
+        String source = """
+                actor fnc deliver(record{outcome: Result<int, string>} message): void {
+                    return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(error.getMessage().contains("canonical actor-safe tagged-value codec"),
+                error.getMessage());
+    }
+
+    @Test
     void scalarActorIdentityRemainsSendable() {
         String source = """
                 actor fnc dispatch(ActorId target): ActorId { return target; }
