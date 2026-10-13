@@ -7471,7 +7471,8 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object exportAny(String name) {
             Ast.ModuleDecl module = modules.get(name);
-            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) return new ModuleFacade(this, module);
+            if (module != null && !module.name().equals(Parser.ROOT_MODULE)
+                    && module.visibility() == Ast.Visibility.PUBLIC) return new ModuleFacade(this, module);
             Ast.ClassDecl klass = findClass(name);
             if (klass != null && klass.visibility() == Ast.Visibility.PUBLIC) {
                 return new ClassFacade(this, klass);
@@ -7497,6 +7498,8 @@ public final class OresEvalRootNode extends RootNode {
                 return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
             }
             for (Ast.ModuleDecl candidate : program.modules()) {
+                if (!candidate.name().equals(Parser.ROOT_MODULE)
+                        && candidate.visibility() != Ast.Visibility.PUBLIC) continue;
                 for (Ast.Decl decl : candidate.declarations()) {
                     if (decl instanceof Ast.FieldDecl field
                             && field.visibility() == Ast.Visibility.PUBLIC
