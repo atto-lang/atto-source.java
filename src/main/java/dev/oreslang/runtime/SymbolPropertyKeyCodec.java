@@ -99,24 +99,45 @@ public final class SymbolPropertyKeyCodec {
                 : OresSymbol.stable(text);
     }
 
+    /** Scope identity is resolved by the trusted receiver, not guest source. */
+    public record AdmissionScope(String tenant, String endpoint, String protocol) {
+        public AdmissionScope {
+            if (tenant == null || tenant.isBlank() || endpoint == null || endpoint.isBlank()
+                    || protocol == null || protocol.isBlank()) {
+                throw new IllegalArgumentException("untrusted Symbol admission requires tenant, endpoint and protocol");
+            }
+        }
+    }
+
     /**
-     * Default fail-closed ingress for an untrusted actor. An explicit
-     * destination-scoped export allowlist may add identities, but there is no
-     * mutable process-global "public" bit and decoding never interns.
+     * Default fail-closed untrusted ingress. Userland exports are indexed by
+     * the exact receiver (tenant, endpoint, protocol), never a global public
+     * flag or an unscoped set. The runtime must supply the authentic receiving
+     * scope and a trusted, immutable manifest snapshot; source code must not
+     * construct its own authority scope.
      */
-    public static Object decodeForUntrusted(byte[] input, Set<OresSymbol> scopedExports) {
-        Objects.requireNonNull(scopedExports, "destination-scoped Symbol exports");
+    public static Object decodeForUntrusted(
+            byte[] input,
+            AdmissionScope receivingScope,
+            java.util.Map<AdmissionScope, Set<OresSymbol>> scopedExports) {
+        Objects.requireNonNull(receivingScope, "receiving scope");
+        Objects.requireNonNull(scopedExports, "scoped export manifest");
         Object key = decode(input);
-        if (key instanceof OresSymbol symbol
-                && !symbol.publicToUntrustedCoreV1()
-                && !scopedExports.contains(symbol)) {
-            throw new SecurityException("Symbol key is not visible to untrusted actor");
+        if (key instanceof OresSymbol symbol && !symbol.publicToUntrustedCoreV1()) {
+            Set<OresSymbol> exported = scopedExports.getOrDefault(receivingScope, Set.of());
+            if (exported == null || !exported.contains(symbol)) {
+                throw new SecurityException("Symbol key is not exported to recipient scope");
+            }
         }
         return key;
     }
 
     public static Object decodeForUntrusted(byte[] input) {
-        return decodeForUntrusted(input, Set.of());
+        Object key = decode(input);
+        if (key instanceof OresSymbol symbol && !symbol.publicToUntrustedCoreV1()) {
+            throw new SecurityException("Symbol key is not visible to untrusted actor");
+        }
+        return key;
     }
 
     /** Reject duplicate logical keys after decoding, including NFC aliases. */
