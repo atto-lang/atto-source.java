@@ -3293,6 +3293,13 @@ public final class TypeChecker {
                 ResolvedField resolvedField = fields.get(i);
                 Ast.FieldDecl field = resolvedField.field();
                 if (i < created.arguments().size()) {
+                    // A synthesized positional constructor must not silently
+                    // replace a declaration-initialized fixed storage slot.
+                    if (field.initializer() != null
+                            && field.bindingKind() != Ast.BindingKind.LET) {
+                        throw new IllegalArgumentException("positional construction cannot override initialized final class field '"
+                                + resolvedField.owner().name() + "." + field.name() + "'");
+                    }
                     Type fieldPattern = classFieldType(resolvedField.owner(), field);
                     Type expected = substituteGenerics(
                             fieldPattern,
@@ -5722,6 +5729,14 @@ public final class TypeChecker {
             }
             for (int i = 0; i < arguments.size(); i++) {
                 ResolvedField resolvedField = fields.get(i);
+                // Generic constructor inference is also a construction
+                // admission path; reject fixed-slot overrides before inference.
+                Ast.FieldDecl field = resolvedField.field();
+                if (field.initializer() != null
+                        && field.bindingKind() != Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException("positional construction cannot override initialized final class field '"
+                            + resolvedField.owner().name() + "." + field.name() + "'");
+                }
                 Type fieldPattern = resolve(
                         resolvedField.field().type(),
                         Set.copyOf(resolvedField.owner().genericParameters()),
