@@ -93,6 +93,18 @@ final class ResultMustUseProofTest {
     }
 
     @Test
+    void resultCannotBeOverwrittenAfterEarlierHandling() {
+        rejects("""
+                fnc bad(): void {
+                  let Result<void, String> result = Ok();
+                  result.unwrap();
+                  result = Ok();
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void nameShadowingCannotDischargeOuterResult() {
         rejects("""
                 fnc bad(bool flag): void {
