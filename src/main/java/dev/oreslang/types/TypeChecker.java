@@ -5181,7 +5181,7 @@ public final class TypeChecker {
             for (Ast.TypeRef option : ref.arguments()) requireRuntimeReifiableType(option, operator);
             return;
         }
-        if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
+        if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isIntersection() || ref.isStringLiteral()
                 || ref.name().equals("$infer$") || ref.name().equals("self")
                 || ref.name().equals("Fnc") || ref.name().equals("Function")) {
             throw new IllegalArgumentException(
@@ -7075,6 +7075,10 @@ public final class TypeChecker {
         if (ref.isUnion()) {
             return Types.unionOf(ref.arguments().stream().map(option -> resolve(option, generics, self, allowNullMarker)).toList());
         }
+        if (ref.isIntersection()) {
+            return Types.intersectOf(ref.arguments().stream()
+                    .map(part -> resolve(part, generics, self, allowNullMarker)).toList());
+        }
         if (ref.isTupleType()) {
             Map<String, Ast.TypeRef> metadata = namedTypeParameters(ref);
             validateCollectionMetadata("Tuple", metadata);
@@ -7403,9 +7407,14 @@ public final class TypeChecker {
     }
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {
+        // Read-only views must not acquire mutation authority via aliases.
+        if (actual.readOnly() && !expected.readOnly()) return false;
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
             Type candidate = actual.members().get(required.getKey());
             if (candidate == null || !assignable(candidate, required.getValue())) return false;
+            // Writable structural slots must be invariant under both nominal
+            // inheritance and recursive generic-aware assignability.
+            if (!expected.readOnly() && !assignable(required.getValue(), candidate)) return false;
         }
         return true;
     }
