@@ -525,7 +525,7 @@ public final class Parser {
             }
             // Legacy 'fnc name' and explicit 'method name' both describe instance
             // methods. The AST's isStatic flag, not the spelling, controls binding.
-            methods.add(parseMethod(annotations, mods));
+            methods.add(parseMethod(annotations, mods, isAbstract));
         }
         consume(
                 classTerminator,
@@ -905,6 +905,11 @@ public final class Parser {
     }
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
+        return parseMethod(annotations, mods, false);
+    }
+
+    private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods,
+                                       boolean enclosingAbstractClass) {
         CallableStructural structural = normalizeCallableStructural(annotations, mods.structural);
         annotations = structural.annotations();
         String name = parseMethodName();
@@ -954,12 +959,23 @@ public final class Parser {
         }
 
         Ast.TypeRef returnType = parseReturnType(annotations);
+        // An abstract class may declare required slots as `name(args): Type;`.
+        // Such signatures are implicitly public and abstract unless visibility
+        // was explicitly specified. Their identity is still name + arity only.
+        // Outside abstract classes, a stray semicolon is never a method body.
+        boolean implicitAbstract = check(SEMICOLON) && !mods.isAbstract && enclosingAbstractClass;
+        if (check(SEMICOLON) && !mods.isAbstract && !enclosingAbstractClass) {
+            throw error(peek(), "signature-only method '" + name
+                    + "' requires an abstract class or explicit 'abstract' modifier");
+        }
         List<Ast.Stmt> body;
-        if (mods.isAbstract) {
+        if (mods.isAbstract || implicitAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else body = parseBlock();
-        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async, mods.suspends, structural.enabled(),
+        Ast.Visibility visibility = implicitAbstract && !mods.visibilitySeen
+                ? Ast.Visibility.PUBLIC : mods.visibility;
+        return new Ast.MethodDecl(name, visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body);
     }
 
@@ -1645,7 +1661,11 @@ public final class Parser {
             return new Ast.ContinueStmt();
         }
         if (match(WHILE)) {
-            Ast.Expr condition = check(LPAREN) ? parseParenthesizedWhileCondition() : parseCondition();
+            // Route the while backedge through the existing source-task
+            // ForStmt trampoline: one continuation and one budget mechanism.
+            Ast.Expr condition = check(LPAREN)
+                    ? parseParenthesizedWhileCondition()
+                    : parseCondition();
             match(SEMICOLON);
             return new Ast.ForStmt(null, condition, null, parseLoopBody());
         }
@@ -1658,9 +1678,7 @@ public final class Parser {
             return new Ast.LoopStmt(parseLoopBody());
         }
         if (match(FOR)) {
-            if (check(LBRACE)) {
-                return new Ast.LoopStmt(parseLoopBody());
-            }
+            if (check(LBRACE)) return new Ast.LoopStmt(parseLoopBody());
             boolean asyncIteration = match(AWAIT);
             return parseFor(asyncIteration);
         }
@@ -2824,7 +2842,22 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnary() {
-        if (match(BANG, TILDE, MINUS, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
+        // Signed i64's negative endpoint requires magnitude 2^63, which
+        // cannot be parsed as a positive Java long. Treat exactly that
+        // token sequence as a single negative literal, without broadening
+        // positive literal admission or accepting malformed separators.
+        if (match(MINUS)) {
+            if (check(INT)) {
+                String literal = peek().lexeme();
+                if (!literal.endsWith("_") && !literal.contains("__")
+                        && literal.replace("_", "").equals("9223372036854775808")) {
+                    advance();
+                    return new Ast.LiteralExpr(Long.MIN_VALUE);
+                }
+            }
+            return new Ast.UnaryExpr("-", parseUnary());
+        }
+        if (match(BANG, TILDE, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
             boolean mutable = match(MUT);
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
@@ -2896,10 +2929,10 @@ public final class Parser {
         }
 
         if (!name.equals("copy") && !name.equals("take")
-                && !name.equals("borrow") && !name.equals("share")) {
+                && !name.equals("borrow") && !name.equals("share") && !name.equals("fail")) {
             throw error(operation,
                     "unknown rt operation '" + name
-                            + "'; supported operations are cooperate, copy, take, borrow, and share");
+                            + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
         // Mutable borrows use the same ownership checks as the legacy spelling.
@@ -3014,7 +3047,8 @@ public final class Parser {
         Token token = peek();
         if (token.type() == IDENT
                 || isReservedCallableName(token.type())
-                || isContextualStatementCallableName(token.type())) {
+                || isContextualStatementCallableName(token.type())
+                || token.type() == TRUE || token.type() == FALSE) {
             advance();
             return token.lexeme();
         }

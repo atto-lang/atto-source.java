@@ -174,8 +174,8 @@ statement       = binding_decl
                 | select_stmt
                 | defer_stmt
                 | for_stmt
-                | loop_stmt
                 | while_stmt
+                | loop_stmt
                 | expression stmt_terminator ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
@@ -184,7 +184,7 @@ block_stmt      = "block" block ;
 break_stmt      = "break" stmt_terminator ;
 continue_stmt   = "continue" stmt_terminator ;
 loop_stmt       = "loop" loop_body | "for" block ;
-while_stmt      = "while" ( condition | "(" condition ")" ) [ ";" ] loop_body ;
+while_stmt      = "while" ( "(" condition ")" | condition ) [ ";" ] loop_body ;
 
 if_stmt         = "if" condition
                   ( block
