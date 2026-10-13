@@ -309,6 +309,37 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void constructorCannotCreateBorrowAliasToPartiallyInitializedSelf() {
+        String unary = """
+                define class Unsafe as
+                  val int age;
+                  constructor(int age) {
+                    const alias = &self;
+                    self.age = age;
+                  }
+                end
+                """;
+        IllegalArgumentException unaryFailure = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(unary)));
+        assertTrue(unaryFailure.getMessage().contains(
+                "constructor cannot borrow partially initialized self"));
+
+        String runtimeIntrinsic = """
+                define class Unsafe as
+                  val int age;
+                  constructor(int age) {
+                    const alias = rt borrow self;
+                    self.age = age;
+                  }
+                end
+                """;
+        IllegalArgumentException runtimeFailure = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(runtimeIntrinsic)));
+        assertTrue(runtimeFailure.getMessage().contains(
+                "constructor cannot borrow partially initialized self"));
+    }
+
+    @Test
     void constructorCannotLogOrBorrowPartiallyInitializedSelf() {
         String logger = """
                 define class Unsafe as
