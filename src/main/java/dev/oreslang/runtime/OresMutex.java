@@ -426,9 +426,15 @@ public final class OresMutex {
 
         private void rejectBlockingActorAcquisition() {
             requireActorAccess();
-            if (ActorRuntime.inActorExecution()) {
+            // A regular OresScheduler turn is just as nonblocking as an actor
+            // mailbox turn. Even a currently free Semaphore cannot grant
+            // permission to use its blocking acquisition API on a carrier:
+            // another task may win the permit between observation and acquire.
+            if (ActorRuntime.inActorExecution()
+                    || OresScheduler.current() != null
+                    || OresScheduler.isSchedulerCarrierThread()) {
                 throw new WrongMutexDomainException(
-                        "blocking SharedMutex.lock()/lock_for()/with_lock() is forbidden during actor execution; use try_lock() or await lock_async()");
+                        "blocking SharedMutex.lock()/lock_for()/with_lock() is forbidden during actor execution or on scheduler carriers; use try_lock() or await lock_async()");
             }
         }
 
@@ -671,8 +677,9 @@ public final class OresMutex {
         public Optional<Guard<T>> lockFor(Duration timeout) {
             Objects.requireNonNull(timeout, "timeout");
             if (timeout.isNegative()) throw new IllegalArgumentException("timeout must not be negative");
-            rejectBlockingActorAcquisition();
+            // A zero deadline is a poll, not a blocking acquisition.
             if (timeout.isZero()) return tryLock();
+            rejectBlockingActorAcquisition();
             Object ownerDomain = reserveDomain(true);
             if (ownerDomain == null) return Optional.empty();
             try {
