@@ -1901,14 +1901,12 @@ public final class OresEvalRootNode extends RootNode {
                                             }
                                         }
                                     }
-                                    continuation.accept(
-                                            t,
-                                            SourceFlow.normal());
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(
-                                            t,
-                                            SourceFlow.throwing(failure2));
+                                     } catch (RuntimeException | Error failure2) {
+                                    continuation.accept(t, SourceFlow.throwing(failure2));
+                                    return;
                                 }
+                                // Never publish while the destructuring catch is active.
+                                continuation.accept(t, SourceFlow.normal());
                             });
                     return;
                 }
@@ -3174,22 +3172,14 @@ public final class OresEvalRootNode extends RootNode {
                                                         null,
                                                         failure2);
                                             } else {
+                                                Object result;
                                                 try {
-                                                    Object result =
-                                                            binary(
-                                                                    binary.operator(),
-                                                                    left,
-                                                                    right);
-                                                    continuation.accept(
-                                                            t2,
-                                                            result,
-                                                            null);
+                                                    result = binary(binary.operator(), left, right);
                                                 } catch (RuntimeException | Error failure3) {
-                                                    continuation.accept(
-                                                            t2,
-                                                            null,
-                                                            failure3);
+                                                    continuation.accept(t2, null, failure3);
+                                                    return;
                                                 }
+                                                continuation.accept(t2, result, null);
                                             }
                                         });
                             });
@@ -3265,34 +3255,26 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Object result;
+                                Throwable castFailure = null;
                                 try {
-                                    boolean matches =
-                                            oresTypeMatches(
-                                                    value,
-                                                    cast.targetType());
-                                    if (cast.mode()
-                                            == Ast.CastMode.OPTIONAL) {
-                                        continuation.accept(
-                                                t,
-                                                new OptionValue(
-                                                        matches,
-                                                        matches ? value : null),
-                                                null);
+                                    boolean matches = oresTypeMatches(value, cast.targetType());
+                                    if (cast.mode() == Ast.CastMode.OPTIONAL) {
+                                        result = new OptionValue(matches, matches ? value : null);
                                     } else if (!matches) {
-                                        continuation.accept(
-                                                t,
-                                                null,
-                                                new OresCastError(
-                                                        "cannot cast runtime type "
-                                                                + oresRuntimeTypeName(value)
-                                                                + " to "
-                                                                + cast.targetType().name()));
+                                        result = null;
+                                        castFailure = new OresCastError(
+                                                "cannot cast runtime type "
+                                                        + oresRuntimeTypeName(value)
+                                                        + " to " + cast.targetType().name());
                                     } else {
-                                        continuation.accept(t, value, null);
+                                        result = value;
                                     }
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                continuation.accept(t, result, castFailure);
                             });
                     return;
                 }
@@ -3312,17 +3294,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Object result;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            member(
-                                                    receiver,
-                                                    member.member(),
-                                                    env),
-                                            null);
+                                    result = member(receiver, member.member(), env);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                continuation.accept(t, result, null);
                             });
                     return;
                 }
@@ -3349,19 +3328,14 @@ public final class OresEvalRootNode extends RootNode {
                                                         failure2);
                                                 return;
                                             }
+                                            Object result;
                                             try {
-                                                continuation.accept(
-                                                        t2,
-                                                        indexValue(
-                                                                receiver,
-                                                                key),
-                                                        null);
+                                                result = indexValue(receiver, key);
                                             } catch (RuntimeException | Error failure3) {
-                                                continuation.accept(
-                                                        t2,
-                                                        null,
-                                                        failure3);
+                                                continuation.accept(t2, null, failure3);
+                                                return;
                                             }
+                                            continuation.accept(t2, result, null);
                                         });
                             });
                     return;
@@ -3377,17 +3351,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Object result;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            assignEvaluated(
-                                                    assignment.target(),
-                                                    value,
-                                                    env),
-                                            null);
+                                    result = assignEvaluated(assignment.target(), value, env);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                continuation.accept(t, result, null);
                             });
                     return;
                 }
@@ -3411,17 +3382,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Object result;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            instantiateEvaluated(
-                                                    created,
-                                                    values,
-                                                    env),
-                                            null);
+                                    result = instantiateEvaluated(created, values, env);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                continuation.accept(t, result, null);
                             });
                     return;
                 }
