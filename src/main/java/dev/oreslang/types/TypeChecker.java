@@ -1283,6 +1283,46 @@ public final class TypeChecker {
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
+            validateInterfaceParameterLabels(klass, iface, new LinkedHashSet<>());
+        }
+    }
+
+    /**
+     * Structural assignability does not encode parameter names in a function
+     * shape, but a statically named call against an interface does. Enforce
+     * stable labels on the implementing method, including inherited contracts,
+     * independently of generic/type assignability.
+     */
+    private void validateInterfaceParameterLabels(
+            Ast.ClassDecl klass, Ast.InterfaceDecl iface, Set<Ast.InterfaceDecl> seen) {
+        if (!seen.add(iface)) return;
+        try {
+            for (Ast.InterfaceMember member : iface.members()) {
+                if (!(member instanceof Ast.InterfaceFunctionDecl contract)) continue;
+                Ast.MethodDecl implementation = findMethodsByName(
+                        klass, contract.name(), new LinkedHashSet<>()).stream()
+                        .filter(method -> method.arity() == contract.parameters().size())
+                        .findFirst().orElse(null);
+                if (implementation == null) continue; // Ordinary conformance reports missing methods.
+                for (int i = 0; i < contract.parameters().size(); i++) {
+                    String expectedLabel = contract.parameters().get(i).name();
+                    String actualLabel = implementation.parameters().get(i).name();
+                    if (!expectedLabel.equals(actualLabel)) {
+                        throw new IllegalArgumentException(
+                                "incompatible parameter label implementing interface '"
+                                        + iface.name() + "' on class '" + klass.name()
+                                        + "' method '" + contract.name() + "' at parameter " + (i + 1)
+                                        + ": contract '" + expectedLabel + "', implementation '"
+                                        + actualLabel + "'");
+                    }
+                }
+            }
+            for (Ast.TypeRef parentRef : iface.parents()) {
+                Ast.InterfaceDecl parent = findInterface(parentRef.name());
+                if (parent != null) validateInterfaceParameterLabels(klass, parent, seen);
+            }
+        } finally {
+            seen.remove(iface);
         }
     }
 
@@ -2884,6 +2924,10 @@ public final class TypeChecker {
             }
             if (call.typeArgumentsPresent()) {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
+            }
+            if (NamedCallBinder.hasNamed(call.arguments())) {
+                throw new IllegalArgumentException(
+                        "named arguments require a statically declared callable with parameter labels");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
