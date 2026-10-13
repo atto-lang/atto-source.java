@@ -2709,6 +2709,12 @@ public final class Parser {
 
         if (check(IDENT)) {
             String name = advance().lexeme();
+            // Nominal sum cases are scoped to their enum. Preserve the
+            // qualified identity (Expr.Literal) rather than erasing it into
+            // just Literal; otherwise distinct enums could collide.
+            while (match(DOT)) {
+                name += "." + consume(IDENT, "expected constructor name after '.'").lexeme();
+            }
             if (match(LPAREN)) {
                 List<Ast.Pattern> args = new ArrayList<>();
                 if (!check(RPAREN)) {
