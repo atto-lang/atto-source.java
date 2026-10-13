@@ -266,6 +266,32 @@ final class ImportInertConstantSyntaxTest {
     }
 
     @Test
+    void shortCircuitCannotHideUnknownOrMutableReferences() {
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("define pub const bool safe = false && missingConstant;"));
+        assertTrue(missing.getMessage().contains("unknown compile-time constant"),
+                missing::toString);
+        IllegalArgumentException mutable = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                    pub val bool dynamic = true;
+                    define pub const bool safe = false && dynamic;
+                    """));
+        assertTrue(mutable.getMessage().contains("non-const runtime binding"),
+                mutable::toString);
+    }
+
+    @Test
+    void shortCircuitCannotHideConstantDependencyCycles() {
+        IllegalArgumentException cyclic = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                    define pub const bool a = false && b;
+                    define pub const bool b = a;
+                    """));
+        assertTrue(cyclic.getMessage().contains("circular constant dependency"),
+                cyclic::toString);
+    }
+
+    @Test
     void rejectCyclicConstantDependenciesAcrossLegalSameFileModules() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("""
