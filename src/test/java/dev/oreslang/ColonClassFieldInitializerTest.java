@@ -41,6 +41,18 @@ final class ColonClassFieldInitializerTest {
     }
 
     @Test
+    void finalConstIsNotWritableFromMutableMethod() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  final const int token: 5
+                  change(mut self)(): void {
+                    self.token = 6;
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void finalConstRejectsNonliteralAndMutableReferentWithoutDroppingConst() {
         IllegalArgumentException computed = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("""
