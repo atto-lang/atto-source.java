@@ -63,6 +63,7 @@ public final class Lexer {
                     add(ELLIPSIS);
                 } else add(DOT);
             }
+            case '#' -> symbol();
             case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE);
@@ -95,6 +96,54 @@ public final class Lexer {
             else if (c == '/' && match('*')) depth++;
             else if (c == '*' && match('/')) depth--;
         }
+    }
+
+    /** Hash-prefixed Symbol value; #class is a name, not a keyword. */
+    private void symbol() {
+        if (isAtEnd()) throw error("expected Symbol name or quoted name after '#'");
+        String name;
+        char ch = peek();
+        if (ch == '\\'' || ch == '"') {
+            advance();
+            char quote = ch;
+            StringBuilder value = new StringBuilder();
+            while (!isAtEnd() && peek() != quote) {
+                char c = advance();
+                if (c == '\\n') throw error("Symbol literal cannot contain an unescaped newline");
+                if (c == '\\\\') {
+                    if (isAtEnd()) throw error("unterminated Symbol escape");
+                    char escaped = advance();
+                    value.append(switch (escaped) {
+                        case 'u' -> unicodeEscape();
+                        case 'n' -> '\\n'; case 'r' -> '\\r'; case 't' -> '\\t';
+                        case '"' -> '"'; case '\\'' -> '\\''; case '\\\\' -> '\\\\';
+                        default -> throw error("unsupported Symbol escape");
+                    });
+                } else value.append(c);
+            }
+            if (isAtEnd()) throw error("unterminated quoted Symbol");
+            advance();
+            name = value.toString();
+        } else if (isIdentStart(ch)) {
+            int nameStart = current;
+            advance();
+            while (isIdentPart(peek())) advance();
+            name = source.substring(nameStart, current);
+            if (!name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                throw error("unquoted Symbol name must be an ASCII identifier");
+            }
+            if (name.length() > 128) throw error("unquoted Symbol exceeds 128 UTF-8 bytes");
+        } else {
+            throw error("expected Symbol identifier or quoted string immediately after '#'");
+        }
+        // This validation deliberately never permanently interns the literal.
+        String canonical;
+        try {
+            canonical = dev.oreslang.runtime.OresSymbol.literal(name).name();
+        } catch (IllegalArgumentException invalid) {
+            throw error("invalid Symbol literal: " + invalid.getMessage());
+        }
+        tokens.add(new Token(SYMBOL_LITERAL, canonical, line, startColumn));
     }
 
     private void string(char quote) {
