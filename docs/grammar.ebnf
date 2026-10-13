@@ -80,9 +80,15 @@ constructor_decl
                   "(" [ param_list ] ")" block ;
 
 field_decl      = { annotation } visibility
-                  ( binding_kind type_ref IDENT [ "=" expression ]
+                  ( [ "final" ] type_ref IDENT ( ":" | "=" ) expression
+                  | binding_kind type_ref IDENT [ "=" expression ]
                   | IDENT ":" type_ref [ "=" expression ] )
                   stmt_terminator ;
+(* In class bodies, type-first field declarations canonically use ':' for
+   initializers; '=' is accepted for source compatibility. 'final' is contextual
+   and fixes the field slot without implying deep immutability. The formatter
+   rewrites only eligible field initializers, never assignment expressions,
+   map/struct entries, labels, return types, or named type annotations. *)
 
 method_decl     = { annotation } visibility { method_modifier } [ "fnc" | "method" ] method_name [ generic_params ]
                   method_head return_spec ( block | stmt_terminator ) ;
