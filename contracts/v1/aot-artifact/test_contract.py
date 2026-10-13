@@ -17,8 +17,15 @@ def unique_keys(pairs):
         data[key] = value
     return data
 
+def reject_non_json_constant(value):
+    # Python's json.loads accepts NaN/Infinity by default even though those
+    # are invalid JSON literals. A signed admission payload must be strict.
+    raise ValueError("non-JSON numeric literal in AOT manifest: " + value)
+
+
 def decode(text):
-    return json.loads(text, object_pairs_hook=unique_keys)
+    return json.loads(text, object_pairs_hook=unique_keys,
+                      parse_constant=reject_non_json_constant)
 
 def check():
     schema = decode((ROOT / "manifest.schema.json").read_text())
@@ -67,7 +74,20 @@ def check():
         pass
     else:
         raise AssertionError("duplicate JSON key escaped input admission")
-    print("AOT manifest V1 schema: valid fixture and 25 negative checks passed")
+    for invalid in ("NaN", "Infinity", "-Infinity"):
+        try:
+            decode('{"size_bytes": ' + invalid + '}')
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("nonstandard JSON number escaped admission: " + invalid)
+    try:
+        decode('{"size_bytes": 1, "size_bytes": 2}')
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("duplicate nested JSON key escaped admission")
+    print("AOT manifest V1 schema: valid fixture and 29 negative checks passed")
 
 if __name__ == "__main__":
     check()
