@@ -7396,9 +7396,17 @@ public final class OresEvalRootNode extends RootNode {
             return candidate;
         }
 
+        private boolean isModuleExportable(String ownerName) {
+            if (ownerName == null) return false;
+            if (ownerName.equals(Parser.ROOT_MODULE)) return true;
+            Ast.ModuleDecl owner = modules.get(ownerName);
+            return owner != null && owner.visibility() == Ast.Visibility.PUBLIC;
+        }
+
         private Invocation prepareImportedInvocation(Ast.ImportKind kind, String name, List<Object> args) {
             Ast.FunctionDecl fn = findFunction(name, args.size());
-            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
+            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
+                    || !isModuleExportable(declarationModules.get(fn))) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export callable '" + name + "'");
             }
@@ -7429,7 +7437,8 @@ public final class OresEvalRootNode extends RootNode {
             return switch (kind) {
                 case FUNCTION -> {
                     Ast.FunctionDecl fn = findSingleFunction(name);
-                    if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
+                    if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
+                            || !isModuleExportable(declarationModules.get(fn))) {
                         throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export function '" + name + "'");
                     }
                     if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE) {
@@ -7448,7 +7457,8 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.ClassDecl klass = findClass(name);
                     if (klass == null
                             || klass.actorKind() != Ast.ActorKind.NONE
-                            || klass.visibility() != Ast.Visibility.PUBLIC) {
+                            || klass.visibility() != Ast.Visibility.PUBLIC
+                            || !isModuleExportable(classModules.get(klass))) {
                         throw new IllegalArgumentException(
                                 "code unit '" + codeUnitId
                                         + "' does not export public ordinary class '" + name + "'");
@@ -7474,11 +7484,13 @@ public final class OresEvalRootNode extends RootNode {
             if (module != null && !module.name().equals(Parser.ROOT_MODULE)
                     && module.visibility() == Ast.Visibility.PUBLIC) return new ModuleFacade(this, module);
             Ast.ClassDecl klass = findClass(name);
-            if (klass != null && klass.visibility() == Ast.Visibility.PUBLIC) {
+            if (klass != null && klass.visibility() == Ast.Visibility.PUBLIC
+                    && isModuleExportable(classModules.get(klass))) {
                 return new ClassFacade(this, klass);
             }
             Ast.FunctionDecl fn = findSingleFunction(name);
-            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) {
+            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC
+                    && isModuleExportable(declarationModules.get(fn))) {
                 if (fn.kind() == Ast.CallableKind.ROUTINE) {
                     throw new IllegalArgumentException(
                             "routine '" + name
