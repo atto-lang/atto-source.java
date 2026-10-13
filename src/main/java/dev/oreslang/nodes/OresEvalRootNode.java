@@ -5546,6 +5546,7 @@ public final class OresEvalRootNode extends RootNode {
                         && methodCall.member().equals("send")
                         && call.typeArgumentsPresent()) {
                     if (args.size() != 1 || call.typeArguments().size() != 1
+                            || call.typeArguments().getFirst().inferArguments()
                             || !call.typeArguments().getFirst().arguments().isEmpty()) {
                         throw new IllegalArgumentException(
                                 "PipelineRunner.send<ResultCase> requires one message and one nominal reply case");
