@@ -556,17 +556,41 @@ public final class OwnershipChecker {
                     if (containsMutexGuardType(outgoing.type)) {
                         throw error("writech cannot transport MutexGuard");
                     }
-                } else if (arm.operation() == Ast.ChannelOperation.READ
-                        && arm.bindingName() != null) {
+                } else if (arm.operation() == Ast.ChannelOperation.READ) {
                     Ast.TypeRef element = elementTypes.get(i);
-                    armScope.define(
-                            arm.bindingName(),
-                            new VarState(
-                                    element,
-                                    arm.mutableReferent(),
-                                    arm.bindingKind() == Ast.BindingKind.LET,
-                                    kindOfType(element),
+                    if (arm.destructureKind() != null) {
+                        for (int j = 0; j < arm.destructureBindings().size(); j++) {
+                            Ast.DestructureBinding binding = arm.destructureBindings().get(j);
+                            if (binding.isDiscard()) continue;
+                            Ast.TypeRef projected = binding.declaredType() != null
+                                    ? binding.declaredType()
+                                    : arm.destructureKind() == Ast.DestructureKind.SEQUENCE
+                                            ? sequenceDestructureBindingType(element, j, binding.rest())
+                                            : destructureBindingType(
+                                                    new Ast.DestructureStmt(
+                                                            Ast.DestructureKind.OBJECT,
+                                                            arm.destructureBindings(),
+                                                            new Ast.LiteralExpr(null)),
+                                                    element, j, binding.name());
+                            armScope.define(binding.name(), new VarState(
+                                    projected,
+                                    binding.mutableReferent(),
+                                    binding.kind() == Ast.BindingKind.LET,
+                                    kindOfType(projected),
                                     Origin.LOCAL));
+                        }
+                    } else if (arm.bindingName() != null) {
+                        Ast.TypeRef bound = arm.bindingType() == null
+                                ? element : arm.bindingType();
+                        armScope.define(
+                                arm.bindingName(),
+                                new VarState(
+                                        bound,
+                                        arm.mutableReferent(),
+                                        arm.bindingKind() == Ast.BindingKind.LET,
+                                        kindOfType(bound),
+                                        Origin.LOCAL));
+                    }
                 }
 
                 if (selected.mode() == Ast.WaitMode.NONBLOCKING || selected.explicitDo()) {
@@ -2264,6 +2288,9 @@ public final class OwnershipChecker {
                     }
                     if (arm.bindingName() != null) {
                         armLocals.add(arm.bindingName());
+                    }
+                    for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                        if (!binding.isDiscard()) armLocals.add(binding.name());
                     }
                     scanStatements(
                             arm.body(),
