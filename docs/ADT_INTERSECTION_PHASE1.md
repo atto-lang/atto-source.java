@@ -90,3 +90,38 @@ type BrokenMethodField =
   and generic constraint solving without exponential blowup.
 - Exhaustive ADT cases in Java and LLVM, ABI/MessagePack parity and tests that
   exercise execution, throws, suspend, actor isolation and borrowed payloads.
+
+
+## Provenance hardening: fields versus methods
+
+A string-shaped field key is **not** evidence of a method. Before this
+audit, the structural assignability checks treated keys resembling
+`instance$foo$arity1$generics0` as compiler method slots and applied
+function variance to them, even if the key originated from a user-defined
+writable record.
+
+The compiler now attaches an explicit set of **compiler-proven method keys**
+to each nominal class/interface structural shape. Ordinary source records,
+object literals and structural aliases have no such proof. Assignability
+requires both sides to agree on member kind (field versus method), even in
+readonly views. Method signatures retain variance only when both sides
+carry the method proof; data fields remain invariant when writable.
+
+The witness is retained across class/interface inheritance, generic
+substitution, receiver-self binding, readonly projection, and record-rest
+projection. Intersecting a method with a same-named data field is a
+compile-time error. Source-defined field names in the compiler's reserved
+method-slot namespace are rejected.
+
+The witness is compiler-only metadata. It is **not** a runtime vtable,
+serializable field, or permission to forge an actor method/message.
+
+### Regression targets
+
+- Genuine method override/implementation with a subtype return remains valid
+- Writable function-valued fields with narrower returns cannot widen
+- Quoted structural record keys cannot impersonate compiler methods
+- Readonly views cannot manufacture missing method identity
+- Inheritance and specialization cannot strip method identity
+- Field/method intersections fail closed, even when their function types match
+

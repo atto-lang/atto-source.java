@@ -87,13 +87,15 @@ Unknown/Generic, nested mutable projections and methods; explicit
 LLVM rejection or matching lowering for syntax/shape checks, and shared
 positive/negative conformance cases. No parity or green build is claimed.
 
-### Synchronous call/ownership admission
+### Suspension and actor admission
 
-The readonly inline spellings are borrowed shape **views**. A parameter typed
-`struct{...}` or `record{...}` (including aliases resolving to readonly
-records) may not be marked `mut` and may not be admitted as an async,
-generator, or actor mailbox parameter. The existing `structural {...}`
-spelling already has the same restrictions. Do not loosen the restriction by
-using a different syntactic spelling for the same structural view. A future
-owned/copying shape-conversion construct could explicitly permit async/actor
-transfer after ownership and serializer validation.
+Type-position `struct{...}` / `record{...}` (and aliases that resolve to
+readonly shape views) must not provide a `mut` parameter or cross an actor
+mailbox. These borrowed parameter views are prohibited for `async`,
+`suspend` / `suspends`, and `generator` callables. The same prohibition
+applies to explicit `structural {...}` parameters. This is a capability and
+lifetime rule, not a statement that an owned immutable struct can never be
+copied/serialized for async or actor use.
+
+An eventual explicit owned/copy conversion may relax this restriction only
+with ownership, serialization, and cancellation-safe lifetime proof.

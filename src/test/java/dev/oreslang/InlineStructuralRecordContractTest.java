@@ -81,7 +81,7 @@ final class InlineStructuralRecordContractTest {
     }
 
     @Test
-    void readonlyInlineShapesCannotBeMutableOrCrossAsyncActorBoundaries() {
+    void readonlyInlineShapesCannotBecomeMutableAsyncOrActorParameters() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 async fnc bad(record{foo: int} value): int {
                     return value.foo;
@@ -92,6 +92,28 @@ final class InlineStructuralRecordContractTest {
                     return;
                 }
                 """)));
+    }
+
+    @Test
+    void suspendCallableCannotRetainReadonlyShapeView() {
+        IllegalArgumentException problem = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                suspend fnc bad(record{foo: int} value): int {
+                    return value.foo;
+                }
+                """)));
+        assertTrue(problem.getMessage().contains("outlive"), problem.getMessage());
+    }
+
+    @Test
+    void suspendCallableCannotRetainExplicitStructuralViewEither() {
+        IllegalArgumentException problem = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                suspend fnc bad(structural {foo: int} value): int {
+                    return value.foo;
+                }
+                """)));
+        assertTrue(problem.getMessage().contains("outlive"), problem.getMessage());
     }
 
     @Test

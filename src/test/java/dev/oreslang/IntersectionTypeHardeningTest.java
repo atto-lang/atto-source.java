@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -236,5 +237,61 @@ final class IntersectionTypeHardeningTest {
                         fnc use(C value): void { return; }
                         """)));
         assertTrue(generic.getMessage().contains("ownership-aware generic field projection"), generic.getMessage());
+    }
+
+    @Test
+    void methodProvenanceIsNotForgeableWithStructuralFieldNames() {
+        String slot = "instance$apply$arity1$generics0";
+        Types.Function implementation = new Types.Function(
+                List.of(Types.Primitive.INT), new Types.StringLiteral("narrow"));
+        Types.Function contract = new Types.Function(
+                List.of(Types.Primitive.INT), Types.Primitive.STRING);
+        Types.Record realImplementation = new Types.Record(Map.of(slot, implementation),
+                false, Set.of(slot));
+        Types.Record realContract = new Types.Record(Map.of(slot, contract),
+                false, Set.of(slot));
+        Types.Record fakeImplementation = new Types.Record(Map.of(slot, implementation));
+        Types.Record fakeContract = new Types.Record(Map.of(slot, contract));
+
+        assertTrue(Types.isAssignable(realImplementation, realContract),
+                "verified methods retain covariant return types");
+        assertFalse(Types.isAssignable(fakeImplementation, realContract),
+                "a callable-valued field must never impersonate a method");
+        assertFalse(Types.isAssignable(realImplementation, fakeContract),
+                "a method must never implicitly become a writable data slot");
+        assertFalse(Types.isAssignable(fakeImplementation, fakeContract),
+                "writable function-valued data fields remain invariant");
+        assertFalse(Types.isAssignable(fakeImplementation,
+                realContract.withMembers(realContract.members(), true)),
+                "readonly views cannot manufacture method identity");
+        assertEquals(realContract.methodKeys(),
+                realContract.withMembers(realContract.members(), true).methodKeys());
+        assertTrue(fakeImplementation.methodKeys().isEmpty());
+    }
+
+    @Test
+    void methodDataNameCollisionRejectsIntersectionEvenWithIdenticalType() {
+        String slot = "instance$apply$arity1$generics0";
+        Types.Function fn = new Types.Function(
+                List.of(Types.Primitive.INT), Types.Primitive.STRING);
+        Types.Record data = new Types.Record(Map.of(slot, fn));
+        Types.Record methods = new Types.Record(Map.of(slot, fn), false, Set.of(slot));
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Types.intersectOf(methods, data));
+        assertTrue(failure.getMessage().contains("field/method collision"),
+                failure.getMessage());
+        assertThrows(IllegalArgumentException.class,
+                () -> Types.intersectOf(data, methods));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Types.Record(Map.of(slot, Types.Primitive.INT),
+                        false, Set.of(slot)));
+    }
+
+    @Test
+    void sourceRecordCannotClaimReservedCompilerMethodSlotName() {
+        rejected("""
+                type Forged = {"instance$apply$arity1$generics0": typeof fnc(int) => string};
+                fnc consume(Forged value): void { return; }
+                """, "reserved for compiler method contracts");
     }
 }
