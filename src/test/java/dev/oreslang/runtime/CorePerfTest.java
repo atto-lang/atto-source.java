@@ -10,6 +10,26 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 class CorePerfTest {
+    @Test void randomizedSamplingCoversRepeatedPhasesWithoutConsumingSlots() {
+        var recorder = new CorePerf.Recorder(16, 1024);
+        int[] phases = new int[17];
+        for (int i = 0; i < 1_000_000; i++) {
+            if (recorder.sample()) phases[i % phases.length]++;
+        }
+        for (int count : phases) assertTrue(count > 10 && count < 150, java.util.Arrays.toString(phases));
+        var bytes = new ByteArrayOutputStream();
+        recorder.dump(new PrintStream(bytes, true, StandardCharsets.UTF_8));
+        String output = bytes.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("\"sample_every\":1024"));
+        assertTrue(output.contains("\"recorded\":0,\"reserved\":0"));
+        assertTrue(new CorePerf.Recorder(1).sample());
+    }
+
+    @Test void sampleIntervalsFailClosed() {
+        for (int invalid : new int[] {0, -1, 3, 1023, Integer.MAX_VALUE}) {
+            assertThrows(IllegalArgumentException.class, () -> new CorePerf.Recorder(1, invalid));
+        }
+    }
     @Test void boundedRecorderRetainsColdEventsAndExportsNoPayloads() {
         var recorder = new CorePerf.Recorder(2);
         long first = System.nanoTime();

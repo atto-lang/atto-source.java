@@ -54,17 +54,31 @@ public final class CorePerf {
 
     /** Repeated configuration switches sampling without discarding buffered data. */
     public static synchronized void configure(boolean enabled) {
+        configure(enabled, 1);
+    }
+
+    /** Phase sampling keeps a bounded capture useful during sustained traffic. */
+    public static synchronized void configure(boolean enabled, int sampleEvery) {
+        validateSampleEvery(sampleEvery);
         if (!enabled) {
             active = null;
             return;
         }
         if (perfRecorder == null) {
-            perfRecorder = new Recorder(DEFAULT_CAPACITY);
+            perfRecorder = new Recorder(DEFAULT_CAPACITY, sampleEvery);
             installShutdownHook();
             System.err.println("ores-core-perf: enabled; first " + DEFAULT_CAPACITY
-                    + " completed phases buffered; JSONL exported at JVM shutdown");
+                    + " completed phases buffered; sample every " + sampleEvery
+                    + "; JSONL exported at JVM shutdown");
         }
+        if (perfRecorder.sampleEvery != sampleEvery)
+            throw new IllegalStateException("core perf sampling cannot change within a capture");
         active = perfRecorder;
+    }
+
+    public static void validateSampleEvery(int value) {
+        if (value < 1 || value > 1_048_576 || (value & (value - 1)) != 0)
+            throw new IllegalArgumentException("core perf sample interval must be a power of two in 1..1048576");
     }
 
     static synchronized void configureDebug(boolean enabled) {
@@ -127,7 +141,7 @@ public final class CorePerf {
     /** Zero allocation and no clock read on the disabled hot path. */
     public static long start() {
         Recorder recorder = active;
-        return recorder == null || recorder.saturated ? 0L : System.nanoTime();
+        return recorder == null || recorder.saturated || !recorder.sample() ? 0L : System.nanoTime();
     }
 
     public static void end(int phase, long started) {
@@ -145,7 +159,7 @@ public final class CorePerf {
     /** Reuse timestamps already obtained for actor lifecycle bookkeeping. */
     public static void elapsed(int phase, long started, long ended) {
         Recorder recorder = active;
-        if (recorder != null && !recorder.saturated
+        if (recorder != null && !recorder.saturated && recorder.sample()
                 && started != 0L && validDuration(started, ended)) {
             recorder.record(phase, started, ended);
         }
@@ -159,6 +173,9 @@ public final class CorePerf {
     /** Package-visible recorder for tests; separate from global CLI state. */
     static final class Recorder {
         private final int capacity;
+        private final int sampleEvery;
+        private final ThreadLocal<long[]> sampleState = ThreadLocal.withInitial(
+                () -> new long[] { Thread.currentThread().threadId() ^ 0x9E3779B97F4A7C15L });
         private final long origin = System.nanoTime();
         private final AtomicInteger cursor = new AtomicInteger();
         private final AtomicIntegerArray published;
@@ -171,12 +188,32 @@ public final class CorePerf {
         private volatile int sharedParallelism;
 
         Recorder(int capacity) {
+            this(capacity, 1);
+        }
+
+        Recorder(int capacity, int sampleEvery) {
             if (capacity < 1) throw new IllegalArgumentException("capacity must be positive");
+            validateSampleEvery(sampleEvery);
             this.capacity = capacity;
+            this.sampleEvery = sampleEvery;
             this.published = new AtomicIntegerArray(capacity);
             this.offsets = new long[capacity];
             this.durations = new long[capacity];
             this.threadIds = new long[capacity];
+        }
+
+        boolean sample() {
+            if (sampleEvery == 1) return true;
+            // Per-thread primitive state: no shared atomic or clock on a miss,
+            // no allocation after first use. Randomized phase selection avoids
+            // aliasing an interval with a request's repeated phase sequence.
+            long[] state = sampleState.get();
+            long value = state[0];
+            value ^= value << 13;
+            value ^= value >>> 7;
+            value ^= value << 17;
+            state[0] = value;
+            return (value & (sampleEvery - 1)) == 0;
         }
 
         void record(int phase, long started, long finished) {
@@ -230,7 +267,8 @@ public final class CorePerf {
         void dump(PrintStream out) {
             int reserved = cursor.get();
             int recorded = 0;
-            out.println("{\"schema\":\"ores-core-perf.v1\",\"kind\":\"begin\",\"capacity\":" + capacity + "}");
+            out.println("{\"schema\":\"ores-core-perf.v1\",\"kind\":\"begin\",\"capacity\":" + capacity
+                    + ",\"sample_every\":" + sampleEvery + "}");
             out.println("{\"schema\":\"ores-core-perf.v1\",\"kind\":\"backend\",\"actor_carriers\":\""
                     + backend + "\",\"private_parallelism\":" + privateParallelism
                     + ",\"shared_parallelism\":" + sharedParallelism + "}");

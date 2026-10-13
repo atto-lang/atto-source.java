@@ -7,12 +7,23 @@ Both modes are disabled by default. Neither is distributed tracing or applicatio
 
 ```sh
 oreslang-compiler --core-perf --platform=server program.ores
+# Sustained traffic: randomized 1/1024 phase capture, still bounded to 8192 rows.
+oreslang-compiler --core-perf --core-perf-sample-every=1024 --platform=server program.ores
 oreslang-compiler --core-debug --platform=server program.ores
 # Use both switches when correlating timing and numeric diagnostic events.
 # Or with flags-2-env's canonical .cli-flags.toml:
 # eval "$(flags2env export -- oreslang-compiler --core-perf)"
 # ORES_CORE_PERF=true oreslang-compiler --platform=server program.ores
 ```
+
+The sampling interval must be a power of two from 1 through 1048576 and does
+not enable recording by itself. The default interval 1 retains the original
+cold-start capture. Sampling selects phases independently with primitive
+per-thread state; unsampled starts read no clock, reserve no shared slot, and
+perform no formatting or I/O. State allocates once per participating thread.
+The JSONL begin record reports `sample_every`. This is phase sampling, not a
+complete request trace. A saturated buffer stops collecting; check the end
+record before treating a capture as representative of an entire load interval.
 
 The `--no-core-perf` and `--no-core-debug` switches override
 `ORES_CORE_PERF=true` and `ORES_CORE_DEBUG=true` respectively. The canonical

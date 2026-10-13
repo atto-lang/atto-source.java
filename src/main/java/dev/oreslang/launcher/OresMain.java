@@ -67,6 +67,7 @@ public final class OresMain {
         }
         String perfEnv = System.getenv("ORES_CORE_PERF");
         boolean corePerf = "true".equalsIgnoreCase(perfEnv) || "1".equals(perfEnv);
+        int corePerfSampleEvery = 1;
         String debugEnv = System.getenv("ORES_CORE_DEBUG");
         boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
         boolean strict = false;
@@ -90,6 +91,10 @@ public final class OresMain {
                 else if (arg.equals("--check")) checkOnly = true;
                 else if (arg.equals("--core-perf")) corePerf = true;
                 else if (arg.equals("--no-core-perf")) corePerf = false;
+                else if (arg.startsWith("--core-perf-sample-every=")) {
+                    corePerfSampleEvery = Integer.parseInt(arg.substring("--core-perf-sample-every=".length()));
+                    CorePerf.validateSampleEvery(corePerfSampleEvery);
+                }
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
@@ -149,7 +154,7 @@ public final class OresMain {
             throw new UsageException("--check and --build-analysis are mutually exclusive");
         }
 
-        CorePerf.configure(corePerf);
+        CorePerf.configure(corePerf, corePerfSampleEvery);
         CoreDebug.configure(coreDebug);
         try {
             NativeBuildMode.requireCompatible(ExecutionProfile.parse(mode, platform));
@@ -320,7 +325,7 @@ public final class OresMain {
                         + "[--allow-ffi[=PATH,...]] [--deny-ffi[=PATH,...]] "
                         + "[--allow-import[=PATH,...]] [--deny-import[=PATH,...]] "
                         + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] "
-                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] [--mode=aot|jit|hybrid] "
+                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-perf-sample-every=N] [--core-debug|--no-core-debug] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
                         + "[file.ores|file.java]");
