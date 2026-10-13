@@ -156,6 +156,21 @@ public final class TaggedMessageContracts {
         Map<String, EnumType> enums = new LinkedHashMap<>();
         Map<String, Ast.PatternDecl> pending = new LinkedHashMap<>();
         Set<String> taken = new HashSet<>();
+        // Until package-qualified nominal identities are supported, a root
+        // enum/pattern may not be shadowed by any declaration whose simple
+        // name could be resolved instead by the evaluator or type checker.
+        Set<String> ordinaryNames = new HashSet<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl other : module.declarations()) {
+                String name = null;
+                if (other instanceof Ast.ClassDecl c) name = c.name();
+                else if (other instanceof Ast.InterfaceDecl c) name = c.name();
+                else if (other instanceof Ast.TypeAliasDecl c) name = c.name();
+                else if (other instanceof Ast.FunctionDecl c) name = c.name();
+                else if (other instanceof Ast.FieldDecl c) name = c.name();
+                if (name != null) ordinaryNames.add(name);
+            }
+        }
         for (Ast.ModuleDecl module : program.modules()) {
             // The current tagged wire identity is file-root local by design;
             // reject nested module declaration until import/export ABI exists.
@@ -168,8 +183,10 @@ public final class TaggedMessageContracts {
                 }
                 String name = declaration instanceof Ast.EnumDecl e ? e.name()
                         : ((Ast.PatternDecl) declaration).name();
-                if (!taken.add(name)) throw new IllegalArgumentException(
-                        "duplicate enum/pattern name " + name);
+                if (!taken.add(name) || ordinaryNames.contains(name)) {
+                    throw new IllegalArgumentException(
+                            "ambiguous enum/pattern name conflicts with another declaration: " + name);
+                }
                 if (declaration instanceof Ast.PatternDecl p) {
                     pending.put(p.name(), p);
                     continue;
