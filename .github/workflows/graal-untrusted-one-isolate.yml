@@ -1,0 +1,39 @@
+name: Graal single-untrusted-isolate Native Image
+on:
+  pull_request:
+    paths:
+      - 'pom.xml'
+      - 'src/main/**'
+      - 'src/test/java/dev/oreslang/runtime/SharedUntrustedGraalIsolateTest.java'
+      - '.github/workflows/graal-untrusted-one-isolate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  shared-untrusted-native-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: JDK baseline and JVM fail-closed smoke
+        run: |
+          java -version
+          native-image --version
+          mvn -B -ntp -Dtest=SharedUntrustedGraalIsolateTest test
+      - name: Build actual Oreslang language isolate
+        run: |
+          mvn -B -ntp -Pnative-isolate -Dnative.image.optimization=-Ob -DskipTests package
+      - name: Mandatory positive single-isolate guest execution smoke
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LIB="$(find target -maxdepth 1 -type f \( -name '*oresvm*.so' -o -name '*oresvm*.dylib' \) | head -n1)"
+          test -n "$LIB"
+          mvn -B -ntp -Dtest=SharedUntrustedGraalIsolateTest \
+            -Dores.untrusted.isolate.library="$(realpath "$LIB")" \
+            -Dores.untrusted.require-native-isolate=true test

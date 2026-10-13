@@ -89,10 +89,109 @@ signal ordering must be respected. Runtime signal handling does not imply every
 exit notification overtakes application messages. See the official
 [process and signal semantics](https://www.erlang.org/doc/system/ref_man_processes.html).
 
+## Actor-owned native regions (feature branch, October 10, 2026)
+
+`ActorRuntime.ActorMemorySlice` is now created for SHARED, PRIVATE (source
+syntax: isolated), and UNTRUSTED actors. `ActorContext.actorMemory()` exposes
+an actor-owned region for all three kinds. Existing `privateMemory()` remains
+restricted to PRIVATE and UNTRUSTED for compatibility. Every allocation
+retains an owning actor ID and checks that ID on read/write/close; a SHARED
+actor's *private* memory is not automatically exported to its peers.
+
+`allocatePrivateBytes()` uses `ActorForeignMemory` underneath:
+- When `java.lang.foreign.Arena` is present, including the preview FFM
+  implementation shipped with the tested GraalVM JDK 21, each block has a
+  separate `Arena.ofShared()`. Continuations may migrate carrier threads, so
+  a confined arena would be incorrect. Block close or actor finalization
+  zeroizes and closes it after the actor execution boundary and child teardown.
+- On a Java 21 runtime without the FFM classes, the compatible fallback is
+  `ByteBuffer.allocateDirect()` and its native memory **is not** immediately
+  reclaimed. JDK 22+ fails closed if FFM cannot initialize; Native Image builds
+  require working FFM support and reachability configuration as applicable.
+- These are off-heap **byte blocks**, not relocated Java/Truffle objects.
+  Interpreter ASTs, source objects, mailbox envelopes, futures and scheduling
+  infrastructure can still allocate on the garbage-collected heap.
+- Arenas are per-block at this stage, not slab-pooled bump allocators. This
+  prioritizes precise ownership/close semantics over peak allocation speed.
+  Benchmark allocations, zeroization, object promotion, RSS and GC pauses
+  before asserting any improvement.
+
+### Single Graal isolate for ALL untrusted actors (corrected architecture)
+
+The **host process** owns exactly one `SharedUntrustedGraalIsolate` manager.
+It creates **one Graal `Engine` with `spawnIsolate(true)` and one Oreslang
+guest `Context`**, into which untrusted actor source is admitted through a
+bounded asynchronous queue. The guest `OresVM`/`ActorRuntime` is shared by
+every actor spawned in that context. The Engine sets the aggregate isolate
+heap cap; actor-local `ActorMemorySlice` budgets and FFM arenas remain separate
+**logical ownership regions**, not independent managed heaps or GC domains.
+
+The process-wide singleton fails closed when the language-isolate Native
+Image or required Graal sandbox is unavailable, or when a second caller
+requests a conflicting aggregate heap cap. The domain root receives only
+`ACTOR_SPAWN` authority; `IsolatePolicy.untrustedActor()` continues to
+grant **no** capabilities to individual untrusted actors. Context source
+submission returns completion-only futures; raw guest `Value` and
+`MemorySegment` references never pass back to host code.
+
+**Strict host admission guard:** Set `-Dores.untrusted.require-physical-isolate=true`
+in production host JVMs to reject legacy `ActorRuntime.spawnUntrusted()`
+and source-level untrusted actor spawns attempted in that host runtime, even if
+the host runtime was constructed with an adversarial policy. This property is
+**an interim fail-closed safety gate**, not a host-to-guest message bridge.
+It deliberately rejects these host calls rather than silently executing them
+in a non-isolated dispatcher. `SharedUntrustedGraalIsolate.submitSource()`
+is the separate bounded source-entry API; host actor-reference/message routing
+remains pending. The toggle must be managed by the trusted launcher and must
+not be set or cleared by guest code.
+
+**Integration gap:** The existing Java `ActorRuntime.spawnUntrusted()` direct
+host entrypoint still runs on a distinct **host dispatcher**, not inside this
+physical isolate. Production security must not use that API as an isolation
+boundary until routing over a serialized host/guest actor mailbox bridge is
+implemented. Likewise the polyglot Oreslang isolate image must be built,
+installed, and verified with at least two simultaneously live actors. This
+commit establishes the ONE-isolate bootstrap and policy, not complete
+message routing or host-isolation certification.
+
+The untrusted actors are **one trust domain**: they share the same managed
+isolate heap, collector and failure fate. One actor panic should be locally
+supervised if possible; corruption, isolate OOM or host-enforced termination
+may take out *all* untrusted actors together. No intra-domain hostile-code
+security separation is promised. This is intentionally **not** one isolate
+per actor. Untrusted native/FFI/host reflection remains denied.
+
+### Reproducible Native Image gate
+
+Build with a GraalVM distribution that matches the Maven Truffle/Polyglot
+artifacts (currently **GraalVM 25.3.4.1**, not a generic GraalVM JDK 25.0
+image). The `native-isolate` profile supplies
+`com.oracle.svm.truffle.PolyglotIsolateGuestFeature`, and the image must
+include the `ores` language implementation. This is a custom polyglot
+language isolate; it is not provided by the standard JS/Python/Wasm isolate
+Maven dependencies.
+
+```sh
+mvn -B -Pnative-isolate -Dnative.image.optimization=-Ob -DskipTests package
+# During local smoke tests only; engine.IsolateLibrary is experimental.
+mvn -B -Dtest=SharedUntrustedGraalIsolateTest \
+  -Dores.untrusted.isolate.library="$(realpath target/liboresvm.so)" \
+  -Dores.untrusted.require-native-isolate=true test
+```
+
+The positive smoke MUST run the guest source and await its future. A test
+which only observes the expected error `No native isolate library ... [ores]`
+is insufficient and does not certify the physical boundary. A release must
+bundle/register the native language-isolate resource using Graal's supported
+language artifact discovery; the explicitly configured `IsolateLibrary`
+property is a test/developer override, **not** the recommended production
+distribution format.
+
 ## Physical heap backend decision
 
-Start with exec'd workers as the reference protected backend. Each live isolated
-actor needs its own address space; putting several isolated actors in one worker
+For PRIVATE/isolated actors that require a physically separate worker, start
+with exec'd workers as the reference protected backend. Each such actor
+needs its own address space; putting several isolated actors in one worker
 would weaken this contract. Warm workers can amortize startup, but reassignment
 must recreate the address space, or demonstrate complete VM teardown and absence
 of retained authority. Never fork a running multithreaded JVM and continue guest

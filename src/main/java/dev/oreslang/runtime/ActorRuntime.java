@@ -721,23 +721,29 @@ public final class ActorRuntime implements AutoCloseable {
     public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
 
     /**
-     * Logical actor-confined memory slice for one private actor.
+     * Actor-confined memory slice for every actor, including shared actors.
      *
      * This is independent of carrier threads. Mailbox payloads and persistent
-     * actor-state allocations share one budget. The current JVM backend uses
-     * accounting plus alias isolation; a native/polyglot-isolate backend can map
-     * this same contract to a physically separate heap/arena.
+     * actor-state allocations share one budget. Actor-owned byte regions use
+     * FFM arenas on JDK 22+ (Java 21 compatibility uses direct ByteBuffers).
+     * Ordinary Java/Truffle objects still reside on a managed GC heap.
+     * Actor ownership is logical, not a claim of an OS/address-space sandbox.
      */
     public final class ActorMemorySlice implements AutoCloseable {
         private final ActorId owner;
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
+        private final int maxNativeBlocks;
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
             this.limitBytes = limitBytes;
+            // FFM arenas carry native and Java metadata beyond the logical
+            // byte length. Prevent unlimited zero/tiny block allocations.
+            this.maxNativeBlocks = (int) Math.min(1024L,
+                    Math.max(16L, limitBytes / 4096L));
         }
 
         public ActorId owner() { return owner; }
@@ -762,16 +768,31 @@ public final class ActorRuntime implements AutoCloseable {
          * compiler-lowered private actor state a genuinely unshared backing
          * region while actors remain multiplexed over carrier threads.
          */
-        public PrivateMemoryBlock allocatePrivateBytes(int bytes) {
+        public synchronized PrivateMemoryBlock allocatePrivateBytes(int bytes) {
             requireCurrentOwner();
             if (bytes < 0) throw new IllegalArgumentException("private memory block size cannot be negative");
-            MemoryReservation reservation = reserve(bytes, "private actor direct heap");
+            if (sliceClosed.get()) throw new IllegalStateException("actor native memory slice closed");
+            if (blocks.size() >= maxNativeBlocks)
+                throw new IllegalStateException("actor native block limit exceeded for " + owner
+                        + ": blocks=" + blocks.size() + " limit=" + maxNativeBlocks);
+            // Even a logically empty FFM segment has native arena overhead.
+            MemoryReservation reservation = reserve(Math.max(1L, (long) bytes),
+                    "actor native memory block");
+            PrivateMemoryBlock block = null;
             try {
-                PrivateMemoryBlock block = new PrivateMemoryBlock(this, reservation, bytes);
+                block = new PrivateMemoryBlock(this, reservation, bytes);
                 blocks.add(block);
                 return block;
             } catch (RuntimeException | Error failure) {
-                reservation.close();
+                // If tracking fails after native allocation, do not leave a
+                // live arena orphaned behind a released memory reservation.
+                try {
+                    if (block != null) block.invalidateFromSlice();
+                } catch (RuntimeException | Error cleanupError) {
+                    failure.addSuppressed(cleanupError);
+                } finally {
+                    reservation.close();
+                }
                 throw failure;
             }
         }
@@ -804,7 +825,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || !isPrivateKind(cell.kind) || !cell.ref.id().equals(owner)) {
+            if (cell == null || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
                         "private actor memory slice may only be reserved by its owning actor");
             }
@@ -826,12 +847,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         @Override
-        public synchronized void close() {
-            if (!sliceClosed.compareAndSet(false, true)) return;
-            for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
-            blocks.clear();
-            long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+        public void close() {
+            // Snapshot under the slice lock, but never hold that lock while
+            // closing individual blocks. Block.close() acquires the block
+            // monitor before releasing the slice's reservation.
+            final List<PrivateMemoryBlock> retiring;
+            final long bytes;
+            synchronized (this) {
+                if (!sliceClosed.compareAndSet(false, true)) return;
+                retiring = List.copyOf(blocks);
+                blocks.clear();
+                bytes = usedBytes.getAndSet(0);
+            }
+            RuntimeException failure = null;
+            try {
+                for (PrivateMemoryBlock block : retiring) {
+                    try {
+                        block.invalidateFromSlice();
+                    } catch (RuntimeException error) {
+                        if (failure == null) failure = error;
+                        else failure.addSuppressed(error);
+                    }
+                }
+            } finally {
+                // Accounting must be released even if a native arena fails
+                // to close; that failure is reported to actor termination.
+                if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+            }
+            if (failure != null) throw failure;
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -849,7 +892,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice slice;
         private final MemoryReservation reservation;
         private final int capacity;
-        private volatile ByteBuffer memory;
+        private volatile ActorForeignMemory region;
         private final AtomicBoolean blockClosed = new AtomicBoolean();
 
         private PrivateMemoryBlock(
@@ -859,46 +902,48 @@ public final class ActorRuntime implements AutoCloseable {
             this.slice = Objects.requireNonNull(slice);
             this.reservation = Objects.requireNonNull(reservation);
             this.capacity = bytes;
-            this.memory = ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN);
+            this.region = ActorForeignMemory.allocate(bytes);
         }
 
         public int capacity() { return capacity; }
         public ActorId owner() { return slice.owner(); }
         public boolean closed() { return blockClosed.get(); }
+        /** True when this block uses an explicitly closeable FFM Arena. */
+        public boolean deterministicReclamation() { return region != null && region.deterministicReclamation(); }
 
-        public byte readByte(int index) {
+        public synchronized byte readByte(int index) {
             return openMemory().get(index);
         }
 
-        public void writeByte(int index, byte value) {
+        public synchronized void writeByte(int index, byte value) {
             openMemory().put(index, value);
         }
 
-        public int readInt(int index) {
+        public synchronized int readInt(int index) {
             return openMemory().getInt(index);
         }
 
-        public void writeInt(int index, int value) {
+        public synchronized void writeInt(int index, int value) {
             openMemory().putInt(index, value);
         }
 
-        public long readLong(int index) {
+        public synchronized long readLong(int index) {
             return openMemory().getLong(index);
         }
 
-        public void writeLong(int index, long value) {
+        public synchronized void writeLong(int index, long value) {
             openMemory().putLong(index, value);
         }
 
-        public double readDouble(int index) {
+        public synchronized double readDouble(int index) {
             return openMemory().getDouble(index);
         }
 
-        public void writeDouble(int index, double value) {
+        public synchronized void writeDouble(int index, double value) {
             openMemory().putDouble(index, value);
         }
 
-        public byte[] copyOut() {
+        public synchronized byte[] copyOut() {
             ByteBuffer live = openMemory();
             byte[] out = new byte[capacity];
             ByteBuffer duplicate = live.duplicate();
@@ -907,7 +952,7 @@ public final class ActorRuntime implements AutoCloseable {
             return out;
         }
 
-        public void copyIn(byte[] bytes) {
+        public synchronized void copyIn(byte[] bytes) {
             Objects.requireNonNull(bytes);
             ByteBuffer live = openMemory();
             if (bytes.length != capacity) {
@@ -925,32 +970,40 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("private actor memory block is closed");
             }
             slice.requireCurrentOwner();
-            ByteBuffer live = memory;
+            ActorForeignMemory live = region;
             if (live == null) throw new IllegalStateException("private actor memory block is closed");
-            return live;
+            return live.memory();
         }
 
-        private void zeroAndDetachMemory() {
-            ByteBuffer live = memory;
+        private synchronized void zeroAndDetachMemory() {
+            ActorForeignMemory live = region;
             if (live == null) return;
-            ByteBuffer duplicate = live.duplicate();
-            duplicate.clear();
-            while (duplicate.hasRemaining()) duplicate.put((byte) 0);
-            memory = null;
+            // Once this method runs the block is already marked closed, so
+            // no future owner operation can access it. Always release the
+            // Java wrapper even if native teardown reports an error.
+            try {
+                live.close();
+            } finally {
+                region = null;
+            }
         }
 
-        private void invalidateFromSlice() {
+        private synchronized void invalidateFromSlice() {
             if (!blockClosed.compareAndSet(false, true)) return;
             zeroAndDetachMemory();
         }
 
         @Override
-        public void close() {
+        public synchronized void close() {
             openMemory(); // owner + liveness check before invalidation
             if (!blockClosed.compareAndSet(false, true)) return;
-            zeroAndDetachMemory();
-            slice.unregister(this);
-            reservation.close();
+            try {
+                zeroAndDetachMemory();
+            } finally {
+                // Release accounting even when the off-heap close fails.
+                slice.unregister(this);
+                reservation.close();
+            }
         }
     }
 
@@ -1330,6 +1383,8 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+        /** Actor-owned native-byte region, including for SHARED actors. */
+        default Optional<ActorMemorySlice> actorMemory() { return privateMemory(); }
 
         /**
          * Current admitted mailbox envelope, present only while onMessage is
@@ -4122,6 +4177,17 @@ public final class ActorRuntime implements AutoCloseable {
             String codeActorType) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
+        // The legacy ActorRuntime can run in a trusted host JVM. A separate
+        // dispatcher is NOT a Graal physical isolate. Production embedders
+        // requiring the boundary must use SharedUntrustedGraalIsolate and
+        // must not silently admit untrusted guest code on this host runtime.
+        if (kind == ActorKind.UNTRUSTED
+                && Boolean.getBoolean("ores.untrusted.require-physical-isolate")) {
+            throw new SecurityException(
+                    "UNTRUSTED actor rejected in host ActorRuntime: "
+                    + "physical shared Graal isolate is required; "
+                    + "use SharedUntrustedGraalIsolate instead");
+        }
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
         if ((behaviorFactory == null) == (codeExecutor == null)) {
@@ -4146,6 +4212,17 @@ public final class ActorRuntime implements AutoCloseable {
             parentForPolicy.policy.require(
                     IsolatePolicy.Capability.ACTOR_SPAWN,
                     "actor spawn");
+        }
+
+        // An adversarial guest-domain root may create untrusted actors, but
+        // cannot elevate guest code to PRIVATE/SHARED actor semantics. All
+        // actor execution admitted by this domain stays in the same UNTRUSTED
+        // Graal isolate and receives the restrictive actor policy.
+        if (policyCeiling.adversarial()
+                && policyCeiling.allows(IsolatePolicy.Capability.ACTOR_SPAWN)
+                && kind != ActorKind.UNTRUSTED) {
+            throw new SecurityException(
+                    "shared untrusted domain may spawn only UNTRUSTED actors");
         }
 
         IsolatePolicy effectivePolicy;
@@ -6759,9 +6836,9 @@ public final class ActorRuntime implements AutoCloseable {
                     ref.id(), outputChannel);
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
-            this.memorySlice = isPrivateKind(kind)
-                    ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
-                    : null;
+            // SHARED actors have private allocations too; only explicitly shared
+            // regions may cross actor boundaries.
+            this.memorySlice = new ActorMemorySlice(ref.id(), policy.maxHeapBytes());
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
@@ -7025,7 +7102,17 @@ public final class ActorRuntime implements AutoCloseable {
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
-            if (memorySlice != null) memorySlice.close();
+            if (memorySlice != null) {
+                try {
+                    memorySlice.close();
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable failure) {
+                    // Never strand actor termination after failed native
+                    // cleanup; surface the failure through doneFuture.
+                    ref.terminationCause.compareAndSet(null, failure);
+                }
+            }
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
@@ -7371,7 +7458,10 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public IsolatePolicy policy() { return policy; }
                     @Override public ActorKind kind() { return kind; }
                     @Override public Optional<ActorMemorySlice> privateMemory() {
-                        return Optional.ofNullable(memorySlice);
+                        return isPrivateKind(kind) ? Optional.of(memorySlice) : Optional.empty();
+                    }
+                    @Override public Optional<ActorMemorySlice> actorMemory() {
+                        return Optional.of(memorySlice);
                     }
                     @Override public Optional<ActorInboxMail<M>> currentMail() {
                         return Optional.ofNullable(activeMail);
