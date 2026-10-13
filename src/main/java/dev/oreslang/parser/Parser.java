@@ -1849,7 +1849,10 @@ public final class Parser {
      * This parser never speculatively consumes an event while checking types.
      */
     private SelectReadBinding parseSelectReadBinding() {
-        if (check(LBRACE)) return new SelectReadBinding(null, null, null, false);
+        if (check(LBRACE) || match(ARROW)) {
+            // A typed operation can return void; it has no value to bind.
+            return new SelectReadBinding(null, null, null, false);
+        }
         Ast.BindingKind kind = Ast.BindingKind.CONST;
         boolean mutable = false;
         if (isBindingKind(peek().type())) {
