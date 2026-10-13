@@ -29,6 +29,9 @@ final class OresMutexCarrierSafetyTest {
                 try (var guard = shared.tryLock().orElseThrow()) {
                     assertEquals(7, guard.value());
                 }
+                assertThrows(UnsupportedOperationException.class,
+                        () -> shared.lockAsync().minimalCompletionStage(),
+                        "even settled mutex Futures cannot downgrade to unguarded stages");
                 return true;
             }).join());
             assertEquals(37, scheduler.startSync(() -> 37).join(),
@@ -63,7 +66,12 @@ final class OresMutexCarrierSafetyTest {
                             () -> pending.get(1, TimeUnit.SECONDS));
                     assertThrows(java.util.concurrent.TimeoutException.class,
                             () -> pending.get(0, TimeUnit.SECONDS));
+                    assertThrows(UnsupportedOperationException.class,
+                            pending::minimalCompletionStage,
+                            "minimal stages can expose unguarded toCompletableFuture bridges");
                     var derived = pending.thenApply(mutexGuard -> 21);
+                    assertThrows(UnsupportedOperationException.class,
+                            derived::minimalCompletionStage);
                     assertTrue(derived instanceof OresMutex.CarrierSafeFuture<?>,
                             "dependent stages must retain the nonblocking policy");
                     assertThrows(OresMutex.WrongMutexDomainException.class, derived::join);
