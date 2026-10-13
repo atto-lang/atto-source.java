@@ -168,20 +168,13 @@ public final class CriticalGate {
                 cancelledWaiter = synchronousWaiter;
                 if (owner == this) {
                     owner = null;
-                    while (!waiters.isEmpty()) {
-                        Ticket candidate = waiters.removeFirst();
-                        WAITING_ON.remove(candidate.logicalOwner, CriticalGate.this);
-                        if (candidate.closed) continue;
-                        owner = candidate;
-                        candidate.granted = true;
-                        wake = candidate;
-                        break;
-                    }
-                } else {
-                    if (waiters.remove(this)) {
-                        WAITING_ON.remove(logicalOwner, CriticalGate.this);
-                    }
+                } else if (mode == Mode.READ) {
+                    readers.remove(this);
                 }
+                if (waiters.remove(this)) {
+                    WAITING_ON.remove(logicalOwner, CriticalGate.this);
+                }
+                wake = drainLocked().stream().findFirst().orElse(null);
             }
             if (cancelledWaiter != null) cancelledWaiter.countDown();
             if (!admitted.isDone()) {
