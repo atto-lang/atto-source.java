@@ -188,4 +188,47 @@ final class ActorUrgentMailboxTest {
         }
     }
 
+    @Test
+    void urgentMailCannotOvertakeOutstandingCooperatingActorTask() throws Exception {
+        int cooperates = 96;
+        var started = new CountDownLatch(1);
+        var taskDone = new CountDownLatch(1);
+        var urgentDone = new CountDownLatch(1);
+        var steps = new AtomicInteger();
+        var overtaken = new AtomicBoolean();
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 4, 64, 32))) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                if ("task".equals(message)) {
+                    context.runtime().startActorTask(resume -> {
+                        int step = steps.getAndIncrement();
+                        if (step == 0) started.countDown();
+                        if (step < cooperates) return OresScheduler.cooperate();
+                        taskDone.countDown();
+                        return OresScheduler.done(null);
+                    });
+                } else if ("urgent".equals(message)) {
+                    if (taskDone.getCount() != 0) overtaken.set(true);
+                    urgentDone.countDown();
+                    context.self().stop();
+                } else {
+                    throw new AssertionError("unexpected actor message");
+                }
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            try {
+                actor.send("task");
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                actor.sendUrgent("urgent");
+                assertTrue(urgentDone.await(5, TimeUnit.SECONDS));
+                assertFalse(overtaken.get(),
+                        "urgent user mail must not bypass a cooperatively suspended logical task");
+                assertEquals(cooperates + 1, steps.get());
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            } finally {
+                actor.cancel();
+            }
+        }
+    }
+
 }
