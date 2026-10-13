@@ -4007,6 +4007,9 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            // A dynamic callable has no statically known parameter labels.
+            // Do not silently pass source-order named values as positionals.
+            rejectUnboundNamedCall(call);
             evalSuspendableExpr(
                     task,
                     call.callee(),
