@@ -119,4 +119,48 @@ final class AbstractAritySignatureTest {
         assertTrue(error.getMessage().contains("unresolved abstract method 'abc' with arity 1"),
                 error.getMessage());
     }
+
+    @Test
+    void wrongArgumentTypeDoesNotSearchAnotherOverload() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define abstract class Foo as
+                          abc(int value): int;
+                          abc(int value, int delta): int;
+                        end
+                        define class Impl extends Foo as
+                          pub abc(int value): int { return value; }
+                          pub abc(int value, int delta): int { return value + delta; }
+                        end
+                        pub fnc bad(): int {
+                          val value = new Impl();
+                          return value.abc(true);
+                        }
+                        """)));
+        assertFalse(error.getMessage().contains("ambiguous overload"), error.getMessage());
+    }
+
+    @Test
+    void staticFunctionCannotBecomeImplicitAbstract() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define abstract class Foo as
+                          pub static fnc abc(int value): int;
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("static class functions cannot be abstract"),
+                error.getMessage());
+    }
+
+    @Test
+    void explicitSelfReceiverDoesNotAddAnOverloadArgument() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define abstract class Foo as
+                          abc(): void;
+                          abc(self Foo)(): void;
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("already has arity 0"), error.getMessage());
+    }
 }
