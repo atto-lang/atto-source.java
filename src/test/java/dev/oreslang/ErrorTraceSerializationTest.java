@@ -56,6 +56,10 @@ final class ErrorTraceSerializationTest {
         List<Long> msgpack = GuestErrorWireCodec.messagePack(
                 "ActorAskTimeoutError", 9007, "late", List.of("main"));
         assertEquals(0x85L, msgpack.getFirst());
+        List<Long> compactMessagePack = GuestErrorWireCodec.messagePack(
+                "ActorAskTimeoutError", 9007, "private", List.of("secret"), false);
+        assertEquals(0x83L, compactMessagePack.getFirst()); // only schema/code/name
+        assertTrue(compactMessagePack.size() < msgpack.size());
         assertEquals(0xa6L, msgpack.get(1));
         assertTrue(msgpack.stream().allMatch(b -> b >= 0 && b < 256));
 
@@ -65,6 +69,11 @@ final class ErrorTraceSerializationTest {
         assertTrue(protobuf.contains(26L));
         assertTrue(protobuf.contains(34L));
         assertTrue(protobuf.contains(42L));
+        List<Long> compactProto = GuestErrorWireCodec.protoBuf(
+                "ActorAskTimeoutError", 9007, "private", List.of("secret"), false);
+        assertTrue(compactProto.size() < protobuf.size());
+        assertFalse(compactProto.contains(34L)); // field 4 message omitted
+        assertFalse(compactProto.contains(42L)); // field 5 stack omitted
     }
 
     @Test
