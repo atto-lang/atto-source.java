@@ -18,6 +18,10 @@ import java.util.Set;
 public final class NominalEnumOverloads {
     private NominalEnumOverloads() {}
 
+    /** Explicit compiler work bounds; backend signatures must agree. */
+    public static final int MAX_SAME_ARITY_CANDIDATES = 128;
+    public static final int MAX_OVERLOAD_ARITY = 64;
+
     private static final Set<String> SCALARS = Set.of(
             "bool", "int", "uint", "string", "String", "i8", "u8",
             "i16", "u16", "i32", "u32", "i64", "u64", "f64");
@@ -135,6 +139,10 @@ public final class NominalEnumOverloads {
      */
     public static Signature signature(
             String name, List<Ast.Param> parameters, Map<String, String> enumSymbols) {
+        if (parameters.size() > MAX_OVERLOAD_ARITY) {
+            throw new IllegalArgumentException("nominal enum overload exceeds arity limit "
+                    + MAX_OVERLOAD_ARITY);
+        }
         List<Position> positions = new ArrayList<>();
         for (Ast.Param parameter : parameters) {
             if (parameter.structural() || parameter.mutable()) {
@@ -199,6 +207,10 @@ public final class NominalEnumOverloads {
     public static Signature select(
             List<Signature> candidates, Map<Integer, String> provenEnumAtPosition) {
         if (candidates.isEmpty()) throw new IllegalArgumentException("empty overload set");
+        if (candidates.size() > MAX_SAME_ARITY_CANDIDATES) {
+            throw new IllegalArgumentException("nominal enum overload family exceeds candidate limit "
+                    + MAX_SAME_ARITY_CANDIDATES);
+        }
         int arity = candidates.getFirst().arity();
         String name = candidates.getFirst().name();
         for (Signature candidate : candidates) {
