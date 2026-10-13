@@ -597,6 +597,7 @@ public final class NativeHttp implements AutoCloseable {
             if (bytes.length > state.server.bodyLimit) throw new IllegalArgumentException("response too large");
             return operation(() -> {
                 synchronized (state) {
+                    if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
                     if (state.committed) throw new IllegalStateException("response already started");
                     state.committed = true;
                     state.responseStatus = status;
@@ -613,6 +614,7 @@ public final class NativeHttp implements AutoCloseable {
             validateStatus(status); setHeader("Content-Type", contentType);
             return operation(() -> {
                 synchronized (state) {
+                    if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
                     if (state.committed) throw new IllegalStateException("response already started");
                     state.committed = true;
                     state.responseStatus = status;
@@ -627,7 +629,10 @@ public final class NativeHttp implements AutoCloseable {
         private OresFuture<Object> writeBuffer(byte[] bytes) {
             if (bytes.length > state.server.bodyLimit) throw new IllegalArgumentException("response chunk too large");
             return operation(() -> {
-                if (!state.committed) throw new IllegalStateException("response not started");
+                synchronized (state) {
+                    if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
+                    if (!state.committed) throw new IllegalStateException("response not started");
+                }
                 if (!state.suppressBody) { state.raw.getResponseBody().write(bytes); state.raw.getResponseBody().flush(); }
                 return null;
             });
@@ -648,6 +653,12 @@ public final class NativeHttp implements AutoCloseable {
                     CorePerf.end(CorePerf.HTTP_IO_QUEUE, queued);
                     long workPerf = CorePerf.start();
                     try {
+                        // Ownership was checked when the operation was queued,
+                        // but a deadline may have made the exchange terminal
+                        // before this I/O worker actually begins executing.
+                        synchronized (state) {
+                            if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
+                        }
                         Object value = operation.call();
                         synchronized (state) { state.busy = false; }
                         result.completeFromRuntime(value);
