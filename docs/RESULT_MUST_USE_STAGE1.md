@@ -27,6 +27,10 @@ ownership/escape/liveness parity and not LLVM guest Result execution.
 - Fresh `Result<void,E>` temporaries may not be passed into untyped
   call sinks; references to named Results may be inspected without
   losing the originating pending obligation.
+- An outstanding Result cannot cross explicit `await`, channel operations,
+  deferred execution or lambda capture/construction until suspension,
+  cancellation, and cleanup obligations have a proven lowering. The proof
+  checks nested expression operands and conditional/match guards.
 - Nested Result obligations inside container/Option/tuple/record/union
   types are rejected until recursive tracking exists. Class/actor
   fields and module bindings storing Result obligations are likewise
