@@ -52,6 +52,41 @@ final class ChannelDataOnlyPayloadTest {
     }
 
     @Test
+    void typedChannelFactorySupportsRealTaggedDataAndRejectsWrongTypeDeclarations() throws Exception {
+        String program = """
+                pub routine main(): void {
+                  val Channel<Option<int>> numbers = Channel.new<Option<int>>(1);
+                  writech numbers, Some(42);
+                  val Option<int> item = readch numbers;
+                  stdio.stdout.write(item.unwrap());
+                  return;
+                }
+                """;
+        permits(program);
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        org.graalvm.polyglot.Source source = org.graalvm.polyglot.Source
+                .newBuilder(OresLanguage.ID, program, "sealed-channel-option.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (org.graalvm.polyglot.Context context =
+                org.graalvm.polyglot.Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("42", output.toString(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void wrongPrimitiveTypeIsRejectedBeforeChannelIsConstructed() {
+        IllegalArgumentException bad = forbids("""
+                fnc bad(Channel<int> output): void {
+                  writech output, "hello";
+                  return;
+                }
+                """);
+        assertNotNull(bad.getMessage());
+    }
+
+    @Test
     void rejectsClassesEvenIfMethodFreeAndRejectsNominalInterfaces() {
         IllegalArgumentException klass = forbids("""
                 define class Plain as
