@@ -85,6 +85,35 @@ final class ExclusiveAdtMatchSafetyTest {
     }
 
     @Test
+    void freeVariableGuardsCannotProveExclusiveCasesDisjoint() {
+        // Two comparisons of an outer name are not a snapshot proof:
+        // suspendable guards can observe different outer values.
+        rejectsOverlap("""
+                fnc classify(bool input, int threshold): int {
+                    match input
+                        true when threshold < 0 -> { return 1; }
+                        true when threshold >= 0 -> { return 2; }
+                        false -> { return 0; }
+                        else -> { return 3; }
+                    end
+                }
+                """);
+    }
+
+    @Test
+    void sameTupleProjectionHasStableExclusiveGuardPartitions() {
+        accepts("""
+                fnc classify(Tuple[int, int] pair): int {
+                    match pair
+                        (x, _) when x < 0 -> { return 1; }
+                        (x, _) when x >= 0 -> { return 2; }
+                        else -> { return 3; }
+                    end
+                }
+                """);
+    }
+
+    @Test
     void IdenticalPatternsWithProvenDisjointGuardRangesCanCoexist() {
         accepts("""
                 define enum State as
