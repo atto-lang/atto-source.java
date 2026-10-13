@@ -220,6 +220,56 @@ final class ActorSendContractTest {
         }
     }
     @Test
+    void successfulDrainObserversCanReenterGracefulStopWithoutHoldingLifecycleMonitor()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch callbackObserved = new CountDownLatch(1);
+        AtomicInteger callbacksUnderLock = new AtomicInteger();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                entered.countDown();
+                if (!release.await(5, TimeUnit.SECONDS))
+                    throw new AssertionError("test actor timed out");
+            });
+            ref.send(1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var actors = (java.util.Map<?, ?>) actorsField.get(runtime);
+            Object cell = actors.get(ref.id());
+            assertNotNull(cell);
+            var monitorField = cell.getClass().getDeclaredField("lifecycleLock");
+            monitorField.setAccessible(true);
+            Object lifecycleMonitor = monitorField.get(cell);
+
+            OresFuture<Void> processed = ref.drain();
+            processed.whenCompleteRuntime((ignored, failure) -> {
+                if (Thread.holdsLock(lifecycleMonitor)) callbacksUnderLock.incrementAndGet();
+                try {
+                    if (failure != null) throw new AssertionError("unexpected drain failure", failure);
+                    ref.gracefulStop();
+                } catch (Throwable unexpected) {
+                    callbackFailure.set(unexpected);
+                } finally {
+                    callbackObserved.countDown();
+                }
+            });
+
+            release.countDown();
+            assertTrue(callbackObserved.await(5, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get(), "drain callback must safely reenter lifecycle");
+            assertEquals(0, callbacksUnderLock.get(),
+                    "successful drain callbacks must never hold lifecycleLock");
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
     void failedDrainObserverCallbacksRunOutsideActorLifecycleMonitor() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
