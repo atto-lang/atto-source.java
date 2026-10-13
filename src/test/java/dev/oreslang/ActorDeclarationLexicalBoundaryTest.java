@@ -281,8 +281,11 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
-    void actorMayUseExplicitSameFileParentButNotAmbientSiblingTypes() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+    void actorSuperclassRemainsSealedAndAmbientSiblingTypesStayForbidden() {
+        // Superclasses can contribute hidden instance fields and inherited
+        // actor-unsafe methods. Reject until the inherited layout and lane
+        // have a trusted proof, even if this particular parent is stateless.
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 shared actor Parent {
                   pub fnc inherited(): int { return 1; }
                 }
