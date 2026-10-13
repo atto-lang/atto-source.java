@@ -371,7 +371,7 @@ public final class TypeChecker {
             Record expectedTemplate = interfaceShape(contract, Set.copyOf(contract.genericParameters()), new LinkedHashSet<>());
             Record expected = (Record) substituteGenerics(expectedTemplate,
                     genericBindings(contract.genericParameters(), namedRef.arguments(), "contract " + contract.name()));
-            if (!assignable(actual, expected)) {
+            if (!mayAssign(actual, expected)) {
                 throw new IllegalArgumentException("module '" + module.name() + "' does not conform to contract '" + ref.name()
                         + "': expected " + expected + " but got " + actual);
             }
@@ -1291,7 +1291,7 @@ public final class TypeChecker {
             Record expected = (Record) substituteGenerics(expectedTemplate,
                     genericBindings(iface.genericParameters(), interfaceType.arguments(), "interface " + iface.name()));
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
-            if (!assignable(actual, expected)) {
+            if (!mayAssign(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
         }
@@ -1686,7 +1686,7 @@ public final class TypeChecker {
                 for (Ast.Expr constant : arm.constants()) {
                     if (!constant(constant)) throw new IllegalArgumentException("switch case must be a compile-time constant");
                     Type actual = typeOf(constant, env, generics, self);
-                    if (!assignable(actual, subject) && !assignable(subject, actual)) {
+                    if (!mayAssign(actual, subject) && !mayAssign(subject, actual)) {
                         throw new IllegalArgumentException("switch case type " + actual + " is incompatible with " + subject);
                     }
                     String key = constant.toString();
@@ -1969,7 +1969,7 @@ public final class TypeChecker {
                         // writable type/capability. A union of read types is
                         // never a valid write target for heterogeneous slots.
                         for (Type candidate : tuple.elements()) {
-                            if (!assignable(candidate, first) || !assignable(first, candidate)
+                            if (!mayAssign(candidate, first) || !mayAssign(first, candidate)
                                     || readonlyCapabilityErased(candidate, first)
                                     || readonlyCapabilityErased(first, candidate)) {
                                 throw new IllegalArgumentException(
@@ -4990,7 +4990,7 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.LiteralPattern literal) {
             Type literalType = typeOf(new Ast.LiteralExpr(literal.value()), bindings, generics, self);
-            if (!assignable(literalType, subject) && !assignable(subject, literalType)) {
+            if (!mayAssign(literalType, subject) && !mayAssign(subject, literalType)) {
                 throw new IllegalArgumentException("literal pattern type " + literalType + " is incompatible with " + subject);
             }
             return;
@@ -5154,7 +5154,7 @@ public final class TypeChecker {
         if (subject instanceof SelfType selfType) {
             return structuralPatternMayMatch(selfType.bound(), targetShape);
         }
-        if (subject instanceof Record) return assignable(subject, targetShape);
+        if (subject instanceof Record) return mayAssign(subject, targetShape);
         if (subject instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
@@ -5403,7 +5403,7 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.TypePattern typed) {
             Type target = deref(resolve(typed.type(), generics, self));
-            return typesMayOverlap(subject, target) && assignable(subject, target);
+            return typesMayOverlap(subject, target) && mayAssign(subject, target);
         }
         if (pattern instanceof Ast.StructuralPattern structural) {
             Type resolved = deref(resolve(structural.target(), generics, self));
@@ -5501,7 +5501,7 @@ public final class TypeChecker {
             // nominal values cannot be certified from structural assignability.
             if (findClass(left.name()) != null && (findClass(right.name()) != null
                     || findInterface(right.name()) != null)) {
-                return assignable(source, target);
+                return mayAssign(source, target);
             }
         }
         return false;
@@ -5924,7 +5924,7 @@ public final class TypeChecker {
     }
 
     private Type capabilitySafeEquivalentJoin(Type a, Type b) {
-        if (assignable(b, a) && assignable(a, b)) {
+        if (mayAssign(b, a) && mayAssign(a, b)) {
             // Keep the left-hand shape while overlaying any stronger readonly
             // capability carried by the equivalent right-hand value. This is
             // recursive, so List<Record>, Tuple<Record>, Option<Record>, etc.
@@ -5969,7 +5969,7 @@ public final class TypeChecker {
         Type b = deref(right);
         if (Types.isNumeric(a) && Types.isNumeric(b)) return;
         if (isStringLike(a) && isStringLike(b)) return;
-        if (typesMayOverlap(a, b) || assignable(a, b) || assignable(b, a)) return;
+        if (typesMayOverlap(a, b) || mayAssign(a, b) || mayAssign(b, a)) return;
         throw new IllegalArgumentException(
                 "equality operands have disjoint value domains: " + left + " and " + right);
     }
@@ -6588,7 +6588,7 @@ public final class TypeChecker {
         Type existing = members.get(name);
         boolean methodSlot = name.contains("$arity") && existing instanceof Function && type instanceof Function;
         boolean compatible = methodSlot ? existing.equals(type)
-                : existing == null || (assignable(existing, type) && assignable(type, existing));
+                : existing == null || (mayAssign(existing, type) && mayAssign(type, existing));
         if (!compatible) {
             throw new IllegalArgumentException("conflicting member '" + name + "' in " + owner + ": " + existing + " vs " + type);
         }
@@ -7792,7 +7792,38 @@ public final class TypeChecker {
         return assignable(previous, expected) && assignable(expected, previous);
     }
 
+
+    /**
+     * Read-only compatibility question: unification may be explored, but
+     * neither success nor failure can bind a hole in the surrounding scope.
+     * Use requireAssignable for *committing* an expected type constraint.
+     */
+    private boolean mayAssign(Type actual, Type expected) {
+        Map<Long, Type> previous = new HashMap<>(inferenceSolutions);
+        try {
+            return assignable(actual, expected);
+        } finally {
+            inferenceSolutions.clear();
+            inferenceSolutions.putAll(previous);
+        }
+    }
+
+    /**
+     * Each assignability proof is transactional. A partially matched
+     * structural record, union arm, or function signature may not leave
+     * solved holes behind after the overall relation has failed.
+     */
     private boolean assignable(Type actual, Type expected) {
+        Map<Long, Type> previousSolutions = new HashMap<>(inferenceSolutions);
+        boolean proved = assignableWithConstraints(actual, expected);
+        if (!proved) {
+            inferenceSolutions.clear();
+            inferenceSolutions.putAll(previousSolutions);
+        }
+        return proved;
+    }
+
+    private boolean assignableWithConstraints(Type actual, Type expected) {
         // A negative constraint cannot be proved from an opaque top or an
         // unresolved inference. This guard must precede any contextual solver.
         if (expected instanceof Types.Not) return Types.isAssignable(actual, expected);
