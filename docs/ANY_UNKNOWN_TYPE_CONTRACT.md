@@ -76,6 +76,17 @@ cannot be erased by this simplification. Type checks also reject unknown
 nominal names without guest runtime recognition, rather than silently testing
 a Java host class or always returning false.
 
+## Indexed-access variance and union safety
+
+Indexing a heterogeneous tuple or record with a nonconstant key yields the
+**union** of all possible field/element types, not the legacy compiler-internal
+inference sentinel. That union may be inspected or narrowed, but cannot pass as
+an arbitrary concrete type. Indexed writes to tuples with dynamic indices
+are accepted only when every slot has an equivalent writable type and readonly
+capability; otherwise they fail at compile time. A constant tuple index checks
+bounds and uses the exact slot type. Dynamic indexing into an empty closed
+tuple/record is rejected.
+
 ## Writable structural fields and inference boundaries
 
 A record whose members are writable may not widen member types covariantly.

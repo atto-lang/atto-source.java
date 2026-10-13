@@ -1911,8 +1911,34 @@ public final class TypeChecker {
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException(
+                else if (receiver instanceof Tuple tuple) {
+                    Long slot = constantTupleIndex(indexed.index());
+                    if (slot != null) {
+                        if (slot < 0 || slot >= tuple.elements().size()) {
+                            throw new IllegalArgumentException(
+                                    "tuple assignment index " + slot + " outside arity " + tuple.elements().size());
+                        }
+                        targetType = tuple.elements().get(slot.intValue());
+                    } else {
+                        if (tuple.elements().isEmpty()) {
+                            throw new IllegalArgumentException("cannot assign through an empty tuple");
+                        }
+                        Type first = tuple.elements().getFirst();
+                        // The index may select *any* slot. Allow a write only
+                        // when every potential slot has exactly the same
+                        // writable type/capability. A union of read types is
+                        // never a valid write target for heterogeneous slots.
+                        for (Type candidate : tuple.elements()) {
+                            if (!assignable(candidate, first) || !assignable(first, candidate)
+                                    || readonlyCapabilityErased(candidate, first)
+                                    || readonlyCapabilityErased(first, candidate)) {
+                                throw new IllegalArgumentException(
+                                        "dynamic tuple assignment requires homogeneous writable slot types");
+                            }
+                        }
+                        targetType = first;
+                    }
+                } else throw new IllegalArgumentException(
                         "indexed assignment requires an array/list or tuple; structs have a closed static field set");
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
@@ -3222,8 +3248,10 @@ public final class TypeChecker {
                     }
                     return member;
                 }
-                if (record.members().isEmpty()) return Unknown.INSTANCE;
-                return record.members().values().stream().reduce(Unknown.INSTANCE, this::commonType);
+                if (record.members().isEmpty()) {
+                    throw new IllegalArgumentException("cannot dynamically index an empty closed record");
+                }
+                return Types.unionOf(List.copyOf(record.members().values()));
             }
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
@@ -3236,7 +3264,10 @@ public final class TypeChecker {
                     }
                     return tuple.elements().get(constant.intValue());
                 }
-                return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                if (tuple.elements().isEmpty()) {
+                    throw new IllegalArgumentException("cannot dynamically index an empty tuple");
+                }
+                return Types.unionOf(tuple.elements());
             }
             throw new IllegalArgumentException(
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
@@ -5384,8 +5415,7 @@ public final class TypeChecker {
             };
         }
         if (receiver instanceof Tuple tuple) {
-            Type element = tuple.elements().stream()
-                    .reduce(Unknown.INSTANCE, this::commonType);
+            Type element = Types.unionOf(tuple.elements());
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), element);
@@ -5463,11 +5493,7 @@ public final class TypeChecker {
         iterable = receiverDispatchType(iterable);
         if (iterable instanceof ListType list) return list.element();
         if (iterable instanceof Tuple tuple) {
-            Type result = Unknown.INSTANCE;
-            for (Type element : tuple.elements()) {
-                result = result == Unknown.INSTANCE ? element : commonType(result, element);
-            }
-            return result;
+            return Types.unionOf(tuple.elements());
         }
         if (iterable instanceof Named named) {
             if (named.name().equals("Iterator") && named.arguments().size() == 1) {

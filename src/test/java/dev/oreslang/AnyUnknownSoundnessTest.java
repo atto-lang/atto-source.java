@@ -179,6 +179,33 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void dynamicTupleWritesCannotTargetIncompatibleSlots() {
+        reject("""
+                fnc bad(int index): void {
+                  let tuple = (10, "hello");
+                  tuple[index] = 77;
+                  return;
+                }
+                """, "dynamic tuple assignment requires homogeneous writable slot types");
+    }
+
+    @Test
+    void dynamicReadsMustNotManufactureAnUncheckedInt() {
+        reject("""
+                fnc bad(int index): int {
+                  val tuple = (10, "hello");
+                  return tuple[index];
+                }
+                """, "return");
+        reject("""
+                fnc bad(string field): int {
+                  val obj = struct{foo: 1, bar: "hello"};
+                  return obj[field];
+                }
+                """, "return");
+    }
+
+    @Test
     void sourceTopsCannotBeShadowedByAliasesOrGenericParameters() {
         reject("fnc identity<Any>(Any value): Any { return value; }", "reserved type name");
         reject("fnc identity<Unknown>(Unknown value): Unknown { return value; }", "reserved type name");
