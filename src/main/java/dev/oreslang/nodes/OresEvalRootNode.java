@@ -6,6 +6,7 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.NamedCallBinder;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -3479,7 +3480,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             evalSuspendableExpr(
                     task,
-                    expressions.get(index),
+                    NamedCallBinder.value(expressions.get(index)),
                     env,
                     (t, value, failure) -> {
                         if (failure != null) {
@@ -3944,7 +3945,8 @@ public final class OresEvalRootNode extends RootNode {
                                 }
                                 try {
                                     Invocation invocation =
-                                            functionInvocation(direct, values);
+                                            functionInvocation(direct,
+                                                    bindCallArguments(call, direct.parameters(), values, "function " + direct.name()));
                                     completeSourceInvocation(
                                             t,
                                             invocation,
@@ -4167,7 +4169,7 @@ public final class OresEvalRootNode extends RootNode {
                     return object.owner.methodInvocation(
                             object,
                             method,
-                            args);
+                            bindCallArguments(call, method.parameters(), args, "method " + method.name()));
                 }
 
                 OwnedField ownedField = object.owner.findField(
@@ -4205,7 +4207,7 @@ public final class OresEvalRootNode extends RootNode {
                         env.accessClass(), "static function", method.name());
                 return klass.owner().staticFunctionInvocation(
                         method,
-                        args);
+                        bindCallArguments(call, method.parameters(), args, "static function " + method.name()));
             }
 
             if (receiver instanceof ModuleFacade module) {
@@ -5521,7 +5523,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, directName.name());
                     List<Object> args = evaluateArguments(call.arguments(), env);
-                    return functionInvocation(direct, args);
+                    return functionInvocation(direct,
+                            bindCallArguments(call, direct.parameters(), args, "function " + direct.name()));
                 }
             }
 
@@ -5580,7 +5583,8 @@ public final class OresEvalRootNode extends RootNode {
                                 env.accessClass(),
                                 "method",
                                 method.name());
-                        return object.owner.methodInvocation(object, method, args);
+                        return object.owner.methodInvocation(object, method,
+                                bindCallArguments(call, method.parameters(), args, "method " + method.name()));
                     }
 
                     OwnedField ownedField = object.owner.findField(
@@ -5626,7 +5630,8 @@ public final class OresEvalRootNode extends RootNode {
                             env.accessClass(),
                             "static function",
                             fn.name());
-                    return klass.owner().staticFunctionInvocation(fn, args);
+                    return klass.owner().staticFunctionInvocation(fn,
+                            bindCallArguments(call, fn.parameters(), args, "static function " + fn.name()));
                 }
 
                 if (receiver instanceof ModuleFacade module) {
@@ -5647,7 +5652,8 @@ public final class OresEvalRootNode extends RootNode {
                                 env.accessClass(),
                                 "method",
                                 method.name());
-                        return object.owner.methodInvocation(object, method, args);
+                        return object.owner.methodInvocation(object, method,
+                                bindCallArguments(call, method.parameters(), args, "method " + method.name()));
                     }
                 }
 
@@ -5683,13 +5689,20 @@ public final class OresEvalRootNode extends RootNode {
             return invokableInvocation(invokable, args);
         }
 
+        private List<Object> bindCallArguments(
+                Ast.CallExpr call, List<Ast.Param> formals,
+                List<Object> values, String callable) {
+            if (!NamedCallBinder.hasNamed(call.arguments())) return values;
+            return NamedCallBinder.bind(call.arguments(), formals, callable).toFormalOrder(values);
+        }
+
         private List<Object> evaluateArguments(List<Ast.Expr> arguments, Env env) {
             ArrayList<Object> values = new ArrayList<>(arguments.size());
             for (Ast.Expr argument : arguments) {
                 if (argument instanceof Ast.SpreadExpr spread) {
                     values.addAll(expandArgumentSequence(eval(spread.expression(), env), "argument spread"));
                 } else {
-                    values.add(eval(argument, env));
+                    values.add(eval(NamedCallBinder.value(argument), env));
                 }
             }
             return List.copyOf(values);
