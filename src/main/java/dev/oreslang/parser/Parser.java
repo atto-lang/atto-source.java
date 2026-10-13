@@ -1642,7 +1642,10 @@ public final class Parser {
             throw error(peek(), "typed exceptional effect '" + peek().lexeme()
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
-        if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
+        if (looksLikeStaticSelectStatement()) {
+            if (!check(DO)) throw error(peek(), "bare static select statement is forbidden; use do select or return select");
+            return parseStaticSelectStatement();
+        }
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
         if (check(CB) && checkNext(SELECT)) {
@@ -1754,8 +1757,12 @@ public final class Parser {
             advance(); // match
             return parseMatch(true);
         }
-        if (match(MATCH)) return parseMatch(false);
-        if (match(SWITCH)) return parseSwitch();
+        if (check(DO) && checkNext(SWITCH)) {
+            advance(); advance(); return parseSwitch();
+        }
+        if (check(MATCH) || check(SWITCH)) {
+            throw error(peek(), "bare match/switch statement is forbidden; use do or value-returning forms");
+        }
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
