@@ -91,10 +91,8 @@ public final class OresMutex {
 
         @Override
         public boolean cancel(boolean mayInterruptIfRunning) {
-            // Preserve the pre-existing one-shot cancellation contract. A
-            // completed cancellation no longer retains revokeQueuedWaiter,
-            // and calling CompletableFuture.cancel again would otherwise
-            // report true for an already-cancelled result.
+            // Preserve the existing one-shot physical claim contract. A
+            // completed cancellation no longer retains revokeQueuedWaiter.
             if (super.isDone()) return false;
             java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
             if (revoke != null && !revoke.getAsBoolean()) {
@@ -102,6 +100,26 @@ public final class OresMutex {
                 // noncancellable until the resulting Guard is published.
                 return false;
             }
+            if (ActorRuntime.inActorExecution()) {
+                // CompletableFuture.cancel synchronously invokes non-Async
+                // dependents on the cancelling thread. Never execute an
+                // arbitrary Java host callback with the actor's ambient
+                // thread-local execution authority, or park its carrier.
+                //
+                // Physical revocation and quota/deadlock cleanup above are
+                // already committed; terminal Java Future publication is
+                // intentionally deferred, exactly like timer expiry.
+                // Every async waiter reserves a slot in this bounded
+                // executor before being queued, so the notification cannot
+                // be discarded under ordinary queue saturation.
+                Shared.TIMEOUT_DELIVERY.execute(
+                        () -> completeCancellationFromRuntime(mayInterruptIfRunning));
+                return true;
+            }
+            return completeCancellationFromRuntime(mayInterruptIfRunning);
+        }
+
+        private boolean completeCancellationFromRuntime(boolean mayInterruptIfRunning) {
             try {
                 return super.cancel(mayInterruptIfRunning);
             } finally {
