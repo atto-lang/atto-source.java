@@ -168,6 +168,12 @@ public final class TaggedMessageContracts {
                 "ActorRef", "Channel", "Future");
         Set<String> ordinaryNames = new HashSet<>();
         for (Ast.ModuleDecl module : program.modules()) {
+            // Enum constructors and modules both produce runtime namespaces.
+            // A root enum cannot shadow a named module (or vice versa):
+            // the evaluator and static checker otherwise resolve A.Member
+            // against different authorities.
+            if (!module.name().equals(Parser.ROOT_MODULE))
+                ordinaryNames.add(module.name());
             for (Ast.Decl other : module.declarations()) {
                 String name = null;
                 if (other instanceof Ast.ClassDecl c) name = c.name();
