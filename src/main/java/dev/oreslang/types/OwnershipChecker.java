@@ -167,6 +167,47 @@ public final class OwnershipChecker {
             }
         }
 
+        // An initializer is executable code, not merely a type expression.
+        // Historically the checker visited constructors/methods but skipped
+        // class field initializer expressions entirely. Check each initializer
+        // before constructor execution so rt take, borrow and storage transfer
+        // rules cannot be bypassed by moving an operation into a field.
+        //
+        // Actor state uses a distinct initialization/capability protocol and
+        // is not included in this ordinary-class migration.
+        if (klass.actorKind() == Ast.ActorKind.NONE) {
+            Scope initializerScope = new Scope(null);
+            Ast.ConstructorDecl declaringConstructor = klass.constructor();
+            if (declaringConstructor != null) {
+                for (Ast.Param param : declaringConstructor.parameters()) {
+                    Ast.TypeRef type = param.type();
+                    String name = type.name();
+                    if (!type.isBorrow() && type.arguments().isEmpty()
+                            && !param.structural()
+                            && (name.equals("int") || name.equals("bool")
+                                    || name.equals("float") || name.equals("string"))) {
+                        initializerScope.define(param.name(), stateForParam(param));
+                    }
+                }
+            }
+            try {
+                for (Ast.FieldDecl field : klass.fields()) {
+                    if (field.initializer() == null) continue;
+                    ValueInfo value = checkExpr(field.initializer(), initializerScope, true);
+                    if (isBorrowValue(value)) {
+                        throw error("class field '" + klass.name() + "." + field.name()
+                                + "' cannot store a borrowed initializer result");
+                    }
+                    if (containsMutexGuardType(value.type)) {
+                        throw error("class field '" + klass.name() + "." + field.name()
+                                + "' cannot store a MutexGuard");
+                    }
+                }
+            } finally {
+                initializerScope.close();
+            }
+        }
+
         if (klass.constructor() != null) {
             Ast.ConstructorDecl constructor = klass.constructor();
             Scope scope = new Scope(null);
