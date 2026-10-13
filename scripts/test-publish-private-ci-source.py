@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Offline adversarial tests for the private destination-bound publisher."""
 import importlib.util
+import base64
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -32,10 +34,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
                         private=True, default_branch="main")
+        if route == "repos/trusted/ci/git/blobs":
+            raw = base64.b64decode(payload["content"])
+            return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
+                                        + bytes([0]) + raw).hexdigest()}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
-            "repos/trusted/ci/git/blobs": {"sha": C},
             "repos/trusted/ci/git/trees": {"sha": D},
             "repos/trusted/ci/git/commits": {"sha": A},
             "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
@@ -105,6 +110,30 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaises(pub.Denied):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
         self.assertFalse(any(r.endswith("/git/refs") for _, r, _ in self.route_calls))
+
+    def test_valid_looking_but_incorrect_blob_sha_is_rejected(self):
+        original = self.fake_api
+        def wrong(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/blobs":
+                return {"sha": C}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong):
+            with self.assertRaisesRegex(pub.Denied, "digest"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        self.assertFalse(any(r.endswith("/git/refs") for _, r, _ in self.route_calls))
+
+    def test_source_must_be_under_trusted_checkout(self):
+        outside = self.root.parent / ("unsafe-" + self.root.name)
+        outside.mkdir()
+        try:
+            (outside / "outside.ores").write_text("private data")
+            with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                with self.assertRaisesRegex(pub.Denied, "trusted checkout"):
+                    pub.publish("trusted/ci", outside, "ci/oreslang-test", self.root)
+        finally:
+            (outside / "outside.ores").unlink()
+            outside.rmdir()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_denied_preflight_halts_before_api(self):
         with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
