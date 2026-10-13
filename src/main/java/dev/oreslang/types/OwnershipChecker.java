@@ -767,6 +767,12 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        // Defense in depth: standalone ownership analysis must never
+        // assign a normal value/closure capability to state-loan AST.
+        if (expr instanceof Ast.ActorStateAccessExpr) {
+            throw error("sealed actor handle_state requires verified state-loan "
+                    + "ownership and scheduler-backed cleanup lowering");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
