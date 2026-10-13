@@ -6,6 +6,62 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class CriticalGateTest {
     @Test
+    void throwingCloseObserverDoesNotStrandAlreadyGrantedSuccessor() {
+        CriticalGate gate = new CriticalGate();
+        var writer = gate.newTicket();
+        var nextWriter = gate.newTicket();
+        var lastWriter = gate.newTicket();
+        assertTrue(writer.enterAsync().isDone());
+        OresFuture<Void> nextAdmission = nextWriter.enterAsync();
+        OresFuture<Void> lastAdmission = lastWriter.enterAsync();
+        assertFalse(nextAdmission.isDone());
+        writer.onClose(() -> {
+            throw new IllegalStateException("injected close observer failure");
+        });
+        var failure = assertThrows(IllegalStateException.class, writer::close);
+        assertEquals("injected close observer failure", failure.getMessage());
+        assertTrue(nextAdmission.isDone(), "handoff must settle despite close callback failure");
+        assertTrue(nextWriter.isHeld());
+        assertFalse(lastAdmission.isDone());
+        nextWriter.close();
+        assertTrue(lastAdmission.isDone(), "subsequent FIFO handoff must still run");
+        lastWriter.close();
+        assertFalse(gate.held());
+        assertEquals(0, gate.queuedCount());
+    }
+
+    @Test
+    void wholeDomainCloseContinuesAfterMultipleThrowingObservers() {
+        CriticalGate gate = new CriticalGate();
+        var writer = gate.newTicket();
+        var firstQueued = gate.newTicket(CriticalGate.Mode.READ);
+        var secondQueued = gate.newTicket(CriticalGate.Mode.WRITE);
+        assertTrue(writer.enterAsync().isDone());
+        var firstAdmission = firstQueued.enterAsync();
+        var secondAdmission = secondQueued.enterAsync();
+        writer.onClose(() -> {
+            throw new IllegalStateException("writer observer failed");
+        });
+        firstQueued.onClose(() -> {
+            throw new IllegalStateException("reader observer failed");
+        });
+        IllegalStateException failure = assertThrows(IllegalStateException.class, gate::closeAll);
+        assertEquals("writer observer failed", failure.getMessage());
+        assertEquals(1, failure.getSuppressed().length,
+                "later observer failures must be recorded without skipping cleanup");
+        assertTrue(firstAdmission.isDone());
+        assertTrue(secondAdmission.isDone());
+        assertFalse(writer.isHeld());
+        assertFalse(firstQueued.isHeld());
+        assertFalse(secondQueued.isHeld());
+        assertEquals(0, gate.queuedCount());
+        assertFalse(gate.held());
+        assertEquals(0, CriticalGate.waitingLogicalDomains());
+        assertThrows(IllegalStateException.class, gate::newTicket);
+        gate.closeAll();
+    }
+
+    @Test
     void directCoreDomainCloseDetachesActorResourceBeforeActorStops() throws Exception {
         CriticalGate gate = new CriticalGate();
         java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
