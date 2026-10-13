@@ -210,8 +210,11 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
-    void settledActorCompletionDoesNotParkUnderLiveMutexGuard() throws Exception {
-        assertEquals("settled", run("""
+    void settledActorCompletionIsAlsoRejectedByStaticNoYieldChecking() {
+        // Source ownership checking forbids await under a guard even when the
+        // Future is known to be settled at runtime. The runtime inline path
+        // remains relevant to host calls that have escaped source admission.
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run("""
                 define class Counter as
                   pub let int value = 0;
                 end
@@ -230,10 +233,13 @@ final class SourceLoopSoftPreemptionTest {
                   val guard = mutex.lock();
                   await idle.get_done();
                   guard.release();
-                  stdio.stdout.write("settled");
+                  stdio.stdout.write("unreachable");
                   return;
                 }
                 """));
+        assertTrue(failure.getMessage().contains("MutexGuard"),
+                "static no-yield admission must reject even a settled await: "
+                        + failure.getMessage());
     }
 
     @Test
