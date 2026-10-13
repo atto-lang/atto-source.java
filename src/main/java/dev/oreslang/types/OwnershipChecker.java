@@ -282,7 +282,7 @@ public final class OwnershipChecker {
                         // Every initializer sees the original scope, including
                         // when an unpacked binding shadows an outer owner.
                         Scope elementScope = new Scope(scope);
-                        checkBinding(new Ast.BindingStmt(binding.kind(), null, binding.name(),
+                        checkBinding(new Ast.BindingStmt(binding.kind(), binding.declaredType(), binding.name(),
                                 tuple.elements().get(i), binding.mutableReferent()), elementScope);
                         if (unpacked.putIfAbsent(binding.name(), elementScope.lookup(binding.name())) != null) {
                             throw error("duplicate tuple binding '" + binding.name() + "'");
@@ -296,7 +296,9 @@ public final class OwnershipChecker {
             for (int i = 0; i < destructure.bindings().size(); i++) {
                 Ast.DestructureBinding binding = destructure.bindings().get(i);
                 if (binding.isDiscard()) continue;
-                Ast.TypeRef bindingType = destructureBindingType(destructure, source.type, i, binding.name());
+                Ast.TypeRef bindingType = binding.declaredType() != null
+                        ? binding.declaredType()
+                        : destructureBindingType(destructure, source.type, i, binding.name());
                 ValueKind bindingKind = bindingType.name().equals("$infer$")
                         ? (source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY)
                         : kindOfType(bindingType);
@@ -609,7 +611,9 @@ public final class OwnershipChecker {
             for (int i = 0; i < loop.bindings().size(); i++) {
                 Ast.DestructureBinding binding = loop.bindings().get(i);
                 if (binding.isDiscard()) continue;
-                Ast.TypeRef bindingType = sequenceDestructureBindingType(elementType, i, binding.rest());
+                Ast.TypeRef bindingType = binding.declaredType() != null
+                        ? binding.declaredType()
+                        : sequenceDestructureBindingType(elementType, i, binding.rest());
                 loopScope.define(binding.name(), new VarState(
                         bindingType,
                         binding.mutableReferent(),
