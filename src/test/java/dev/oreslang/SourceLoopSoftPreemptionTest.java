@@ -154,6 +154,43 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void overdueWhileLoopNeverYieldsWithGuardButCooperatesAfterRelease()
+            throws Exception {
+        String output = run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  let i = 0;
+                  while (i < 1024) do
+                    guard.value = guard.value + 1;
+                    i = i + 1;
+                  done
+                  stdio.stdout.write(guard.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  guard.release();
+
+                  // The dispatch has already exhausted its budget. A newly
+                  // safe backedge must cooperate immediately, rather than
+                  // waiting for another full 64-backedge polling batch.
+                  let resumed = 0;
+                  while resumed < 1 do
+                    resumed = resumed + 1;
+                  done
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("1024|0|"), output);
+        assertTrue(Long.parseLong(output.substring("1024|0|".length())) > 0,
+                "release of an overdue lexical guard must restore fairness");
+    }
+
+    @Test
     void infiniteCpuActorDoesNotStarvePeerWithOneSharedCarrier()
             throws Exception {
         // Both actors deliberately use the SHARED lane. With one physical
