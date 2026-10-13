@@ -191,4 +191,41 @@ final class ColonClassFieldInitializerTest {
         assertEquals(Ast.BindingKind.LET, foo.fields().get(2).bindingKind());
         assertTrue(foo.fields().get(2).mutableReferent());
     }
+
+    @Test
+    void constructorCanInitializeFixedSlotOnlyOnce() {
+        String duplicate = """
+                define class Foo as
+                  val int value;
+                  constructor() {
+                    self.value = 1;
+                    self.value = 2;
+                  }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(duplicate)));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(duplicate)));
+    }
+
+    @Test
+    void constructorRejectsConservativeCrossBranchSecondFixedWrite() {
+        String ambiguous = """
+                define class Foo as
+                  val int value;
+                  constructor() {
+                    if true then
+                      self.value = 1;
+                    else
+                      self.value = 2;
+                    fi
+                  }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(ambiguous)));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(ambiguous)));
+    }
 }
