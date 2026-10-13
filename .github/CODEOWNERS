@@ -1,5 +1,6 @@
 # Security review for all changes that can authorize private-source exports.
 # Enforcement requires branch protection to require code-owner reviews.
+/.github/CODEOWNERS @ORESoftware
 /.github/private-ci-approved-repositories.txt @ORESoftware
 /scripts/check-private-ci-destination.sh @ORESoftware
 /scripts/run-in-private-ci-destination.sh @ORESoftware
