@@ -2212,6 +2212,14 @@ public final class TypeChecker {
                         namespace.name() + "." + qualifiedCall.member(),
                         arity, call.arguments(), env, generics, self);
                 if (target != null) {
+                    // A module-qualified call is a public namespace access.
+                    // Private declarations must not type-check only to fail
+                    // later (or accidentally run via prebound dispatch).
+                    if (target.visibility() != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException(
+                                "module function '" + namespace.name() + "."
+                                        + target.name() + "' is private");
+                    }
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
