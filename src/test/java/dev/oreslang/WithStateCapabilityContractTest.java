@@ -92,6 +92,28 @@ final class WithStateCapabilityContractTest {
                 ActorStateContract.verify(Parser.parse(
                     "define actor A as let v: int = 0; end")));
     }
+    @Test void actorSuperclassInheritanceCannotBypassSealedStateLayout() {
+        // The parser accepts an extends clause, but no actor kind may
+        // inherit unverified fields or callable state-bearing methods.
+        for (String declaration : new String[] {
+                "define actor Child extends Base as",
+                "define serial actor Child extends Base as"
+        }) {
+            Ast.Program parsed = Parser.parse(declaration
+                    + " ping(): int { return 1; } end");
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(parsed), declaration);
+            assertTrue(denied.getMessage().contains("cannot extend a class"),
+                    denied::getMessage);
+        }
+        // Implemented interfaces do not contribute unchecked instance
+        // storage; they remain distinct from superclass inheritance.
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(
+                "define actor Child from BaseContract as "
+                + "ping(): int { return 1; } end")));
+    }
+
     @Test void statelessActorMethodsStillReceiveSealedStateVerification() {
         assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(
                 "define actor Stateless as ping(): int { return 1; } end")));
