@@ -495,15 +495,17 @@ final class StdErrorCatalogTest {
     }
 
     @Test
-    void concreteSubclassesMustImplementAbstractCodeSlot() throws Exception {
+    void concreteBaseErrorAllowsInheritedCodeAndSerializableMethods() throws Exception {
         String source = CoreLibrarySources.source("std/error");
-        for (String classBody : new String[]{
-                "define class MissingCode extends Error as end",
-                "define class WrongArity extends Error as pub code(int ignored): int { return ignored; } end"}) {
-            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(source + "\n" + classBody)));
-            assertTrue(failure.getMessage().contains("unresolved abstract method 'code'"), failure::getMessage);
-        }
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source + """
+                
+                define class UserError extends Error as
+                end
+                fnc example(): int {
+                  val UserError e = new UserError();
+                  return e.code();
+                }
+                """)));
     }
 
     @Test
@@ -520,11 +522,16 @@ final class StdErrorCatalogTest {
     }
 
     @Test
-    void effectSyntaxRemainsFailClosedUntilGuestLoweringExists() {
-        for (String keyword : new String[]{"throw", "raise", "panic", "recover"}) {
+    void effectSyntaxTypeChecksBeforeFailClosedGuestLowering() {
+        for (String keyword : new String[]{"throw", "raise", "panic"}) {
+            Ast.Program program = Parser.parse("fnc f(): void { " + keyword + " 1; return; }");
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                    () -> Parser.parse("fnc f(): void { " + keyword + " 1; return; }"));
-            assertTrue(failure.getMessage().contains("not yet enabled"), failure::getMessage);
+                    () -> TypeChecker.checkTypes(program));
+            assertTrue(failure.getMessage().contains("requires a nominal std/error.Error value"),
+                    failure::getMessage);
         }
+        IllegalArgumentException recover = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc f(): void { recover 1; return; }"));
+        assertTrue(recover.getMessage().contains("not yet enabled"), recover::getMessage);
     }
 }
