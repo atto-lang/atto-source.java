@@ -822,12 +822,6 @@ public final class Parser {
                 List<String> memberGenerics = parseGenericParameters();
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
-                java.util.Set<String> parameterNames = new java.util.HashSet<>();
-                for (Ast.Param param : params) {
-                    if (!parameterNames.add(param.name())) {
-                        throw error(previous(), "duplicate interface/contract parameter name '" + param.name() + "'");
-                    }
-                }
                 consume(RPAREN, "expected ')' after interface parameters");
                 Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
@@ -1243,6 +1237,7 @@ public final class Parser {
             }
             params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
+        requireDistinctParameterNames(params);
         return List.copyOf(params);
     }
 
@@ -1262,6 +1257,15 @@ public final class Parser {
         do names.add(consume(IDENT, "expected generic parameter name").lexeme()); while (match(COMMA));
         consume(GT, "expected '>' after generic parameters");
         return names;
+    }
+
+    private void requireDistinctParameterNames(List<Ast.Param> params) {
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (Ast.Param param : params) {
+            if (!names.add(param.name())) {
+                throw error(previous(), "duplicate parameter name '" + param.name() + "'");
+            }
+        }
     }
 
     private List<Ast.Param> parseParametersUntil(Token.Type terminator) {
@@ -1338,6 +1342,7 @@ public final class Parser {
             }
             params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
+        requireDistinctParameterNames(params);
         return params;
     }
 
