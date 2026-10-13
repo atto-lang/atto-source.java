@@ -81,6 +81,20 @@ final class InlineStructuralRecordContractTest {
     }
 
     @Test
+    void readonlyInlineShapesCannotBeMutableOrCrossAsyncActorBoundaries() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                async fnc bad(record{foo: int} value): int {
+                    return value.foo;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                actor fnc bad(struct{foo: int} value): void {
+                    return;
+                }
+                """)));
+    }
+
+    @Test
     void duplicateFieldNamesFailAtParseTime() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(record{foo: int, foo: string} v): void { return; }

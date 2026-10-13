@@ -86,3 +86,14 @@ native AOT/hybrid checks; a targeted audit of readonly numeric widening,
 Unknown/Generic, nested mutable projections and methods; explicit
 LLVM rejection or matching lowering for syntax/shape checks, and shared
 positive/negative conformance cases. No parity or green build is claimed.
+
+### Synchronous call/ownership admission
+
+The readonly inline spellings are borrowed shape **views**. A parameter typed
+`struct{...}` or `record{...}` (including aliases resolving to readonly
+records) may not be marked `mut` and may not be admitted as an async,
+generator, or actor mailbox parameter. The existing `structural {...}`
+spelling already has the same restrictions. Do not loosen the restriction by
+using a different syntactic spelling for the same structural view. A future
+owned/copying shape-conversion construct could explicitly permit async/actor
+transfer after ownership and serializer validation.

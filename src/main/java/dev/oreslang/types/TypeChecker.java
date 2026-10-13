@@ -576,12 +576,13 @@ public final class TypeChecker {
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
             argumentTypes.add(parameterType);
-            if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
+            boolean structuralView = param.structural() || containsReadonlyRecordCapability(parameterType);
+            if (structuralView && fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
                         "structural parameter '" + param.name() + "' cannot cross an actor mailbox boundary; "
                                 + "pass an owned/sendable nominal value instead");
             }
-            if (param.structural() && (fn.async() || fn.generator())) {
+            if (structuralView && (fn.async() || fn.generator())) {
                 throw new IllegalArgumentException(
                         "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
                                 + "pass an owned nominal value or copy the required fields");
@@ -1177,12 +1178,13 @@ public final class TypeChecker {
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
                 methodArgumentTypes.add(parameterType);
-                if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
+                boolean structuralView = param.structural() || containsReadonlyRecordCapability(parameterType);
+                if (structuralView && klass.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
                             "structural parameter '" + param.name() + "' cannot cross actor method mailbox boundaries; "
                                     + "actor APIs require owned/sendable nominal message values");
                 }
-                if (param.structural() && method.async()) {
+                if (structuralView && method.async()) {
                     throw new IllegalArgumentException(
                             "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
                                     + "pass an owned nominal value or copy the required fields");
@@ -6261,7 +6263,17 @@ public final class TypeChecker {
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
-        if (!param.structural()) return resolve(param.type(), generics, self);
+        if (!param.structural()) {
+            Type resolved = resolve(param.type(), generics, self);
+            // A readonly inline shape (including an alias) is a view, not
+            // permission to request a mutable parameter/receiver.
+            if (param.mutable() && containsReadonlyRecordCapability(resolved)) {
+                throw new IllegalArgumentException(
+                        "readonly structural parameter '" + param.name()
+                                + "' cannot be declared mut");
+            }
+            return resolved;
+        }
         if (param.mutable()) {
             throw new IllegalArgumentException(
                     "structural parameter '" + param.name()
