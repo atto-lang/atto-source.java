@@ -8,6 +8,7 @@ on:
     paths:
       - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
       - "src/test/java/dev/oreslang/SourceContinuationSingleDeliveryTest.java"
+      - "src/test/java/dev/oreslang/SourceTerminalFlowPolicyTest.java"
       - "src/test/java/dev/oreslang/SourceInlineCriticalStateHandoffTest.java"
       - "src/test/java/dev/oreslang/WithUsingLoanSuspensionAuditTest.java"
       - "src/test/java/dev/oreslang/SourceLoopSoftPreemptionTest.java"
@@ -49,7 +50,7 @@ jobs:
       - name: Execute guest-source continuation and state-handoff regressions
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=SourceContinuationSingleDeliveryTest,SourceInlineCriticalStateHandoffTest,SourceCriticalActorStateTest,SourceLoopSoftPreemptionTest,WithUsingLoanSuspensionAuditTest,GeneratorLanguageTest,AsyncAwaitLanguageTest,AsyncChannelBoundaryTest \
+            -Dtest=SourceContinuationSingleDeliveryTest,SourceTerminalFlowPolicyTest,SourceInlineCriticalStateHandoffTest,SourceCriticalActorStateTest,SourceLoopSoftPreemptionTest,WithUsingLoanSuspensionAuditTest,GeneratorLanguageTest,AsyncAwaitLanguageTest,AsyncChannelBoundaryTest \
             test
       - name: Execute full Maven regression suite
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
