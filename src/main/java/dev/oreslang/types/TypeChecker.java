@@ -987,27 +987,36 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
-            Type fieldType = classFieldType(klass, field);
-            if (field.initializer() != null && field.type() != null) {
-                Ast.ClassDecl previousClassOwner = currentClassOwner;
-                Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
-                currentClassOwner = klass;
-                lexicalClassOrigin = klass;
-                try {
-                    Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
-                    requireReadonlyCapabilityPreserved(
-                            actual,
-                            fieldType,
-                            "field initializer " + klass.name() + "." + field.name());
-                    requireMutableReferentCompatible(
-                            actual,
-                            field.mutableReferent(),
-                            "field '" + klass.name() + "." + field.name() + "'");
-                    requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
-                } finally {
-                    currentClassOwner = previousClassOwner;
-                    lexicalClassOrigin = previousLexicalClass;
+            // An untrusted actor's initial state is constructed inside its
+            // isolation boundary. The same Symbol-admission policy must apply
+            // to declared and inferred field initializers, not just methods.
+            Ast.ActorKind priorFieldActorKind = currentActorKind;
+            currentActorKind = klass.actorKind();
+            try {
+                Type fieldType = classFieldType(klass, field);
+                if (field.initializer() != null && field.type() != null) {
+                    Ast.ClassDecl previousClassOwner = currentClassOwner;
+                    Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
+                    currentClassOwner = klass;
+                    lexicalClassOrigin = klass;
+                    try {
+                        Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
+                        requireReadonlyCapabilityPreserved(
+                                actual,
+                                fieldType,
+                                "field initializer " + klass.name() + "." + field.name());
+                        requireMutableReferentCompatible(
+                                actual,
+                                field.mutableReferent(),
+                                "field '" + klass.name() + "." + field.name() + "'");
+                        requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
+                    } finally {
+                        currentClassOwner = previousClassOwner;
+                        lexicalClassOrigin = previousLexicalClass;
+                    }
                 }
+            } finally {
+                currentActorKind = priorFieldActorKind;
             }
         }
 
