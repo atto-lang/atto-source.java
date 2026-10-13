@@ -16,7 +16,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.OresMutex;
-import dev.oreslang.runtime.CriticalGate;
+import dev.oreslang.runtime.CriticalRwGate;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -144,8 +144,8 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
         // A single code unit owns one file-global critical gate. Imported calls
         // dispatch back to the declaring evaluator and therefore share it.
-        private final CriticalGate fileCriticalGate = OresMutex.criticalGate();
-        private final java.util.concurrent.ConcurrentHashMap<Ast.ClassDecl, CriticalGate> staticCriticalGates =
+        private final CriticalRwGate fileCriticalGate = new CriticalRwGate();
+        private final java.util.concurrent.ConcurrentHashMap<Ast.ClassDecl, CriticalRwGate> staticCriticalGates =
                 new java.util.concurrent.ConcurrentHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
@@ -862,7 +862,7 @@ public final class OresEvalRootNode extends RootNode {
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
-            private final CriticalGate.Ticket criticalTicket;
+            private final CriticalRwGate.Ticket criticalTicket;
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -872,7 +872,7 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.FunctionDecl function,
                     List<?> arguments) {
                 this.function = Objects.requireNonNull(function, "function");
-                this.criticalTicket = function.critical() ? fileCriticalGate.newTicket() : null;
+                this.criticalTicket = function.critical() ? fileCriticalGate.newCriticalTicket() : null;
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = null;
@@ -886,7 +886,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.function = null;
                 this.method = Objects.requireNonNull(method, "method");
                 this.criticalTicket = method.critical()
-                        ? methodGate(method, receiver).newTicket() : null;
+                        ? methodGate(method, receiver).newCriticalTicket() : null;
                 this.receiver = receiver;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
@@ -1168,10 +1168,10 @@ public final class OresEvalRootNode extends RootNode {
             return new RuntimeException(unwrapped);
         }
 
-        private CriticalGate methodGate(Ast.MethodDecl method, OresObject receiver) {
+        private CriticalRwGate methodGate(Ast.MethodDecl method, OresObject receiver) {
             if (receiver != null) return receiver.criticalGate;
             return staticCriticalGates.computeIfAbsent(
-                    declaringClass(method), ignored -> OresMutex.criticalGate());
+                    declaringClass(method), ignored -> new CriticalRwGate());
         }
 
         private OresFuture<Object> startSourceFunctionTask(
@@ -4533,7 +4533,7 @@ public final class OresEvalRootNode extends RootNode {
                 return returnSourceTaskResult(future, fn.async());
             }
 
-            CriticalGate.Ticket critical = fn.critical() ? fileCriticalGate.newTicket() : null;
+            CriticalRwGate.Ticket critical = fn.critical() ? fileCriticalGate.newCriticalTicket() : null;
             if (critical != null) critical.enterSync();
             try {
                 Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
@@ -4620,8 +4620,8 @@ public final class OresEvalRootNode extends RootNode {
                 return returnSourceTaskResult(future, method.async());
             }
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
-            CriticalGate.Ticket critical = method.critical()
-                    ? methodGate(method, receiver).newTicket() : null;
+            CriticalRwGate.Ticket critical = method.critical()
+                    ? methodGate(method, receiver).newCriticalTicket() : null;
             if (critical != null) critical.enterSync();
             try {
                 Env env = new Env(null, false, declaringClass(method));
@@ -6946,8 +6946,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callStaticFunctionBodyRaw(Ast.MethodDecl fn, List<?> args) {
-            CriticalGate.Ticket critical = fn.critical()
-                    ? methodGate(fn, null).newTicket() : null;
+            CriticalRwGate.Ticket critical = fn.critical()
+                    ? methodGate(fn, null).newCriticalTicket() : null;
             if (critical != null) critical.enterSync();
             try {
                 Env env = new Env(null, false, declaringClass(fn));
@@ -8721,7 +8721,7 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private static final class OresObject implements OresMutex.SharedState {
-        private final CriticalGate criticalGate = OresMutex.criticalGate();
+        private final CriticalRwGate criticalGate = new CriticalRwGate();
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
