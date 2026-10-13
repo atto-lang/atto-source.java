@@ -164,7 +164,11 @@ public final class Types {
             if (source.readOnly() && !target.readOnly()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
-                if (actual == null || !isAssignable(actual, required.getValue())) return false;
+                if (actual == null) return false;
+                // A callable-valued data field is not an instance method.
+                if (source.methodKeys().contains(required.getKey())
+                        != target.methodKeys().contains(required.getKey())) return false;
+                if (!isAssignable(actual, required.getValue())) return false;
                 // Writable data slots require equal resolved types. Bidirectional
                 // assignability is not enough: Unknown/Generic can match both
                 // directions and would allow writes through an unsafe alias.
@@ -277,6 +281,11 @@ public final class Types {
             java.util.TreeMap<String, Type> merged = new java.util.TreeMap<>(a.members());
             for (Map.Entry<String, Type> field : b.members().entrySet()) {
                 Type existing = merged.get(field.getKey());
+                if (existing != null && a.methodKeys().contains(field.getKey())
+                        != b.methodKeys().contains(field.getKey())) {
+                    throw new IllegalArgumentException(
+                            "intersection field/method collision at '" + field.getKey() + "'");
+                }
                 if (existing == null) {
                     merged.put(field.getKey(), field.getValue());
                     continue;
