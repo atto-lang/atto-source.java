@@ -32,7 +32,7 @@ final class BorrowControlFlowHardeningTest {
     void independentSwitchArmsDoNotSeeOneAnothersMoves() {
         admitted("""
                   let Box box = new Box();
-                  switch 1
+                  do switch 1
                     case 1 -> {
                       val Box consumed = rt take box;
                     }
@@ -50,7 +50,7 @@ final class BorrowControlFlowHardeningTest {
     void anySwitchArmMovePoisonsSubsequentUse() {
         rejectedAsMoved("""
                   let Box box = new Box();
-                  switch 1
+                  do switch 1
                     case 1 -> {
                       val Box consumed = rt take box;
                     }
