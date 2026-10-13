@@ -116,12 +116,9 @@ public final class Parser {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
                 if (match(MODULE)) {
-                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                            || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
-                        throw error(previous(), "modules do not accept declaration modifiers");
-                    }
+                    validateOnlyVisibilityModifiers(modifiers, "module declarations");
                     rejectCallableStructuralAnnotation(annotations, "module declarations");
-                    modules.add(parseModule(annotations));
+                    modules.add(parseModule(annotations, modifiers.visibility));
                     continue;
                 }
                 if (match(CONTRACT)) {
@@ -254,7 +251,7 @@ public final class Parser {
         return consume(IDENT, "expected imported name").lexeme();
     }
 
-    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
+    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.TypeRef> contracts = match(CONFORMS) ? parseTypeRefList() : List.of();
@@ -264,7 +261,7 @@ public final class Parser {
         List<Ast.Decl> declarations = new ArrayList<>();
         while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
         consume(END, "expected 'end' to close module " + name);
-        return new Ast.ModuleDecl(name, annotations, contracts, declarations);
+        return new Ast.ModuleDecl(name, visibility, annotations, contracts, declarations);
     }
 
     private Ast.Decl parseModuleMember() {
