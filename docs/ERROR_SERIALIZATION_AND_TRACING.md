@@ -43,3 +43,7 @@ The overloaded capture_trace(SimpleTrace)/capture_trace(ArrayTrace) syntax is re
 - Message causes/suppressed failures, safe redaction and bounded cycle handling require separate additive versioned wire fields; no ad-hoc recursive object serialization.
 
 Related: docs/ERROR_HIERARCHY.md, docs/EXCEPTION_EFFECT_ADMISSION.md, docs/TRAP.md, LLVM issue #313 and Java supervision issue #641.
+
+## Required typed effect operands (implementation gate)
+
+`throw`, `raise`, and `panic` take exactly one canonical std/error.Error or nominal descendant, never string, primitive, Any/Unknown, borrowed reference or a structural approximation. Their dedicated AST and static nominal check are staged, but all effects still fail closed at the runtime-admission boundary. Future throw-site capture must not alter ordinary new Error() allocation or allow supervisor panic to be intercepted. See docs/EXCEPTION_EFFECT_ADMISSION.md and LLVM issue #143.

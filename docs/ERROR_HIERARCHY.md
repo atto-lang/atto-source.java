@@ -246,3 +246,7 @@ See `docs/EXCEPTION_EFFECT_ADMISSION.md`, `docs/TRAP.md`, `docs/PATTERN_MATCHING
 ## Trace and serialization extension
 
 The concrete Error root implements Serializable with to_string(), to_json(), to_messagepack(), and to_proto_buf(). New Error() is trace-free, and explicit capture_stack() populates a bounded guest trace. Its inherited synthetic constructor fields configure full_trace, json_full, message, binary_full and stack; see docs/ERROR_SERIALIZATION_AND_TRACING.md for wire formats, compact JSON and binary output, trust-boundary redaction and the not-yet-enabled automatic throw-site capture. Current Java trace capture handles synchronous guest callable frames only; LLVM/async parity remains a release gate.
+
+## Exceptional effect payload type admission
+
+Every source `throw e`, `raise e`, and `panic e` must carry an owned nominal subclass of the canonical `std/error.Error` class (including the root itself). Nominal evidence must be verified by the compiler and cannot be satisfied by duck typing, `Any`/`Unknown`, copied code/name fields or an unrelated class named `Error`. The Java AST/type checker on PR #811 recognizes these statements and diagnoses invalid operands before failing closed for valid operands; guest exceptional effect execution is still not admitted. The actor supervisor CONTROL flow for unhandled failures remains a distinct, unforgeable runtime channel. Full contract: docs/EXCEPTION_EFFECT_ADMISSION.md.
