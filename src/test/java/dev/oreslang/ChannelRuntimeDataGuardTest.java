@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import org.junit.jupiter.api.Test;
+import dev.oreslang.runtime.ChannelRuntime;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -96,4 +97,18 @@ final class ChannelRuntimeDataGuardTest {
         withNull.add(null);
         rejects(withNull);
     }
+    @Test
+    void sealedGuestStyleChannelRejectsBadValuesBeforeAnyWriteOrSelectRegistration() {
+        ChannelRuntime.Channel<Object> channel = new ChannelRuntime.Channel<>(1,
+                ChannelRuntimeDataGuardTest::check);
+        assertTrue(channel.tryWrite(42));
+        assertEquals(42, channel.tryRead().orElseThrow());
+        Runnable callable = () -> { };
+        assertThrows(IllegalArgumentException.class, () -> channel.tryWrite(callable));
+        assertThrows(IllegalArgumentException.class, () -> channel.writeAsync(callable));
+        assertThrows(IllegalArgumentException.class, () -> ChannelRuntime.write(channel, callable));
+        assertEquals(0, channel.size());
+        assertTrue(channel.tryRead().isEmpty());
+    }
+
 }
