@@ -5435,7 +5435,7 @@ public final class OresEvalRootNode extends RootNode {
             return new ChannelRuntime.Channel<>(
                     capacity,
                     value -> requireChannelTypedDataValue(declaredPayloadType, value),
-                    Evaluator::snapshotChannelDataValue,
+                    Evaluator::snapshotChannelDataValueVerified,
                     GUEST_CHANNEL_SEAL,
                     context);
         }
@@ -5649,6 +5649,16 @@ public final class OresEvalRootNode extends RootNode {
         /** Deeply detach data before buffering or registering a channel write. */
         private static Object snapshotChannelDataValue(Object value) {
             requireChannelDataValue(value);
+            return snapshotChannelDataValueVerified(value);
+        }
+
+        /**
+         * Called only after Channel.prepareValue has checked the full input
+         * against its typed data policy. Avoid an extra O(n) traversal on
+         * every write; Channel.prepareValue checks the detached result again
+         * after this copier returns.
+         */
+        private static Object snapshotChannelDataValueVerified(Object value) {
             return copyChannelDataValue(value, new IdentityHashMap<>(), 0, false);
         }
 
