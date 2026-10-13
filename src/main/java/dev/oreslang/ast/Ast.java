@@ -474,8 +474,14 @@ public final class Ast {
         }
     }
 
-    public record TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) implements Decl {
+    public record TypeAliasDecl(
+            String name, Visibility visibility, List<String> genericParameters, TypeRef target) implements Decl {
         public TypeAliasDecl { genericParameters = List.copyOf(genericParameters); }
+
+        /** Existing AST producers without an explicit visibility are private by default. */
+        public TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) {
+            this(name, Visibility.PRIVATE, genericParameters, target);
+        }
     }
 
     public enum BindingKind { CONST, VAL, LET }
