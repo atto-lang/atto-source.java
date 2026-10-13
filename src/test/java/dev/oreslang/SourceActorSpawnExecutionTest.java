@@ -331,6 +331,60 @@ final class SourceActorSpawnExecutionTest {
         }
     }
 
+    @Test
+    void readonlyStructuralRecordWithExtraFieldsTraversesRealActorMailbox() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<record{foo: int}> mail): void {
+                    self.send(mail.value.foo);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+
+                  worker.send(infer struct{foo: 3, extra: "kept"});
+
+                  val output = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(output.value);
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        assertEquals("3", run(program, "source-owned-record-mailbox-width.ores"));
+    }
+
+    @Test
+    void nominalFieldMatchCannotCrossSourceActorMailboxAsOwnedRecord() throws Exception {
+        String program = """
+                define class Candidate as
+                  pub val int foo = 3;
+                end
+
+                define actor Worker as
+                  receive(ActorMail<record{foo: int}> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send(new Candidate());
+                  return;
+                }
+                """;
+        PolyglotException error = assertThrows(PolyglotException.class,
+                () -> run(program, "source-nominal-record-mailbox-rejected.ores"));
+        assertTrue(error.getMessage().contains("cannot implicitly convert")
+                || error.getMessage().contains("class instance")
+                || error.getMessage().contains("Sendable"), error.getMessage());
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source =
