@@ -2922,6 +2922,13 @@ public final class Parser {
                 continue;
             }
             if (!suppressRefinementOperators && match(AS)) {
+                // These are guarded Option bindings, not ordinary casts. Do
+                // not accept them until ownership, scope, and runtime lowering
+                // are implemented together.
+                if (check(CONST) || check(LET)) {
+                    throw error(peek(),
+                            "conditional 'as const/let' binding is not yet supported by the borrow checker");
+                }
                 boolean optional = match(QUESTION);
                 expr = new Ast.CastExpr(expr, parseTypeRef(),
                         optional ? Ast.CastMode.OPTIONAL : Ast.CastMode.CHECKED);
