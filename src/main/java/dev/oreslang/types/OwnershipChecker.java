@@ -892,10 +892,15 @@ public final class OwnershipChecker {
             }
             Ast.Expr argument = runtime.arguments().getFirst();
             if (initializingClass != null
-                    && runtime.operation().equals("borrow")
                     && argument instanceof Ast.NameExpr selfName
                     && selfName.name().equals("self")) {
-                throw error("constructor cannot borrow partially initialized self");
+                if (runtime.operation().equals("borrow")) {
+                    throw error("constructor cannot borrow partially initialized self");
+                }
+                // rt copy/share/take/fail on self would either duplicate,
+                // expose, or destructively transfer a still-unpublished
+                // instance. No runtime intrinsic may lift this capability.
+                throw error("constructor cannot apply runtime operation to partially initialized self");
             }
             if (runtime.operation().equals("fail")) {
                 checkExpr(argument, scope, false);
