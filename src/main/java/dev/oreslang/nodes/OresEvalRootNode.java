@@ -1506,7 +1506,13 @@ public final class OresEvalRootNode extends RootNode {
                                     && seen.add(method)) {
                                 if (method.async()) return true;
                                 for (Ast.Stmt statement : method.body()) {
-                                    if (statementContainsPotentialSuspension(statement, seen)) return true;
+                                    // The call site must await a loop-bearing
+                                    // method's SourceTask completion. Otherwise
+                                    // a returned Future is silently discarded
+                                    // by an ordinary expression statement.
+                                    if (containsSourceLoop(statement)
+                                            || statementContainsPotentialSuspension(statement, seen))
+                                        return true;
                                 }
                             }
                         }
@@ -4607,6 +4613,18 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
+        /**
+         * An ordinary CPU-only loop is not an explicit await, but its
+         * backedge can cooperate once lowered into a heap-owned SourceTask.
+         * Do not apply this to arbitrary synchronous function calls: their
+         * existing return-value contract does not imply an async boundary.
+         */
+        private boolean methodRequiresSourceTask(Ast.MethodDecl method) {
+            return method.async()
+                    || methodContainsPotentialSuspension(method)
+                    || method.body().stream().anyMatch(this::containsSourceLoop);
+        }
+
         private void callGeneratorBodyRaw(
                 Ast.FunctionDecl fn,
                 List<?> args,
@@ -4648,7 +4666,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "method " + method.name() + " arity mismatch");
             }
-            if (method.async() || methodContainsPotentialSuspension(method)) {
+            if (methodRequiresSourceTask(method)) {
                 OresFuture<Object> future =
                         startSourceMethodTask(method, receiver, args);
                 return returnSourceTaskResult(future, method.async());
@@ -7037,7 +7055,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "static function " + fn.name() + " arity mismatch");
             }
-            if (fn.async() || methodContainsPotentialSuspension(fn)) {
+            if (methodRequiresSourceTask(fn)) {
                 OresFuture<Object> future =
                         startSourceMethodTask(
                                 fn,
