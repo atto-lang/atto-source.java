@@ -130,6 +130,14 @@ public final class SymbolPropertyKeyCodec {
                 AdmissionScope scope = Objects.requireNonNull(entry.getKey(), "export scope");
                 Set<OresSymbol> exports = Set.copyOf(
                         Objects.requireNonNull(entry.getValue(), "Symbol exports"));
+                // Reject invalid manifests at configuration time, not merely
+                // when an untrusted message eventually uses one of the keys.
+                for (OresSymbol symbol : exports) {
+                    if (symbol.kind() != OresSymbol.Kind.PROCESS) {
+                        throw new IllegalArgumentException(
+                                "v1 untrusted Symbol exports must be PROCESS identities");
+                    }
+                }
                 frozen.put(scope, exports);
             }
             this.scopes = java.util.Map.copyOf(frozen);
