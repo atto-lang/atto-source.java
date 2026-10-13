@@ -1864,3 +1864,21 @@ Explicit `rt take` of a move-only field/index projection is rejected until
 partial-move/drop tracking exists. Borrow the projection, or move its named
 owner. Copyable field reads remain available. `rt copy`/`rt share` continue to
 reject unsupported move-only operands rather than aliasing them.
+
+### Compiler-inserted scheduling and borrows
+
+A source-task loop may automatically cooperate at a reduction/budget backedge.
+The checker therefore rejects an enclosing ordinary borrow in such a loop.
+A borrow created inside the iteration ends before the backedge and remains valid.
+Mutex regions suppress automatic cooperation; untrusted loop checkpoints charge
+fuel/cancellation without admitting a carrier handoff.
+
+Same-source suspension effects are followed transitively, including legacy plain
+functions containing await/cooperate and callable bodies that trigger source-task
+lowering. Both explicit `for await` and ordinary Iterator/AsyncIterator iteration
+are lifetime boundaries: generator stepping or producer cleanup may suspend.
+These conservative checks do not establish trusted summaries for imported or
+arbitrary host callables.
+
+See `src/test/resources/ownership-matrix/` for 50 independently specified source
+programs and their compiler/runtime oracles.

@@ -49,7 +49,7 @@ final class MemberSuspensionLanguageTest {
                   }
                 end
                 """));
-        assertTrue(error.getMessage().contains("cannot await while an ordinary borrow is live"),
+        assertTrue(error.getMessage().contains("while an ordinary borrow is live"),
                 error.getMessage());
     }
 
@@ -86,7 +86,7 @@ final class MemberSuspensionLanguageTest {
                   }
                 end
                 """));
-        assertTrue(error.getMessage().contains("cannot await while an ordinary borrow is live"),
+        assertTrue(error.getMessage().contains("while an ordinary borrow is live"),
                 error.getMessage());
     }
 

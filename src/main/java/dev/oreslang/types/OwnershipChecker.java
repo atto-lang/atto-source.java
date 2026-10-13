@@ -42,6 +42,7 @@ public final class OwnershipChecker {
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
+    private boolean currentMayAutoCooperate;
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
 
@@ -118,11 +119,15 @@ public final class OwnershipChecker {
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
+        boolean previousMayAutoCooperate = currentMayAutoCooperate;
         currentAsyncGenerator = fn.generator() && fn.async();
+        currentMayAutoCooperate = fn.async() || fn.suspends() || hasSourceSuspension(fn.body())
+                || (fn.actorKind() != Ast.ActorKind.NONE && fn.actorKind() != Ast.ActorKind.UNTRUSTED);
         try {
             checkBlock(fn.body(), scope, fn.returnType());
         } finally {
             currentAsyncGenerator = previousAsyncGenerator;
+            currentMayAutoCooperate = previousMayAutoCooperate;
             scope.close();
         }
     }
@@ -203,8 +208,15 @@ public final class OwnershipChecker {
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            boolean previousMayAutoCooperate = currentMayAutoCooperate;
+            currentMayAutoCooperate = method.async() || method.suspends() || hasSourceSuspension(method.body())
+                    || (klass.actorKind() != Ast.ActorKind.NONE && klass.actorKind() != Ast.ActorKind.UNTRUSTED);
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                currentMayAutoCooperate = previousMayAutoCooperate;
+                scope.close();
+            }
         }
     }
 
@@ -250,7 +262,70 @@ public final class OwnershipChecker {
         scope.close();
     }
 
+    private boolean invocationSuspends(Ast.FunctionDecl function) {
+        return function.suspends() || (!function.async() && !function.generator()
+                && hasSourceSuspension(function.body()));
+    }
+
+    private boolean invocationSuspends(Ast.MethodDecl method) {
+        return method.suspends() || (!method.async() && hasSourceSuspension(method.body()));
+    }
+
+    /** Conservative source-task effects, including legacy unannotated await. */
+    private boolean hasSourceSuspension(Object node) {
+        return hasSourceSuspension(node, java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+    }
+
+    private boolean hasSourceSuspension(Object node, Set<Object> seen) {
+        if (node == null || !seen.add(node) || node instanceof Ast.LambdaExpr) return false;
+        if (node instanceof Ast.AwaitExpr
+                || node instanceof Ast.ChannelOpExpr channel && channel.mode() == Ast.WaitMode.BLOCKING
+                || node instanceof Ast.DynamicSelectExpr selected && selected.mode() == Ast.WaitMode.BLOCKING
+                || node instanceof Ast.SelectStmt selected && selected.mode() != Ast.WaitMode.IMMEDIATE
+                || node instanceof Ast.RuntimeCallExpr runtime && runtime.operation().equals("cooperate")
+                || node instanceof Ast.ForOfStmt loop && loop.asyncIteration()
+                || node instanceof Ast.ForOfDestructureStmt loop && loop.asyncIteration()) return true;
+        if (node instanceof Ast.CallExpr call) {
+            Ast.FunctionDecl function = call.callee() instanceof Ast.NameExpr name ? findFunction(name.name())
+                    : call.callee() instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.NameExpr namespace
+                        ? findFunction(namespace.name() + "." + member.member()) : null;
+            if (function != null && !function.generator()
+                    && (function.async() || function.suspends() || function.actorKind() != Ast.ActorKind.NONE
+                        || hasSourceSuspension(function.body(), seen))) return true;
+            if (call.callee() instanceof Ast.MemberExpr member) {
+                for (Ast.ClassDecl klass : classes.values()) {
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        if (method.name().equals(member.member()) && method.arity() == call.arguments().size()
+                                && seen.add(method)
+                                && (method.async() || method.suspends() || hasSourceSuspension(method.body(), seen))) return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof Iterable<?> children) {
+            for (Object child : children) if (hasSourceSuspension(child, seen)) return true;
+        } else if (node instanceof java.lang.Record record
+                && node.getClass().getName().startsWith("dev.oreslang.ast.")) {
+            for (var component : record.getClass().getRecordComponents()) {
+                try {
+                    if (hasSourceSuspension(component.getAccessor().invoke(record), seen)) return true;
+                } catch (ReflectiveOperationException failure) {
+                    throw new IllegalStateException("cannot analyze source suspension", failure);
+                }
+            }
+        }
+        return false;
+    }
+
     private void checkLoopBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
+        // SourceTask may insert a carrier handoff at every loop backedge.
+        // Body-local loans end before that edge; enclosing loans do not.
+        // Mutex regions suppress handoff at runtime; untrusted loops only
+        // charge fuel/cancellation and cannot hand off their physical turn.
+        if (currentMayAutoCooperate && mutexCriticalSectionDepth == 0 && !parent.hasLiveMutexGuard()) {
+            checkSuspensionBorrows(parent, "automatic loop cooperation");
+        }
         loopDepth++;
         try {
             checkBlock(body, parent, returnType);
@@ -607,6 +682,10 @@ public final class OwnershipChecker {
                 throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
             }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
+            Ast.TypeRef iterableType = iterable.type.isBorrow() ? iterable.type.borrowedTarget() : iterable.type;
+            if (iterableType.name().equals("Iterator") || iterableType.name().equals("AsyncIterator")) {
+                checkSuspensionBorrows(scope, "generator iteration");
+            }
             Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
@@ -632,6 +711,10 @@ public final class OwnershipChecker {
                 throw error("cannot suspend for async iteration while a borrow or MutexGuard is live");
             }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
+            Ast.TypeRef iterableType = iterable.type.isBorrow() ? iterable.type.borrowedTarget() : iterable.type;
+            if (iterableType.name().equals("Iterator") || iterableType.name().equals("AsyncIterator")) {
+                checkSuspensionBorrows(scope, "generator iteration");
+            }
             Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
@@ -1268,9 +1351,9 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
-                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
+                if (invocationSuspends(fn)) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name(),
-                        fn.suspends() ? "suspends call " + fn.name() : null);
+                        invocationSuspends(fn) ? "suspends call " + fn.name() : null);
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -1283,13 +1366,13 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
-                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
+                if (invocationSuspends(fn)) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(
                         call.arguments(),
                         signature.parameters(),
                         scope,
                         "function " + namespace.name() + "." + qualified.member(),
-                        fn.suspends() ? "suspends call " + fn.name() : null);
+                        invocationSuspends(fn) ? "suspends call " + fn.name() : null);
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -1358,13 +1441,13 @@ public final class OwnershipChecker {
                             call,
                             scope,
                             Map.of());
-                    if (staticFunction.suspends()) checkSuspensionBorrows(scope, "suspends call " + staticFunction.name());
+                    if (invocationSuspends(staticFunction)) checkSuspensionBorrows(scope, "suspends call " + staticFunction.name());
                     checkArguments(
                             call.arguments(),
                             signature.parameters(),
                             scope,
                             "static function " + staticClass.name() + "." + staticFunction.name(),
-                            staticFunction.suspends() ? "suspends call " + staticFunction.name() : null);
+                            invocationSuspends(staticFunction) ? "suspends call " + staticFunction.name() : null);
                     Ast.TypeRef callResult = callableResultType(signature.result(), staticFunction.async(), false);
                     return new ValueInfo(callResult, kindOfType(callResult), null);
                 }
@@ -1510,12 +1593,12 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
-                if (method.suspends()) checkSuspensionBorrows(scope, "suspends call " + method.name());
+                if (invocationSuspends(method)) checkSuspensionBorrows(scope, "suspends call " + method.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(),
                         member.receiver(), method.explicitReceiverType() != null
                                 && method.explicitReceiverType().isBorrow()
                                 && method.explicitReceiverType().mutableBorrow(),
-                        method.suspends() ? "suspends call " + method.name() : null);
+                        invocationSuspends(method) ? "suspends call " + method.name() : null);
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
                     throw error("method '" + target.owner().name() + "." + method.name()
