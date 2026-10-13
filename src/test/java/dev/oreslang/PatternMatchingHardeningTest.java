@@ -228,6 +228,91 @@ final class PatternMatchingHardeningTest {
     }
 
     @Test
+    void refutableOptionPayloadCannotClaimWholeVariant() {
+        IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc incomplete(Option<int> value): int {
+                          match value over
+                            on Some(0) -> { return 1; }
+                            on None -> { return 0; }
+                          end
+                        }
+                        """)));
+        assertTrue(incomplete.getMessage().contains("non-exhaustive match"));
+
+        IllegalArgumentException guarded = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc incomplete(Option<bool> value): int {
+                          match value over
+                            on Some(flag) when flag -> { return 1; }
+                            on None -> { return 0; }
+                          end
+                        }
+                        """)));
+        assertTrue(guarded.getMessage().contains("non-exhaustive match"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc exhaustive(Option<bool> value): int {
+                  match value over
+                    on Some(true) -> { return 1; }
+                    on Some(false) -> { return 2; }
+                    on None -> { return 0; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
+    void resultPayloadsMustCoverBothBranches() {
+        IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc incomplete(Result<int, String> value): int {
+                          match value over
+                            on Ok(0) -> { return 1; }
+                            on Err(message) -> { return 0; }
+                          end
+                        }
+                        """)));
+        assertTrue(incomplete.getMessage().contains("non-exhaustive match"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc exhaustive(Result<bool, bool> value): int {
+                  match value over
+                    on Ok(true) -> { return 1; }
+                    on Ok(false) -> { return 2; }
+                    on Err(true) -> { return 3; }
+                    on Err(false) -> { return 4; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
+    void nestedSumExhaustivenessProvesPayloadsRecursively() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc exhaustive(Option<Result<int, String>> value): int {
+                  match value over
+                    on Some(Ok(n)) -> { return n; }
+                    on Some(Err(message)) -> { return 0; }
+                    on None -> { return -1; }
+                  end
+                }
+                """)));
+
+        IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc incomplete(Option<Result<int, String>> value): int {
+                          match value over
+                            on Some(Ok(0)) -> { return 1; }
+                            on Some(Err(message)) -> { return 0; }
+                            on None -> { return -1; }
+                          end
+                        }
+                        """)));
+        assertTrue(incomplete.getMessage().contains("non-exhaustive match"));
+    }
+
+    @Test
     void switchIsConstantDispatchAndRejectsDuplicateCases() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int value): int {
