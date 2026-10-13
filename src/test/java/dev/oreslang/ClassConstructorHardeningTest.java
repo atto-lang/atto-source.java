@@ -341,7 +341,7 @@ final class ClassConstructorHardeningTest {
         IllegalArgumentException unaryFailure = assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(unary)));
         assertTrue(unaryFailure.getMessage().contains(
-                "constructor cannot borrow partially initialized self"));
+                "constructor cannot borrow partially initialized self"), unaryFailure.getMessage());
 
         String runtimeIntrinsic = """
                 define class Unsafe as
@@ -355,7 +355,7 @@ final class ClassConstructorHardeningTest {
         IllegalArgumentException runtimeFailure = assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(runtimeIntrinsic)));
         assertTrue(runtimeFailure.getMessage().contains(
-                "constructor cannot borrow partially initialized self"));
+                "constructor cannot borrow partially initialized self"), runtimeFailure.getMessage());
     }
 
     @Test
