@@ -198,6 +198,52 @@ public final class CriticalGate {
         }
     }
 
+    /** Caller owns the monitor. */
+    private boolean heldByDomain(Object domain) {
+        if (owner != null && owner.logicalOwner == domain) return true;
+        for (Ticket reader : readers.keySet()) {
+            if (reader.logicalOwner == domain) return true;
+        }
+        return false;
+    }
+
+    /** Caller owns the monitor. */
+    private void grantLocked(Ticket ticket) {
+        if (owner != null) throw new IllegalStateException("reader/writer overlap");
+        if (ticket.mode == Mode.WRITE) {
+            if (!readers.isEmpty()) throw new IllegalStateException("writer/reader overlap");
+            owner = ticket;
+        } else {
+            if (readers.size() >= MAX_ACTIVE_READERS) {
+                throw new IllegalStateException("active critical readers full");
+            }
+            readers.put(ticket, Boolean.TRUE);
+        }
+        ticket.granted = true;
+    }
+
+    /** Drain exactly one writer or one FIFO cohort of readers. Monitor held. */
+    private java.util.List<Ticket> drainLocked() {
+        if (owner != null || waiters.isEmpty()) return java.util.List.of();
+        if (waiters.peekFirst().mode == Mode.WRITE && !readers.isEmpty()) {
+            return java.util.List.of();
+        }
+        java.util.List<Ticket> wake = new java.util.ArrayList<>();
+        while (!waiters.isEmpty()) {
+            Ticket candidate = waiters.peekFirst();
+            if (candidate.mode == Mode.WRITE && !readers.isEmpty()) break;
+            if (candidate.mode == Mode.WRITE && !wake.isEmpty()) break;
+            if (candidate.mode == Mode.READ && readers.size() >= MAX_ACTIVE_READERS) break;
+            waiters.removeFirst();
+            WAITING_ON.remove(candidate.logicalOwner, this);
+            if (candidate.closed) continue;
+            grantLocked(candidate);
+            wake.add(candidate);
+            if (candidate.mode == Mode.WRITE) break;
+        }
+        return wake;
+    }
+
     /**
      * Follow the waiting dependency chain: requesting this gate would close
      * a cycle if the current owner is (transitively) waiting on requester.
