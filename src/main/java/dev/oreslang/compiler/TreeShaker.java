@@ -194,6 +194,7 @@ public final class TreeShaker {
             if (expression instanceof Ast.BinaryExpr binary) {
                 return containsLambda(binary.left()) || containsLambda(binary.right());
             }
+            if (expression instanceof Ast.TrapExpr trapped) return containsLambda(trapped.expression());
             if (expression instanceof Ast.UnaryExpr unary) return containsLambda(unary.operand());
             if (expression instanceof Ast.AssignExpr assignment) {
                 return containsLambda(assignment.target()) || containsLambda(assignment.value());
@@ -287,6 +288,9 @@ public final class TreeShaker {
                         binary.operator(),
                         substitute(binary.left(), substitutions, shadowed),
                         substitute(binary.right(), substitutions, shadowed));
+            }
+            if (expression instanceof Ast.TrapExpr trapped) {
+                return new Ast.TrapExpr(substitute(trapped.expression(), substitutions, shadowed));
             }
             if (expression instanceof Ast.UnaryExpr unary) {
                 return new Ast.UnaryExpr(
@@ -840,6 +844,10 @@ public final class TreeShaker {
                 Object value = evaluate(rewritten, module, locals);
                 return value == UNKNOWN ? rewritten : new Ast.LiteralExpr(value);
             }
+            if (expression instanceof Ast.TrapExpr trapped) {
+                // A trap is an effect boundary, never a constant-folding shortcut.
+                return new Ast.TrapExpr(rewriteExpression(trapped.expression(), module, locals));
+            }
             if (expression instanceof Ast.UnaryExpr unary) {
                 Ast.UnaryExpr rewritten = new Ast.UnaryExpr(
                         unary.operator(), rewriteExpression(unary.operand(), module, locals));
@@ -1257,6 +1265,8 @@ public final class TreeShaker {
             } else if (expression instanceof Ast.BinaryExpr binary) {
                 scanExpression(module, binary.left(), locals);
                 scanExpression(module, binary.right(), locals);
+            } else if (expression instanceof Ast.TrapExpr trapped) {
+                scanExpression(module, trapped.expression(), locals);
             } else if (expression instanceof Ast.UnaryExpr unary) {
                 scanExpression(module, unary.operand(), locals);
             } else if (expression instanceof Ast.AssignExpr assignment) {
