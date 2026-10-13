@@ -1724,6 +1724,15 @@ public final class Parser {
             consumeStatementTerminator("continue statement should end with ';'");
             return new Ast.ContinueStmt();
         }
+        if (match(WHILE)) {
+            // Share the existing post-commit loop trampoline and its
+            // per-task scheduling/fuel accounting with for loops.
+            Ast.Expr condition = check(LPAREN)
+                    ? parseParenthesizedWhileCondition()
+                    : parseCondition();
+            match(SEMICOLON);
+            return new Ast.ForStmt(null, condition, null, parseLoopBody());
+        }
         if (match(IF)) return parseIf();
         if (match(MATCH)) return parseMatch();
         if (match(SWITCH)) return parseSwitch();
@@ -2525,6 +2534,13 @@ public final class Parser {
             return true;
         }
         return false;
+    }
+
+    private Ast.Expr parseParenthesizedWhileCondition() {
+        consume(LPAREN, "expected '(' before while condition");
+        Ast.Expr condition = parseCondition();
+        consume(RPAREN, "expected ')' after while condition");
+        return condition;
     }
 
     private Ast.Expr parseCondition() {
