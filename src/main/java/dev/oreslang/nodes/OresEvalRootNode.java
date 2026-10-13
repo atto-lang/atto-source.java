@@ -692,40 +692,51 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        private synchronized Object initialize() {
+        private Object initialize() {
             if (startupPhase == StartupPhase.READY) return null;
-            if (startupPhase == StartupPhase.INITIALIZING) {
-                throw new IllegalStateException("recursive initialization of code unit " + codeUnitId);
-            }
-            if (startupPhase == StartupPhase.FAILED) {
-                throw new IllegalStateException("initialization previously failed for code unit " + codeUnitId);
-            }
-            if (startupPhase == StartupPhase.CREATED) link();
-
-            startupPhase = StartupPhase.INITIALIZING;
-            Object last = null;
+            // Acquire the context-wide gate *before* this evaluator's monitor.
+            // No two threads may initialize opposite ends of a cycle while
+            // holding different unit locks (or park an actor carrier waiting).
+            context.enterLinkedInitialization(codeUnitId);
             try {
-                for (Ast.ModuleDecl module : program.modules()) {
-                    for (Ast.Decl decl : module.declarations()) {
-                        if (decl instanceof Ast.FunctionDecl fn && fn.name().equals("init")) {
-                            Object initialized =
-                                    invoke(functionBodyInvocation(fn, List.of()));
-                            if (initialized instanceof OresFuture<?> future) {
-                                if (OresScheduler.current() != null) {
-                                    throw new IllegalStateException(
-                                            "module init cannot suspend from inside a scheduler-owned startup turn");
+                if (startupPhase == StartupPhase.READY) return null;
+                if (startupPhase == StartupPhase.INITIALIZING) {
+                    throw new IllegalStateException(
+                            "recursive initialization of code unit " + codeUnitId);
+                }
+                if (startupPhase == StartupPhase.FAILED) {
+                    throw new IllegalStateException(
+                            "initialization previously failed for code unit " + codeUnitId);
+                }
+                if (startupPhase == StartupPhase.CREATED) link();
+
+                startupPhase = StartupPhase.INITIALIZING;
+                Object last = null;
+                try {
+                    for (Ast.ModuleDecl module : program.modules()) {
+                        for (Ast.Decl decl : module.declarations()) {
+                            if (decl instanceof Ast.FunctionDecl fn && fn.name().equals("init")) {
+                                Object initialized =
+                                        invoke(functionBodyInvocation(fn, List.of()));
+                                if (initialized instanceof OresFuture<?> future) {
+                                    if (OresScheduler.current() != null) {
+                                        throw new IllegalStateException(
+                                                "module init cannot suspend from inside a scheduler-owned startup turn");
+                                    }
+                                    initialized = future.join();
                                 }
-                                initialized = future.join();
+                                last = initialized;
                             }
-                            last = initialized;
                         }
                     }
+                    startupPhase = StartupPhase.READY;
+                    return last;
+                } catch (RuntimeException | Error failure) {
+                    startupPhase = StartupPhase.FAILED;
+                    throw failure;
                 }
-                startupPhase = StartupPhase.READY;
-                return last;
-            } catch (RuntimeException | Error failure) {
-                startupPhase = StartupPhase.FAILED;
-                throw failure;
+            } finally {
+                context.leaveLinkedInitialization();
             }
         }
 
@@ -772,6 +783,10 @@ public final class OresEvalRootNode extends RootNode {
             Invocation current = initial;
             int tailHops = 0;
             while (true) {
+                // Imported calls are the trigger for lazy initialization.
+                // Lexically local calls within an init hook do not re-enter
+                // the same module's lifecycle.
+                if (current.owner() != this) current.owner().initialize();
                 Object result = current.owner().executeRaw(current);
                 if (!(result instanceof TailCall tail)) return result;
                 current = tail.invocation();
@@ -6917,7 +6932,10 @@ public final class OresEvalRootNode extends RootNode {
                                 + " must be called so arity can select the scalar or list overload");
             }
             if (receiver instanceof ImportedNamespace namespace) return namespace.owner().exportValue(namespace.kind(), name);
-            if (receiver instanceof ModuleFacade namespace) return namespace.owner().moduleMember(namespace.module(), name);
+            if (receiver instanceof ModuleFacade namespace) {
+                return namespace.owner().moduleMember(
+                        namespace.module(), name, namespace.owner() != this);
+            }
             if (receiver instanceof ClassFacade klass) {
                 List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
@@ -6936,7 +6954,9 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 if (!functions.isEmpty()) {
-                    return new StaticFunctionValue(klass.owner(), klass.klass(), name, env == null ? null : env.accessClass());
+                    return new StaticFunctionValue(
+                            klass.owner(), klass.klass(), name,
+                            env == null ? null : env.accessClass(), klass.owner() != this);
                 }
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
@@ -7294,15 +7314,20 @@ public final class OresEvalRootNode extends RootNode {
             private final Ast.ClassDecl klass;
             private final String functionName;
             private final Ast.ClassDecl accessClass;
+            private final boolean importedAccess;
 
-            private StaticFunctionValue(Evaluator owner, Ast.ClassDecl klass, String functionName, Ast.ClassDecl accessClass) {
+            private StaticFunctionValue(
+                    Evaluator owner, Ast.ClassDecl klass, String functionName,
+                    Ast.ClassDecl accessClass, boolean importedAccess) {
                 this.owner = owner;
                 this.klass = klass;
                 this.functionName = functionName;
                 this.accessClass = accessClass;
+                this.importedAccess = importedAccess;
             }
 
             @Override public Object call(List<Object> arguments) {
+                if (importedAccess) owner.initialize();
                 return owner.invoke(owner.prepareStaticValueInvocation(klass, functionName, arguments, accessClass));
             }
         }
@@ -7410,7 +7435,10 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' must be specialized by a direct call; "
                                         + "polymorphic function values are not supported yet");
                     }
-                    yield tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                    yield tailCallable(args -> {
+                        initialize();
+                        return callFunctionRaw(fn, objectArguments(args));
+                    });
                 }
                 case CLASS -> {
                     Ast.ClassDecl klass = findClass(name);
@@ -7461,7 +7489,10 @@ public final class OresEvalRootNode extends RootNode {
                                     + "' must be specialized by a direct call; "
                                     + "polymorphic function values are not supported yet");
                 }
-                return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                return tailCallable(args -> {
+                    initialize();
+                    return callFunctionRaw(fn, objectArguments(args));
+                });
             }
             for (Ast.ModuleDecl candidate : program.modules()) {
                 for (Ast.Decl decl : candidate.declarations()) {
@@ -7469,6 +7500,7 @@ public final class OresEvalRootNode extends RootNode {
                             && field.visibility() == Ast.Visibility.PUBLIC
                             && field.name().equals(name)) {
                         if (field.initializer() == null) throw new IllegalArgumentException("exported binding has no initializer: " + name);
+                        initialize();
                         return eval(field.initializer(), new Env(null));
                     }
                 }
@@ -7484,6 +7516,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException("actor '" + klass.name()
                         + "' cannot be constructed with new; actor state must be initialized inside ActorRuntime");
             }
+            if (externalConstruction) initialize();
             if (externalConstruction && klass.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException(
                         "class '" + klass.name() + "' is private and cannot be constructed outside its file/module");
@@ -7583,7 +7616,7 @@ public final class OresEvalRootNode extends RootNode {
             return Path.of(id).normalize().toString().replace('\\', '/');
         }
 
-        private Object moduleMember(Ast.ModuleDecl module, String name) {
+        private Object moduleMember(Ast.ModuleDecl module, String name, boolean importedAccess) {
             List<Ast.FunctionDecl> callableFamily = module.declarations().stream()
                     .filter(Ast.FunctionDecl.class::isInstance)
                     .map(Ast.FunctionDecl.class::cast)
@@ -7606,7 +7639,10 @@ public final class OresEvalRootNode extends RootNode {
                                     + "' must be specialized by a direct call; "
                                     + "polymorphic function values are not supported yet");
                 }
-                return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                return tailCallable(args -> {
+                    if (importedAccess) initialize();
+                    return callFunctionRaw(fn, objectArguments(args));
+                });
             }
 
             for (Ast.Decl decl : module.declarations()) {
@@ -7617,6 +7653,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
                     if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
+                    if (importedAccess) initialize();
                     return eval(field.initializer(), new Env(null));
                 }
             }
