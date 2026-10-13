@@ -301,6 +301,56 @@ final class ActorStateBoundaryKeywordTest {
     }
 
     @Test
+    void scalarReadWriteLoanShapeProvesPurityWithoutEnablingRuntime() {
+        Ast.Program program = Parser.parse("""
+                define actor Counter as
+                    state { value: int = 0 }
+                    pub get(): int {
+                        return self.handle_state(critical-read |s| -> s.value);
+                    }
+                    pub increment(): int {
+                        return self.handle_state(critical-write |s| -> {
+                            s.value = s.value + 1;
+                            return s.value;
+                        });
+                    }
+                end
+                """);
+        Ast.ClassDecl actor = (Ast.ClassDecl)
+                program.modules().getFirst().declarations().getFirst();
+        for (Ast.MethodDecl method : actor.methods()) {
+            Ast.ActorStateAccessExpr access = (Ast.ActorStateAccessExpr)
+                    ((Ast.ReturnStmt) method.body().getFirst()).value();
+            assertDoesNotThrow(() -> dev.oreslang.types.ActorStateLoanShapeChecker.validate(
+                    actor, access));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(program),
+                "shape validation must never enable unverified codegen");
+    }
+
+    @Test
+    void scalarStateLoanEffectCheckerRejectsEscapesSuspensionAndReadMutation() {
+        for (String callback : List.of(
+                "critical-read |s| -> s",
+                "critical-read |s| -> await s.value",
+                "critical-read |s| -> { s.value = 99; return s.value; }",
+                "critical-write |s| -> { s.unknown = 1; return s.unknown; }",
+                "critical-write |s| -> { s.value = external; return s.value; }",
+                "critical-write |s| -> { s.value = do_work(); return s.value; }",
+                "critical-write |s| -> { s.value = 1; }")) {
+            Ast.Program parsed = Parser.parse(
+                    "define actor Counter as state { value: int = 0 } "
+                    + "pub get(): int { return self.handle_state(" + callback + "); } end");
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(parsed), callback);
+            assertTrue(failure.getMessage().contains("state-loan effect violation"),
+                    callback + " -> " + failure.getMessage());
+        }
+    }
+
+    @Test
     void invalidStateCallbackShapesFailAtParser() {
         for (String expression : List.of(
                 "self.handle_state(|s| -> s.value)",
