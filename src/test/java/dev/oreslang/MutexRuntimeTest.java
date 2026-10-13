@@ -12,6 +12,7 @@ import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -1213,6 +1214,515 @@ final class MutexRuntimeTest {
         assertFalse(waiter.isAlive());
         assertNull(failure.get());
         owner.release();
+    }
+
+    @Test
+    void wrappedOresFutureCancellationReturnsWaiterQuotaBeforeVisibility() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var free = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread requester = Thread.ofPlatform().start(() -> {
+            try {
+                var producer = held.lockAsync();
+                var adapted = dev.oreslang.runtime.OresFuture.from(producer);
+                assertTrue(adapted.cancel(false), "queued producer must accept cancellation");
+                assertTrue(producer.isCancelled());
+                assertTrue(adapted.isCancelled());
+                assertEquals(0, queuedAsyncReservations(held),
+                        "wrapper completed cancellation before quota cleanup");
+                // The same execution domain may now start another acquisition.
+                var next = free.lock();
+                next.release();
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+
+        requester.join(3_000);
+        assertFalse(requester.isAlive());
+        assertNull(failure.get());
+        owner.release();
+        var next = held.lockFor(Duration.ofSeconds(2));
+        assertTrue(next.isPresent(), "wrapper cancellation leaked the physical permit");
+        next.orElseThrow().release();
+    }
+
+    @Test
+    void cancelledAsyncWaitUnlinksDeadlockGraphBeforeObservation() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var free = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread waiter = Thread.ofPlatform().start(() -> {
+            try {
+                for (int attempt = 0; attempt < 64; attempt++) {
+                    var queued = held.lockAsync();
+                    assertTrue(queued.cancel(false), "queued cancellation should claim the wait");
+                    assertThrows(java.util.concurrent.CancellationException.class, queued::join);
+                    // Same execution domain on the same thread. A stale WAITING_ON
+                    // edge, even briefly visible, rejects this unrelated acquisition.
+                    var next = free.lock();
+                    next.release();
+                }
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+
+        waiter.join(5_000);
+        assertFalse(waiter.isAlive(), "cancelled waiter never settled");
+        assertNull(failure.get());
+        owner.release();
+    }
+
+    @Test
+    void repeatedTimedAsyncFailuresNeverPublishStaleDeadlockEdges() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var free = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread waiter = Thread.ofPlatform().start(() -> {
+            try {
+                for (int attempt = 0; attempt < 64; attempt++) {
+                    var timed = held.lockAsyncFor(Duration.ofMillis(2));
+                    var timedFailure = assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> timed.get(2, TimeUnit.SECONDS));
+                    assertInstanceOf(OresMutex.LockTimeoutException.class, timedFailure.getCause());
+                    var next = free.lock();
+                    next.release();
+                }
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+
+        waiter.join(8_000);
+        assertFalse(waiter.isAlive(), "timeout stress did not settle");
+        assertNull(failure.get());
+        owner.release();
+    }
+
+    @Test
+    void timeoutVersusHandoffDoesNotLosePermitOrPublishStaleEdge() throws Exception {
+        for (int attempt = 0; attempt < 48; attempt++) {
+            var held = OresMutex.shared(new int[]{0});
+            var free = OresMutex.shared(new int[]{0});
+            var owner = held.lock();
+            CountDownLatch pending = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            Thread waiter = Thread.ofPlatform().start(() -> {
+                try {
+                    var timed = held.lockAsyncFor(Duration.ofMillis(20));
+                    pending.countDown();
+                    try {
+                        var acquired = timed.get(2, TimeUnit.SECONDS);
+                        acquired.release();
+                    } catch (java.util.concurrent.ExecutionException expected) {
+                        assertInstanceOf(OresMutex.LockTimeoutException.class, expected.getCause());
+                    }
+                    // A successful handoff owns the guard; a timeout must have
+                    // detached the deadlock edge before get() returns.
+                    var other = free.lock();
+                    other.release();
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                    pending.countDown();
+                }
+            });
+
+            assertTrue(pending.await(2, TimeUnit.SECONDS));
+            owner.release();
+            waiter.join(3_000);
+            assertFalse(waiter.isAlive(), "handoff/timeout raced into a hang");
+            assertNull(failure.get());
+            var after = held.lockFor(Duration.ofSeconds(2));
+            assertTrue(after.isPresent(), "handoff/timeout leaked the physical permit");
+            after.orElseThrow().release();
+        }
+    }
+
+    private static int queuedAsyncReservations(OresMutex.Shared<?> mutex) throws Exception {
+        // Regression-only admission accounting introspection: the Future must
+        // never be externally settled before the reservation is returned.
+        var field = OresMutex.Shared.class.getDeclaredField("asyncWaiters");
+        field.setAccessible(true);
+        return ((AtomicInteger) field.get(mutex)).get();
+    }
+
+    @Test
+    void timedOutAndCancelledWaitersReturnQuotaBeforeFutureObservation() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread requester = Thread.ofPlatform().start(() -> {
+            try {
+                for (int attempt = 0; attempt < 64; attempt++) {
+                    var timed = held.lockAsyncFor(Duration.ofMillis(1));
+                    var timedFailure = assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> timed.get(2, TimeUnit.SECONDS));
+                    assertInstanceOf(OresMutex.LockTimeoutException.class, timedFailure.getCause());
+                    assertEquals(0, queuedAsyncReservations(held),
+                            "timed future was visible before admission quota release");
+
+                    var cancelled = held.lockAsync();
+                    assertTrue(cancelled.cancel(false));
+                    assertTrue(cancelled.isCancelled());
+                    assertEquals(0, queuedAsyncReservations(held),
+                            "cancelled future was visible before admission quota release");
+                }
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+
+        requester.join(10_000);
+        assertFalse(requester.isAlive());
+        assertNull(failure.get());
+        owner.release();
+    }
+
+    @Test
+    void awardedAsyncWaiterReturnsQuotaBeforeGuardVisibility() throws Exception {
+        var held = OresMutex.shared(new int[]{0});
+        var owner = held.lock();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch queued = new CountDownLatch(1);
+
+        Thread requester = Thread.ofPlatform().start(() -> {
+            try {
+                var pending = held.lockAsyncFor(Duration.ofSeconds(3));
+                queued.countDown();
+                var guard = pending.get(3, TimeUnit.SECONDS);
+                assertEquals(0, queuedAsyncReservations(held),
+                        "successful handoff exposed guard before quota was settled");
+                guard.release();
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+        assertTrue(queued.await(2, TimeUnit.SECONDS));
+        assertEquals(1, queuedAsyncReservations(held));
+        owner.release();
+        requester.join(4_000);
+        assertFalse(requester.isAlive());
+        assertNull(failure.get());
+        assertEquals(0, queuedAsyncReservations(held));
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(12)
+    void blockingHostTimeoutCallbackDoesNotStarveUnrelatedMutexDeadline() throws Exception {
+        var slowMutex = OresMutex.shared(new int[]{0});
+        var fastMutex = OresMutex.shared(new int[]{0});
+        var slowOwner = slowMutex.lock();
+        var fastOwner = fastMutex.lock();
+        var callbackStarted = new CountDownLatch(1);
+        var releaseCallback = new CountDownLatch(1);
+        var registered = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        AtomicBoolean secondTimedOut = new AtomicBoolean();
+        Thread slowRequester = null;
+        Thread fastRequester = null;
+        try {
+            slowRequester = Thread.ofPlatform().start(() -> {
+                try {
+                    var pending = slowMutex.lockAsyncFor(Duration.ofMillis(500));
+                    assertFalse(pending.isDone(), "slow timeout completed before callback registration");
+                    pending.whenComplete((guard, error) -> {
+                        callbackStarted.countDown();
+                        try {
+                            if (!releaseCallback.await(4, TimeUnit.SECONDS)) {
+                                failure.compareAndSet(null,
+                                        new AssertionError("blocking callback was never released"));
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            failure.compareAndSet(null, interrupted);
+                        }
+                    });
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                } finally {
+                    registered.countDown();
+                }
+            });
+            assertTrue(registered.await(2, TimeUnit.SECONDS),
+                    "timed waiter was not registered");
+            assertNull(failure.get(), String.valueOf(failure.get()));
+            assertTrue(callbackStarted.await(2, TimeUnit.SECONDS),
+                    "slow timeout completion callback was not reached");
+
+            // One unrelated slow host completion must not monopolize the
+            // process-wide timeout scheduler. The held permit forces B to
+            // expire, and B's owner domain is isolated to its requester.
+            fastRequester = Thread.ofPlatform().start(() -> {
+                try {
+                    var pending = fastMutex.lockAsyncFor(Duration.ofMillis(30));
+                    var outcome = assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> pending.get(1, TimeUnit.SECONDS),
+                            "unrelated mutex timeout was delayed by a blocked callback");
+                    assertInstanceOf(OresMutex.LockTimeoutException.class, outcome.getCause());
+                    secondTimedOut.set(true);
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            fastRequester.join(1_500);
+            assertFalse(fastRequester.isAlive(), "unrelated mutex timeout stalled");
+            assertTrue(secondTimedOut.get(),
+                    "second mutex should expire while the first host callback is blocked");
+            assertNull(failure.get(), String.valueOf(failure.get()));
+        } finally {
+            releaseCallback.countDown();
+            if (slowRequester != null) slowRequester.join(5_000);
+            if (fastRequester != null) fastRequester.join(5_000);
+            slowOwner.release();
+            fastOwner.release();
+        }
+        assertEquals(0, queuedAsyncReservations(slowMutex));
+        assertEquals(0, queuedAsyncReservations(fastMutex));
+    }
+
+
+    @Test
+    @org.junit.jupiter.api.Timeout(15)
+    void allBlockedHostNotificationWorkersCannotStallPhysicalDeadlineRevocation() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var owner = mutex.lock();
+        var callbackEntered = new CountDownLatch(4);
+        var permitCallbacksToFinish = new CountDownLatch(1);
+        var callbackFailure = new AtomicReference<Throwable>();
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                fifth = new AtomicReference<>();
+        var pending = new java.util.concurrent.CopyOnWriteArrayList<
+                java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>();
+        try {
+            var registered = new CountDownLatch(4);
+            for (int index = 0; index < 4; index++) {
+                Thread.ofPlatform().start(() -> {
+                    try {
+                        var future = mutex.lockAsyncFor(Duration.ofMillis(350));
+                        future.whenComplete((guard, failure) -> {
+                            try {
+                                assertInstanceOf(OresMutex.LockTimeoutException.class, failure);
+                                if (!Thread.currentThread().getName()
+                                        .startsWith("ores-shared-mutex-notifications-")) {
+                                    callbackFailure.compareAndSet(null, new AssertionError(
+                                            "host callbacks must never run on deadline workers"));
+                                }
+                                callbackEntered.countDown();
+                                assertTrue(permitCallbacksToFinish.await(5, TimeUnit.SECONDS),
+                                        "test must unblock every notification worker");
+                            } catch (Throwable error) {
+                                callbackFailure.compareAndSet(null, error);
+                            }
+                        });
+                        pending.add(future);
+                    } catch (Throwable error) {
+                        callbackFailure.compareAndSet(null, error);
+                    } finally {
+                        registered.countDown();
+                    }
+                });
+            }
+            assertTrue(registered.await(2, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get(), String.valueOf(callbackFailure.get()));
+            assertTrue(callbackEntered.await(3, TimeUnit.SECONDS),
+                    "all four notification workers should be busy in host callbacks");
+
+            var fifthRegistered = new CountDownLatch(1);
+            Thread.ofPlatform().start(() -> {
+                try {
+                    fifth.set(mutex.lockAsyncFor(Duration.ofMillis(30)));
+                } catch (Throwable error) {
+                    callbackFailure.compareAndSet(null, error);
+                } finally {
+                    fifthRegistered.countDown();
+                }
+            });
+            assertTrue(fifthRegistered.await(2, TimeUnit.SECONDS));
+            assertNotNull(fifth.get());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (queuedAsyncReservations(mutex) != 0 && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertEquals(0, queuedAsyncReservations(mutex),
+                    "fifth timeout MUST revoke its waiter and free admission "
+                            + "even while all notification callbacks are blocked");
+            assertFalse(fifth.get().isDone(),
+                    "fifth terminal notification should wait behind blocked delivery workers");
+        } finally {
+            permitCallbacksToFinish.countDown();
+            owner.release();
+        }
+        assertEquals(4, pending.size(), "four slow host callbacks must have been registered");
+        var fifthOutcome = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> fifth.get().get(3, TimeUnit.SECONDS));
+        assertInstanceOf(OresMutex.LockTimeoutException.class, fifthOutcome.getCause());
+        for (var future : pending) {
+            var problem = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> future.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(OresMutex.LockTimeoutException.class, problem.getCause());
+        }
+        assertNull(callbackFailure.get(), String.valueOf(callbackFailure.get()));
+        assertEquals(0, queuedAsyncReservations(mutex));
+        var next = mutex.lockFor(Duration.ofSeconds(1)).orElseThrow();
+        next.release();
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(12)
+    void blockedHandoffHostCallbackCannotParkReleasingOwner() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var ownerReady = new CountDownLatch(1);
+        var allowRelease = new CountDownLatch(1);
+        var waiterReady = new CountDownLatch(1);
+        var callbackEntered = new CountDownLatch(1);
+        var allowCallback = new CountDownLatch(1);
+        var ownerDone = new CountDownLatch(1);
+        var waiterDone = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+
+        Thread owner = Thread.ofPlatform().start(() -> {
+            try {
+                var guard = mutex.lock();
+                ownerReady.countDown();
+                if (!allowRelease.await(4, TimeUnit.SECONDS)) {
+                    throw new AssertionError("owner release never signalled");
+                }
+                guard.release(); // Must release in the same execution domain.
+            } catch (Throwable problem) {
+                failure.compareAndSet(null, problem);
+                ownerReady.countDown();
+            } finally {
+                ownerDone.countDown();
+            }
+        });
+        Thread waiter = null;
+        try {
+            assertTrue(ownerReady.await(2, TimeUnit.SECONDS));
+            assertNull(failure.get(), String.valueOf(failure.get()));
+            waiter = Thread.ofPlatform().start(() -> {
+                try {
+                    var pending = mutex.lockAsync();
+                    pending.whenComplete((guard, problem) -> {
+                        try {
+                            assertNull(problem);
+                            assertTrue(Thread.currentThread().getName()
+                                            .startsWith("ores-shared-mutex-notifications-"),
+                                    "host Future completion ran on releasing owner carrier");
+                            callbackEntered.countDown();
+                            assertTrue(allowCallback.await(4, TimeUnit.SECONDS),
+                                    "blocked host callback never released");
+                        } catch (Throwable callbackFailure) {
+                            failure.compareAndSet(null, callbackFailure);
+                            callbackEntered.countDown();
+                        }
+                    });
+                    waiterReady.countDown();
+                    var guard = pending.get(4, TimeUnit.SECONDS);
+                    assertTrue(allowCallback.await(4, TimeUnit.SECONDS));
+                    guard.release(); // Waiter must reclaim its own guard domain.
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                    waiterReady.countDown();
+                } finally {
+                    waiterDone.countDown();
+                }
+            });
+            assertTrue(waiterReady.await(2, TimeUnit.SECONDS));
+            assertNull(failure.get(), String.valueOf(failure.get()));
+            allowRelease.countDown();
+            assertTrue(callbackEntered.await(2, TimeUnit.SECONDS),
+                    "handoff callback was not reached");
+            assertTrue(ownerDone.await(2, TimeUnit.SECONDS),
+                    "releasing owner was parked inside foreign Future callback");
+        } finally {
+            allowRelease.countDown();
+            allowCallback.countDown();
+            owner.join(5_000);
+            if (waiter != null) waiter.join(5_000);
+        }
+        assertFalse(owner.isAlive());
+        assertTrue(waiterDone.await(1, TimeUnit.SECONDS));
+        assertNull(failure.get(), String.valueOf(failure.get()));
+        assertEquals(0, queuedAsyncReservations(mutex));
+        var after = mutex.lockFor(Duration.ofSeconds(1)).orElseThrow();
+        after.release();
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    @SuppressWarnings("unchecked")
+    void notificationCapacityIsolatedPerExecutionDomainAndReleasedAtTerminalState()
+            throws Exception {
+        var error = new AtomicReference<Throwable>();
+        var requester = Thread.ofPlatform().start(() -> {
+            Object domain = ActorRuntime.currentExecutionDomain();
+            java.util.concurrent.ConcurrentHashMap<Object, Integer> counts = null;
+            int max = 0;
+            try {
+                var field = OresMutex.Shared.class.getDeclaredField("DOMAIN_ASYNC_NOTIFICATIONS");
+                field.setAccessible(true);
+                counts = (java.util.concurrent.ConcurrentHashMap<Object, Integer>) field.get(null);
+                var limit = OresMutex.Shared.class.getDeclaredField("MAX_DOMAIN_ASYNC_NOTIFICATIONS");
+                limit.setAccessible(true);
+                max = limit.getInt(null);
+                assertNull(counts.get(domain),
+                        "fresh execution domain already retained a pending admission");
+                var saturated = OresMutex.shared(new int[]{0});
+                counts.put(domain, max);
+                try {
+                    var rejected = saturated.lockAsync();
+                    var outcome = assertThrows(java.util.concurrent.ExecutionException.class,
+                            () -> rejected.get(2, TimeUnit.SECONDS));
+                    assertInstanceOf(java.util.concurrent.RejectedExecutionException.class,
+                            outcome.getCause());
+                    assertEquals(max, counts.get(domain));
+                    var peerFailure = new AtomicReference<Throwable>();
+                    var peer = Thread.ofPlatform().start(() -> {
+                        try {
+                            var peerMutex = OresMutex.shared(new int[]{0});
+                            var guard = peerMutex.lockAsync().get(2, TimeUnit.SECONDS);
+                            guard.release();
+                        } catch (Throwable failure) {
+                            peerFailure.set(failure);
+                        }
+                    });
+                    peer.join(3_000);
+                    assertFalse(peer.isAlive());
+                    assertNull(peerFailure.get(), String.valueOf(peerFailure.get()));
+                    assertEquals(max, counts.get(domain));
+                } finally {
+                    counts.remove(domain, max);
+                }
+
+                var guard = saturated.lockAsync().get(2, TimeUnit.SECONDS);
+                guard.release();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (counts.containsKey(domain) && System.nanoTime() < deadline) {
+                    Thread.sleep(2);
+                }
+                assertNull(counts.get(domain),
+                        "terminal Future callback retained actor execution-domain admission");
+            } catch (Throwable failure) {
+                error.compareAndSet(null, failure);
+            } finally {
+                if (counts != null && max > 0) counts.remove(domain, max);
+            }
+        });
+        requester.join(7_000);
+        assertFalse(requester.isAlive());
+        assertNull(error.get(), String.valueOf(error.get()));
     }
 
     @Test
