@@ -372,7 +372,15 @@ public final class OresEvalRootNode extends RootNode {
                     if (parentRef.name().equals("Object") || parentRef.name().equals("List"))
                         continue;
                     Ast.ClassDecl parent = dispatchParent(klass, parentRef);
-                    if (parent == null) continue;
+                    // Never publish a partial vtable for a parent whose methods
+                    // were not linked. A missing inherited method is not a safe
+                    // substitute for an unavailable class declaration.
+                    if (parent == null) {
+                        throw new IllegalArgumentException(
+                                "cannot link inherited callable slots for class '"
+                                        + klass.name() + "': unresolved parent '"
+                                        + parentRef.name() + "'");
+                    }
                     for (Map.Entry<CallableSelector, Ast.MethodDecl> inherited :
                             compileCallableSlots(parent, active).entrySet()) {
                         if (local.containsKey(inherited.getKey())) continue;
