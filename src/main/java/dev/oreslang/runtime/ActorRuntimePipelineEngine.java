@@ -195,7 +195,12 @@ public final class ActorRuntimePipelineEngine implements PipelineController.Engi
             // The source's received nominal message was copied by ActorRuntime
             // at source completion. Do not synthesize a delivery receipt.
             // The result remains unavailable until all physical DONE receipts.
-            return stream.completedReply();
+            // The nominal decode can allocate nested guest data. Enqueue
+            // it on trusted CONTROL, not the actor's physical-finalizer
+            // callback or a bounded actor DATA carrier.
+            return successfulRoundtrip.thenComposeAsync(
+                    ignored -> stream.completedReply(),
+                    ActorRuntimePipelineEngine.this::scheduleControl);
         }
 
         @Override
