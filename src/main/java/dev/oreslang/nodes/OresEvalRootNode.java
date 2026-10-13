@@ -136,6 +136,12 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> declarationModules =
                 new IdentityHashMap<>();
+        // Linked declaration tables and ASTs are immutable during execution.
+        // Cache only complete root analyses: a recursive seen-set result is
+        // path-dependent and must never be published as a declaration result.
+        // Identity keys avoid recursively hashing record-based AST bodies.
+        private final Map<Object, Boolean> suspensionResults =
+                java.util.Collections.synchronizedMap(new IdentityHashMap<>());
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
@@ -1278,10 +1284,14 @@ public final class OresEvalRootNode extends RootNode {
         private boolean functionContainsPotentialSuspension(
                 Ast.FunctionDecl function) {
             if (function.suspends()) return true;
-            return functionContainsPotentialSuspension(
+            Boolean cached = suspensionResults.get(function);
+            if (cached != null) return cached;
+            boolean result = functionContainsPotentialSuspension(
                     function,
                     java.util.Collections.newSetFromMap(
                             new IdentityHashMap<>()));
+            suspensionResults.put(function, result);
+            return result;
         }
 
         private boolean functionContainsPotentialSuspension(
@@ -4509,6 +4519,14 @@ public final class OresEvalRootNode extends RootNode {
         private boolean methodContainsPotentialSuspension(
                 Ast.MethodDecl method) {
             if (method.suspends()) return true;
+            Boolean cached = suspensionResults.get(method);
+            if (cached != null) return cached;
+            boolean result = analyzeMethodSuspension(method);
+            suspensionResults.put(method, result);
+            return result;
+        }
+
+        private boolean analyzeMethodSuspension(Ast.MethodDecl method) {
             for (Ast.Stmt stmt : method.body()) {
                 if (statementContainsPotentialSuspension(
                         stmt,
