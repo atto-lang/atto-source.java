@@ -649,20 +649,36 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         requireBlockingAllowed();
 
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-        whenCompleteRuntime((value, failure) -> done.countDown());
-
-        if (unit == null) {
-            done.await();
-        } else if (!done.await(timeout, unit)) {
-            return state.get() == PENDING ? PENDING : state.get();
+        RuntimeWaiterRegistration<T> registration =
+                whenCompleteRuntimeCancellable((value, failure) -> done.countDown());
+        try {
+            if (unit == null) {
+                done.await();
+            } else if (!done.await(timeout, unit)) {
+                Object afterTimeout = state.get();
+                return afterTimeout == PENDING ? PENDING : afterTimeout;
+            }
+            return state.get();
+        } finally {
+            // A host timeout or interruption must not leave a callback
+            // retained indefinitely by a Future that never completes.
+            // Detaching a reader only unregisters this subscription and
+            // never cancels the runtime operation that owns the Future.
+            registration.detach();
         }
-        return state.get();
     }
 
     private static void requireBlockingAllowed() {
-        if (ActorRuntime.inActorExecution()) {
+        // Neither actor mailbox carriers nor ordinary OresScheduler turns may
+        // park awaiting an uncompleted Future. These contexts must lower await
+        // into suspension and continuation resumption instead of calling the
+        // host/embedder Future.get() or join() blocking bridges.
+        if (ActorRuntime.inActorExecution()
+                || ActorRuntime.isActorCarrierThread()
+                || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()) {
             throw new IllegalStateException(
-                    "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
+                    "blocking Future wait on an actor/scheduler carrier is forbidden; use suspend/await");
         }
     }
 

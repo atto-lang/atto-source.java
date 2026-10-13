@@ -38,6 +38,14 @@ public final class OresMutex {
         }
     }
 
+    /** Stable across scheduler suspension and carrier migration. */
+    private static Object semanticExecutionDomain() {
+        Object actorDomain = ActorRuntime.currentActorExecutionDomain();
+        if (actorDomain != null) return actorDomain;
+        Object taskDomain = OresScheduler.currentTaskDomain();
+        return taskDomain != null ? taskDomain : ActorRuntime.currentExecutionDomain();
+    }
+
     public static <T> Local<T> local(T value) {
         return new Local<>(value);
     }
@@ -62,7 +70,64 @@ public final class OresMutex {
      * timeout-complete it, or obtrude a value. Otherwise a queued lock request
      * could be detached from the mutex's domain/permit accounting.</p>
      */
-    public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
+    /**
+     * A runtime CompletionStage boundary that cannot park a scheduler carrier,
+     * including dependent stages returned by thenApply/thenCompose/etc.
+     * Never expose an ordinary pending CompletableFuture derived from an
+     * actor-owned lock operation as a blocking guest-accessible bridge.
+     */
+    public static class CarrierSafeFuture<T> extends CompletableFuture<T> {
+        protected CarrierSafeFuture() { }
+
+        @Override
+        public <U> CompletableFuture<U> newIncompleteFuture() {
+            return new CarrierSafeFuture<>();
+        }
+
+        @Override
+        public java.util.concurrent.CompletionStage<T> minimalCompletionStage() {
+            // The JDK minimal stage's toCompletableFuture() can create a
+            // separate unguarded CompletableFuture. Never allow an actor lock
+            // result to be converted into a blocking host Future via this
+            // otherwise innocuous-looking CompletionStage escape hatch.
+            throw new UnsupportedOperationException(
+                    "SharedMutex completion cannot be downgraded to an unguarded minimal CompletionStage");
+        }
+
+        private void rejectBlockingCarrierRead() {
+            if (!isDone() && (ActorRuntime.inActorExecution()
+                    || ActorRuntime.isActorCarrierThread()
+                    || OresScheduler.current() != null
+                    || OresScheduler.isSchedulerCarrierThread())) {
+                throw new WrongMutexDomainException(
+                        "unresolved SharedMutex completion cannot block an actor/scheduler carrier; use await instead");
+            }
+        }
+
+        @Override
+        public T join() {
+            rejectBlockingCarrierRead();
+            return super.join();
+        }
+
+        @Override
+        public T get()
+                throws InterruptedException, java.util.concurrent.ExecutionException {
+            rejectBlockingCarrierRead();
+            return super.get();
+        }
+
+        @Override
+        public T get(long timeout, TimeUnit unit)
+                throws InterruptedException, java.util.concurrent.ExecutionException,
+                java.util.concurrent.TimeoutException {
+            Objects.requireNonNull(unit, "unit");
+            if (timeout > 0L) rejectBlockingCarrierRead();
+            return super.get(timeout, unit);
+        }
+    }
+
+    public static final class GuardFuture<T> extends CarrierSafeFuture<Guard<T>> {
         private GuardFuture() { }
 
         private boolean completeFromRuntime(Guard<T> guard) {
@@ -204,11 +269,11 @@ public final class OresMutex {
 
         private Local(T value) {
             this.value = value;
-            this.ownerDomain = ActorRuntime.currentExecutionDomain();
+            this.ownerDomain = semanticExecutionDomain();
         }
 
         private void requireOwnerDomain() {
-            if (!Objects.equals(ActorRuntime.currentExecutionDomain(), ownerDomain)) {
+            if (!Objects.equals(semanticExecutionDomain(), ownerDomain)) {
                 throw new WrongMutexDomainException(
                         "Mutex<T> is actor/private-domain state and cannot be accessed from another actor/execution domain; use SharedMutex<T>");
             }
@@ -426,9 +491,16 @@ public final class OresMutex {
 
         private void rejectBlockingActorAcquisition() {
             requireActorAccess();
-            if (ActorRuntime.inActorExecution()) {
+            // A regular OresScheduler turn is just as nonblocking as an actor
+            // mailbox turn. Even a currently free Semaphore cannot grant
+            // permission to use its blocking acquisition API on a carrier:
+            // another task may win the permit between observation and acquire.
+            if (ActorRuntime.inActorExecution()
+                    || ActorRuntime.isActorCarrierThread()
+                    || OresScheduler.current() != null
+                    || OresScheduler.isSchedulerCarrierThread()) {
                 throw new WrongMutexDomainException(
-                        "blocking SharedMutex.lock()/lock_for()/with_lock() is forbidden during actor execution; use try_lock() or await lock_async()");
+                        "blocking SharedMutex.lock()/lock_for()/with_lock() is forbidden during actor execution or on scheduler carriers; use try_lock() or await lock_async()");
             }
         }
 
@@ -439,7 +511,7 @@ public final class OresMutex {
          */
         private Object reserveDomain(boolean tryOnly) {
             requireActorAccess();
-            Object domain = ActorRuntime.currentExecutionDomain();
+            Object domain = semanticExecutionDomain();
             if (activeDomains.add(domain)) return domain;
             if (tryOnly) return null;
             throw new RecursiveLockException("SharedMutex<T>");
@@ -671,8 +743,15 @@ public final class OresMutex {
         public Optional<Guard<T>> lockFor(Duration timeout) {
             Objects.requireNonNull(timeout, "timeout");
             if (timeout.isNegative()) throw new IllegalArgumentException("timeout must not be negative");
+            // Language-level actor code explicitly forbids lock_for(),
+            // including a zero timeout; actors must use try_lock(). A plain
+            // scheduler task can safely use a zero-timeout poll because it
+            // cannot park a carrier.
+            if (timeout.isZero()) {
+                if (ActorRuntime.inActorExecution()) rejectBlockingActorAcquisition();
+                return tryLock();
+            }
             rejectBlockingActorAcquisition();
-            if (timeout.isZero()) return tryLock();
             Object ownerDomain = reserveDomain(true);
             if (ownerDomain == null) return Optional.empty();
             try {
@@ -711,7 +790,8 @@ public final class OresMutex {
                         "SharedMutex process-wide async waiter limit exceeded: " + MAX_GLOBAL_ASYNC_WAITERS));
             }
 
-            boolean enforceOwnerDomain = ActorRuntime.inActorExecution();
+            boolean enforceOwnerDomain = ActorRuntime.inActorExecution()
+                    || OresScheduler.currentTaskDomain() != null;
             GuardFuture<T> future = new GuardFuture<>();
             AsyncWaiter waiter = new AsyncWaiter(
                     ownerDomain,
@@ -841,14 +921,17 @@ public final class OresMutex {
             boolean acquired = false;
             boolean waiting = false;
             try {
-                if (ActorRuntime.inActorExecution()) {
+                if (ActorRuntime.inActorExecution()
+                        || ActorRuntime.isActorCarrierThread()
+                        || OresScheduler.current() != null
+                        || OresScheduler.isSchedulerCarrierThread()) {
                     // Recovery is expected to happen after the poisoning guard
                     // released its permit. Never block an actor if another
                     // recovery attempt is already in progress.
                     acquired = permit.tryAcquire();
                     if (!acquired) {
                         throw new WrongMutexDomainException(
-                                "SharedMutex recovery is busy; actor recovery never blocks, retry from a later mailbox turn");
+                                "SharedMutex recovery is busy; actor/scheduler recovery never blocks, retry from a later turn");
                     }
                 } else {
                     try {
@@ -911,7 +994,7 @@ public final class OresMutex {
 
             private void requireOwnerDomain() {
                 if (enforceOwnerDomain
-                        && !Objects.equals(ActorRuntime.currentExecutionDomain(), ownerDomain)) {
+                        && !Objects.equals(semanticExecutionDomain(), ownerDomain)) {
                     throw new WrongMutexDomainException(
                             "SharedMutex guard belongs to another actor/execution domain");
                 }

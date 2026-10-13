@@ -64,7 +64,8 @@ public final class OresContext implements AutoCloseable {
             Object host = env.asHostObject(value);
             if (host instanceof ChannelRuntime.Channel<?>
                     || host instanceof OresFuture<?>
-                    || host instanceof CompletionStage<?>) {
+                    || host instanceof CompletionStage<?>
+                    || host instanceof java.util.concurrent.Future<?>) {
                 return host;
             }
         }

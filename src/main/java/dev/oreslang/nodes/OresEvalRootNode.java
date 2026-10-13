@@ -6922,7 +6922,16 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
         }
 
+        private void rejectOpaqueHostFuture(Object receiver) {
+            Object unwrapped = context.unwrapHostRuntimeValue(receiver);
+            if (unwrapped instanceof java.util.concurrent.Future<?>) {
+                throw new SecurityException(
+                        "Java Future host methods are forbidden in Oreslang; return CompletionStage and use await");
+            }
+        }
+
         private Object hostMember(Object receiver, String ownerName, String name) {
+            rejectOpaqueHostFuture(receiver);
             InteropLibrary interop = InteropLibrary.getUncached(receiver);
             if (interop.isMemberInvocable(receiver, name)) {
                 return (Invokable) args -> {
@@ -6944,6 +6953,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invokeHostMember(Object receiver, String name, List<Object> args) {
+            rejectOpaqueHostFuture(receiver);
             try {
                 Object[] unwrapped = args.stream().map(this::unwrapHostArgument).toArray();
                 Object result = InteropLibrary.getUncached(receiver).invokeMember(receiver, name, unwrapped);
@@ -6962,7 +6972,7 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 Object[] unwrapped = args.stream().map(this::unwrapHostArgument).toArray();
                 Object value = interop.instantiate(hostClass.symbol(), unwrapped);
-                return new HostObjectFacade(value);
+                return normalizeHostResult(value);
             } catch (Exception failure) {
                 throw hostInteropError("construct Java host class " + hostClass.className(), failure);
             }
@@ -6974,6 +6984,10 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof ChannelRuntime.Channel<?>) return value;
             if (value instanceof CompletionStage<?> stage) {
                 return OresFuture.from(stage);
+            }
+            if (value instanceof java.util.concurrent.Future<?>) {
+                throw new SecurityException(
+                        "opaque Java Future cannot cross into Oreslang; return CompletionStage and use await");
             }
             if (value instanceof Number || value instanceof Boolean || value instanceof String
                     || value instanceof Character || value instanceof OresFuture<?>) {
