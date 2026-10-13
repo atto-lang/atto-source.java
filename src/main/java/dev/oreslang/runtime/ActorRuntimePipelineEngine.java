@@ -19,12 +19,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Host-only ActorRuntime bridge for versioned pipeline generations.
- * Typed guest replies, guest-language lowering and LLVM parity are NOT
- * supplied by this adapter.
+ * Returns the actual compiler-validated typed backward reply, after physical
+ * DONE. Guest-language lowering and LLVM parity remain separate release gates.
  */
 public final class ActorRuntimePipelineEngine implements PipelineController.Engine {
-    public record DeliveryReceipt(long planRevision, int stageCount) { }
-
     private final ActorRuntime runtime;
     private final Executor controlExecutor;
     private final Map<String, PipelinePlan.ActorProvider> registry;
@@ -194,8 +192,10 @@ public final class ActorRuntimePipelineEngine implements PipelineController.Engi
                     return CompletableFuture.failedFuture(failure);
                 }
             }
-            return successfulRoundtrip.thenApply(ignored ->
-                    (Object) new DeliveryReceipt(plan.revision(), refs.size()));
+            // The source's received nominal message was copied by ActorRuntime
+            // at source completion. Do not synthesize a delivery receipt.
+            // The result remains unavailable until all physical DONE receipts.
+            return stream.completedReply();
         }
 
         @Override
