@@ -15,6 +15,54 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Timeout(30)
 final class SourceInlineCriticalStateHandoffTest {
     @Test
+    void ordinaryClassMethodWithCpuLoopStillReturnsScalarSynchronously() throws Exception {
+        String guest = """
+                define class Calculator as
+                  pub count(): int {
+                    let total = 0;
+                    for (let i = 0; i < 1024; i = i + 1) do
+                      total = total + 1;
+                    done
+                    return total;
+                  }
+                end
+
+                define actor Worker as
+                  state { count: int = 0; }
+                  count(): void with state.read, state.write, suspend {
+                    for (let i = 0; i < 1024; i = i + 1) do
+                      self.handle_state(critical write |s| -> {
+                        s.count = s.count + 1;
+                      });
+                    done
+                    return;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.count();
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val calculator = new Calculator();
+                  stdio.stdout.write(calculator.count());
+                  return;
+                }
+                """;
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(bytes).build()) {
+            context.eval(Source.newBuilder(
+                    OresLanguage.ID, guest, "plain-class-loop-stays-sync.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        org.junit.jupiter.api.Assertions.assertEquals(
+                "1024", bytes.toString(StandardCharsets.UTF_8),
+                "actor method loop admission must not change ordinary class return values");
+    }
+
+    @Test
     void inlineWriteLoanRetiresBeforeEachCarrierHandoffAndMailboxTurn() throws Exception {
         String guest = """
                 define actor Worker as
