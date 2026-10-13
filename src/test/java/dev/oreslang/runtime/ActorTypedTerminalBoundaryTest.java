@@ -439,6 +439,46 @@ final class ActorTypedTerminalBoundaryTest {
     }
 
     @Test
+    void actorOutputStreamHidesRawCauseGraphFromGuestReaders() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var producer = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        throw ActorRuntime.GuestEffectSignal.throwing(2024);
+                    });
+            producer.send("fail");
+            assertTerminated(producer, THROW, 2024);
+            Throwable raw = producer.failure().orElseThrow();
+
+            // Trusted host inspection remains diagnostic-rich.
+            var hostRead = assertThrows(java.util.concurrent.CompletionException.class,
+                    () -> producer.outputs().next().join());
+            assertSame(raw, hostRead.getCause());
+
+            // Construct next() inside the OTHER actor's turn, but examine the
+            // returned Future as a host after that turn has fully finalized.
+            var observed = new java.util.concurrent.atomic.AtomicReference<OresFuture<?>>();
+            var reader = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        observed.set(producer.outputs().next());
+                        context.self().stop();
+                    });
+            reader.send("inspect");
+            assertTrue(reader.awaitTermination(5, TimeUnit.SECONDS));
+            assertNotNull(observed.get());
+            var failed = assertThrows(java.util.concurrent.CompletionException.class,
+                    () -> observed.get().join());
+            var snapshot = assertInstanceOf(
+                    ActorRuntime.ActorFailureSnapshotException.class, failed.getCause());
+            assertEquals(PANIC, snapshot.notice().terminal().delivered());
+            assertEquals(THROW, snapshot.notice().terminal().origin());
+            assertEquals(2024, snapshot.notice().terminal().originCode());
+            assertNull(snapshot.getCause());
+            assertEquals(0, snapshot.getSuppressed().length);
+            assertNotSame(raw, snapshot);
+        }
+    }
+
+    @Test
     void compilerEffectSignalRejectsOutOfRangeCodes() {
         assertThrows(IllegalArgumentException.class,
                 () -> ActorRuntime.GuestEffectSignal.throwing(-1));
