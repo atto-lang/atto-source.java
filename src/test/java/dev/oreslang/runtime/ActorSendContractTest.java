@@ -659,8 +659,13 @@ final class ActorSendContractTest {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var ref = runtime.<Integer>spawnShared(() -> {
                 initializerEntered.countDown();
-                if (!releaseInitializer.await(5, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException("startup release timed out");
+                try {
+                    if (!releaseInitializer.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("startup release timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("startup interrupted", interrupted);
                 }
                 return (message, context) -> { };
             });
@@ -710,8 +715,13 @@ final class ActorSendContractTest {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<Integer>spawnShared(() -> {
                 initializerEntered.countDown();
-                if (!releaseInitializer.await(5, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException("initializer release timed out");
+                try {
+                    if (!releaseInitializer.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("initializer release timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("initializer interrupted", interrupted);
                 }
                 throw new IllegalStateException("deliberate initializer failure");
             });
