@@ -1,236 +1,72 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayDeque;
-import java.util.IdentityHashMap;
 import java.util.Objects;
-import java.util.concurrent.CancellationException;
 
 /**
- * FIFO, non-thread-affine critical section for one object or one code unit.
+ * Legacy exclusive critical API backed by the identical reader/writer gate
+ * used for explicit read/write admission on this protection domain.
  *
- * <p>Tickets are linear logical-invocation capabilities, not JVM locks. An
- * async owner keeps its ticket across await/carrier migration and releases at
- * task completion (including cancellation). Completion callbacks only settle
- * runtime Futures; they never run user code.</p>
+ * <p>Legacy critical always requests WRITE. Reader and writer tickets on
+ * the same protected object, static class or code unit must come from
+ * rwGate(), never from a separately constructed RW gate.</p>
  */
 public final class CriticalGate {
-    public static final int MAX_WAITERS = 8192;
-    // A short, process-local coordinator serializes queue metadata and the
-    // critical wait-for graph. No guest code or scheduler turn runs under it.
-    // This must never be confused with a permit held across await.
-    private static final Object COORDINATOR = new Object();
-    private static final IdentityHashMap<Object, CriticalGate> WAITING_ON =
-            new IdentityHashMap<>();
-    private final ArrayDeque<Ticket> waiters = new ArrayDeque<>();
-    private Ticket owner;
+    public static final int MAX_WAITERS = CriticalRwGate.MAX_WAITERS;
 
-    // Shared admission engine: legacy critical and explicit RW modes on this
-    // protection domain MUST use the same instance. The old exclusive
-    // coordinator below is retained only during migration and not used for
-    // ticket admission.
-    private final CriticalRwGate unified = new CriticalRwGate();
+    private final CriticalRwGate engine = new CriticalRwGate();
 
+    /** The common admission engine for all critical modes on this domain. */
     public CriticalRwGate rwGate() {
-        return unified;
+        return engine;
+    }
+
+    public Ticket newTicket() {
+        return new Ticket(engine.newCriticalTicket());
+    }
+
+    public Ticket newTicket(CriticalRwGate.Mode mode) {
+        return new Ticket(engine.newTicket(Objects.requireNonNull(mode, "mode")));
     }
 
     public final class Ticket implements AutoCloseable {
-        // Cancellation of a pending admission retracts its queue slot. A granted
-        // admission is already settled and therefore cannot be cancelled.
-        private final OresFuture<Void> admitted = new OresFuture<>(this::close);
-        private boolean requested;
-        private boolean granted;
-        private boolean closed;
-        private Thread synchronousOwner;
-        private Object logicalOwner;
-        // Only host/embedder synchronous callers may wait on a physical thread.
-        // Per-ticket signaling avoids waking every queued host thread.
-        private java.util.concurrent.CountDownLatch synchronousWaiter;
+        private final CriticalRwGate.Ticket delegated;
 
-        private Ticket() { }
+        private Ticket(CriticalRwGate.Ticket delegated) {
+            this.delegated = delegated;
+        }
 
-        /**
-         * Nonblocking admission. Each scheduler task has a stable logical id
-         * across await/carrier migration; detached host async invocations use
-         * their own ticket rather than inheriting the creating host thread.
-         */
         public OresFuture<Void> enterAsync() {
-            return request(false);
+            return delegated.enterAsync();
         }
 
-        private OresFuture<Void> request(boolean synchronous) {
-            Object domain = OresScheduler.currentTaskDomain();
-            if (domain == null) domain = ActorRuntime.currentActorExecutionDomain();
-            if (domain == null) domain = synchronous ? Thread.currentThread() : this;
-            boolean completeNow = false;
-            synchronized (COORDINATOR) {
-                if (closed || requested) {
-                    throw new IllegalStateException("critical ticket already used or released");
-                }
-                requested = true;
-                logicalOwner = domain;
-                if (owner == null && waiters.isEmpty()) {
-                    owner = this;
-                    granted = true;
-                    completeNow = true;
-                } else {
-                    if (waiters.size() >= MAX_WAITERS) {
-                        requested = false;
-                        throw new IllegalStateException("critical wait queue is full");
-                    }
-                    if (owner != null && owner.logicalOwner == domain) {
-                        requested = false;
-                        throw new IllegalStateException(
-                                "recursive logical critical acquisition would deadlock");
-                    }
-                    CriticalGate priorWait = WAITING_ON.get(domain);
-                    if (priorWait != null) {
-                        requested = false;
-                        throw new IllegalStateException(
-                                "logical caller cannot wait on multiple critical gates simultaneously");
-                    }
-                    if (wouldCreateCycle(domain)) {
-                        requested = false;
-                        throw new IllegalStateException(
-                                "cross-gate critical acquisition would create a deadlock cycle");
-                    }
-                    WAITING_ON.put(domain, CriticalGate.this);
-                    waiters.addLast(this);
-                }
-            }
-            // Completing the Future may notify runtime callbacks; always do so
-            // after releasing the metadata coordinator.
-            if (completeNow) admitted.completeFromRuntime(null);
-            return admitted;
-        }
-
-        /** Synchronous callers cannot suspend; never park an actor or ROOT carrier. */
+        /** Host-only waits; synchronous actor/scheduler contention fails fast. */
         public void enterSync() {
-            OresFuture<Void> ready = request(true);
-            if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) {
-                // Never park a scheduler/actor worker. Release and fail outside
-                // the monitor, because Future settlement runs callbacks.
-                boolean admittedNow;
-                synchronized (COORDINATOR) {
-                    admittedNow = granted && !closed;
-                    if (admittedNow) synchronousOwner = Thread.currentThread();
-                }
-                if (!admittedNow) {
-                    close();
-                    throw new IllegalStateException(
-                            "contended synchronous critical call would block an actor/scheduler carrier; declare suspend critical and await it");
-                }
-                return;
-            }
-            java.util.concurrent.CountDownLatch signal = null;
-            synchronized (COORDINATOR) {
-                if (!granted && !closed) {
-                    synchronousWaiter = new java.util.concurrent.CountDownLatch(1);
-                    signal = synchronousWaiter;
-                }
-            }
-            if (signal != null) {
-                try {
-                    signal.await();
-                } catch (InterruptedException interrupted) {
-                    close();
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException(
-                            "interrupted while waiting for critical section", interrupted);
-                }
-            }
-            synchronized (COORDINATOR) {
-                if (closed || !granted) {
-                    throw new CancellationException("critical ticket was cancelled");
-                }
-                synchronousOwner = Thread.currentThread();
-            }
+            delegated.enterSync();
         }
 
-        /** Attach after scheduler start; already-settled completions run this too. */
         public void releaseOnCompletion(OresFuture<?> completion) {
-            Objects.requireNonNull(completion, "completion")
-                    .whenCompleteRuntime((value, failure) -> close());
+            delegated.releaseOnCompletion(completion);
         }
 
         public boolean isHeld() {
-            synchronized (COORDINATOR) {
-                return granted && !closed;
-            }
+            return delegated.isHeld();
         }
 
         @Override
         public void close() {
-            Ticket wake = null;
-            java.util.concurrent.CountDownLatch cancelledWaiter = null;
-            synchronized (COORDINATOR) {
-                if (closed) return;
-                closed = true;
-                synchronousOwner = null;
-                cancelledWaiter = synchronousWaiter;
-                if (owner == this) {
-                    owner = null;
-                    while (!waiters.isEmpty()) {
-                        Ticket candidate = waiters.removeFirst();
-                        WAITING_ON.remove(candidate.logicalOwner, CriticalGate.this);
-                        if (candidate.closed) continue;
-                        owner = candidate;
-                        candidate.granted = true;
-                        wake = candidate;
-                        break;
-                    }
-                } else {
-                    if (waiters.remove(this)) {
-                        WAITING_ON.remove(logicalOwner, CriticalGate.this);
-                    }
-                }
-            }
-            if (cancelledWaiter != null) cancelledWaiter.countDown();
-            if (!admitted.isDone()) {
-                admitted.failFromRuntime(new CancellationException("critical ticket released"));
-            }
-            if (wake != null) {
-                wake.admitted.completeFromRuntime(null);
-                java.util.concurrent.CountDownLatch signal;
-                synchronized (COORDINATOR) {
-                    signal = wake.synchronousWaiter;
-                }
-                if (signal != null) signal.countDown();
-            }
+            delegated.close();
         }
     }
-
-    /**
-     * Follow the waiting dependency chain: requesting this gate would close
-     * a cycle if the current owner is (transitively) waiting on requester.
-     * Call only under COORDINATOR.
-     */
-    private boolean wouldCreateCycle(Object requester) {
-        Ticket current = owner;
-        IdentityHashMap<Object, Boolean> visited = new IdentityHashMap<>();
-        while (current != null) {
-            Object ownerDomain = current.logicalOwner;
-            if (ownerDomain == requester) return true;
-            if (visited.put(ownerDomain, Boolean.TRUE) != null) return false;
-            CriticalGate waiting = WAITING_ON.get(ownerDomain);
-            if (waiting == null) return false;
-            current = waiting.owner;
-        }
-        return false;
-    }
-
-    public Ticket newTicket() { return new Ticket(); }
 
     public int queuedCount() {
-        synchronized (COORDINATOR) { return waiters.size(); }
+        return engine.queuedCount();
     }
 
     public boolean held() {
-        synchronized (COORDINATOR) { return owner != null; }
+        return engine.activeReaderCount() > 0 || engine.hasWriter();
     }
 
-    /** Runtime diagnostic; identifies queued logical invocations, not threads. */
     public static int waitingLogicalDomains() {
-        synchronized (COORDINATOR) { return WAITING_ON.size(); }
+        return CriticalRwGate.waitingLogicalDomains();
     }
 }
