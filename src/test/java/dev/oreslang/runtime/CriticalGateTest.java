@@ -6,6 +6,74 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class CriticalGateTest {
     @Test
+    void anotherMessageOnSameActorCannotReleasePriorMessageGrantInline() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        java.util.concurrent.CountDownLatch firstEntered =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch secondEntered =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch leaveSecond =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<CriticalGate.Ticket> grant =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            try {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        if ("first".equals(message)) {
+                            var writer = gate.newTicket();
+                            grant.set(writer);
+                            assertTrue(writer.enterAsync().isDone());
+                            firstEntered.countDown();
+                        } else if ("second".equals(message)) {
+                            // Both envelopes have the same actor-wide fallback
+                            // domain, but not the same logical invocation.
+                            grant.get().close();
+                            assertTrue(grant.get().isHeld(),
+                                    "a later message cannot impersonate ticket owner");
+                            secondEntered.countDown();
+                            assertTrue(leaveSecond.await(5,
+                                    java.util.concurrent.TimeUnit.SECONDS));
+                            assertTrue(grant.get().isHeld(),
+                                    "foreign message release must await carrier exit");
+                        }
+                    } catch (Throwable error) {
+                        failure.compareAndSet(null, error);
+                    } finally {
+                        if ("first".equals(message)) firstEntered.countDown();
+                        if ("second".equals(message)) secondEntered.countDown();
+                    }
+                });
+                actor.send("first");
+                assertTrue(firstEntered.await(5,
+                        java.util.concurrent.TimeUnit.SECONDS));
+                actor.send("second");
+                assertTrue(secondEntered.await(5,
+                        java.util.concurrent.TimeUnit.SECONDS));
+                assertNull(failure.get());
+                assertTrue(grant.get().isHeld());
+                leaveSecond.countDown();
+                long deadline = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                while ((grant.get().isHeld()
+                        || runtime.trackedActorResourceCount(actor) != 0)
+                        && System.nanoTime() < deadline) Thread.onSpinWait();
+                assertFalse(grant.get().isHeld(),
+                        "deferred release must retire after actor turn exit");
+                assertEquals(0, runtime.trackedActorResourceCount(actor));
+                runtime.stop(actor);
+            } finally {
+                leaveSecond.countDown();
+            }
+        }
+        assertNull(failure.get());
+        assertFalse(gate.hasWriter());
+        assertEquals(0, CriticalGate.waitingLogicalDomains());
+    }
+
+    @Test
     void foreignTicketCloseCannotReleaseGrantedWriterDuringGuestTurn() throws Exception {
         CriticalGate gate = new CriticalGate();
         java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
