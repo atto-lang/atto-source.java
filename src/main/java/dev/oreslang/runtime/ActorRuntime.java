@@ -5548,6 +5548,12 @@ public final class ActorRuntime implements AutoCloseable {
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
         requireGraphDepth(depth);
+        // Actor ingress must check Symbol visibility BEFORE the general scalar fast path.
+        // Immutable equality never confers permission to receive a private userland key.
+        if (value instanceof OresSymbol symbol && !symbol.publicCore()) {
+            throw new SecurityException(
+                    "untrusted actor cannot receive private Symbol " + symbol);
+        }
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
@@ -6194,7 +6200,7 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
-                || value instanceof ActorGroupId;
+                || value instanceof ActorGroupId || value instanceof OresSymbol;
     }
 
     @Override
