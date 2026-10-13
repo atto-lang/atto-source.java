@@ -130,6 +130,10 @@ public final class NativeHttp implements AutoCloseable {
             long perf = CorePerf.start();
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
             synchronized (exchange.state) { exchange.checkOwner(); exchange.state.spawnNanos = System.nanoTime(); }
+            // Includes supervisor admission wait and guest routing before this
+            // native handler boundary. Reuse lifecycle timestamps: no new clock.
+            CorePerf.elapsed(CorePerf.HTTP_ADMISSION_TO_HANDLER,
+                    exchange.state.admittedNanos, exchange.state.spawnNanos);
             if (workers != null) {
                 try {
                     Worker worker = worker();

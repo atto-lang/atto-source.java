@@ -10,6 +10,16 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 class CorePerfTest {
+    @Test void admissionToHandlerPhaseRetainsQueueDurationWithoutRequestData() {
+        var recorder = new CorePerf.Recorder(1);
+        recorder.record(CorePerf.HTTP_ADMISSION_TO_HANDLER, 100L, 11_000_100L);
+        var bytes = new ByteArrayOutputStream();
+        recorder.dump(new PrintStream(bytes, true, StandardCharsets.UTF_8));
+        String output = bytes.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("\"phase\":\"http.admission.to_handler\""));
+        assertTrue(output.contains("\"duration_ns\":11000000"));
+        assertFalse(output.contains("request_id"));
+    }
     @Test void randomizedSamplingCoversRepeatedPhasesWithoutConsumingSlots() {
         var recorder = new CorePerf.Recorder(16, 1024);
         int[] phases = new int[17];

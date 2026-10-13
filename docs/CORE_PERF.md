@@ -84,6 +84,13 @@ actual console write and the request's transport/actor lifetime. The lifetime
 can overlap every request phase. Userland request spans can end later, after
 the supervisor resumes and exports them.
 
+`http.admission.to_handler` reuses existing admission and handler-entry
+timestamps to measure the supervisor queue plus guest routing before native
+handler dispatch. It applies to fresh and pooled handlers and adds no new clock
+read. Unlike `http.dispatch`, which covers native dispatch work, this phase can
+expose waits before the native dispatcher without userland metrics. It overlaps
+request lifetime and does not isolate routing CPU time from queueing.
+
 ## Analyze
 
 ```sh
