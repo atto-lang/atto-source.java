@@ -8718,6 +8718,15 @@ public final class OresEvalRootNode extends RootNode {
             }
             Objects.requireNonNull(object, "object");
         }
+
+        @Override
+        public void revokeRuntimeAdmissions() {
+            // Invoked only by ActorRuntime after the final carrier/guest turn
+            // unwinds. Revocation permanently fences stale actor-instance
+            // method tickets before the actor's memory arena is reclaimed.
+            // This must not close file-global or class-static critical gates.
+            object.criticalGate.close();
+        }
     }
 
     private static final class OresObject implements OresMutex.SharedState {
