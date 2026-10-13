@@ -1683,7 +1683,7 @@ public final class TypeChecker {
             Type subject = deref(typeOf(switched.subject(), env, generics, self));
             Map<Env.Binding, Set<String>> beforeCases = env.initializationSnapshot();
             List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
-            Set<String> seen = new HashSet<>();
+            Set<Object> seen = new HashSet<>();
             for (Ast.SwitchCase arm : switched.cases()) {
                 env.restoreInitialization(beforeCases);
                 if (arm.constants().isEmpty()) throw new IllegalArgumentException("switch case requires at least one constant");
@@ -1693,8 +1693,13 @@ public final class TypeChecker {
                     if (!assignable(actual, subject) && !assignable(subject, actual)) {
                         throw new IllegalArgumentException("switch case type " + actual + " is incompatible with " + subject);
                     }
-                    String key = constant.toString();
-                    if (!seen.add(key)) throw new IllegalArgumentException("duplicate switch case: " + key);
+                    // AST.toString() is not a semantic key: a literal text
+                    // value "#foo" can print exactly like the Symbol #foo.
+                    // Keep nominal runtime identity in the duplicate set.
+                    Object key = constant instanceof Ast.LiteralExpr literal
+                            ? new SwitchLiteralCaseKey(literal.value().getClass(), literal.value())
+                            : constant.toString();
+                    if (!seen.add(key)) throw new IllegalArgumentException("duplicate switch case: " + constant);
                 }
                 checkBlock(arm.body(), env, generics, expectedReturn, self);
                 exits.add(env.initializationSnapshot());
@@ -7809,6 +7814,10 @@ public final class TypeChecker {
         }
         return result;
     }
+
+    // Distinguishes String "#foo" from guest Symbol #foo without relying
+    // on an escaped display spelling; preserves normalized Symbol equality.
+    private record SwitchLiteralCaseKey(Class<?> nominalType, Object value) { }
 
     private boolean constant(Ast.Expr expr) {
         if (expr instanceof Ast.LiteralExpr) return true;
