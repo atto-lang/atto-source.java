@@ -14,8 +14,9 @@ LLVM also rejects unsupported exception syntax before emitting LLVM IR.
   may consume the effect.
 - `raise e`: explicit escalation, not caught by ordinary catch/trap.
 - `panic e`: invariant failure, not caught by ordinary catch/trap.
-- `recover`: capability-checked supervisor recovery; cannot recover a VM-fatal
-  condition, forge a notice, or silently erase diagnostics.
+- `recover`: capability-checked `raise` recovery at a safe checkpoint; it cannot
+  recover an actor's own `panic`, recover a VM-fatal condition, forge a
+  supervisor notice, or silently erase diagnostics.
 
 ## First executable milestone
 
