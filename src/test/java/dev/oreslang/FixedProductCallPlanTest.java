@@ -57,6 +57,47 @@ final class FixedProductCallPlanTest {
         assertTrue(failure.getMessage().contains("duplicate"), failure.getMessage());
     }
 
+    @Test
+    void forgedPublicRecordConstructorsCannotBypassPermutationProof() {
+        var order = List.of(
+                new FixedProductCallPlan.BoundSlot(0, 1, "b"),
+                new FixedProductCallPlan.BoundSlot(1, 0, "a"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(order, List.of(0, 1)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(new FixedProductCallPlan.BoundSlot(0, 0, null),
+                                new FixedProductCallPlan.BoundSlot(0, 1, null)),
+                        List.of(0, 0)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(new FixedProductCallPlan.BoundSlot(0, 2, null)),
+                        List.of(0)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(new FixedProductCallPlan.BoundSlot(-1, 0, null)),
+                        List.of(0)));
+        var valid = new FixedProductCallPlan(order, List.of(1, 0));
+        assertEquals(List.of(1, 0), valid.abiToSource());
+    }
+
+    @Test
+    void binderSnapshotIsImmutableAndHandlesZeroArity() {
+        assertEquals(List.of(), FixedProductCallPlan.bind(List.of(), List.of()).abiToSource());
+        var inputs = new java.util.ArrayList<>(
+                List.of(named("b"), named("a")));
+        var plan = FixedProductCallPlan.bind(List.of("a", "b"), inputs);
+        inputs.set(0, positional());
+        assertEquals(List.of(1, 0), plan.abiToSource());
+        assertThrows(UnsupportedOperationException.class, () -> plan.abiToSource().set(0, 0));
+        assertThrows(UnsupportedOperationException.class, () -> plan.sourceOrder().clear());
+    }
+
+    @Test
+    void labelComparisonIsCaseSensitive() {
+        assertRejected("unknown", List.of(named("A"), named("b"), named("c")));
+    }
+
     private static void assertRejected(String fragment, List<FixedProductCallPlan.InputSlot> args) {
         var failure = assertThrows(IllegalArgumentException.class,
                 () -> FixedProductCallPlan.bind(PARAMS, args));
