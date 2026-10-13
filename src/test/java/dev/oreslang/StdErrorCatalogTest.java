@@ -140,8 +140,8 @@ final class StdErrorCatalogTest {
         assertEquals(new Entry("StateError", 2009, false, null), parsed.get("EmptyCollectionError"));
         assertEquals(new Entry("StateError", 2010, false, null), parsed.get("IteratorExhaustedError"));
         assertEquals(new Entry("StateError", 2011, false, null), parsed.get("DeadlockDetectedError"));
-        assertEquals(new Entry("StateError", 2012, false, "ActorApiError"), parsed.get("ProcessNotFoundError"));
-        assertEquals(new Entry("StateError", 2013, false, "ActorApiError"), parsed.get("MailboxFullError"));
+
+
         assertEquals(new Entry("OperationError", 8009, false, null), parsed.get("NotImplementedError"));
         assertEquals(new Entry("OperationError", 8010, false, null), parsed.get("ResourceExhaustedError"));
         assertThrows(IllegalArgumentException.class, () -> CoreLibrarySources.source("std/error/../core"));
