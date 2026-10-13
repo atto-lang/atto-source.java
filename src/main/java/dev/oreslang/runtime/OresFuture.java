@@ -607,6 +607,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private static void requireBlockingAllowed() {
+        if (ActorRuntime.inActorRetirementCallback()) {
+            throw new IllegalStateException(
+                    "await would block an actor retirement callback before DONE or another pending Future can settle");
+        }
         if (ActorRuntime.inActorExecution()) {
             throw new IllegalStateException(
                     "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
