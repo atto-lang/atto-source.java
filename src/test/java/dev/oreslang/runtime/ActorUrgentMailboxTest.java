@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -100,12 +101,22 @@ final class ActorUrgentMailboxTest {
                 Duration.ofMinutes(1), false);
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
+        var processedAfterStop = new AtomicInteger();
         try (var runtime = new ActorRuntime(policy,
                 new ActorRuntime.DispatcherConfig(2, 2, 1, 64))) {
             var actor = runtime.<String>spawnShared(() -> (message, context) -> {
                 if ("hold".equals(message)) {
                     entered.countDown();
-                    release.await(3, TimeUnit.SECONDS);
+                    if (!release.await(3, TimeUnit.SECONDS)) {
+                        throw new AssertionError("held actor turn was not released");
+                    }
+                    // Self STOP is out-of-band and nonblocking on the actor
+                    // carrier. A host stop() intentionally blocks until
+                    // finalization, so it cannot be called while the same host
+                    // thread still owns this release latch.
+                    context.self().stop();
+                } else {
+                    processedAfterStop.incrementAndGet();
                 }
             });
             actor.ready().get(3, TimeUnit.SECONDS);
@@ -114,10 +125,11 @@ final class ActorUrgentMailboxTest {
                 assertTrue(entered.await(3, TimeUnit.SECONDS));
                 actor.send("normal");
                 for (int i = 0; i < 16; i++) actor.sendUrgent("urgent-" + i);
-                actor.stop(); // out-of-band: neither user queue can block STOP
             } finally {
                 release.countDown();
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+                assertEquals(0, processedAfterStop.get(),
+                        "STOP must revoke all queued normal and urgent user mail");
                 assertTrue(actor.failure().isEmpty(), () -> actor.failure().toString());
             }
         }
