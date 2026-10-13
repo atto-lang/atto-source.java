@@ -7451,6 +7451,26 @@ public final class OresEvalRootNode extends RootNode {
                     args,
                     "constructor " + klass.name());
 
+            // Deliberately narrower than the constructor-body environment.
+            // A reference, borrow or move-only parameter cannot be injected
+            // into a declaration initializer without a checked transfer
+            // proof. The implicit arguments tuple is likewise unavailable.
+            Env scalarInitializerArgs = new Env(null, false, klass, object);
+            for (int i = 0; i < constructor.parameters().size(); i++) {
+                Ast.Param param = constructor.parameters().get(i);
+                Ast.TypeRef parameterType = param.type();
+                String typeName = parameterType.name();
+                if (!parameterType.isBorrow()
+                        && parameterType.arguments().isEmpty()
+                        && !param.structural()
+                        && (typeName.equals("int") || typeName.equals("bool")
+                                || typeName.equals("float") || typeName.equals("string"))) {
+                    scalarInitializerArgs.define(
+                            param.name(), args.get(i),
+                            param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+            }
+
             // Field initializers run before the constructor body and with the
             // declaring class's private-member authority. Only the declaring
             // class may read its own constructor arguments, not inherited
@@ -7460,7 +7480,7 @@ public final class OresEvalRootNode extends RootNode {
                 OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
                 Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
                 Env initializerEnv = new Env(
-                        fieldOwner == klass ? constructorEnv : null,
+                        fieldOwner == klass ? scalarInitializerArgs : null,
                         false, fieldOwner, object);
                 initializerEnv.define("self", object, Ast.BindingKind.VAL);
                 fields.put(field.name(), eval(field.initializer(), initializerEnv));
