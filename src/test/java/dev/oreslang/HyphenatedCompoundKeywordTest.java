@@ -61,7 +61,12 @@ final class HyphenatedCompoundKeywordTest {
             "pub fnc critical-write put(): void { return; }",
             "pub critical-write fnc put(): void { return; }",
             "define actor A as critical-read peek(): int { return 1; } end",
-            "define actor A as critical-write write(): void { return; } end"
+            "define actor A as critical-write write(): void { return; } end",
+            "define actor A as fnc critical-read peek(): int { return 1; } end",
+            "define actor A as method critical-write put(): void { return; } end",
+            "define class Box as pub critical-read get(): int { return 1; } end",
+            "define class Box as pub static fnc critical-write put(): void { return; } end",
+            "pub static critical-read fnc nonmember(): int { return 1; }"
         };
         for (String source : unsupported) {
             IllegalArgumentException failure = assertThrows(
