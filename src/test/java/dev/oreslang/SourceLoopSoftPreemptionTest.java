@@ -394,6 +394,79 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void sustainedMailboxTrafficRemainsOrderedWhileInfiniteActorIsCooperating()
+            throws Exception {
+        String setting = "ores.runtime.actor.shared.parallelism";
+        String before = System.getProperty(setting);
+        System.setProperty(setting, "1");
+        try {
+            String output = run("""
+                    define actor Greedy as
+                      receive(ActorMail<String> mail): void {
+                        self.send("entered");
+                        while true do
+                          let n = 1 + 1;
+                        done
+                      }
+                    end
+
+                    define actor Peer as
+                      let int count;
+                      on_start(): void {
+                        self.count = 0;
+                        return;
+                      }
+                      receive(ActorMail<String> mail): void {
+                        if mail.value == "stop" then
+                          self.end();
+                          return;
+                        fi
+                        self.count = self.count + 1;
+                        self.send(self.count);
+                        return;
+                      }
+                    end
+
+                    pub async routine main(): void {
+                      val greedy = spawn Greedy();
+                      val peer = spawn Peer();
+                      await greedy.get_ready();
+                      await peer.get_ready();
+                      greedy.send("start");
+                      val entered = (await greedy.outputs.next()).value.unwrap();
+
+                      // Each reply must make progress even though a separate
+                      // shared-lane actor never voluntarily exits its loop.
+                      let i = 1;
+                      while i <= 64 do
+                        peer.send("tick");
+                        val reply = (await peer.outputs.next()).value.unwrap();
+                        if reply.value != i then
+                          stdio.stdout.write("replayed-or-reordered");
+                          return;
+                        fi
+                        i = i + 1;
+                      done
+                      peer.send("stop");
+                      greedy.stop();
+                      await greedy.get_done();
+                      await peer.get_done();
+                      stdio.stdout.write("64|");
+                      stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                      return;
+                    }
+                    """);
+            assertTrue(output.startsWith("64|"),
+                    "progress or mailbox ordering failure: " + output);
+            assertTrue(Long.parseLong(output.substring("64|".length())) >= 1,
+                    "infinite CPU actor never returned its physical carrier");
+        } finally {
+            if (before == null) System.clearProperty(setting);
+            else System.setProperty(setting, before);
+        }
+    }
+
+    @Test
     void whileSourceSyntaxRetainsReductionCooperationAcrossAotCompatibleBackedges()
             throws Exception {
         String output = run("""
