@@ -309,6 +309,37 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void constructorCannotLogOrBorrowPartiallyInitializedSelf() {
+        String logger = """
+                define class Unsafe as
+                  val int age;
+                  constructor(int age) {
+                    stdio.stdout.log(self);
+                    self.age = age;
+                  }
+                end
+                """;
+        IllegalArgumentException logging = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(logger)));
+        assertTrue(logging.getMessage().contains(
+                "constructor cannot pass partially initialized self to a call"));
+
+        String borrowed = """
+                define class Unsafe as
+                  val int age;
+                  constructor(int age) {
+                    stdio.stdout.log(&self);
+                    self.age = age;
+                  }
+                end
+                """;
+        IllegalArgumentException borrowing = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse(borrowed)));
+        assertTrue(borrowing.getMessage().contains(
+                "constructor cannot borrow partially initialized self for a call"));
+    }
+
+    @Test
     void partiallyInitializedConstructorSelfCannotBeTransferredAsValue() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
