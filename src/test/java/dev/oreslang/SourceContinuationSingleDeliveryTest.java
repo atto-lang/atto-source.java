@@ -165,6 +165,30 @@ final class SourceContinuationSingleDeliveryTest {
                 """, "source-continuation-assign-await.ores"));
     }
 
+    @Test
+    void deferredAndFinallyCleanupExecuteOnceAcrossCooperativeAwait() throws Exception {
+        assertEquals("defer:catch:finally:after", run("""
+                async fnc fail(): int {
+                  rt cooperate;
+                  val Option<int> empty = None;
+                  return empty.unwrap();
+                }
+
+                pub async routine main(): void {
+                  try {
+                    defer stdio.stdout.write("defer:");
+                    val unused = await fail();
+                  } catch (err) {
+                    stdio.stdout.write("catch:");
+                  } finally {
+                    stdio.stdout.write("finally:");
+                  }
+                  stdio.stdout.write("after");
+                  return;
+                }
+                """, "source-defer-finally-cooperation.ores"));
+    }
+
     private static String run(String text, String sourceName) throws Exception {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
