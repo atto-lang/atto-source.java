@@ -32,11 +32,11 @@ final class NativeNetStdlibTest {
                 pub async routine main(): void {
                   val NioTcpListener listener = net_core.listen_loopback(0, 32, 4, 16);
                   stdio.println(listener.port);
-                  val Future<NioTcpConnection> pending_accept = net_core.accept(listener);
+                  val Future<NioTcpConnection> pending_accept = net_core.accept(rt borrow listener);
                   val NioTcpConnection peer = await pending_accept;
-                  val Future<Array<int>> pending_read = net_core.read(peer, 64);
+                  val Future<Array<int>> pending_read = net_core.read(rt borrow peer, 64);
                   val Array<int> bytes = await pending_read;
-                  val Future<int> pending_write = net_core.write(peer, bytes);
+                  val Future<int> pending_write = net_core.write(rt borrow peer, bytes);
                   val int sent = await pending_write;
                   stdio.println(sent);
                   val Future<void> pending_close = net_core.close_connection(peer);
