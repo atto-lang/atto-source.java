@@ -89,6 +89,54 @@ final class SelfImportIsolationTest {
     }
 
     @Test
+    void transitiveHardlinkAliasCannotCreateSecondUnitForSamePhysicalSource() throws Exception {
+        Path a = temp.resolve("a.ores");
+        Path b = temp.resolve("b.ores");
+        Files.writeString(a, """
+                import * as other from "./b.ores";
+                pub routine main(): void { return; }
+                """);
+        Files.writeString(b, """
+                import * as original from "./alias-a.ores";
+                """);
+        Path alias = temp.resolve("alias-a.ores");
+        try {
+            Files.createLink(alias, a);
+        } catch (UnsupportedOperationException | IOException failure) {
+            Assumptions.assumeTrue(false, "hard links unavailable: " + failure);
+        }
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> LinkedProgramRunner.validate(a));
+        assertTrue(failure.getMessage().contains("source file identity alias"),
+                failure.getMessage());
+    }
+
+    @Test
+    void transitiveSymlinkAliasCannotCreateSecondUnitForSamePhysicalSource() throws Exception {
+        Path a = temp.resolve("a.ores");
+        Path b = temp.resolve("b.ores");
+        Files.writeString(a, """
+                import * as other from "./b.ores";
+                pub routine main(): void { return; }
+                """);
+        Files.writeString(b, """
+                import * as original from "./alias-a.ores";
+                """);
+        Path alias = temp.resolve("alias-a.ores");
+        try {
+            Files.createSymbolicLink(alias, a.getFileName());
+        } catch (UnsupportedOperationException | IOException | SecurityException failure) {
+            Assumptions.assumeTrue(false, "symlinks unavailable: " + failure);
+        }
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> LinkedProgramRunner.validate(a));
+        assertTrue(failure.getMessage().contains("source file identity alias"),
+                failure.getMessage());
+    }
+
+    @Test
     void compilerSourceMapRejectsLexicallyResolvedSelfEdge() {
         IncrementalCompiler compiler = new IncrementalCompiler();
 
