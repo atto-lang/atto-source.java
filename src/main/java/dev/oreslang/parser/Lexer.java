@@ -93,10 +93,7 @@ public final class Lexer {
     /** Hash only introduces Symbol literals; colon remains a field/type separator. */
     private void symbol() {
         if (peek() == '"' || peek() == '\'') {
-            char quote = advance();
-            string(quote);
-            Token decoded = tokens.remove(tokens.size() - 1);
-            tokens.add(new Token(SYMBOL_LITERAL, decoded.lexeme(), line, startColumn));
+            symbolQuoted(advance());
             return;
         }
         if (!asciiSymbolStart(peek())) {
@@ -110,6 +107,34 @@ public final class Lexer {
             throw error("unquoted Symbol literal exceeds 128 ASCII bytes");
         }
         tokens.add(new Token(SYMBOL_LITERAL, source.substring(nameStart, current), line, startColumn));
+    }
+
+    /** Quoted Symbol escapes are strict, unlike legacy ordinary string escapes. */
+    private void symbolQuoted(char quote) {
+        StringBuilder value = new StringBuilder();
+        while (!isAtEnd() && peek() != quote) {
+            char ch = advance();
+            if (ch == '\n' || ch == '\r') {
+                throw error("raw newline in quoted Symbol literal");
+            }
+            if (ch == '\\') {
+                if (isAtEnd()) throw error("unterminated quoted Symbol escape");
+                char escaped = advance();
+                ch = switch (escaped) {
+                    case 'u' -> unicodeEscape();
+                    case 'n' -> '\n';
+                    case 'r' -> '\r';
+                    case 't' -> '\t';
+                    case '"', '\'', '\\' -> escaped;
+                    default -> throw error("invalid quoted Symbol escape");
+                };
+            }
+            value.append(ch);
+        }
+        if (isAtEnd()) throw error("unterminated quoted Symbol literal");
+        advance();
+        String key = dev.oreslang.runtime.OresSymbol.normalizeAndValidate(value.toString());
+        tokens.add(new Token(SYMBOL_LITERAL, key, line, startColumn));
     }
 
     private static boolean asciiSymbolStart(char c) {
