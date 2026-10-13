@@ -141,3 +141,29 @@ the actual actor serializer must enforce the isolation boundary.
 This integration branch adds a source-level negative regression for
 `actor fnc ... (record{foo: int})` invoked with `new Candidate()` and a
 positive regression with `infer struct{foo: 3, extra: "kept"}`.
+
+### Borrow-provenance hardening after #850 integration
+
+An owned structural record parameter consumes owned, data-only storage.
+Field compatibility does not turn a nominal class instance into such
+storage. A named class/interface value can satisfy a structural *borrowed*
+parameter only when its declaration explicitly uses `structural`. Otherwise
+use a new owned struct value with the required fields. This also prevents
+an intermediate typed record alias from silently hiding an identity-bearing
+class before the actor call-site transport check.
+
+`OwnershipChecker` now rejects forwarding an explicit structural view
+through a by-value callable parameter, returning such a view through an owned
+record return annotation, and hiding it behind an explicitly owned binding
+type. Untyped aliases retain borrowed provenance. Generic aggregate
+destructuring of a borrowed source is conservative/fail-closed until
+field-by-field lifetime and Copy proofs exist.
+
+An explicit borrowed return (`&T`) may only return a proven incoming loan;
+returning one as owned `record{...}` is not permitted. These ownership
+rules are separate from the readonly-capability and coercion-free record
+subtyping rules.
+
+Regression suite: `StructuralLoanLaunderingRegressionTest`.
+**Validation remains pending actual JDK/Maven execution**; CI job results
+with no executable steps are infrastructure failures, not green tests.
