@@ -463,8 +463,16 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.TypeRef schemaType =
                         dev.oreslang.types.ActorStateContract.keySchema(schemaField);
                 LinkedHashMap<String, String> typedKeys = new LinkedHashMap<>();
-                schemaType.recordMembers().forEach(
-                        (name, type) -> typedKeys.put(name, type.name()));
+                schemaType.recordMembers().forEach((name, type) -> {
+                    if (type.name().equals("List")
+                            && type.arguments().size() == 1
+                            && type.arguments().getFirst().name().equals("int")
+                            && type.arguments().getFirst().arguments().isEmpty()) {
+                        typedKeys.put(name, "List[int]");
+                    } else {
+                        typedKeys.put(name, type.name());
+                    }
+                });
                 LinkedHashMap<String, Object> initial = new LinkedHashMap<>();
                 if (schemaField.initializer() instanceof Ast.ObjectExpr defaults) {
                     Env stateInit = new Env(null, false, klass, object);
