@@ -190,6 +190,28 @@ final class ActorRuntimeDynamicPipelineIntegrationTest {
             controller.close().toCompletableFuture().get(10, TimeUnit.SECONDS);
             assertEquals(PipelineController.State.CLOSED, controller.state());
 
+            // Signal.Data belongs to the *correct bound codec*, so the
+            // pre-admission check passes. But the actual authenticated
+            // backward mail is Signal.Result: the public host API must
+            // reject this mismatch and atomically mark the generation FAILED.
+            PipelineController mismatchedReplyController = new PipelineController(
+                    original, engine);
+            PipelineRunner mismatchedReplyRunner = mismatchedReplyController.start();
+            assertThrows(Exception.class, () -> mismatchedReplyRunner.sendExpected(
+                    new TaggedMessageCodec.TaggedValue(
+                            "Signal", "Data", 1, 5L), "Signal.Data")
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS),
+                    "host API returned a typed reply of the wrong nominal case");
+            assertEquals(PipelineController.State.FAILED,
+                    mismatchedReplyController.state(),
+                    "wrong typed reply left an invalid retired generation RUNNING");
+            mismatchedReplyController.close().toCompletableFuture()
+                    .get(10, TimeUnit.SECONDS);
+            assertEquals(PipelineController.State.CLOSED,
+                    mismatchedReplyController.state());
+            assertEquals(15L, observed.remove(), "wrong-type route did not execute");
+            assertTrue(observed.isEmpty());
+
             // A fatal actor failure after an already committed directional
             // publication must poison the route, even if Sink raced ahead and
             // produced a reply. Neither a successful whole-route DONE nor a
