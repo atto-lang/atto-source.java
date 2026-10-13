@@ -976,8 +976,9 @@ final class ParserTest {
 
 
     @Test
-    void actorInheritanceMustPreserveIsolationKind() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+    void actorInheritanceFailsClosedUntilInheritedStateIsVerified() {
+        // Matching SHARED kinds alone do not prove inherited state safety.
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 shared actor Parent {
                 }
 
