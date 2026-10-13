@@ -13,28 +13,31 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class DoSelectReturnScopeTest {
     @Test
-    void blockingDoSelectReturnIsArmLocalAndItsValueIsDiscarded() throws Exception {
+    void blockingDoSelectReturnExitsEnclosingCallableWithoutDiscardWarning() throws Exception {
         String program = """
-                pub fnc main(): void {
+                fnc calculate(): int {
                   val Channel<int> incoming = Channel.new<int>(1);
                   writech incoming, 7;
                   do select {
                     case readch incoming: val number {
                       stdio.stdout.write("selected:");
                       stdio.stdout.write(number);
+                      stdio.stdout.write(":");
                       return number * 2;
                     }
                   }
-                  stdio.stdout.write(":continued");
+                  return -1;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(calculate());
                   return;
                 }
                 """;
 
         OresCompiler.AnalysisResult result =
                 OresCompiler.parseAndTypeCheckWithDiagnostics(program);
-        assertEquals(1, result.warnings().size(), result.warnings().toString());
-        assertTrue(result.warnings().getFirst().contains("W-SELECT-RETURN"));
-        assertEquals("selected:7:continued", run(program));
+        assertEquals(0, result.warnings().size(), result.warnings().toString());
+        assertEquals("selected:7:14", run(program));
     }
 
     @Test
@@ -57,7 +60,7 @@ final class DoSelectReturnScopeTest {
     }
 
     @Test
-    void bareReturnInDoSelectIsWarnedAndDoesNotEscapeCallable() throws Exception {
+    void bareReturnInBlockingDoSelectExitsEnclosingCallable() throws Exception {
         String program = """
                 pub fnc main(): void {
                   val Channel<int> incoming = Channel.new<int>(1);
@@ -67,14 +70,14 @@ final class DoSelectReturnScopeTest {
                       return;
                     }
                   }
-                  stdio.stdout.write("still-here");
+                  stdio.stdout.write("not-executed");
                   return;
                 }
                 """;
         OresCompiler.AnalysisResult result =
                 OresCompiler.parseAndTypeCheckWithDiagnostics(program);
-        assertEquals(1, result.warnings().size());
-        assertEquals("still-here", run(program));
+        assertEquals(0, result.warnings().size(), result.warnings().toString());
+        assertEquals("", run(program));
     }
 
     private static String run(String program) throws Exception {
