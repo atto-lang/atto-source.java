@@ -16,6 +16,54 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void cleanupAcceptedOrRejectedByExecutorRunsExactlyOnceAndNeverInlineOnRejection() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger successes = new java.util.concurrent.atomic.AtomicInteger();
+        NativeHttp.executeCleanup(Runnable::run, successes::incrementAndGet);
+        assertEquals(1, successes.get(), "accepted cleanup should execute exactly once");
+
+        CountDownLatch finished = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Thread> carrier =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread caller = Thread.currentThread();
+        NativeHttp.executeCleanup(task -> { throw new RejectedExecutionException("closing"); }, () -> {
+            carrier.set(Thread.currentThread());
+            successes.incrementAndGet();
+            finished.countDown();
+        });
+        assertTrue(finished.await(5, TimeUnit.SECONDS), "rejected cleanup must run without an executor");
+        assertEquals(2, successes.get(), "rejected cleanup should execute exactly once");
+        assertNotSame(caller, carrier.get(), "fallback socket cleanup must not park the caller");
+        assertTrue(carrier.get().isVirtual(), "fallback should use an independent virtual thread");
+    }
+
+    @Test void repeatedGracefulShutdownReturnsASettledDrainAfterLastExchange() throws Exception {
+        String output = run("""
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 3000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              val completed = request.completion;
+              await request.respond(200, "text/plain", "drained");
+              stdio.println(await completed);
+              val first = server.shutdown(0);
+              val second = server.shutdown(0);
+              await first;
+              await second;
+              stdio.println("DRAINED");
+              stdio.println(server.active);
+              stdio.println(server.accepted);
+              stdio.println(server.completed);
+              return;
+            }
+            """, port -> {
+                HttpResponse<String> response = request(port, "GET", "/", "");
+                assertEquals(200, response.statusCode());
+                assertEquals("drained", response.body());
+            });
+        assertTrue(output.contains("200\\nDRAINED\\n0\\n1\\n1"),
+                "repeated shutdown should settle without retaining admissions: " + output);
+    }
+
     @Test void pathDecodingPreservesSegmentBoundariesAndRejectsAmbiguousBytes() {
         assertEquals(List.of(), NativeHttp.segments("/"));
         assertEquals(List.of("😀"), NativeHttp.segments("/😀"));
