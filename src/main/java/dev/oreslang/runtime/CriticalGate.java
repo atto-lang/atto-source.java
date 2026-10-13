@@ -233,6 +233,9 @@ public final class CriticalGate {
 
     /** Caller owns the monitor. */
     private void grantLocked(Ticket ticket) {
+        if (heldDomains.containsKey(ticket.logicalOwner)) {
+            throw new IllegalStateException("duplicate logical critical owner domain");
+        }
         if (owner != null) throw new IllegalStateException("reader/writer overlap");
         if (ticket.mode == Mode.WRITE) {
             if (!readers.isEmpty()) throw new IllegalStateException("writer/reader overlap");
@@ -243,9 +246,7 @@ public final class CriticalGate {
             }
             readers.put(ticket, Boolean.TRUE);
         }
-        if (heldDomains.put(ticket.logicalOwner, ticket) != null) {
-            throw new IllegalStateException("duplicate logical critical owner domain");
-        }
+        heldDomains.put(ticket.logicalOwner, ticket);
         ticket.granted = true;
     }
 
