@@ -99,6 +99,29 @@ class DiagnosticProof(unittest.TestCase):
         self.assertEqual(result["status"], "fail")
         self.assertEqual(mock_run.call_count, 1)
 
+    def test_shared_native_cleanup_case_registry_and_high_exit_admission(self):
+        suite, _ = run.validate_suite()
+        cases = {item["source"]: item for item in suite["cases"]}
+        for name, value in (
+            ("fixtures/native-defer-lifo-cfg.ores", 111),
+            ("fixtures/native-defer-field-return.ores", 222),
+            ("fixtures/native-try-finally-return-snapshot.ores", 246),
+        ):
+            with self.subTest(source=name):
+                self.assertEqual(cases[name]["expected_exit"], value)
+                self.assertEqual(cases[name]["backends"], {"llvm": "required", "graal": "required"})
+        compiled = CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        case = {"id": "native.finally", "kind": "native_exit",
+                "source": "fixtures/native-try-finally-return-snapshot.ores",
+                "expected_exit": 246}
+        for status, wanted in ((246, "pass"), (222, "fail"), (-10, "fail"), (1, "fail")):
+            with self.subTest(status=status):
+                outcome = CompletedProcess(args=[], returncode=status, stdout="", stderr="")
+                with patch.object(run.subprocess, "run", side_effect=[compiled, outcome]):
+                    result = run.run_case(case, "graal", ["check", "{source}"], "", 3,
+                                          ["guest", "{source}"])
+                    self.assertEqual(result["status"], wanted)
+
     def test_native_test_does_not_skip_missing_clang(self):
         case = {"id":"native.add","kind":"native_exit","source":"fixtures/add.ores","expected_exit":42}
         with patch.object(run.subprocess, "run", return_value=CompletedProcess(

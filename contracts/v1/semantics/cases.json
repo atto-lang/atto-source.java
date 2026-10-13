@@ -121,6 +121,39 @@
         "llvm": "required",
         "graal": "required"
       }
+    },
+    {
+      "id": "native.defer-lifo-cfg",
+      "feature": "native.defer-lifo",
+      "source": "fixtures/native-defer-lifo-cfg.ores",
+      "kind": "native_exit",
+      "expected_exit": 111,
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "native.defer-field-return",
+      "feature": "native.defer-field-return",
+      "source": "fixtures/native-defer-field-return.ores",
+      "kind": "native_exit",
+      "expected_exit": 222,
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
+    },
+    {
+      "id": "native.try-finally-return-snapshot",
+      "feature": "native.try-finally-return-snapshot",
+      "source": "fixtures/native-try-finally-return-snapshot.ores",
+      "kind": "native_exit",
+      "expected_exit": 246,
+      "backends": {
+        "llvm": "required",
+        "graal": "required"
+      }
     }
   ]
 }
