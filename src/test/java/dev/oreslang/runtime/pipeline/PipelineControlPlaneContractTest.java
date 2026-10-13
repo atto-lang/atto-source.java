@@ -47,6 +47,9 @@ public final class PipelineControlPlaneContractTest {
             private final List<Object> actors = new ArrayList<>();
             private final CompletableFuture<Object> admission = new CompletableFuture<>();
             private final CompletableFuture<Void> physicallyDone = new CompletableFuture<>();
+            // The whole-route result is distinct from physical STOP/DONE:
+            // failure of DATA does not release live actor resources.
+            private final CompletableFuture<Void> routeDone = new CompletableFuture<>();
             private boolean used;
             private boolean stopping;
 
@@ -67,12 +70,13 @@ public final class PipelineControlPlaneContractTest {
                 stopping = true;
                 return physicallyDone; // simulates physical actor shutdown, not just a Boolean
             }
-            @Override public CompletionStage<Void> getDone() { return physicallyDone; }
+            @Override public CompletionStage<Void> getDone() { return routeDone; }
             void reply(Object answer) { admission.complete(answer); }
             void failSend(Throwable why) { admission.completeExceptionally(why); }
             void finalizeActors() {
                 check(stopping, "fake physical DONE without authoritative stop");
                 physicallyDone.complete(null);
+                routeDone.complete(null);
             }
         }
         @Override public PipelineController.Session open(PipelinePlan plan) {
@@ -235,6 +239,27 @@ public final class PipelineControlPlaneContractTest {
         settled(closed);
     }
 
+    private static void prematureWholeRouteFailureFencesIngress() {
+        FakeEngine engine = new FakeEngine();
+        PipelineController controller = new PipelineController(new PipelinePlanner()
+                .add("source", "Source", "M", Object::new)
+                .add("sink", "Sink", "M", Object::new).build(), engine);
+        PipelineRunner runner = controller.start();
+        engine.latest().routeDone.completeExceptionally(
+                new IllegalStateException("actor died before first DATA"));
+        check(controller.state() == PipelineController.State.FAILED,
+                "premature physical failure left ingress RUNNING");
+        failed(runner.send(5));
+        failed(controller.restart());
+        CompletionStage<Void> cleanup = controller.close();
+        check(!cleanup.toCompletableFuture().isDone(),
+                "early-failed route skipped physical STOP/DONE");
+        engine.latest().finalizeActors();
+        settled(cleanup);
+        check(controller.state() == PipelineController.State.CLOSED,
+                "failed route could not physically close");
+    }
+
     private static void planValidationBeforeActorCreation() {
         FakeEngine engine = new FakeEngine();
         rejected(() -> new PipelinePlanner()
@@ -261,6 +286,7 @@ public final class PipelineControlPlaneContractTest {
         failureDoesNotRestartAmbiguousPublication();
         closeWhileDeliveryFailsStillDrainsEveryActor();
         rejectStalePlanInstall();
+        prematureWholeRouteFailureFencesIngress();
         planValidationBeforeActorCreation();
         System.out.println("DYNAMIC_PIPELINE_CONTROL_CONTRACT_PASS assertions=" + checks);
     }

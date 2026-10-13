@@ -1,0 +1,105 @@
+// Production actor pipeline feature gate: 15 actual compiled actors.
+// Source + 13 Transform stages + Sink. Signed i64 payload, 14 forward
+// and 14 backward messages, bounded one-flow scheduler admission.
+define enum Signal as
+    Data: int = 1
+    Result: int = 2
+end
+define pattern PipeMessages as
+    Signal.Data
+    Signal.Result
+end
+define actor Source as
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.forward(Signal.Data(n));
+            }
+            on Signal.Result n -> {
+                if n == 34 then
+                    stdio.stdout.write("DYNAMIC_PIPE_16_V1_34");
+                elif n == 36 then
+                    stdio.stdout.write("|DYNAMIC_PIPE_16_V2_36");
+                else
+                    stdio.stdout.write("DYNAMIC_PIPE_16_BAD");
+                fi
+                self.end();
+            }
+        end
+        return;
+    }
+end
+define actor Transform as
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.forward(Signal.Data(n + 1));
+            }
+            on Signal.Result n -> {
+                self.backward(Signal.Result(n + 1));
+                self.end();
+            }
+        end
+        return;
+    }
+end
+define actor Sink as
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.backward(Signal.Result(n + 1));
+                self.end();
+            }
+            on Signal.Result n -> {
+                self.end();
+            }
+        end
+        return;
+    }
+end
+
+define actor TransformV2 as
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.forward(Signal.Data(n + 2));
+            }
+            on Signal.Result n -> {
+                self.backward(Signal.Result(n + 2));
+                self.end();
+            }
+        end
+        return;
+    }
+end
+
+pub async routine main(): void {
+    val planner = new PipelinePlanner();
+    planner.add("source", || -> spawn Source());
+    planner.add("transform0", || -> spawn Transform());
+    planner.add("transform1", || -> spawn Transform());
+    planner.add("transform2", || -> spawn Transform());
+    planner.add("transform3", || -> spawn Transform());
+    planner.add("transform4", || -> spawn Transform());
+    planner.add("transform5", || -> spawn Transform());
+    planner.add("transform6", || -> spawn Transform());
+    planner.add("transform7", || -> spawn Transform());
+    planner.add("transform8", || -> spawn Transform());
+    planner.add("transform9", || -> spawn Transform());
+    planner.add("transform10", || -> spawn Transform());
+    planner.add("transform11", || -> spawn Transform());
+    planner.add("transform12", || -> spawn Transform());
+    planner.add("transform13", || -> spawn Transform());
+    planner.add("sink", || -> spawn Sink());
+
+    val controller = new PipelineController(planner.build());
+    val first = controller.start();
+    await first.send(Signal.Data(5));
+    await controller.pause();
+
+    controller.replace("transform6", || -> spawn TransformV2());
+    val second = controller.resume();
+    await second.send(Signal.Data(5));
+    await controller.close();
+    return;
+}

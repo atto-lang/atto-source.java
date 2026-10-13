@@ -105,6 +105,9 @@ public final class PipelineController {
             }
             throw asRuntime(failure);
         }
+        final long activatedGeneration;
+        final Session activatedSession = opened;
+        final PipelineRunner runner;
         synchronized (gate) {
             // The only allowed concurrent operation during OPENING is
             // observation. A reentrant start, pause, swap or close fails.
@@ -113,12 +116,35 @@ public final class PipelineController {
             }
             active = opened;
             ++generation;
+            activatedGeneration = generation;
             inFlight = false;
             quiesceStarted = false;
             pauseFuture = null;
             state = State.RUNNING;
-            return new PipelineRunner(this, generation, wholeDone);
+            runner = new PipelineRunner(this, generation, wholeDone);
         }
+        // The scheduler can report fatal actor completion before the caller
+        // submits DATA. Fence the entire generation, rather than leaving a
+        // RUNNING controller containing a physically dead route. Ignore
+        // successful completion (normal after DATA), and do not supersede a
+        // STOP already in progress (PAUSING) or a subsequent generation.
+        wholeDone.whenComplete((ignored, failure) -> {
+            if (failure == null) return;
+            synchronized (gate) {
+                if (active == activatedSession
+                        && generation == activatedGeneration
+                        && state == State.RUNNING) {
+                    state = State.FAILED;
+                }
+            }
+        });
+        synchronized (gate) {
+            if (state == State.FAILED) {
+                throw new IllegalStateException(
+                        "actor pipeline failed during startup; close for physical cleanup");
+            }
+        }
+        return runner;
     }
 
     public CompletionStage<Void> pause() {

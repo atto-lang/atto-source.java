@@ -36,6 +36,34 @@ final class DynamicPipelineGuestSourceTest {
                 execute(source()));
     }
 
+    @Test void fifteenActorSourceGuestDynamicallyReplacesMiddleStage() throws Exception {
+        String guest = Files.readString(
+                Path.of("examples/actor-dynamic-pipeline-15-swap.ores"));
+        assertEquals("DYNAMIC_PIPE_15_V1_32|DYNAMIC_PIPE_15_V2_34",
+                execute(guest));
+    }
+
+    @Test void sixteenActorMaximumBoundDynamicallyReplacesMiddleStage() throws Exception {
+        String guest = Files.readString(
+                Path.of("examples/actor-dynamic-pipeline-16-swap.ores"));
+        assertEquals("DYNAMIC_PIPE_16_V1_34|DYNAMIC_PIPE_16_V2_36",
+                execute(guest));
+    }
+
+    @Test void rejectSeventeenthStageBeforeAllocatingActors() throws Exception {
+        String guest = Files.readString(
+                Path.of("examples/actor-dynamic-pipeline-16-swap.ores"));
+        String target = "    val controller = new PipelineController(planner.build());";
+        String malicious = guest.replace(target,
+                "    planner.add(\"overflow\", || -> spawn Transform());\n"
+                + target);
+        assertNotEquals(guest, malicious);
+        org.graalvm.polyglot.PolyglotException failure =
+                assertThrows(org.graalvm.polyglot.PolyglotException.class,
+                        () -> execute(malicious));
+        assertTrue(failure.toString().contains("stage cap is 16"), failure.toString());
+    }
+
     @Test void rejectDynamicProviderWithCapturedOrComputedActorType() throws Exception {
         String guest = source();
         String malformed = guest.replace(
