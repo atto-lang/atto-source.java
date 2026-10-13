@@ -168,7 +168,13 @@ public final class FreeCallableOverloads {
     public static Ast.FunctionDecl chooseStatic(List<Ast.FunctionDecl> candidates,
             List<Types.Type> argumentTypes,
             Map<String, TaggedMessageContracts.EnumType> enums, String display) {
-        if (candidates.size() == 1) return candidates.getFirst();
+        if (candidates.size() == 1) {
+            if (candidates.getFirst().parameters().size() != argumentTypes.size()) {
+                throw new IllegalArgumentException(
+                        "call arity mismatch for '" + display + "'");
+            }
+            return candidates.getFirst();
+        }
         List<String> tags = new ArrayList<>(argumentTypes.size());
         for (Types.Type type : argumentTypes) tags.add(staticTag(type, enums));
         return choose(candidates, tags, enums.keySet(), display);
@@ -176,7 +182,13 @@ public final class FreeCallableOverloads {
 
     public static Ast.FunctionDecl chooseRuntime(List<Ast.FunctionDecl> candidates,
             List<?> values, Set<String> enumOwners, String display) {
-        if (candidates.size() == 1) return candidates.getFirst();
+        if (candidates.size() == 1) {
+            if (candidates.getFirst().parameters().size() != values.size()) {
+                throw new IllegalArgumentException(
+                        "call arity mismatch for '" + display + "'");
+            }
+            return candidates.getFirst();
+        }
         List<String> tags = new ArrayList<>(values.size());
         for (Object value : values) tags.add(runtimeTag(value, enumOwners));
         return choose(candidates, tags, enumOwners, display);
