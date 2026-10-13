@@ -31,7 +31,8 @@ public final class MacroExpander {
     // expression-only until typed AST expansion and symbol IDs are implemented.
     private static final Set<Token.Type> FORBIDDEN_TEMPLATE_TOKENS = Set.of(
             SEMICOLON, VAL, LET, CONST, FNC, ROUTINE, DEFINE, CLASS, MODULE,
-            ACTOR, ISOACTOR, IMPORT, RETURN, SELF, SUPER, END, FI, DO, IF,
+            ACTOR, ISOACTOR, IMPORT, FROM, RETURN, THROW, RAISE, PANIC, RECOVER,
+            SELF, SUPER, END, FI, DO, IF,
             ELSE, ELSEIF, THEN, SWITCH, MATCH, MATCHES, WHEN, CASE, DEFAULT,
             WHILE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, DEFER,
             TRY, CATCH, FINALLY, STRUCT, INTERFACE, TRAIT, IMPL, CONTRACT,
@@ -41,7 +42,7 @@ public final class MacroExpander {
             // Annotation synthesis and async/actor authority are not valid
             // expression-template syntax without typed AST/effect lowering.
             AT, BACKTICK, AWAIT, SPAWN, SELECT, READCH, WRITECH,
-            ASYNC, SUSPENDS, TRAP,
+            ASYNC, SUSPENDS, TRAP, NB, CB,
             EQUAL, FAT_ARROW, ARROW);
 
 
