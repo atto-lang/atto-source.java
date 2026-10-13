@@ -219,9 +219,18 @@ public final class NativeNioFutureReactor implements AutoCloseable {
          */
         public OresFuture<java.util.List<Long>> readBytesAsync(int maximum) {
             OresFuture<byte[]> read = readAsync(maximum);
+            // The guest-facing mapped Future must revoke the SAME kernel
+            // operation. Propagate cancel admission to the raw Future before
+            // guest cancellation becomes visible; the raw cancellation waiter
+            // intentionally does not race the exported terminal CAS.
             OresFuture<java.util.List<Long>> exported =
-                    new OresFuture<>(() -> false, () -> { });
+                    new OresFuture<>(() -> read.cancel(false), () -> { });
             read.whenCompleteRuntime((bytes, failure) -> {
+                if (read.isCancelled()) {
+                    // Only the exported Future owns this raw read; cancellation
+                    // is settled by the public Future itself.
+                    return;
+                }
                 if (failure != null) {
                     exported.failFromRuntime(failure);
                 } else {

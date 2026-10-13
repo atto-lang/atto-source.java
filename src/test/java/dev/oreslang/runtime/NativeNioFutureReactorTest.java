@@ -150,6 +150,24 @@ final class NativeNioFutureReactorTest {
         }
     }
 
+    @Test void guestByteArrayFutureCancellationRevokesUnderlyingRead() throws Exception {
+        try (var reactor = NativeNioFutureReactor.loopback(0, 8, 1, 8)) {
+            var accepted = reactor.acceptAsync();
+            try (Socket peer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
+                var connection = accepted.get(2, TimeUnit.SECONDS);
+                var abandoned = connection.readBytesAsync(64);
+                assertTrue(abandoned.cancel(false),
+                        "mapped Array<int> cancellation must revoke raw kernel read");
+                assertTrue(abandoned.isCancelled());
+                var next = connection.readBytesAsync(64);
+                peer.getOutputStream().write("raw".getBytes(StandardCharsets.US_ASCII));
+                assertEquals(java.util.List.of(114L, 97L, 119L), next.get(2, TimeUnit.SECONDS));
+                connection.closeAsync().get(2, TimeUnit.SECONDS);
+            }
+            assertEquals(0, reactor.outstandingFutures());
+        }
+    }
+
     @Test void cancelledAcceptDoesNotClaimIncomingSocket() throws Exception {
         try (var reactor = NativeNioFutureReactor.loopback(0, 8, 1, 8)) {
             var first = reactor.acceptAsync();
