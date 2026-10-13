@@ -101,9 +101,16 @@ element type. A dependent/unresolved type cannot itself solve a fresh hole.
 An empty array alone cannot infer an unconstrained `T` in a generic call;
 the other call arguments must supply a binding first.
 
-This is the first migration step, not a complete inference solver:
-`None`, `Ok`, `Err`, imported ABI gaps and several builtins still carry
-the older sentinel; all must be migrated before removing the final wildcard.
+Constructor inference now also carries origin-aware holes for `None`,
+`Ok(value)`'s missing error arm, and `Err(value)`'s missing success arm.
+Their identities unify only within the corresponding `Option<T>` or
+`Result<T,E>` slot. A concrete payload can contribute a generic constraint,
+but the absent arm cannot invent one. Shared aliases cannot resolve one
+`None` value as two conflicting types.
+
+This is an incremental migration, not a complete inference solver:
+imported ABI gaps, builtins and some inferred type references still carry
+the older sentinel; they must migrate before removing the final wildcard.
 
 ## Conditional joins and nested structural record aliases
 

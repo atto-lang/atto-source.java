@@ -138,7 +138,7 @@ public final class Types {
      * element type because the literal has no elements to contradict it.
      * Other origins will be migrated separately from legacy Unknown.INSTANCE.
      */
-    public enum HoleOrigin { EMPTY_ARRAY }
+    public enum HoleOrigin { EMPTY_ARRAY, OPTION_NONE, RESULT_OK_ERROR, RESULT_ERR_OK }
 
     public record InferenceHole(long id, HoleOrigin origin) implements Type {
         public InferenceHole {

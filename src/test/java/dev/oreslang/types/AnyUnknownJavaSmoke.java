@@ -42,6 +42,10 @@ public final class AnyUnknownJavaSmoke {
         check(!Types.isAssignable(integer, holeA), "unresolved empty array is not wildcard sink");
         check(!Types.isAssignable(holeA, any), "inference hole cannot be boxed into Any");
         check(Types.containsOpaqueTop(new Types.ListType(holeA)), "nested inference hole is opaque");
+        var noValue = Types.newInferenceHole(Types.HoleOrigin.OPTION_NONE);
+        var otherArm = Types.newInferenceHole(Types.HoleOrigin.RESULT_OK_ERROR);
+        check(noValue.origin() != otherArm.origin(), "sum type holes retain constructor origin");
+        check(!Types.isAssignable(noValue, integer), "None payload cannot narrow without context");
         check(any.toString().equals("Any"), "Any has unambiguous diagnostic label");
         check(opaque.toString().equals("Unknown"), "Unknown has unambiguous diagnostic label");
         check(Types.Unknown.INSTANCE.toString().contains("incomplete"),

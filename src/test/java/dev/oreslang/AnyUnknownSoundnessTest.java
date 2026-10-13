@@ -73,6 +73,26 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void optionNoneAndResultUnfilledArmsUseDistinctContextualHoles() {
+        accept("fnc noValue(): Option<int> { return None; }");
+        accept("fnc success(): Result<int, string> { return Ok(42); }");
+        accept("fnc failure(): Result<int, string> { return Err(\"failed\"); }");
+        reject("fnc bad(): int { return None; }", "return value");
+    }
+
+    @Test
+    void optionNoneCannotAcquireContradictoryTypesThroughAliases() {
+        reject("""
+                fnc bad(): void {
+                    val absent = None;
+                    val Option<int> a = absent;
+                    val Option<string> b = absent;
+                    return;
+                }
+                """, "initializer for");
+    }
+
+    @Test
     void sourceTopsAreNotTheInternalInferenceHole() {
         assertNotEquals(Types.Any.INSTANCE, Types.Unknown.INSTANCE);
         assertNotEquals(Types.UnknownValue.INSTANCE, Types.Unknown.INSTANCE);

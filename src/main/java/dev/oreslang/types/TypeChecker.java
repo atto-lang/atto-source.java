@@ -40,8 +40,8 @@ public final class TypeChecker {
             Ast.InterfaceFunctionDecl function) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
-    /** One solution per empty-array inference identity across the entire check. */
-    private final Map<Long, Type> emptyArraySolutions = new HashMap<>();
+    /** One consistent solution per contextual inference identity across the entire check. */
+    private final Map<Long, Type> inferenceSolutions = new HashMap<>();
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
@@ -1863,7 +1863,10 @@ public final class TypeChecker {
                 return new Named("$BooleanOps", List.of());
             }
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
-            if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
+            if (name.name().equals("None")) {
+                return new Named("Option",
+                        List.of(Types.newInferenceHole(Types.HoleOrigin.OPTION_NONE)));
+            }
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) {
                 rejectUnimportedModuleNamespace(name.name());
@@ -2401,8 +2404,10 @@ public final class TypeChecker {
                 Type value = widenCollectionElement(typeOf(call.arguments().getFirst(), env, generics, self));
                 return switch (name.name()) {
                     case "Some" -> new Named("Option", List.of(value));
-                    case "Ok" -> new Named("Result", List.of(value, Unknown.INSTANCE));
-                    case "Err" -> new Named("Result", List.of(Unknown.INSTANCE, value));
+                    case "Ok" -> new Named("Result", List.of(value,
+                            Types.newInferenceHole(Types.HoleOrigin.RESULT_OK_ERROR)));
+                    case "Err" -> new Named("Result", List.of(
+                            Types.newInferenceHole(Types.HoleOrigin.RESULT_ERR_OK), value));
                     default -> throw new IllegalStateException("unreachable sum constructor");
                 };
             }
@@ -6857,7 +6862,9 @@ public final class TypeChecker {
     }
 
     private void inferGenericBindings(Type pattern, Type actual, Map<String, Type> bindings, Set<String> fixedBindings, String label) {
-        if (containsUnknown(actual)) return;
+        if (actual == Unknown.INSTANCE || actual instanceof Types.InferenceHole) return;
+        // Recurse through known constructor payloads and infer from them;
+        // an unresolved complementary sum arm contributes no constraint.
         if (pattern instanceof Generic generic) {
             if (fixedBindings.contains(generic.name())) return;
             Type previous = bindings.putIfAbsent(generic.name(), actual);
@@ -7527,18 +7534,34 @@ public final class TypeChecker {
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
     }
 
+    private boolean bindContextualInference(
+            Types.InferenceHole hole,
+            Type expected,
+            Types.HoleOrigin requiredOrigin) {
+        if (hole.origin() != requiredOrigin || containsUnknown(expected)
+                || expected == Primitive.VOID || expected == Primitive.NULL) {
+            return false;
+        }
+        Type previous = inferenceSolutions.get(hole.id());
+        if (previous == null) {
+            inferenceSolutions.put(hole.id(), expected);
+            return true;
+        }
+        return assignable(previous, expected) && assignable(expected, previous);
+    }
+
     private boolean assignable(Type actual, Type expected) {
         // Contextual empty-array inference is a unification constraint, not
         // an existential cast: once an empty literal is typed as Array<int>,
         // every alias and subsequent list write must agree with int.
         if (actual instanceof Types.InferenceHole hole) {
-            Type solved = emptyArraySolutions.get(hole.id());
+            Type solved = inferenceSolutions.get(hole.id());
             return solved != null
                     ? assignable(solved, expected)
                     : actual.equals(expected);
         }
         if (expected instanceof Types.InferenceHole hole) {
-            Type solved = emptyArraySolutions.get(hole.id());
+            Type solved = inferenceSolutions.get(hole.id());
             return solved != null
                     ? assignable(actual, solved)
                     : actual.equals(expected);
@@ -7546,16 +7569,40 @@ public final class TypeChecker {
         if (actual instanceof ListType sourceList && expected instanceof ListType targetList) {
             if (sourceList.element() instanceof Types.InferenceHole hole
                     && hole.origin() == Types.HoleOrigin.EMPTY_ARRAY
-                    && !emptyArraySolutions.containsKey(hole.id())) {
+                    && !inferenceSolutions.containsKey(hole.id())) {
                 Type element = targetList.element();
                 // Do not bind a fresh hole to another unresolved or dependent
                 // generic; this cannot establish a unique concrete constraint.
                 if (containsUnknown(element) || element instanceof Generic
                         || element == Primitive.VOID || element == Primitive.NULL) return false;
-                emptyArraySolutions.put(hole.id(), element);
+                inferenceSolutions.put(hole.id(), element);
             }
             return assignable(sourceList.element(), targetList.element())
                     && assignable(targetList.element(), sourceList.element());
+        }
+        if (actual instanceof Named source && expected instanceof Named target
+                && source.name().equals(target.name())
+                && source.arguments().size() == target.arguments().size()) {
+            for (int i = 0; i < source.arguments().size(); i++) {
+                Type left = source.arguments().get(i);
+                Type right = target.arguments().get(i);
+                if (left instanceof Types.InferenceHole hole) {
+                    Types.HoleOrigin origin;
+                    if (source.name().equals("Option") && i == 0) {
+                        origin = Types.HoleOrigin.OPTION_NONE;
+                    } else if (source.name().equals("Result") && i == 1) {
+                        origin = Types.HoleOrigin.RESULT_OK_ERROR;
+                    } else if (source.name().equals("Result") && i == 0) {
+                        origin = Types.HoleOrigin.RESULT_ERR_OK;
+                    } else {
+                        return false;
+                    }
+                    if (!bindContextualInference(hole, right, origin)) return false;
+                } else if (!assignable(left, right) || !assignable(right, left)) {
+                    return false;
+                }
+            }
+            return true;
         }
         // A *value* with an unresolved internal type cannot prove a concrete
         // contract. The reverse legacy wildcard is retained temporarily for
