@@ -4482,7 +4482,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (receiver instanceof OresKeyedMap<?, ?> map) {
                     @SuppressWarnings("unchecked")
                     OresKeyedMap<Object, Object> typed = (OresKeyedMap<Object, Object>) map;
-                    return typed.put(key, value);
+                    typed.put(key, value);
+                    return value;
                 }
                 if (receiver instanceof List<?> raw
                         && key instanceof Number number) {
@@ -6137,7 +6138,8 @@ public final class OresEvalRootNode extends RootNode {
                     if (receiver instanceof OresKeyedMap<?, ?> map) {
                         @SuppressWarnings("unchecked")
                         OresKeyedMap<Object, Object> typed = (OresKeyedMap<Object, Object>) map;
-                        return typed.put(index, value);
+                        typed.put(index, value);
+                        return value;
                     }
                     if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
                     int i = Math.toIntExact(number.longValue());
