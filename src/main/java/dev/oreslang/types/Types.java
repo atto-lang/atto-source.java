@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Any, UnknownValue, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -100,14 +100,76 @@ public final class Types {
 
     public record StringLiteral(String value) implements Type { }
 
+    /**
+     * A statically known Oreslang value whose concrete type is hidden from the
+     * current scope. Any is NOT a dynamically unchecked operation permission.
+     * Values must be checked/narrowed before type-dependent access.
+     */
+    public enum Any implements Type { INSTANCE }
+
+    /**
+     * Source-level Unknown: a value without a verified Oreslang type contract.
+     * No implicit conversion into Any or a concrete type is permitted.
+     */
+    public enum UnknownValue implements Type { INSTANCE }
+
+    /**
+     * INTERNAL only: incomplete type information in inference and legacy
+     * builtins. Must never be exposed as the source-level Unknown type.
+     * TODO: replace permissive legacy sentinels with explicit inference holes.
+     */
     public enum Unknown implements Type { INSTANCE }
+
+    /**
+     * Until the runtime carries full type/ownership witnesses, hiding borrowed,
+     * callable, receiver-polymorphic or unresolved values behind a top type
+     * would allow the compiler to lose enforcement evidence.
+     */
+    private static boolean safelyHideConcreteType(Type type) {
+        if (type == Primitive.VOID || type == Primitive.NULL
+                || type == Unknown.INSTANCE || type == UnknownValue.INSTANCE
+                || type instanceof Generic || type instanceof Borrow
+                || type instanceof SelfType || type instanceof Function
+                || type instanceof ClassNamespace) return false;
+        if (type instanceof ListType list) return safelyHideConcreteType(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().allMatch(Types::safelyHideConcreteType);
+        if (type instanceof Union union) return union.options().stream().allMatch(Types::safelyHideConcreteType);
+        if (type instanceof Record record) return record.members().values().stream().allMatch(Types::safelyHideConcreteType);
+        if (type instanceof Named named) return named.arguments().stream().allMatch(Types::safelyHideConcreteType);
+        return true;
+    }
+
+    public static boolean containsOpaqueTop(Type type) {
+        if (type == Any.INSTANCE || type == UnknownValue.INSTANCE) return true;
+        if (type instanceof SelfType self) return containsOpaqueTop(self.bound());
+        if (type instanceof Borrow borrow) return containsOpaqueTop(borrow.target());
+        if (type instanceof ListType list) return containsOpaqueTop(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsOpaqueTop);
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsOpaqueTop);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsOpaqueTop);
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsOpaqueTop);
+        if (type instanceof Function fn) {
+            return fn.parameters().stream().anyMatch(Types::containsOpaqueTop)
+                    || containsOpaqueTop(fn.result());
+        }
+        return false;
+    }
 
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
-        if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
-        if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
+        // Unknown is a safe, opaque destination; only an explicit runtime
+        // validation can establish the stronger Any/concrete invariant.
+        if (to == UnknownValue.INSTANCE) return safelyHideConcreteType(from);
+        if (from == UnknownValue.INSTANCE) return false;
+        if (to == Any.INSTANCE) return safelyHideConcreteType(from);
+        if (from == Any.INSTANCE) return false;
+        // Legacy incomplete inference types are a separate compiler concern;
+        // they must not be confused with the named source type Unknown.
+        if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
+        // Unbound generic parameters are rigid, not an implicit any.
+        if (to instanceof Generic || from instanceof Generic) return false;
         if (from instanceof SelfType source) {
             if (to instanceof SelfType target) {
                 return isAssignable(source.bound(), target.bound())

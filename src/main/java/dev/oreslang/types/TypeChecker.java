@@ -2350,6 +2350,11 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 Type receiverValueType = receiver;
+                if (receiver == Types.Any.INSTANCE || receiver == Types.UnknownValue.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "cannot call member '" + member.member()
+                                    + "' on " + receiver + "; narrow or validate the value first");
+                }
                 receiver = receiverDispatchType(receiver);
 
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
@@ -2864,6 +2869,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
+            if (callee == Types.Any.INSTANCE || callee == Types.UnknownValue.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "cannot call " + callee + " as a function without validated callable type");
+            }
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
             List<ExpandedCallArgument> expanded =
                     expandFixedCallArguments(
@@ -2949,6 +2958,12 @@ public final class TypeChecker {
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            if (deref(receiver) == Types.Any.INSTANCE
+                    || deref(receiver) == Types.UnknownValue.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "cannot read member '" + member.member() + "' on " + receiver
+                                + "; narrow or validate the value first");
+            }
             Type sumReceiver = receiverDispatchType(deref(receiver));
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
@@ -3498,6 +3513,11 @@ public final class TypeChecker {
         if (element == Primitive.VOID) {
             throw new IllegalArgumentException(
                     "Channel<void> cannot carry a value; use an explicit signal/unit type");
+        }
+        if (Types.containsOpaqueTop(element)) {
+            throw new IllegalArgumentException(
+                    where + " cannot conceal an Any/Unknown payload in a channel until "
+                            + "runtime ownership and callable validation are reified");
         }
         // Ordinary Channel<T> is an execution-domain-local capability, not a
         // mailbox. Owned function values and objects containing callables may
@@ -4484,7 +4504,9 @@ public final class TypeChecker {
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
-        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
+        if (type == Unknown.INSTANCE || type == Types.Any.INSTANCE
+                || type == Types.UnknownValue.INSTANCE
+                || type instanceof Generic || type instanceof SelfType
                 || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
@@ -4577,7 +4599,9 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
+        if (type == Unknown.INSTANCE || type == Types.Any.INSTANCE
+                || type == Types.UnknownValue.INSTANCE
+                || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
         if (type instanceof StringLiteral) return true;
@@ -4892,7 +4916,9 @@ public final class TypeChecker {
     }
 
     private boolean structuralPatternMayMatch(Type subject, Record targetShape) {
-        if (subject == Unknown.INSTANCE || subject instanceof Generic) return true;
+        if (subject == Unknown.INSTANCE || subject == Types.Any.INSTANCE
+                || subject == Types.UnknownValue.INSTANCE
+                || subject instanceof Generic) return true;
         if (subject instanceof Union union) {
             return union.options().stream()
                     .anyMatch(option -> structuralPatternMayMatch(option, targetShape));
@@ -5135,6 +5161,8 @@ public final class TypeChecker {
      */
     private boolean typesMayOverlap(Type a, Type b) {
         if (a == Unknown.INSTANCE || b == Unknown.INSTANCE
+                || a == Types.Any.INSTANCE || b == Types.Any.INSTANCE
+                || a == Types.UnknownValue.INSTANCE || b == Types.UnknownValue.INSTANCE
                 || a instanceof Generic || b instanceof Generic) return true;
         if (a instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(option, b));
         if (b instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(a, option));
@@ -5180,6 +5208,11 @@ public final class TypeChecker {
         if (ref.isUnion()) {
             for (Ast.TypeRef option : ref.arguments()) requireRuntimeReifiableType(option, operator);
             return;
+        }
+        if (ref.name().equals("Any") || ref.name().equals("Unknown")) {
+            throw new IllegalArgumentException(
+                    operator + " cannot use " + ref.name()
+                            + " as a target: validate against a concrete runtime type");
         }
         if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
                 || ref.name().equals("$infer$") || ref.name().equals("self")
@@ -5554,6 +5587,7 @@ public final class TypeChecker {
         if (value instanceof Primitive || value instanceof StringLiteral
                 || value instanceof ClassNamespace || value instanceof Generic
                 || value == Unknown.INSTANCE
+                || value == Types.Any.INSTANCE || value == Types.UnknownValue.INSTANCE
                 || valueSemanticAggregate
                 || valueSemanticNamed) {
             throw new IllegalArgumentException(
@@ -7150,6 +7184,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Any", "Unknown" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(ref.name() + " does not accept type arguments");
+                }
+                yield ref.name().equals("Any") ? Types.Any.INSTANCE : Types.UnknownValue.INSTANCE;
+            }
             case "void" -> Primitive.VOID;
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
@@ -7304,6 +7344,12 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        // Safe source-level top types must not inherit the permissive internal
+        // Unknown inference-sentinel behavior.
+        if (actual == Types.Any.INSTANCE || actual == Types.UnknownValue.INSTANCE
+                || expected == Types.Any.INSTANCE || expected == Types.UnknownValue.INSTANCE) {
+            return Types.isAssignable(actual, expected);
+        }
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())
