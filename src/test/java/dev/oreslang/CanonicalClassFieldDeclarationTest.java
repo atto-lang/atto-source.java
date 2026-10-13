@@ -138,6 +138,21 @@ final class CanonicalClassFieldDeclarationTest {
     }
 
     @Test
+    void finalFieldCannotBeDestructivelyTaken() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    define class Sample as
+                      final int answer: 42;
+                    end
+                    pub fnc main(): int {
+                      val Sample sample = new Sample();
+                      return rt take sample.answer;
+                    }
+                    """)));
+        assertTrue(failure.getMessage().contains("cannot rt take final class field"));
+    }
+
+    @Test
     void duplicateMutFieldQualifierIsRejected() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> parseClass("final mut mut int bad: 1;"));
