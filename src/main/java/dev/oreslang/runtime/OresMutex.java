@@ -6,9 +6,12 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -331,21 +334,40 @@ public final class OresMutex {
         private static final int MAX_ASYNC_WAITERS = 8_192;
         private static final int MAX_GLOBAL_ASYNC_WAITERS = 32_768;
         private static final AtomicInteger GLOBAL_ASYNC_WAITERS = new AtomicInteger();
+        // A timed waiter reserves a *separate* notification slot for its whole
+        // lifetime. Its ordinary waiter quota can settle before public
+        // completion, so it cannot bound the notification backlog by itself.
+        // The slot is held through a blocked host whenComplete callback.
+        private static final int MAX_TIMED_NOTIFICATIONS = 32_768;
+        private static final AtomicInteger TIMED_NOTIFICATIONS = new AtomicInteger();
         private static final ConcurrentHashMap<Object, Shared<?>> WAITING_ON =
                 new ConcurrentHashMap<>();
-        // ScheduledFuture completion may synchronously invoke arbitrary host
-        // CompletableFuture dependents. A single timer carrier lets one slow
-        // callback stall timeout processing for every unrelated mutex. Keep a
-        // small, fixed, daemon timer group; do not create a thread per waiter.
-        // Callbacks must still be nonblocking: a saturated timer group can
-        // delay publication, even though queue/domain revocation is atomic.
+        // Timer workers only revoke physical waiters and enqueue terminal
+        // notifications. They MUST NOT invoke CompletableFuture dependents,
+        // which are arbitrary host code and can block indefinitely.
         private static final ScheduledExecutorService ASYNC_TIMEOUTS =
                 Executors.newScheduledThreadPool(
-                        4,
+                        2,
                         Thread.ofPlatform()
                                 .daemon(true)
                                 .name("ores-shared-mutex-timeouts-", 0L)
                                 .factory());
+        // Each scheduled timed waiter has already reserved one notification
+        // slot, so the bounded queue has room for every claimed expiry even
+        // when all four delivery workers are blocked. Abort rather than
+        // CallerRuns: callbacks may never execute on a deadline carrier.
+        private static final ThreadPoolExecutor TIMEOUT_DELIVERY =
+                new ThreadPoolExecutor(
+                        4,
+                        4,
+                        0L,
+                        TimeUnit.MILLISECONDS,
+                        new ArrayBlockingQueue<>(MAX_TIMED_NOTIFICATIONS),
+                        Thread.ofPlatform()
+                                .daemon(true)
+                                .name("ores-shared-mutex-notifications-", 0L)
+                                .factory(),
+                        new ThreadPoolExecutor.AbortPolicy());
 
         private final T value;
         private final Semaphore permit = new Semaphore(1, true);
@@ -858,17 +880,44 @@ public final class OresMutex {
 
             long timeoutNanos = saturatedNanos(timeout);
             if (timeoutNanos == 0L) {
+                // Not scheduled: no host has received this Future yet.
                 future.failQueuedFromRuntime(new LockTimeoutException(timeout));
                 return future;
             }
 
+            if (!reserveWaiter(TIMED_NOTIFICATIONS, MAX_TIMED_NOTIFICATIONS)) {
+                // Fail closed before returning an unpublishable timed waiter.
+                // If a concurrent handoff already won, keep its outcome.
+                future.failQueuedFromRuntime(new RejectedExecutionException(
+                        "SharedMutex timed-notification capacity exceeded: "
+                                + MAX_TIMED_NOTIFICATIONS));
+                return future;
+            }
+            // Independent of asyncWaiters: a revoked timed waiter may remain
+            // undelivered while host callbacks occupy every delivery carrier.
+            // Retain admission until the PUBLIC completion path has unwound.
+            AtomicBoolean notificationReleased = new AtomicBoolean();
+            future.whenComplete((ignored, failure) -> {
+                if (notificationReleased.compareAndSet(false, true)) {
+                    releaseWaiter(TIMED_NOTIFICATIONS, "timed-notification");
+                }
+            });
+
             final java.util.concurrent.ScheduledFuture<?> timeoutTask;
             try {
-                timeoutTask = ASYNC_TIMEOUTS.schedule(
-                        () -> future.failQueuedFromRuntime(new LockTimeoutException(timeout)),
-                        timeoutNanos,
-                        TimeUnit.NANOSECONDS);
+                timeoutTask = ASYNC_TIMEOUTS.schedule(() -> {
+                    // Physical revocation, deadlock-edge removal and waiter
+                    // quota settlement are completed on the deadline worker.
+                    // Do not call completeExceptionally on this worker: an
+                    // arbitrary host completion callback could block it.
+                    java.util.function.BooleanSupplier revoke = future.revokeQueuedWaiter;
+                    if (revoke != null && revoke.getAsBoolean()) {
+                        TIMEOUT_DELIVERY.execute(() ->
+                                future.failFromRuntime(new LockTimeoutException(timeout)));
+                    }
+                }, timeoutNanos, TimeUnit.NANOSECONDS);
             } catch (RuntimeException schedulingFailure) {
+                // Scheduling failed on the requesting carrier before return.
                 future.failQueuedFromRuntime(schedulingFailure);
                 return future;
             }
