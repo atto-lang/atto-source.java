@@ -146,6 +146,22 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? Optional.empty() : Optional.of(current.actorId());
     }
 
+    /**
+     * Compiler/runtime-only owner-checked accounting domain for the active
+     * actor. This is an allocation quota, not a distinct physical JVM heap.
+     * Never return another actor's slice or synthesize it from a carrier ID.
+     */
+    public static Optional<ActorMemorySlice> currentActorMemorySlice() {
+        ActorExecutionContext execution = CURRENT_ACTOR_EXECUTION.get();
+        if (execution == null) return Optional.empty();
+        ActorCell<?> current = execution.runtime().currentActor.get();
+        if (current == null || !current.ref.id().equals(execution.actorId())) {
+            return Optional.empty();
+        }
+        return Optional.of(current.memorySlice);
+    }
+
+
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Thread.currentThread() : current.executionDomain();
