@@ -48,6 +48,7 @@ public final class ChannelRuntime {
     public enum SelectOperation {
         READ,
         WRITE,
+        FUTURE,
         DEFAULT
     }
 
@@ -218,7 +219,7 @@ public final class ChannelRuntime {
         }
     }
 
-    public sealed interface SelectCase permits ReadCase, WriteCase, DefaultCase { }
+    public sealed interface SelectCase permits ReadCase, WriteCase, FutureCase, DefaultCase { }
 
     public record ReadCase<T>(Channel<T> channel) implements SelectCase {
         public ReadCase {
@@ -236,7 +237,18 @@ public final class ChannelRuntime {
         }
     }
 
+    /** One immutable Future completion, not another concurrently running actor. */
+    public record FutureCase<T>(OresFuture<T> future) implements SelectCase {
+        public FutureCase {
+            Objects.requireNonNull(future, "future");
+        }
+    }
+
     public record DefaultCase() implements SelectCase { }
+
+    public static <T> FutureCase<T> await(OresFuture<T> future) {
+        return new FutureCase<>(future);
+    }
 
     public static <T> ReadCase<T> read(Channel<T> channel) {
         return new ReadCase<>(channel);
@@ -453,12 +465,13 @@ public final class ChannelRuntime {
             if (selectCase instanceof ReadCase<?> read) return read.channel();
             if (selectCase instanceof WriteCase<?> write) return write.channel();
             throw new IllegalStateException(
-                    "default case is never channel-registered");
+                    "only channel cases have channel registrations");
         }
 
         private SelectOperation operation() {
             if (selectCase instanceof ReadCase<?>) return SelectOperation.READ;
             if (selectCase instanceof WriteCase<?>) return SelectOperation.WRITE;
+            if (selectCase instanceof FutureCase<?>) return SelectOperation.FUTURE;
             return SelectOperation.DEFAULT;
         }
 
@@ -472,6 +485,9 @@ public final class ChannelRuntime {
         private final SelectPolicy policy;
         private final int[] order;
         private final ArrayList<CaseRegistration> registrations =
+                new ArrayList<>();
+        /** Detached on any winner/cancellation; never cancels a shared producer Future. */
+        private final ArrayList<OresFuture.RuntimeWaiterRegistration<?>> futureWaiters =
                 new ArrayList<>();
         private final int defaultIndex;
         private final OresFuture<SelectResult> future;
@@ -533,6 +549,48 @@ public final class ChannelRuntime {
                 COORDINATOR.unlock();
             }
             runCompletions(completions);
+            if (!immediateOnly) attachFutureWaiters();
+        }
+
+        /**
+         * Subscribe after leaving the channel coordinator. An already-settled
+         * Future may invoke the waiter synchronously; its callback is runtime
+         * plumbing only and must never run guest arms on the producer thread.
+         * The second lock acquisition fences a completion/cancellation race.
+         */
+        private void attachFutureWaiters() {
+            List<CaseRegistration> pending;
+            COORDINATOR.lock();
+            try {
+                if (decided) return;
+                pending = List.copyOf(registrations);
+            } finally {
+                COORDINATOR.unlock();
+            }
+            for (CaseRegistration registration : pending) {
+                if (!(registration.selectCase instanceof FutureCase<?> candidate)) continue;
+                OresFuture.RuntimeWaiterRegistration<?> waiter =
+                        candidate.future().whenCompleteRuntimeCancellable(
+                                (ignored, failure) -> futureBecameReady());
+                COORDINATOR.lock();
+                try {
+                    if (decided) waiter.detach();
+                    else futureWaiters.add(waiter);
+                } finally {
+                    COORDINATOR.unlock();
+                }
+            }
+        }
+
+        private void futureBecameReady() {
+            ArrayList<Runnable> completions = new ArrayList<>();
+            COORDINATOR.lock();
+            try {
+                if (!decided) pumpLocked(completions);
+            } finally {
+                COORDINATOR.unlock();
+            }
+            runCompletions(completions);
         }
 
         private Optional<SelectResult> tryNow() {
@@ -561,7 +619,9 @@ public final class ChannelRuntime {
             CaseRegistration registration =
                     new CaseRegistration(selection, index, selectCase);
             selection.registrations.add(registration);
-            channelOf(selectCase).registrations.add(registration);
+            if (selectCase instanceof ReadCase<?> || selectCase instanceof WriteCase<?>) {
+                channelOf(selectCase).registrations.add(registration);
+            }
         }
     }
 
@@ -571,9 +631,17 @@ public final class ChannelRuntime {
         ACTIVE.remove(selection);
         for (CaseRegistration registration :
                 List.copyOf(selection.registrations)) {
-            registration.channel().registrations.remove(registration);
+            if (registration.selectCase instanceof ReadCase<?>
+                    || registration.selectCase instanceof WriteCase<?>) {
+                registration.channel().registrations.remove(registration);
+            }
         }
         selection.registrations.clear();
+        for (OresFuture.RuntimeWaiterRegistration<?> waiter :
+                selection.futureWaiters) {
+            waiter.detach();
+        }
+        selection.futureWaiters.clear();
     }
 
     /**
@@ -592,6 +660,22 @@ public final class ChannelRuntime {
                 CaseRegistration chosen =
                         preferredCommittableCaseLocked(selection);
                 if (chosen == null) continue;
+
+                if (chosen.selectCase instanceof FutureCase<?> awaiting) {
+                    Object settled = awaiting.future().runtimeTerminalStateOrNull();
+                    if (settled == null) continue;
+                    Throwable failure = OresFuture.runtimeTerminalFailure(settled);
+                    if (failure != null) {
+                        commitFailureLocked(chosen, failure, completions);
+                    } else {
+                        commitSingleLocked(chosen,
+                                new SelectResult(chosen.index, SelectOperation.FUTURE,
+                                        OresFuture.runtimeTerminalValue(settled)),
+                                completions);
+                    }
+                    progressed = true;
+                    break;
+                }
 
                 Channel<?> channel = chosen.channel();
 
@@ -679,6 +763,12 @@ public final class ChannelRuntime {
                     findRegistration(selection, index);
             if (registration == null) continue;
 
+            if (registration.selectCase instanceof FutureCase<?> awaiting) {
+                if (awaiting.future().runtimeTerminalStateOrNull() != null) {
+                    return registration;
+                }
+                continue;
+            }
             Channel<?> channel = registration.channel();
             if (registration.operation() == SelectOperation.READ) {
                 if (!channel.buffer.isEmpty() || channel.closed) {
@@ -722,6 +812,9 @@ public final class ChannelRuntime {
     }
 
     private static boolean basicReadyLocked(CaseRegistration registration) {
+        if (registration.selectCase instanceof FutureCase<?> awaiting) {
+            return awaiting.future().runtimeTerminalStateOrNull() != null;
+        }
         Channel<?> channel = registration.channel();
 
         if (registration.operation() == SelectOperation.READ) {
