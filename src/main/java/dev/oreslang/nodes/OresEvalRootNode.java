@@ -1159,32 +1159,6 @@ public final class OresEvalRootNode extends RootNode {
             return future;
         }
 
-        private static final ThreadLocal<Integer> inlineSourceDepth = ThreadLocal.withInitial(() -> 0);
-
-        /** Synchronous root calls need no carrier hop unless they actually yield. */
-        private OresFuture<Object> startRootMethodTask(SourceTask task, OresScheduler scheduler) {
-            int depth = inlineSourceDepth.get();
-            if (depth >= 16) return scheduler.start(task);
-            inlineSourceDepth.set(depth + 1);
-            try {
-                OresScheduler.Step<Object> first = task.resume(new OresScheduler.Resume(true, null, null));
-                if (first instanceof OresScheduler.Done<?> done) return OresFuture.completed(done.value());
-                // Adopt the already-executed first step. Never replay its side effects.
-                return scheduler.start(new OresScheduler.Task<>() {
-                    private boolean initial = true;
-                    @Override public OresScheduler.Step<Object> resume(OresScheduler.Resume resume) throws Exception {
-                        if (initial) { initial = false; return first; }
-                        return task.resume(resume);
-                    }
-                });
-            } catch (Exception failure) {
-                return OresFuture.failed(failure);
-            } finally {
-                if (depth == 0) inlineSourceDepth.remove();
-                else inlineSourceDepth.set(depth);
-            }
-        }
-
         private OresFuture<Object> startSourceMethodTask(
                 Ast.MethodDecl method,
                 OresObject receiver,
@@ -1196,9 +1170,9 @@ public final class OresEvalRootNode extends RootNode {
                 context.actors().ownCurrentActorFuture(future);
             } else {
                 OresScheduler current = OresScheduler.current();
-                future = !method.async() && current != null
-                        ? startRootMethodTask(task, current)
-                        : (current != null ? current : context.vm().rootScheduler()).start(task);
+                future = (current != null
+                        ? current
+                        : context.vm().rootScheduler()).start(task);
             }
             return future;
         }
