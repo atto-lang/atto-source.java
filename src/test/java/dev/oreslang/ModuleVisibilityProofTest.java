@@ -99,9 +99,9 @@ final class ModuleVisibilityProofTest {
 
     @Test
     void bothExplicitPrivateOrdersHaveExactlyTheSameAstAsImplicitPrivate() {
-        String implicit = "define module Internal as\\n"
-                + "  pub fnc visible(): int { return 1; }\\n"
-                + "end\\n";
+        String implicit = "define module Internal as\n"
+                + "  pub fnc visible(): int { return 1; }\n"
+                + "end\n";
         Ast.Program baseline = Parser.parse(implicit);
         for (String modifier : new String[] {
                 "private define module Internal as",
@@ -133,10 +133,10 @@ final class ModuleVisibilityProofTest {
             }) {
                 Map<String, String> files = Map.of(
                         "pkg/lib.ores",
-                        header + "\\n  pub fnc visible(): int { return 9; }\\nend\\n",
+                        header + "\n  pub fnc visible(): int { return 9; }\nend\n",
                         "pkg/main.ores",
-                        "import " + selection + " from './lib';\\n"
-                                + "pub fnc main(): void { return; }\\n");
+                        "import " + selection + " from './lib';\n"
+                                + "pub fnc main(): void { return; }\n");
                 IllegalArgumentException failure = assertThrows(
                         IllegalArgumentException.class,
                         () -> new IncrementalCompiler().compile(files),
