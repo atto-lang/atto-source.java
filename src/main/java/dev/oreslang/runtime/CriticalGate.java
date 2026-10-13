@@ -362,6 +362,8 @@ public final class CriticalGate {
     /** Permanently revoke all tickets for a torn-down protection domain. */
     public void closeAll() {
         java.util.List<Ticket> revoke = new java.util.ArrayList<>();
+        java.util.List<Runnable> deregisterActor = new java.util.ArrayList<>();
+        java.util.List<Runnable> notifyWrappers = new java.util.ArrayList<>();
         synchronized (COORDINATOR) {
             if (domainClosed) return;
             domainClosed = true;
@@ -376,8 +378,17 @@ public final class CriticalGate {
                 ticket.closed = true;
                 ticket.granted = false;
                 WAITING_ON.remove(ticket.logicalOwner, this);
+                deregisterActor.add(ticket.deregisterActorResource);
+                ticket.deregisterActorResource = () -> { };
+                notifyWrappers.add(ticket.onClose);
+                ticket.onClose = () -> { };
             }
         }
+        // Whole-domain shutdown bypasses Ticket.close(); otherwise actor
+        // registration and RW facade wrappers would remain retained until
+        // their owning actor eventually stopped.
+        for (Runnable deregister : deregisterActor) deregister.run();
+        for (Runnable notify : notifyWrappers) notify.run();
         // A STOP may close the core gate directly, bypassing the RW facade's
         // public close(). Invalidate that facade's owner registry before
         // publishing terminal futures, or a stale owner can block an entirely
