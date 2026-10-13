@@ -28,7 +28,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * Guest code is NEVER invoked by this thread; OresFuture only schedules its
  * registered runtime continuations on their owning Oreslang scheduler.
  *
- * No HTTP or Oreslang-visible net API exists yet. Fail closed instead of
+ * The experimental Oreslang std/net source facade is loopback/supervisor-only.
+ * Fail closed instead of
  * silently falling back to blocking Java socket streams or HttpServer.
  *
  * Bounds: active connections, accepted/read/write futures, per-operation byte
@@ -44,6 +45,8 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     private final int maxPending;
     private final ConcurrentLinkedQueue<Runnable> commands = new ConcurrentLinkedQueue<>();
     private final AtomicBoolean shuttingDown = new AtomicBoolean();
+    // Serializes command publication against the final-shutdown admission fence.
+    private final Object admissionGate = new Object();
     private final CountDownLatch stopped = new CountDownLatch(1);
     private final AtomicInteger pending = new AtomicInteger();
     private final AtomicLong worstCommandQueueNanos = new AtomicLong();
@@ -97,19 +100,18 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     int peakOutstandingFutures() { return peakPending.get(); }
     long maxCommandQueueNanos() { return worstCommandQueueNanos.get(); }
 
-    private boolean reserve() {
-        for (;;) {
-            if (shuttingDown.get()) return false;
-            int count = pending.get();
-            if (count >= maxPending) return false;
-            if (pending.compareAndSet(count, count + 1)) {
-                peakPending.accumulateAndGet(count + 1, Math::max);
-                return true;
-            }
+    private boolean submit(Runnable runnable) {
+        synchronized (admissionGate) {
+            if (shuttingDown.get() || pending.get() >= maxPending) return false;
+            int count = pending.incrementAndGet();
+            peakPending.accumulateAndGet(count, Math::max);
+            postOwned(runnable);
+            return true;
         }
     }
 
-    private void post(Runnable runnable) {
+    // Caller must hold admissionGate, or be the dedicated reactor thread.
+    private void postOwned(Runnable runnable) {
         long queuedAt = System.nanoTime();
         commands.add(() -> {
             worstCommandQueueNanos.accumulateAndGet(
@@ -120,19 +122,17 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     }
 
     public OresFuture<Connection> acceptAsync() {
-        if (!reserve()) return OresFuture.failed(
-                new RejectedExecutionException("TCP listener is closed or at capacity"));
-        // Cancellation is deliberately declined until the operation's
-        // kernel-registration/completion single-winner protocol is finalized.
+        // Cancellation is declined pending the operation's kernel arbitration.
         OresFuture<Connection> future = new OresFuture<>(() -> false, () -> { });
-        post(() -> {
+        if (!submit(() -> {
             if (shuttingDown.get()) {
                 fail(future, new IOException("TCP reactor closing"));
                 return;
             }
             accepts.add(future);
             updateAcceptInterest();
-        });
+        })) return OresFuture.failed(
+                new RejectedExecutionException("TCP listener is closed or at capacity"));
         return future;
     }
 
@@ -186,10 +186,8 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         public OresFuture<byte[]> readAsync(int maximum) {
             if (maximum < 1 || maximum > MAX_IO_BYTES)
                 return OresFuture.failed(new IllegalArgumentException("invalid read size"));
-            if (!reserve()) return OresFuture.failed(
-                    new RejectedExecutionException("TCP read admission exhausted"));
             OresFuture<byte[]> future = new OresFuture<>(() -> false, () -> { });
-            post(() -> {
+            if (!submit(() -> {
                 if (terminated || shuttingDown.get() || closeRequested.get()) {
                     fail(future, new IOException("connection closed"));
                 } else if (read != null) {
@@ -198,7 +196,8 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                     read = new ReadOp(future, maximum);
                     updateInterest();
                 }
-            });
+            })) return OresFuture.failed(
+                    new RejectedExecutionException("TCP read admission exhausted"));
             return future;
         }
 
@@ -208,10 +207,8 @@ public final class NativeNioFutureReactor implements AutoCloseable {
             // Snapshot before crossing threads: no mutable caller-owned buffer
             // survives asynchronous dispatch. Connection ownership remains local.
             byte[] copied = Arrays.copyOf(bytes, bytes.length);
-            if (!reserve()) return OresFuture.failed(
-                    new RejectedExecutionException("TCP write admission exhausted"));
             OresFuture<Integer> future = new OresFuture<>(() -> false, () -> { });
-            post(() -> {
+            if (!submit(() -> {
                 if (terminated || shuttingDown.get() || closeRequested.get()) {
                     fail(future, new IOException("connection closed"));
                 } else if (write != null) {
@@ -222,13 +219,21 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                     write = new WriteOp(future, ByteBuffer.wrap(copied));
                     updateInterest();
                 }
-            });
+            })) return OresFuture.failed(
+                    new RejectedExecutionException("TCP write admission exhausted"));
             return future;
         }
 
         public OresFuture<Void> closeAsync() {
             if (closeRequested.compareAndSet(false, true)) {
-                post(() -> closeConnection(this, new IOException("TCP connection closed")));
+                synchronized (admissionGate) {
+                    // During shutdown the reactor owns close of every tracked
+                    // connection. Never enqueue after the final command drain.
+                    if (!shuttingDown.get()) {
+                        postOwned(() -> closeConnection(this,
+                                new IOException("TCP connection closed")));
+                    }
+                }
             }
             return closed;
         }
@@ -358,7 +363,9 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         } catch (Throwable terminal) {
             terminalFailure = terminal;
         } finally {
-            shuttingDown.set(true);
+            synchronized (admissionGate) {
+                shuttingDown.set(true);
+            }
             try { drainCommands(); } catch (Throwable ignored) { }
             IOException failure = new IOException("TCP reactor terminated", terminalFailure);
             while (!accepts.isEmpty()) fail(accepts.removeFirst(), failure);
@@ -381,6 +388,8 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     }
 
     @Override public void close() {
-        if (shuttingDown.compareAndSet(false, true)) selector.wakeup();
+        synchronized (admissionGate) {
+            if (shuttingDown.compareAndSet(false, true)) selector.wakeup();
+        }
     }
 }

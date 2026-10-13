@@ -80,6 +80,33 @@ final class NativeNioFutureReactorTest {
         }
     }
 
+    @Test void concurrentShutdownCannotStrandAdmittedFutures() throws Exception {
+        for (int round = 0; round < 40; round++) {
+            var reactor = NativeNioFutureReactor.loopback(0, 4, 2, 16);
+            try {
+                var admitted = new java.util.concurrent.CopyOnWriteArrayList<OresFuture<?>>();
+                try (ExecutorService submitters = Executors.newFixedThreadPool(2)) {
+                    var submit = submitters.submit(() -> {
+                        for (int i = 0; i < 32; i++) admitted.add(reactor.acceptAsync());
+                    });
+                    var stop = submitters.submit(reactor::close);
+                    submit.get(2, TimeUnit.SECONDS);
+                    stop.get(2, TimeUnit.SECONDS);
+                }
+                assertTrue(reactor.awaitTerminated(2000), "reactor must terminate");
+                for (var future : admitted) {
+                    assertTrue(future.isDone(), "admitted future stranded after reactor shutdown");
+                }
+                assertEquals(0, reactor.outstandingFutures(), "shutdown must release admission");
+                var after = reactor.acceptAsync();
+                assertThrows(ExecutionException.class, () -> after.get(2, TimeUnit.SECONDS));
+                assertEquals(0, reactor.outstandingFutures());
+            } finally {
+                reactor.close();
+            }
+        }
+    }
+
     @Test void outstandingAcceptSettlesOnShutdownWithoutBlockingCaller() throws Exception {
         var reactor = NativeNioFutureReactor.loopback(0, 2, 1, 1);
         try {
