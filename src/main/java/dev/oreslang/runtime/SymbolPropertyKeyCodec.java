@@ -99,6 +99,26 @@ public final class SymbolPropertyKeyCodec {
                 : OresSymbol.stable(text);
     }
 
+    /**
+     * Default fail-closed ingress for an untrusted actor. An explicit
+     * destination-scoped export allowlist may add identities, but there is no
+     * mutable process-global "public" bit and decoding never interns.
+     */
+    public static Object decodeForUntrusted(byte[] input, Set<OresSymbol> scopedExports) {
+        Objects.requireNonNull(scopedExports, "destination-scoped Symbol exports");
+        Object key = decode(input);
+        if (key instanceof OresSymbol symbol
+                && !symbol.publicToUntrustedCoreV1()
+                && !scopedExports.contains(symbol)) {
+            throw new SecurityException("Symbol key is not visible to untrusted actor");
+        }
+        return key;
+    }
+
+    public static Object decodeForUntrusted(byte[] input) {
+        return decodeForUntrusted(input, Set.of());
+    }
+
     /** Reject duplicate logical keys after decoding, including NFC aliases. */
     public static void requireDistinct(List<byte[]> encodedKeys) {
         Objects.requireNonNull(encodedKeys, "encoded keys");
