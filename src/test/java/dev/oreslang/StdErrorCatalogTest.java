@@ -68,6 +68,12 @@ final class StdErrorCatalogTest {
         assertEquals(new Entry("IOError", 3090, true, null), parsed.get("FileSystemError"));
         assertEquals(new Entry("IOError", 4000, true, null), parsed.get("NetworkError"));
         assertEquals(new Entry("Error", 9000, true, "ActorApiError"), parsed.get("ActorError"));
+        // Actor crash, cancellation and supervisor escalation are CONTROL outcomes,
+        // not forgeable ordinary std/error classes.
+        for (String controlOnly : new String[]{"ActorPanicError", "ActorCancellationError",
+                "ActorSupervisorRestartLimitError", "ActorControlEnvelope"}) {
+            assertFalse(parsed.containsKey(controlOnly), controlOnly);
+        }
         assertEquals(11, parsed.values().stream().filter(Entry::abstractClass).count());
         assertEquals(5, parsed.values().stream().filter(e -> "RetryAdvisory".equals(e.iface())).count());
         long leaves = parsed.keySet().stream().filter(name ->
@@ -134,8 +140,8 @@ final class StdErrorCatalogTest {
         assertEquals(new Entry("StateError", 2009, false, null), parsed.get("EmptyCollectionError"));
         assertEquals(new Entry("StateError", 2010, false, null), parsed.get("IteratorExhaustedError"));
         assertEquals(new Entry("StateError", 2011, false, null), parsed.get("DeadlockDetectedError"));
-        assertEquals(new Entry("StateError", 2012, false, null), parsed.get("ProcessNotFoundError"));
-        assertEquals(new Entry("StateError", 2013, false, null), parsed.get("MailboxFullError"));
+        assertEquals(new Entry("StateError", 2012, false, "ActorApiError"), parsed.get("ProcessNotFoundError"));
+        assertEquals(new Entry("StateError", 2013, false, "ActorApiError"), parsed.get("MailboxFullError"));
         assertEquals(new Entry("OperationError", 8009, false, null), parsed.get("NotImplementedError"));
         assertEquals(new Entry("OperationError", 8010, false, null), parsed.get("ResourceExhaustedError"));
         assertThrows(IllegalArgumentException.class, () -> CoreLibrarySources.source("std/error/../core"));
