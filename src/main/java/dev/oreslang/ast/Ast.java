@@ -52,6 +52,19 @@ public final class Ast {
             arguments = List.copyOf(arguments);
         }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
+        /** A complement in type position. The token '!' is not a value operator here. */
+        public static TypeRef complement(TypeRef excluded) {
+            return excluded.isComplement()
+                    ? excluded.arguments().getFirst()
+                    : new TypeRef("$not$", List.of(excluded), false);
+        }
+        public boolean isComplement() { return name.equals("$not$"); }
+        public TypeRef complementedType() {
+            if (!isComplement() || arguments.size() != 1) {
+                throw new IllegalStateException("malformed complement type");
+            }
+            return arguments.getFirst();
+        }
         public static TypeRef inferred() { return new TypeRef("$infer$", List.of(), false); }
         public static TypeRef borrowed(TypeRef target, boolean mutable) {
             return new TypeRef(mutable ? "$borrow_mut$" : "$borrow$", List.of(target), false);
