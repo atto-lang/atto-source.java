@@ -283,6 +283,8 @@ public final class IncrementalCompiler {
             return;
         }
         if (decl instanceof Ast.InterfaceDecl iface) {
+            // Private contracts/traits/interfaces are not part of the imported ABI.
+            if (iface.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append("interface ").append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
