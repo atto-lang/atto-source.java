@@ -422,7 +422,10 @@ final class ClassConstructorHardeningTest {
     void fieldInitializerCannotInvokeUncheckedTransitiveFunction() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
-                    fnc helper(): int { return 42; }
+                    fnc helper(): int {
+                      stdio.stdout.write("side effect");
+                      return 42;
+                    }
                     define class Unsafe as
                       final int value: helper();
                     end
