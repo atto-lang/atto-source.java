@@ -209,13 +209,20 @@ deprecated_if_do
 condition       = condition_and { "|" condition_and } ;
 condition_and   = equality { "," equality } ;
 
-match_stmt      = "match" [ "first" ] expression [ ";" ]
+match_stmt      = [ "do" ] "match" [ "first" ] expression
+                  ( "over" | [ ";" ] )
                   match_arm { match_arm } "end" ;
-match_arm       = ( pattern | "else" ) [ "when" expression ] "->" block ;
+match_arm       = [ "on" ] ( pattern | "else" ) [ "when" expression ] "->" block ;
+(* Canonical form: do match expr over / on Pattern -> { ... } / end.
+   'on' is required with 'over'. The legacy no-over match remains accepted.
+   'as {field, ...}' only projects declared fields of a tagged data payload.
+   It never resolves methods or arbitrary class instance identity. *)
+record_projection = "as" "{" IDENT { "," IDENT } [ "," ] "}" ;
 pattern         = "_"
                 | literal
                 | IDENT
                 | IDENT "(" [ pattern { "," pattern } ] ")"
+                | IDENT record_projection
                 | "is" type_ref [ IDENT ] ;
 
 switch_stmt     = "switch" expression [ ";" ]
@@ -243,6 +250,10 @@ select_read_binding
                   | type_ref [ "mut" ] IDENT
                   | sequence_pattern
                   | object_pattern ) ;
+(* Canonical select syntax: do select { when readch ch: let {x,y} -> { ... } }.
+   '->' delimits the arm body after all pattern/binding text. Legacy
+   brace-only arm bodies remain accepted for compatibility.
+   'default: -> { ... }' is canonical, 'default: { ... }' remains accepted. *)
 (* Static select arms cannot use nb/try modifiers on readch/writech; the enclosing select supplies wait mode.
    Typed select-read bindings default to const; prefix tuple and record
    projections bind variables only within the winning arm, never another read.
