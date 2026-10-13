@@ -41,6 +41,35 @@ final class ColonClassFieldInitializerTest {
     }
 
     @Test
+    void explicitFinalCannotBeShadowedInDirectOrTransitiveSubclass() {
+        for (String source : new String[]{
+                """
+                define class Base as
+                  pub final int token: 5
+                end
+                define class Child extends Base as
+                  int token: 6
+                end
+                """,
+                """
+                define class Base as
+                  final const int token: 5
+                end
+                define class Middle extends Base as
+                  int unrelated: 1
+                end
+                define class Child extends Middle as
+                  final int token: 6
+                end
+                """
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(error.getMessage().contains("cannot shadow final field"), error.getMessage());
+        }
+    }
+
+    @Test
     void finalConstIsNotWritableFromMutableMethod() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define class Foo as
