@@ -81,6 +81,59 @@ final class NamedArgumentsExecutionTest {
     }
 
     @Test
+    void inheritedOverridesMustPreserveNamedArgumentLabels() throws Exception {
+        String valid = """
+                define class Base as
+                  pub pick(int amount, bool enabled): int {
+                    return enabled ? amount : 0;
+                  }
+                end
+                define class Child extends Base as
+                  pub pick(int amount, bool enabled): int {
+                    return enabled ? amount + 1 : 0;
+                  }
+                end
+                pub routine main(): void {
+                  val Child child = new Child();
+                  stdio.stdout.write(child.pick(enabled: true, amount: 4));
+                }
+                """;
+        assertEquals("5", run(valid));
+
+        String renamed = """
+                define class Base as
+                  pub pick(int amount, bool enabled): int { return amount; }
+                end
+                define class Child extends Base as
+                  pub pick(int value, bool enabled): int { return value; }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(renamed)));
+        assertTrue(error.getMessage().contains("incompatible parameter label"));
+        assertTrue(error.getMessage().contains("amount"));
+        assertTrue(error.getMessage().contains("value"));
+    }
+
+    @Test
+    void multipleParentLabelsCannotCreateAmbiguousDispatchContracts() {
+        String source = """
+                define class Left as
+                  pub pick(int amount): int { return amount; }
+                end
+                define class Right as
+                  pub pick(int value): int { return value; }
+                end
+                define class Child extends Left, Right as
+                  pub pick(int amount): int { return amount; }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("incompatible parameter label"));
+    }
+
+    @Test
     void invalidLabelsAreRejectedByStaticChecker() {
         String header = """
                 fnc foo(int bar, bool a): int { return a ? bar : 0; }
