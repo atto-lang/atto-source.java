@@ -1,0 +1,142 @@
+package dev.oreslang.runtime;
+
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.text.Normalizer;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+
+/**
+ * Versioned, explicitly tagged key interchange, not a replacement for the
+ * existing text-only record/struct layout or a guest Map implementation.
+ *
+ * v1 layout: ASCII "OK", u8 version, u8 key kind, u16 big-endian byte length,
+ * exactly that many UTF-8 bytes, no trailing data.
+ *
+ * Kind 0 = String, 1 = PROCESS Symbol, 2 = STABLE Symbol.
+ * The prefix # in String contents is ordinary text, never a Symbol tag.
+ */
+public final class SymbolPropertyKeyCodec {
+    public static final int VERSION = 1;
+    public static final int MAX_TEXT_KEY_BYTES = 16_384;
+    public static final int MAX_SYMBOL_KEY_BYTES = 256;
+    public static final int MAX_KEYS_PER_OBJECT = 4_096;
+
+    private static final int HEADER_LENGTH = 6;
+    private static final byte TEXT = 0;
+    private static final byte PROCESS_SYMBOL = 1;
+    private static final byte STABLE_SYMBOL = 2;
+
+    private SymbolPropertyKeyCodec() { }
+
+    /** Return independent UTF-8 bytes; never leak a Symbol table/handle ID. */
+    public static byte[] encode(Object key) {
+        final byte kind;
+        final String value;
+        final int limit;
+        if (key instanceof String text) {
+            kind = TEXT;
+            value = text;
+            limit = MAX_TEXT_KEY_BYTES;
+        } else if (key instanceof OresSymbol symbol) {
+            kind = symbol.kind() == OresSymbol.Kind.PROCESS
+                    ? PROCESS_SYMBOL : STABLE_SYMBOL;
+            value = symbol.name();
+            limit = MAX_SYMBOL_KEY_BYTES;
+        } else {
+            throw new IllegalArgumentException(
+                    "key codec accepts only String or Symbol");
+        }
+
+        byte[] utf8 = strictEncode(value);
+        if (utf8.length > limit || kind != TEXT && utf8.length == 0) {
+            throw new IllegalArgumentException("key exceeds tagged wire length budget");
+        }
+        ByteBuffer wire = ByteBuffer.allocate(HEADER_LENGTH + utf8.length);
+        wire.put((byte) 'O').put((byte) 'K').put((byte) VERSION)
+                .put(kind).putShort((short) utf8.length).put(utf8);
+        return wire.array();
+    }
+
+    /** Decode without process-wide interning, with exact length and NFC checks. */
+    public static Object decode(byte[] input) {
+        Objects.requireNonNull(input, "tagged key bytes");
+        if (input.length < HEADER_LENGTH
+                || input.length > HEADER_LENGTH + MAX_TEXT_KEY_BYTES) {
+            throw new IllegalArgumentException("invalid tagged key length");
+        }
+
+        ByteBuffer wire = ByteBuffer.wrap(input);
+        if (wire.get() != (byte) 'O' || wire.get() != (byte) 'K'
+                || Byte.toUnsignedInt(wire.get()) != VERSION) {
+            throw new IllegalArgumentException("invalid tagged key magic/version");
+        }
+        byte kind = wire.get();
+        int length = Short.toUnsignedInt(wire.getShort());
+        int limit = kind == TEXT ? MAX_TEXT_KEY_BYTES : MAX_SYMBOL_KEY_BYTES;
+        if (kind != TEXT && kind != PROCESS_SYMBOL && kind != STABLE_SYMBOL
+                || length != wire.remaining()
+                || length > limit
+                || kind != TEXT && length == 0) {
+            throw new IllegalArgumentException("invalid tagged key kind/length");
+        }
+
+        String text = strictDecode(wire);
+        if (kind == TEXT) return text;
+
+        // Source constructors may NFC-normalize; wire inputs must already
+        // be canonical so that keys cannot bypass duplicate detection.
+        if (!Normalizer.isNormalized(text, Normalizer.Form.NFC)) {
+            throw new IllegalArgumentException("noncanonical NFC Symbol wire key");
+        }
+        return kind == PROCESS_SYMBOL
+                ? OresSymbol.process(text)
+                : OresSymbol.stable(text);
+    }
+
+    /** Reject duplicate logical keys after decoding, including NFC aliases. */
+    public static void requireDistinct(List<byte[]> encodedKeys) {
+        Objects.requireNonNull(encodedKeys, "encoded keys");
+        if (encodedKeys.size() > MAX_KEYS_PER_OBJECT) {
+            throw new IllegalArgumentException("too many tagged keys");
+        }
+        Set<Object> distinct = new HashSet<>();
+        for (byte[] encoded : encodedKeys) {
+            Object key = decode(encoded);
+            if (!distinct.add(key)) {
+                throw new IllegalArgumentException(
+                        "duplicate tagged String or Symbol key");
+            }
+        }
+    }
+
+    private static byte[] strictEncode(String text) {
+        try {
+            ByteBuffer buffer = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(text));
+            byte[] bytes = new byte[buffer.remaining()];
+            buffer.get(bytes);
+            return bytes;
+        } catch (CharacterCodingException bad) {
+            throw new IllegalArgumentException("invalid Unicode key", bad);
+        }
+    }
+
+    private static String strictDecode(ByteBuffer bytes) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(bytes).toString();
+        } catch (CharacterCodingException bad) {
+            throw new IllegalArgumentException("malformed UTF-8 tagged key", bad);
+        }
+    }
+}
