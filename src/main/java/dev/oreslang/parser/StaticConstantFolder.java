@@ -143,6 +143,8 @@ public final class StaticConstantFolder {
         try {
         if (expression instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
+            if (value instanceof Double number && !Double.isFinite(number))
+                throw new IllegalArgumentException("nonfinite compile-time numeric literal");
             if (value == null || value instanceof Long || value instanceof Integer
                     || value instanceof Double || value instanceof Boolean
                     || value instanceof OresSymbol) return value;
