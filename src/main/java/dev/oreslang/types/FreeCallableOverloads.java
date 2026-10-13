@@ -27,8 +27,9 @@ public final class FreeCallableOverloads {
             case "bool", "boolean", "Bool" -> "p:bool";
             case "string", "String" -> "p:string";
             case "float", "f32", "f64" -> "p:float";
-            case "decimal" -> "p:decimal";
-            case "complex", "complex64", "complex128" -> "p:complex";
+            // Decimal/complex native representations have not been reconciled
+            // with boxed guest runtime values. They may be ordinary params,
+            // but cannot currently distinguish same-arity overload slots.
             default -> null;
         };
     }
@@ -48,8 +49,7 @@ public final class FreeCallableOverloads {
                 case BOOL -> "p:bool";
                 case STRING -> "p:string";
                 case FLOAT -> "p:float";
-                case DECIMAL -> "p:decimal";
-                case COMPLEX -> "p:complex";
+                // No same-arity decimal/complex tags until runtime ABI parity.
                 default -> null;
             };
         }
@@ -87,6 +87,17 @@ public final class FreeCallableOverloads {
     public static void requireUnambiguous(List<Ast.FunctionDecl> overloads, Set<String> enumOwners,
                                           String name) {
         Objects.requireNonNull(overloads);
+        Objects.requireNonNull(enumOwners);
+        if (overloads.size() > 256) {
+            throw new IllegalArgumentException("nominal overload family '" + name
+                    + "' exceeds 256 declarations");
+        }
+        for (Ast.FunctionDecl declaration : overloads) {
+            if (declaration.parameters().size() > 64) {
+                throw new IllegalArgumentException("nominal overload family '" + name
+                        + "' exceeds 64 explicit parameters");
+            }
+        }
         for (int i = 0; i < overloads.size(); i++) {
             for (int j = 0; j < i; j++) {
                 Ast.FunctionDecl a = overloads.get(i);
