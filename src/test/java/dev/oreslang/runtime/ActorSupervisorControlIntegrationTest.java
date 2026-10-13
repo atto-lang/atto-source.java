@@ -71,6 +71,33 @@ final class ActorSupervisorControlIntegrationTest {
     }
 
     @Test
+    void directTransferKeepsInFlightAndQueuedControlInOrder() {
+        var parent = new ActorSupervisorControlLane(3);
+        var root = new ActorSupervisorControlLane(3);
+        var ids = List.of(ActorRuntime.ActorId.create(),
+                ActorRuntime.ActorId.create(), ActorRuntime.ActorId.create());
+        for (var id : ids) {
+            parent.reserve(id);
+            root.reserve(id);
+        }
+        parent.publish(notice(ids.get(0), 10));
+        parent.publish(notice(ids.get(1), 11));
+        parent.publish(notice(ids.get(2), 12));
+        assertEquals(10, parent.poll().orElseThrow().terminal().originCode());
+        parent.transferPublishedTo(root);
+        assertEquals(0, parent.pendingCount());
+        assertEquals(0, parent.reservedCount());
+        assertEquals(3, root.pendingCount());
+        for (int i = 0; i < ids.size(); ++i) {
+            var event = root.poll().orElseThrow();
+            assertEquals(ids.get(i), event.actor());
+            assertEquals(10 + i, event.terminal().originCode());
+            root.ack(event.actor());
+        }
+        assertEquals(0, root.reservedCount());
+    }
+
+    @Test
     void rootControlBackpressureRejectsNewActorWithoutPartialAdmission() {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), 1)) {
             var first = runtime.<String>spawnShared(
