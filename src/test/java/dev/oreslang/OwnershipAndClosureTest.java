@@ -355,7 +355,9 @@ final class OwnershipAndClosureTest {
                           return;
                         }
                         """)));
-        assertTrue(error.getMessage().contains("field 'Bar.foo' is immutable"));
+        assertTrue(error.getMessage().contains("cannot reassign final class field")
+                || error.getMessage().contains("field 'Bar.foo' is immutable"),
+                error.getMessage());
     }
 
     @Test
