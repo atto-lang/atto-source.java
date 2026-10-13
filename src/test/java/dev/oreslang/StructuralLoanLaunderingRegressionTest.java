@@ -29,6 +29,53 @@ final class StructuralLoanLaunderingRegressionTest {
     }
 
     @Test
+    void explicitOwnedTypeAnnotationCannotEraseAnIncomingLoan() {
+        String source = """
+                fnc leak(structural {foo: int} view): void {
+                    const alias: record{foo: int} = view;
+                    return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> OwnershipChecker.check(parsed));
+        assertTrue(error.getMessage().contains("cannot be rebound as an owned value"),
+                error.getMessage());
+    }
+
+    @Test
+    void unannotatedAliasRemainsBorrowedAcrossCalls() {
+        String source = """
+                fnc own(record{foo: int} value): void { return; }
+                fnc leak(structural {foo: int} view): void {
+                    const alias = view;
+                    own(alias);
+                    return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> OwnershipChecker.check(parsed));
+        assertTrue(error.getMessage().contains("cannot transfer borrowed structural data"),
+                error.getMessage());
+    }
+
+    @Test
+    void aggregateDestructuringCannotLoseBorrowOwnership() {
+        String source = """
+                fnc leak(structural {foo: int} view): void {
+                    const {foo} = view;
+                    return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> OwnershipChecker.check(parsed));
+        assertTrue(error.getMessage().contains("provenance-aware"),
+                error.getMessage());
+    }
+
+    @Test
     void borrowedStructuralParameterCannotBeReturnedAsOwnedRecord() {
         String source = """
                 fnc leak(structural {foo: int} view): record{foo: int} {
