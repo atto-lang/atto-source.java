@@ -4739,6 +4739,25 @@ public final class TypeChecker {
             }
             return;
         }
+        if (pattern instanceof Ast.RecordPattern projection) {
+            if (!(subject instanceof Record record)) {
+                throw new IllegalArgumentException(
+                        "record match projection requires a statically known record/struct payload, got "
+                                + subject);
+            }
+            for (String field : projection.fields()) {
+                Type member = record.members().get(field);
+                if (member == null) {
+                    throw new IllegalArgumentException(
+                            "match record projection field '" + field
+                                    + "' does not exist in " + subject);
+                }
+                // Preserve readonly capabilities; a match arm receives a
+                // field view, never a new ownership or mutation grant.
+                bindings.define(field, member, Ast.BindingKind.VAL);
+            }
+            return;
+        }
         if (pattern instanceof Ast.TuplePattern tuplePattern) {
             if (!(subject instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
                 throw new IllegalArgumentException(
@@ -4882,6 +4901,10 @@ public final class TypeChecker {
 
         if (earlier instanceof Ast.LiteralPattern a && later instanceof Ast.LiteralPattern b) {
             return java.util.Objects.equals(a.value(), b.value());
+        }
+        if (earlier instanceof Ast.RecordPattern a && later instanceof Ast.RecordPattern b) {
+            // Projection patterns only bind existing keys, never test values.
+            return b.fields().containsAll(a.fields());
         }
 
         if (earlier instanceof Ast.TypePattern a && later instanceof Ast.TypePattern b) {
@@ -5061,6 +5084,10 @@ public final class TypeChecker {
             Type resolved = deref(resolve(structural.target(), generics, self));
             Record shape = structuralPatternShape(structural.target(), resolved, generics);
             return assignable(subject, shape);
+        }
+        if (pattern instanceof Ast.RecordPattern projection) {
+            return subject instanceof Record record
+                    && record.members().keySet().containsAll(projection.fields());
         }
         if (pattern instanceof Ast.TuplePattern tuplePattern
                 && subject instanceof Tuple tuple
