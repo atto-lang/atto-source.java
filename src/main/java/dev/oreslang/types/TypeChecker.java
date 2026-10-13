@@ -5065,6 +5065,14 @@ public final class TypeChecker {
                     + " arms; split the decision into smaller match expressions");
         }
 
+        if (!matched.ordered()) {
+            long fallbackCount = arms.stream().filter(this::isFallbackArm).count();
+            if (fallbackCount > 1) {
+                throw new IllegalArgumentException(
+                        "exclusive match has multiple fallback arms");
+            }
+        }
+
         // Build finite witnesses once. Re-enumerating them for each arm and
         // re-testing every earlier arm produced an avoidable quadratic/cubic
         // proof cost for large enums or tuple products.
