@@ -7390,8 +7390,18 @@ public final class OresEvalRootNode extends RootNode {
                 for (int i = 0; i < classFields.size(); i++) {
                     Ast.FieldDecl field = classFields.get(i);
                     Object value;
-                    if (i < args.size()) value = args.get(i);
-                    else if (field.initializer() != null) {
+                    if (i < args.size()) {
+                        // Runtime defense in depth: reject fixed-slot injection
+                        // even if this path is reached through a linked program
+                        // or an AST that skipped the static type checker.
+                        if (field.initializer() != null
+                                && field.bindingKind() != Ast.BindingKind.LET) {
+                            throw new IllegalArgumentException(
+                                    "positional construction cannot override initialized final class field '"
+                                            + klass.name() + "." + field.name() + "'");
+                        }
+                        value = args.get(i);
+                    } else if (field.initializer() != null) {
                         OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
                         Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
                         Env initializerEnv = new Env(null, false, fieldOwner);
