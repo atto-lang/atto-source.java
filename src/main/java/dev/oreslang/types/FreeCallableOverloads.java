@@ -91,6 +91,19 @@ public final class FreeCallableOverloads {
             for (int j = 0; j < i; j++) {
                 Ast.FunctionDecl a = overloads.get(i);
                 Ast.FunctionDecl b = overloads.get(j);
+                // Suspendability analysis in the present interpreter uses an
+                // arity slot before argument values exist. All alternatives
+                // must therefore agree on the scheduling and effect envelope;
+                // selecting one branch may never silently hide an await.
+                if (a.async() != b.async() || a.suspends() != b.suspends()
+                        || a.generator() != b.generator() || a.trapped() != b.trapped()
+                        || a.actorKind() != b.actorKind()
+                        || a.returnType().name().equals("Future")
+                                != b.returnType().name().equals("Future")) {
+                    throw new IllegalArgumentException(
+                            "nominal overload family '" + name
+                                    + "' requires identical async/suspend/generator/trap/actor scheduling envelopes");
+                }
                 if (a.parameters().size() != b.parameters().size()) {
                     throw new IllegalArgumentException("invalid mixed-arity overload bucket for " + name);
                 }
