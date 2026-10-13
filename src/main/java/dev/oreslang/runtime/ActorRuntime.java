@@ -7719,9 +7719,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // A parent shutting down cannot process CONTROL. Forward
                 // queued/in-flight child failures to root without dropping
                 // their original typed provenance.
-                for (ActorFailureNotice childFailure : childControl.drainPublished()) {
-                    rootSupervisionControl.publish(childFailure);
-                }
+                childControl.transferPublishedTo(rootSupervisionControl);
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
