@@ -175,6 +175,22 @@ final class NamedArgumentsExecutionTest {
     }
 
     @Test
+    void namedConstructorsFailBeforeArgumentEvaluationUntilFullyBound() {
+        String program = """
+                define class Box as
+                  pub Box(int value) { }
+                end
+                fnc sideEffect(): int { return 3; }
+                pub routine main(): void {
+                  val Box box = new Box(value: sideEffect());
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(failure.getMessage().contains("named constructor arguments"));
+    }
+
+    @Test
     void invalidLabelsAreRejectedByStaticChecker() {
         String header = """
                 fnc foo(int bar, bool a): int { return a ? bar : 0; }
