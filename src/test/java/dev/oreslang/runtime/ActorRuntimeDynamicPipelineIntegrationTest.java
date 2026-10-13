@@ -136,8 +136,17 @@ final class ActorRuntimeDynamicPipelineIntegrationTest {
                             "TransformV2", v2, "Sink", sink));
             PipelineController controller = new PipelineController(original, engine);
             PipelineRunner first = controller.start();
-            Object firstReply = first.send(new TaggedMessageCodec.TaggedValue(
-                    "Signal", "Data", 1, 5L))
+            // A compiler-declared case outside this bound domain must fail
+            // before DATA and must not consume the one available root credit.
+            assertThrows(Exception.class, () -> first.sendExpected(
+                    new TaggedMessageCodec.TaggedValue("Signal", "Data", 1, 5L),
+                    "Signal.NotInBoundMailbox").toCompletableFuture()
+                    .get(10, TimeUnit.SECONDS));
+            assertEquals(PipelineController.State.RUNNING, controller.state());
+            assertTrue(observed.isEmpty(), "rejected result published pipeline DATA");
+
+            Object firstReply = first.sendExpected(new TaggedMessageCodec.TaggedValue(
+                    "Signal", "Data", 1, 5L), "Signal.Result")
                     .toCompletableFuture().get(10, TimeUnit.SECONDS);
             assertEquals(new TaggedMessageCodec.TaggedValue(
                     "Signal", "Result", 2, 15L), firstReply,
