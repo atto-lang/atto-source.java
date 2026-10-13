@@ -9,6 +9,133 @@ import org.junit.jupiter.api.Test;
 
 final class CriticalRwGateTest {
     @Test
+    void idleDomainCloseBlocksNewTurnDuringExternalObserver() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        CountDownLatch firstTurn = new CountDownLatch(1);
+        CountDownLatch observerEntered = new CountDownLatch(1);
+        CountDownLatch releaseObserver = new CountDownLatch(1);
+        CountDownLatch nextTurn = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread closeThread = null;
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            try {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        if ("first".equals(message)) {
+                            var ticket = gate.newTicket();
+                            assertTrue(ticket.enterAsync().isDone());
+                            ticket.onClose(() -> {
+                                observerEntered.countDown();
+                                try {
+                                    assertTrue(releaseObserver.await(5, TimeUnit.SECONDS));
+                                } catch (InterruptedException interrupted) {
+                                    Thread.currentThread().interrupt();
+                                    throw new AssertionError(interrupted);
+                                }
+                            });
+                            firstTurn.countDown();
+                        } else {
+                            nextTurn.countDown();
+                        }
+                    } catch (Throwable error) {
+                        failure.compareAndSet(null, error);
+                    } finally {
+                        if ("first".equals(message)) firstTurn.countDown();
+                    }
+                });
+                actor.send("first");
+                assertTrue(firstTurn.await(5, TimeUnit.SECONDS));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!runtime.isActorPhysicalLaneQuiescent(actor)
+                        && System.nanoTime() < deadline) Thread.onSpinWait();
+                assertTrue(runtime.isActorPhysicalLaneQuiescent(actor));
+                assertTrue(gate.hasWriter());
+                closeThread = Thread.ofVirtual().start(() -> {
+                    try { gate.closeAll(); }
+                    catch (Throwable error) { failure.compareAndSet(null, error); }
+                });
+                assertTrue(observerEntered.await(5, TimeUnit.SECONDS));
+                assertFalse(runtime.isActorPhysicalLaneQuiescent(actor),
+                        "idle close must publish physical cleanup fence");
+                actor.send("second");
+                assertFalse(nextTurn.await(150, TimeUnit.MILLISECONDS),
+                        "a queued dispatch cannot cross idle domain-close callbacks");
+                releaseObserver.countDown();
+                assertTrue(nextTurn.await(5, TimeUnit.SECONDS),
+                        "second turn should resume after exit-cleanup lease ends");
+                closeThread.join(5_000);
+                assertFalse(closeThread.isAlive());
+                assertNull(failure.get());
+                runtime.stop(actor);
+            } finally {
+                releaseObserver.countDown();
+                if (closeThread != null) closeThread.join(5_000);
+            }
+        }
+        assertNull(failure.get());
+        assertFalse(gate.hasWriter());
+    }
+
+    @Test
+    void idleDomainCloseBlocksDoneUntilExternalObserverCompletes() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        CountDownLatch firstTurn = new CountDownLatch(1);
+        CountDownLatch observerEntered = new CountDownLatch(1);
+        CountDownLatch releaseObserver = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread closeThread = null;
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            try {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        var ticket = gate.newTicket();
+                        assertTrue(ticket.enterAsync().isDone());
+                        ticket.onClose(() -> {
+                            observerEntered.countDown();
+                            try {
+                                assertTrue(releaseObserver.await(5, TimeUnit.SECONDS));
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(interrupted);
+                            }
+                        });
+                        firstTurn.countDown();
+                    } catch (Throwable error) {
+                        failure.compareAndSet(null, error);
+                    } finally {
+                        firstTurn.countDown();
+                    }
+                });
+                actor.send("hold");
+                assertTrue(firstTurn.await(5, TimeUnit.SECONDS));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!runtime.isActorPhysicalLaneQuiescent(actor)
+                        && System.nanoTime() < deadline) Thread.onSpinWait();
+                assertTrue(runtime.isActorPhysicalLaneQuiescent(actor));
+                closeThread = Thread.ofVirtual().start(() -> {
+                    try { gate.closeAll(); }
+                    catch (Throwable error) { failure.compareAndSet(null, error); }
+                });
+                assertTrue(observerEntered.await(5, TimeUnit.SECONDS));
+                runtime.stop(actor);
+                assertFalse(actor.done().isDone(),
+                        "DONE may not publish while off-carrier resource callbacks run");
+                releaseObserver.countDown();
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+                assertTrue(actor.done().isDone());
+                closeThread.join(5_000);
+                assertFalse(closeThread.isAlive());
+                assertNull(failure.get());
+            } finally {
+                releaseObserver.countDown();
+                if (closeThread != null) closeThread.join(5_000);
+            }
+        }
+        assertNull(failure.get());
+        assertFalse(gate.hasWriter());
+    }
+
+    @Test
     void nestedForeignCloseDuringExitDrainCannotAdmitNextTurnOrPublishDone()
             throws Exception {
         CriticalGate gate = new CriticalGate();
