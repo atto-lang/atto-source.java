@@ -210,7 +210,11 @@ public final class IncrementalCompiler {
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
-            abi.append("module ").append(module.name()).append('\n');
+            // File-root exports remain individually gated by pub; a private
+            // named module is never part of a cross-file export surface.
+            if (!module.name().equals(Parser.ROOT_MODULE)
+                    && module.visibility() != Ast.Visibility.PUBLIC) continue;
+            abi.append("module pub ").append(module.name()).append('\n');
             for (Ast.Annotation annotation : module.annotations()) {
                 if (annotation.name().equals("AdheresTo")) {
                     abi.append(" module-annotation AdheresTo:");
@@ -312,6 +316,17 @@ public final class IncrementalCompiler {
             abi.append("binding ").append(field.bindingKind()).append(' ')
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
                     .append(' ').append(field.name()).append('\n');
+            if (field.bindingKind() == Ast.BindingKind.CONST) {
+                // A public const is value-bearing ABI: changing 42 -> 43 must
+                // rebuild clients even though the declared type is unchanged.
+                // AST spelling, not source text, makes whitespace irrelevant.
+                // When cross-module constant references are enabled this must
+                // use their fully resolved canonical values instead.
+                String value = String.valueOf(field.initializer());
+                abi.append("constant-value ").append(field.name())
+                        .append(':').append(value.length()).append(':')
+                        .append(value).append('\n');
+            }
         }
     }
 
