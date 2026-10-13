@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.NamedCallBinder;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -1184,6 +1185,12 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (NamedCallBinder.hasNamed(call.arguments())
+                && (isBooleanIntrinsicCall(call, scope)
+                    || isBuiltinStdoutCall(call, "log", scope)
+                    || isBuiltinStdoutCall(call, "logList", scope))) {
+            throw error("builtin call does not declare named argument labels");
+        }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
@@ -1668,6 +1675,12 @@ public final class OwnershipChecker {
     private record CallArgumentLoan(VarState root, boolean mutable) { }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
+        if (NamedCallBinder.hasNamed(arguments)) {
+            NamedCallBinder.Plan plan = NamedCallBinder.bind(arguments, params, callable);
+            // Loan acquisition must remain lexical, not sorted by parameter slot.
+            params = plan.parametersInSourceOrder(params);
+            arguments = arguments.stream().map(NamedCallBinder::value).toList();
+        }
         int parameterIndex = 0;
         Map<VarState, Boolean> invocationLoans = new IdentityHashMap<>();
         List<CallArgumentLoan> activeLoans = new ArrayList<>();
@@ -2797,7 +2810,12 @@ public final class OwnershipChecker {
                 fixed.add(explicitGenericNames.get(i));
             }
         }
-        List<Ast.TypeRef> actualTypes = syntacticCallArgumentTypes(call.arguments(), scope);
+        List<Ast.TypeRef> actualTypes = syntacticCallArgumentTypes(
+                call.arguments().stream().map(NamedCallBinder::value).toList(), scope);
+        if (NamedCallBinder.hasNamed(call.arguments())) {
+            actualTypes = NamedCallBinder.bind(
+                    call.arguments(), parameters, "call").toFormalOrder(actualTypes);
+        }
         for (int i = 0; i < Math.min(parameters.size(), actualTypes.size()); i++) {
             inferGenericBindings(parameters.get(i).type(), actualTypes.get(i),
                     Set.copyOf(allGenericNames), bindings, fixed);
