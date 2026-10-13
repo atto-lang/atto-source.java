@@ -142,6 +142,15 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
+        private final IdentityHashMap<Ast.ClassDecl, String> classModules = new IdentityHashMap<>();
+        /**
+         * Immutable effective method slots, constructed before the evaluator is
+         * published to actor carriers. Dispatch performs one selector lookup
+         * rather than scanning methods and recursively traversing parents.
+         * ClassDecl identity (not structural record equality) is intentional.
+         */
+        private final IdentityHashMap<Ast.ClassDecl, Map<CallableSelector, Ast.MethodDecl>>
+                callableSlots = new IdentityHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
@@ -196,6 +205,7 @@ public final class OresEvalRootNode extends RootNode {
             this.codeUnitId = normalizeUnitId(codeUnitId);
             indexImports();
             indexDeclarations();
+            indexCallableSlots();
         }
 
         private void indexImports() {
@@ -284,6 +294,7 @@ public final class OresEvalRootNode extends RootNode {
                     if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                     else if (decl instanceof Ast.ClassDecl klass) {
                         index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                        classModules.put(klass, module.name());
                         for (Ast.MethodDecl method : klass.methods()) methodOwners.put(method, klass);
                     } else if (decl instanceof Ast.InterfaceDecl iface) {
                         index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
@@ -324,6 +335,89 @@ public final class OresEvalRootNode extends RootNode {
                 ambiguous.add(name);
                 map.remove(name);
             }
+        }
+
+        private void indexCallableSlots() {
+            // Class declarations appear under both qualified and unqualified
+            // keys. Visit each actual declaration only once, by identity.
+            Set<Ast.ClassDecl> unique =
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+            unique.addAll(classes.values());
+            for (Ast.ClassDecl klass : unique) {
+                compileCallableSlots(klass,
+                        java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+            }
+        }
+
+        private Map<CallableSelector, Ast.MethodDecl> compileCallableSlots(
+                Ast.ClassDecl klass, Set<Ast.ClassDecl> active) {
+            Map<CallableSelector, Ast.MethodDecl> ready = callableSlots.get(klass);
+            if (ready != null) return ready;
+            if (!active.add(klass)) {
+                throw new IllegalArgumentException(
+                        "inheritance cycle involving " + klass.name());
+            }
+            try {
+                Map<CallableSelector, Ast.MethodDecl> local = new HashMap<>();
+                for (Ast.MethodDecl method : klass.methods()) {
+                    CallableSelector selector = CallableSelector.of(method);
+                    if (local.putIfAbsent(selector, method) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate callable slot '" + selector.mangledName()
+                                        + "' on class '" + klass.name() + "'");
+                    }
+                }
+                Map<CallableSelector, Ast.MethodDecl> effective = new HashMap<>();
+                for (Ast.TypeRef parentRef : klass.parents()) {
+                    if (parentRef.name().equals("Object") || parentRef.name().equals("List"))
+                        continue;
+                    Ast.ClassDecl parent = dispatchParent(klass, parentRef);
+                    // Never publish a partial vtable for a parent whose methods
+                    // were not linked. A missing inherited method is not a safe
+                    // substitute for an unavailable class declaration.
+                    if (parent == null) {
+                        throw new IllegalArgumentException(
+                                "cannot link inherited callable slots for class '"
+                                        + klass.name() + "': unresolved parent '"
+                                        + parentRef.name() + "'");
+                    }
+                    for (Map.Entry<CallableSelector, Ast.MethodDecl> inherited :
+                            compileCallableSlots(parent, active).entrySet()) {
+                        if (local.containsKey(inherited.getKey())) continue;
+                        Ast.MethodDecl old = effective.putIfAbsent(
+                                inherited.getKey(), inherited.getValue());
+                        // A true diamond shares one declaration identity.
+                        // Unrelated definitions cannot win via parent order.
+                        if (old != null && old != inherited.getValue()) {
+                            CallableSelector selector = inherited.getKey();
+                            throw new IllegalArgumentException(
+                                    "ambiguous inherited callable slot '"
+                                            + selector.name() + "' with arity "
+                                            + selector.arity() + " on class '"
+                                            + klass.name()
+                                            + "'; declare an explicit child override");
+                        }
+                    }
+                }
+                effective.putAll(local);
+                Map<CallableSelector, Ast.MethodDecl> frozen = Map.copyOf(effective);
+                callableSlots.put(klass, frozen);
+                return frozen;
+            } finally {
+                active.remove(klass);
+            }
+        }
+
+        private Ast.ClassDecl dispatchParent(Ast.ClassDecl child, Ast.TypeRef parentRef) {
+            // A simple parent name resolves in the lexical class module.
+            // Using findClass(name) alone incorrectly reports ambiguity when
+            // unrelated modules each declare a class named Base.
+            String module = classModules.get(child);
+            if (module != null) {
+                Ast.ClassDecl local = classes.get(module + "." + parentRef.name());
+                if (local != null) return local;
+            }
+            return findClass(parentRef.name());
         }
 
         private boolean hasFunctionFamily(String name) {
@@ -469,8 +563,7 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MethodDecl startup =
                     findMethod(
                             klass,
-                            CallableSelector.instance("on_start", 0),
-                            new LinkedHashSet<>());
+                            CallableSelector.instance("on_start", 0));
             if (startup != null) {
                 if (methodContainsPotentialSuspension(startup)) {
                     throw new IllegalStateException(
@@ -515,8 +608,7 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MethodDecl receive =
                     findMethod(
                             state.object().klass,
-                            CallableSelector.instance("receive", 1),
-                            new LinkedHashSet<>());
+                            CallableSelector.instance("receive", 1));
             if (receive == null) {
                 throw new IllegalStateException(
                         "actor '" + state.object().klass.name()
@@ -2662,7 +2754,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator = findMethod(object.klass,
-                        CallableSelector.instance("Symbol.asyncIterator", 0), new LinkedHashSet<>());
+                        CallableSelector.instance("Symbol.asyncIterator", 0));
                 if (iterator != null) {
                     object.owner.requireClassMemberVisible(iterator.visibility(),
                             object.owner.declaringClass(iterator), env.accessClass(), "method", iterator.name());
@@ -4170,8 +4262,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl method =
                         object.owner.findMethod(
                                 object.klass,
-                                CallableSelector.instance(member.member(), args.size()),
-                                new LinkedHashSet<>());
+                                CallableSelector.instance(member.member(), args.size()));
                 if (method != null) {
                     object.owner.requireClassMemberVisible(
                             method.visibility(),
@@ -4208,8 +4299,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl method =
                         klass.owner().findStaticFunction(
                                 klass.klass(),
-                                CallableSelector.staticFunction(member.member(), args.size()),
-                                new LinkedHashSet<>());
+                                CallableSelector.staticFunction(member.member(), args.size()));
                 if (method == null) {
                     throw new IllegalArgumentException(
                             "no static function " + klass.klass().name()
@@ -5587,7 +5677,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
 
                     Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
+                            object.klass, CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -5629,7 +5719,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof ClassFacade klass) {
                     Ast.MethodDecl fn = klass.owner().findStaticFunction(
-                            klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()), new LinkedHashSet<>());
+                            klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()));
                     if (fn == null) {
                         throw new IllegalArgumentException(
                                 "no static function " + klass.klass().name() + "." + methodCall.member()
@@ -5654,7 +5744,7 @@ public final class OresEvalRootNode extends RootNode {
                         && !methodCall.member().equals("is_released")
                         && guard.value() instanceof OresObject object) {
                     Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
+                            object.klass, CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -7116,7 +7206,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareBoundMethodInvocation(OresObject receiver, String name, List<Object> args, Ast.ClassDecl accessClass) {
             CallableSelector selector = CallableSelector.instance(name, args.size());
-            Ast.MethodDecl method = findMethod(receiver.klass, selector, new LinkedHashSet<>());
+            Ast.MethodDecl method = findMethod(receiver.klass, selector);
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
             requireClassMemberVisible(method.visibility(), declaringClass(method), accessClass, "method", name);
             if (!method.genericParameters().isEmpty()) throw new IllegalArgumentException("generic method values require direct-call specialization");
@@ -7125,7 +7215,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareStaticValueInvocation(Ast.ClassDecl klass, String name, List<Object> args, Ast.ClassDecl accessClass) {
             CallableSelector selector = CallableSelector.staticFunction(name, args.size());
-            Ast.MethodDecl fn = findStaticFunction(klass, selector, new LinkedHashSet<>());
+            Ast.MethodDecl fn = findStaticFunction(klass, selector);
             if (fn == null) throw new IllegalArgumentException("no static function " + klass.name() + "." + name + " with arity " + args.size());
             requireClassMemberVisible(fn.visibility(), declaringClass(fn), accessClass, "static function", name);
             if (!fn.genericParameters().isEmpty()) throw new IllegalArgumentException("generic static function values require direct-call specialization");
@@ -7635,58 +7725,28 @@ public final class OresEvalRootNode extends RootNode {
 
         private Ast.MethodDecl findMethod(
                 Ast.ClassDecl klass,
-                CallableSelector selector,
-                Set<Ast.ClassDecl> seen) {
+                CallableSelector selector) {
             if (selector.kind() != CallableSelector.Kind.INSTANCE) {
                 throw new IllegalArgumentException("instance dispatch requires an INSTANCE selector");
             }
-            if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
-            for (Ast.MethodDecl method : klass.methods()) {
-                if (selector.matches(method)) {
-                    seen.remove(klass);
-                    return method;
-                }
+            Map<CallableSelector, Ast.MethodDecl> slots = callableSlots.get(klass);
+            if (slots == null) {
+                throw new IllegalStateException("class method dispatch table not linked: " + klass.name());
             }
-            for (Ast.TypeRef parentRef : klass.parents()) {
-                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
-                Ast.ClassDecl parent = findClass(parentRef.name());
-                if (parent == null) continue;
-                Ast.MethodDecl candidate = findMethod(parent, selector, seen);
-                if (candidate != null) {
-                    seen.remove(klass);
-                    return candidate;
-                }
-            }
-            seen.remove(klass);
-            return null;
+            return slots.get(selector);
         }
 
         private Ast.MethodDecl findStaticFunction(
                 Ast.ClassDecl klass,
-                CallableSelector selector,
-                Set<Ast.ClassDecl> seen) {
+                CallableSelector selector) {
             if (selector.kind() != CallableSelector.Kind.STATIC) {
                 throw new IllegalArgumentException("static dispatch requires a STATIC selector");
             }
-            if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
-            for (Ast.MethodDecl fn : klass.methods()) {
-                if (selector.matches(fn)) {
-                    seen.remove(klass);
-                    return fn;
-                }
+            Map<CallableSelector, Ast.MethodDecl> slots = callableSlots.get(klass);
+            if (slots == null) {
+                throw new IllegalStateException("class method dispatch table not linked: " + klass.name());
             }
-            for (Ast.TypeRef parentRef : klass.parents()) {
-                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
-                Ast.ClassDecl parent = findClass(parentRef.name());
-                if (parent == null) continue;
-                Ast.MethodDecl candidate = findStaticFunction(parent, selector, seen);
-                if (candidate != null) {
-                    seen.remove(klass);
-                    return candidate;
-                }
-            }
-            seen.remove(klass);
-            return null;
+            return slots.get(selector);
         }
 
         private List<Ast.MethodDecl> findStaticFunctionsByName(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
@@ -7716,8 +7776,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator = findMethod(
                         object.klass,
-                        CallableSelector.instance("Symbol.iterator", 0),
-                        new LinkedHashSet<>());
+                        CallableSelector.instance("Symbol.iterator", 0));
                 if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
                 object.owner.requireClassMemberVisible(
                         iterator.visibility(),
@@ -7734,7 +7793,7 @@ public final class OresEvalRootNode extends RootNode {
         private Iterable<?> asyncIterableValues(Object value, Env env) {
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator =
-                        findMethod(object.klass, CallableSelector.instance("Symbol.asyncIterator", 0), new LinkedHashSet<>());
+                        findMethod(object.klass, CallableSelector.instance("Symbol.asyncIterator", 0));
                 if (iterator == null) {
                     return asyncSynchronousIterableValues(value, env);
                 }
@@ -7997,8 +8056,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Ast.MethodDecl method = object.owner.findMethod(
                         object.klass,
-                        CallableSelector.instance(fn.name(), fn.parameters().size()),
-                        new LinkedHashSet<>());
+                        CallableSelector.instance(fn.name(), fn.parameters().size()));
                 if (method == null
                         || method.visibility() != Ast.Visibility.PUBLIC
                         || method.isStatic()
