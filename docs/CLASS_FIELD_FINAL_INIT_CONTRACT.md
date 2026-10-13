@@ -102,3 +102,17 @@ legacy constructor filling. Constructor method dispatch and indirect
 callbacks still require broader transitive escape analysis; they are not
 proven safe by this targeted check. All new code remains unverified by a
 running Maven/GraalVM job.
+
+## Follow-up construction escape audit
+
+The ownership checker now treats constructor self as a nonpublishable
+capability. It rejects direct self method dispatch, direct passing of self
+to callable/intrinsic arguments, early self borrows (unary and rt borrow),
+and rt copy/share/take of self. These checks protect even call paths that
+inspect arguments without consuming them, including logging helpers.
+Self field initialization remains available only under the legacy
+constructor-fill rules.
+
+This is intentionally a bounded, fail-closed static audit, not proof that
+all transitive effects and cleanup cases are safe. Actual Java/GraalVM
+execution evidence remains required.
