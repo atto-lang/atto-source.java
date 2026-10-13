@@ -62,4 +62,51 @@ final class ColonClassFieldInitializerTest {
                 end
                 """));
     }
+
+    @Test
+    void finalizedInitializerCannotBeOverwrittenByConstructorOrMethod() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  final int count: 5
+                  constructor() {
+                    self.count = 9;
+                  }
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  val int count = 5;
+                  constructor() {
+                    self.count = 9;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void preservesConstructorInitializationOfLegacyUninitializedFixedField() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  val int count;
+                  constructor() {
+                    self.count = 5;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void rejectsSameLineAdjacentColonFieldsAndDuplicateNames() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Foo as
+                  int one: 1 int two: 2
+                end
+                """));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Foo as
+                  int one: 1
+                  final int one: 2
+                end
+                """)));
+    }
 }
