@@ -26,6 +26,72 @@ final class NestedEnumLocalValueTest {
             """;
 
     @Test
+    void nestedLocalEnumsMayContainWidthCheckedPayloadsWithoutWireCodec() {
+        String source = """
+                define enum Outer as
+                    Wrapped: Inner
+                    Empty
+                end
+                define enum Inner as
+                    Byte: u8
+                    None
+                end
+                """;
+        var program = Parser.parse(source);
+        var types = TaggedMessageContracts.forTypes(program);
+        assertNull(types.requireCase("Inner.Byte").payload());
+        assertNull(types.requireCase("Outer.Wrapped").payload(),
+                "an outer enum must never inherit a fake nested wire codec");
+        assertThrows(IllegalArgumentException.class,
+                () -> TaggedMessageContracts.verify(program));
+
+        var inner = new TaggedMessageCodec.TaggedValue("Inner", "Byte", 1, 255L);
+        assertDoesNotThrow(() -> NominalEnumValueGuards.requirePayload(
+                types, types.requireCase("Outer.Wrapped"), inner));
+        var forged = new TaggedMessageCodec.TaggedValue("Inner", "Byte", 1, 256L);
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalEnumValueGuards.requirePayload(
+                        types, types.requireCase("Outer.Wrapped"), forged));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source + """
+                fnc inspect(Outer outer): int {
+                    match outer over
+                        on Outer.Wrapped as Inner.Byte(v) -> { return v; }
+                        on Outer.Wrapped as Inner.None -> { return 0; }
+                        on Outer.Empty -> { return -1; }
+                    end
+                }
+                """)));
+    }
+
+    @Test
+    void nestedLocalCollectionsRemainValueSafeAndWireIneligible() {
+        String source = """
+                define enum Inner as
+                    Byte: u8
+                end
+                define enum Outer as
+                    Batch: List<Inner>
+                end
+                """;
+        var program = Parser.parse(source);
+        var types = TaggedMessageContracts.forTypes(program);
+        assertNull(types.requireCase("Outer.Batch").payload());
+        assertThrows(IllegalArgumentException.class,
+                () -> TaggedMessageContracts.verify(program));
+        Object good = List.of(
+                new TaggedMessageCodec.TaggedValue("Inner", "Byte", 1, 0L),
+                new TaggedMessageCodec.TaggedValue("Inner", "Byte", 1, 255L));
+        assertDoesNotThrow(() -> NominalEnumValueGuards.requirePayload(
+                types, types.requireCase("Outer.Batch"), good));
+        Object invalid = List.of(
+                new TaggedMessageCodec.TaggedValue("Inner", "Byte", 1, 256L));
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalEnumValueGuards.requirePayload(
+                        types, types.requireCase("Outer.Batch"), invalid));
+    }
+
+    @Test
     void nominalNestedLocalCasesRetainPayloadTypeAndAreNotWireValuesYet() {
         var program = Parser.parse(DECLS);
         var registry = TaggedMessageContracts.forTypes(program);
