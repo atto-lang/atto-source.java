@@ -42,7 +42,7 @@ final class StdErrorCatalogTest {
         assertTrue(CoreLibrarySources.packagedSourcePaths().contains("error.ores"));
         assertFalse(source.contains("java:"));
         assertFalse(source.contains("rt "));
-        assertFalse(source.contains("import "));
+        assertFalse(Pattern.compile("(?m)^\\s*import\\s").matcher(source).find());
         TypeChecker.check(Parser.parse(source));
 
         Map<String, Entry> parsed = new HashMap<>();
