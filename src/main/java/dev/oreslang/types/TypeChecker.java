@@ -2268,6 +2268,19 @@ public final class TypeChecker {
                                 "SelectCase.write value");
                         yield new Named("SelectCase", List.of());
                     }
+                    case "future" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("SelectCase.future expects one Future<T>");
+                        }
+                        Type pending = typeOf(call.arguments().getFirst(), env, generics, self);
+                        if (!(pending instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.future requires Future<T>, got " + pending);
+                        }
+                        yield new Named("SelectCase", List.of());
+                    }
                     case "default" -> {
                         if (!call.arguments().isEmpty()) {
                             throw new IllegalArgumentException("SelectCase.default expects no arguments");
