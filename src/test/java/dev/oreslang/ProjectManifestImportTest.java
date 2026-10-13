@@ -6,6 +6,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
@@ -22,6 +23,62 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class ProjectManifestImportTest {
     @TempDir Path temp;
+
+    @Test
+    void bareImportRejectsSymlinkEscapeFromConfiguredSourceRoot() throws Exception {
+        Path root = temp.resolve("source-root");
+        Path outside = temp.resolve("outside");
+        Files.createDirectories(root.resolve("pkg"));
+        Files.createDirectories(outside);
+        Files.writeString(outside.resolve("escape.ores"), """
+                pub fnc secret(): int { return 7; }
+                """);
+
+        Path link = root.resolve("pkg/escape.ores");
+        try {
+            Files.createSymbolicLink(link, outside.resolve("escape.ores"));
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException failure) {
+            Assumptions.assumeTrue(false, "symlinks unavailable: " + failure);
+        }
+
+        Path main = root.resolve("main.ores");
+        Files.writeString(main, """
+                import fnc secret from "pkg/escape";
+                pub routine main(): void { return; }
+                """);
+
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class, () -> LinkedProgramRunner.validate(main));
+        assertTrue(rejected.getMessage().contains("outside configured search root"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void explicitlyConfiguredSymlinkRootStillResolvesInsideItsRealTarget() throws Exception {
+        Path actual = temp.resolve("actual-root");
+        Files.createDirectories(actual);
+        Files.writeString(actual.resolve("helper.ores"), """
+                pub fnc helper(): int { return 7; }
+                """);
+        Path alias = temp.resolve("root-alias");
+        try {
+            Files.createSymbolicLink(alias, actual.getFileName());
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException failure) {
+            Assumptions.assumeTrue(false, "symlinks unavailable: " + failure);
+        }
+
+        Path main = temp.resolve("main.ores");
+        Files.writeString(main, """
+                import fnc helper from "helper";
+                pub routine main(): void { return; }
+                """);
+
+        OresProjectConfig config = OresProjectConfig.discover(
+                main, Map.of(OresProjectConfig.ENV_ORESLANG_PATH, alias.toString()));
+        Path resolved = config.resolveImport(main, "helper")
+                .orElseThrow(() -> new AssertionError("symlink search root must resolve"));
+        assertEquals(alias.resolve("helper.ores").toAbsolutePath().normalize(), resolved);
+    }
 
     @Test
     void manifestSourceRootsResolveBareImportsThroughCompileAndRuntimeLinking() throws Exception {
