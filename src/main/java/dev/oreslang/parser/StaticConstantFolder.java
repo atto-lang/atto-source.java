@@ -177,7 +177,12 @@ public final class StaticConstantFolder {
             Object value = eval(unary.operand(), module);
             return switch (unary.operator()) {
                 case "-" -> {
-                    if (value instanceof Long number) yield Math.negateExact(number);
+                    if (value instanceof Long number) {
+                        try { yield Math.negateExact(number); }
+                        catch (ArithmeticException overflow) {
+                            throw new IllegalArgumentException("overflow in unary constant expression", overflow);
+                        }
+                    }
                     if (value instanceof Double number) yield -number;
                     yield invalid("unary - requires a numeric constant");
                 }
@@ -221,15 +226,26 @@ public final class StaticConstantFolder {
                     default -> invalid("invalid compile-time bool operator " + op);
                 };
             }
-            if (a instanceof String x && b instanceof String y && op.equals("+"))
-                return boundedString(x + y);
+            if (a instanceof String x && b instanceof String y && op.equals("+")) {
+                // Enforce the UTF-8 budget before allocating the concatenation.
+                // Integer addition avoids allocation and cannot overflow when
+                // both strings were admitted under MAX_STRING_BYTES.
+                long bytes = (long) x.getBytes(StandardCharsets.UTF_8).length
+                        + y.getBytes(StandardCharsets.UTF_8).length;
+                if (bytes > MAX_STRING_BYTES)
+                    throw new IllegalArgumentException("compile-time String exceeds byte limit");
+                return x + y;
+            }
             if (a instanceof Long x && b instanceof Long y) {
                 return switch (op) {
                     case "+" -> Math.addExact(x, y);
                     case "-" -> Math.subtractExact(x, y);
                     case "*" -> Math.multiplyExact(x, y);
                     case "/" -> exactIntegerDivision(x, y);
-                    case "%" -> x % y;
+                    case "%" -> {
+                        if (y == 0L) yield invalid("division by zero in constant remainder");
+                        yield x % y;
+                    }
                     case "<" -> x < y;
                     case "<=" -> x <= y;
                     case ">" -> x > y;
