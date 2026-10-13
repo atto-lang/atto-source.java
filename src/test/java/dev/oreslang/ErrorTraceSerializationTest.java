@@ -256,6 +256,27 @@ final class ErrorTraceSerializationTest {
     }
 
     @Test
+    void snapshotRejectsNullFrameBeforeCodecCanObserveMutableInput() {
+        java.util.ArrayList<String> callerFrames =
+                new java.util.ArrayList<>(List.of("main", "work"));
+        GuestErrorWireCodec.ErrorSnapshot detached =
+                new GuestErrorWireCodec.ErrorSnapshot("Error", 0, "msg",
+                        callerFrames, true);
+        callerFrames.set(1, "mutated");
+        assertEquals(List.of("main", "work"), detached.frames());
+
+        callerFrames.set(1, null);
+        assertThrows(IllegalArgumentException.class,
+                () -> new GuestErrorWireCodec.ErrorSnapshot(
+                        "Error", 0, "msg", callerFrames, true));
+        java.util.Map<String, Object> fields = new java.util.LinkedHashMap<>();
+        fields.put("message", "hello");
+        fields.put("stack", callerFrames);
+        assertThrows(IllegalArgumentException.class,
+                () -> GuestErrorWireCodec.trustedLocalSnapshot("Error", 0, fields));
+    }
+
+    @Test
     void guestErrorCodecCannotExecuteOverriddenCodeMethod() throws Exception {
         Path entry = temp.resolve("untrusted-error-code.ores");
         Files.writeString(entry, """

@@ -28,8 +28,15 @@ public final class GuestErrorWireCodec {
         public ErrorSnapshot {
             // Reject arbitrary List implementations before calling their methods.
             requireJdkOwnedFrameArray(frames);
+            // Detach FIRST and validate the detached copy. The caller may
+            // still mutate its exact-class ArrayList concurrently; validating
+            // the original and then copying it is a TOCTOU disclosure bug.
+            try {
+                frames = List.copyOf(frames);
+            } catch (NullPointerException | java.util.ConcurrentModificationException invalid) {
+                throw new IllegalArgumentException("invalid guest error frame snapshot", invalid);
+            }
             validate(name, code, message, frames);
-            frames = List.copyOf(frames);
             if (!full && (!message.isEmpty() || !frames.isEmpty())) {
                 throw new IllegalArgumentException(
                         "compact actor diagnostic cannot retain message or trace");
@@ -105,11 +112,19 @@ public final class GuestErrorWireCodec {
             throw new IllegalArgumentException("trusted error snapshot requires String message and frame array");
         }
         requireJdkOwnedFrameArray(rawFrames);
-        if (rawFrames.size() > MAX_FRAMES) {
+        // Copy before decoding: no reentrant getter, no later actor mutations
+        // can alter the wire snapshot between validation and serialization.
+        List<?> copy;
+        try {
+            copy = List.copyOf(rawFrames);
+        } catch (NullPointerException | java.util.ConcurrentModificationException invalid) {
+            throw new IllegalArgumentException("invalid guest error frame snapshot", invalid);
+        }
+        if (copy.size() > MAX_FRAMES) {
             throw new IllegalArgumentException("too many guest error frames");
         }
-        List<String> safeFrames = new ArrayList<>(rawFrames.size());
-        for (Object raw : rawFrames) {
+        List<String> safeFrames = new ArrayList<>(copy.size());
+        for (Object raw : copy) {
             if (!(raw instanceof String frame)) {
                 // Do NOT coerce unknown values via Object.toString().
                 throw new IllegalArgumentException(
