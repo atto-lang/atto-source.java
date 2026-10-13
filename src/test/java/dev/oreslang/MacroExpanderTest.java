@@ -52,6 +52,20 @@ final class MacroExpanderTest {
     }
 
     @Test
+    void emptyExpressionMacroTemplatesRejectBeforeAnyCaptureAccess() {
+        for (String source : new String[] {
+                "macro_rules! blank { () => { }; }\ndefine module app as end",
+                "macro_rules! blank { ($x:expr) => { }; }\ndefine module app as end"
+        }) {
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> MacroExpander.expand(new Lexer(source).scan()), source);
+            assertTrue(rejected.getMessage().contains("template must not be empty"),
+                    () -> "missing syntax diagnostic: " + rejected.getMessage());
+        }
+    }
+
+    @Test
     void unsafeControlFlowAndEffectKeywordsCannotBeHiddenInUnusedTemplate() {
         // Macro definitions are validated even when not invoked.
         // New statement, supervisor effect, and async-selection keywords
