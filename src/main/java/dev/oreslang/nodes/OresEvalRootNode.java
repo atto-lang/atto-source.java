@@ -2971,6 +2971,7 @@ public final class OresEvalRootNode extends RootNode {
                                     suspendOnAwaitable(
                                             t,
                                             value,
+                                            env,
                                             continuation);
                                 }
                             });
@@ -3569,6 +3570,7 @@ public final class OresEvalRootNode extends RootNode {
         private void suspendOnAwaitable(
                 SourceTask task,
                 Object value,
+                Env env,
                 SourceValueCont continuation) {
             OresFuture<?> future;
             if (value instanceof OresFuture<?> oresFuture) {
@@ -3606,6 +3608,15 @@ public final class OresEvalRootNode extends RootNode {
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(task, null, failure);
                 }
+                return;
+            }
+
+            if (env.hasLiveMutexGuards()) {
+                continuation.accept(
+                        task,
+                        null,
+                        new IllegalStateException(
+                                "cannot await a pending Future while holding a live MutexGuard"));
                 return;
             }
 
@@ -3837,6 +3848,17 @@ public final class OresEvalRootNode extends RootNode {
                             null,
                             new SecurityException(
                                     "rt cooperate is disabled for untrusted actors until continuation quota state survives scheduler handoffs"));
+                    return;
+                }
+                // Explicit cooperate must obey the SAME no-yield authority
+                // boundary as automatic loop preemption. Otherwise a source
+                // task could park while owning an actor-local MutexGuard.
+                if (env.hasLiveMutexGuards()) {
+                    continuation.accept(
+                            task,
+                            null,
+                            new IllegalStateException(
+                                    "cannot rt cooperate while holding a live MutexGuard"));
                     return;
                 }
                 task.cooperate((t, ignored, failure) ->
