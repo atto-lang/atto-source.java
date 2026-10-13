@@ -498,8 +498,15 @@ public final class ChannelRuntime {
         }
     }
 
+    private static <T> WriteCase<T> snapshotWriteCandidate(WriteCase<T> write) {
+        // An already-built SelectSet can be reused: a fresh registration
+        // must never share the previous reader's mutable data object.
+        return new WriteCase<>(write.channel(), write.value());
+    }
+
     private static final class SelectRegistration {
         private final SelectSet set;
+        private final List<SelectCase> cases;
         private final SelectPolicy policy;
         private final int[] order;
         private final ArrayList<CaseRegistration> registrations =
@@ -511,12 +518,18 @@ public final class ChannelRuntime {
 
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
+            ArrayList<SelectCase> prepared = new ArrayList<>(set.cases.size());
+            for (SelectCase candidate : set.cases) {
+                prepared.add(candidate instanceof WriteCase<?> write
+                        ? snapshotWriteCandidate(write) : candidate);
+            }
+            this.cases = List.copyOf(prepared);
             this.policy = policy;
             this.order = set.initialOrder(policy);
 
             int foundDefault = -1;
-            for (int i = 0; i < set.cases.size(); i++) {
-                if (set.cases.get(i) instanceof DefaultCase) {
+            for (int i = 0; i < cases.size(); i++) {
+                if (cases.get(i) instanceof DefaultCase) {
                     foundDefault = i;
                     break;
                 }
@@ -576,7 +589,7 @@ public final class ChannelRuntime {
             for (CaseRegistration registration : registrations) {
                 if (registration.index == index) return registration;
             }
-            return new CaseRegistration(this, index, set.cases.get(index));
+            return new CaseRegistration(this, index, cases.get(index));
         }
     }
 
@@ -586,7 +599,7 @@ public final class ChannelRuntime {
         ACTIVE.add(selection);
 
         for (int index : selection.order) {
-            SelectCase selectCase = selection.set.cases.get(index);
+            SelectCase selectCase = selection.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
             CaseRegistration registration =
@@ -703,7 +716,7 @@ public final class ChannelRuntime {
         if (selection.decided) return null;
 
         for (int index : selection.order) {
-            SelectCase selectCase = selection.set.cases.get(index);
+            SelectCase selectCase = selection.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
             CaseRegistration registration =
@@ -740,7 +753,7 @@ public final class ChannelRuntime {
         if (selection.decided) return null;
 
         for (int index : selection.order) {
-            SelectCase selectCase = selection.set.cases.get(index);
+            SelectCase selectCase = selection.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
             CaseRegistration registration =
