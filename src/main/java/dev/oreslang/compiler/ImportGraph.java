@@ -217,34 +217,50 @@ final class ImportGraph {
         List<Integer> componentIds = new ArrayList<>(componentDeps.keySet());
         componentIds.sort(Comparator.comparing(i -> components.get(i).getFirst()));
 
+        // Iterative dependency-first traversal: importing a very deep chain
+        // must not exhaust the Java compiler's native call stack.
         List<List<String>> ordered = new ArrayList<>();
         Set<Integer> visited = new HashSet<>();
         Set<Integer> visiting = new HashSet<>();
         for (int component : componentIds) {
-            visitComponent(component, componentDeps, components, visited, visiting, ordered);
+            if (visited.contains(component)) continue;
+            ArrayDeque<ComponentFrame> pending = new ArrayDeque<>();
+            pending.push(new ComponentFrame(component, componentDeps, components));
+            visiting.add(component);
+            while (!pending.isEmpty()) {
+                ComponentFrame current = pending.peek();
+                if (current.nextDependency < current.dependencies.size()) {
+                    int dependency = current.dependencies.get(current.nextDependency++);
+                    if (visited.contains(dependency)) continue;
+                    if (!visiting.add(dependency)) {
+                        throw new IllegalStateException(
+                                "condensed import graph unexpectedly contains a cycle");
+                    }
+                    pending.push(new ComponentFrame(dependency, componentDeps, components));
+                } else {
+                    pending.pop();
+                    visiting.remove(current.component);
+                    visited.add(current.component);
+                    ordered.add(components.get(current.component));
+                }
+            }
         }
         return List.copyOf(ordered);
     }
 
-    private static void visitComponent(
-            int component,
-            Map<Integer, Set<Integer>> dependencies,
-            List<List<String>> components,
-            Set<Integer> visited,
-            Set<Integer> visiting,
-            List<List<String>> ordered) {
-        if (visited.contains(component)) return;
-        if (!visiting.add(component)) {
-            throw new IllegalStateException("condensed import graph unexpectedly contains a cycle");
+    private static final class ComponentFrame {
+        private final int component;
+        private final List<Integer> dependencies;
+        private int nextDependency;
+
+        private ComponentFrame(
+                int component,
+                Map<Integer, Set<Integer>> componentDeps,
+                List<List<String>> components) {
+            this.component = component;
+            this.dependencies = new ArrayList<>(componentDeps.getOrDefault(component, Set.of()));
+            this.dependencies.sort(Comparator.comparing(i -> components.get(i).getFirst()));
         }
-        List<Integer> deps = new ArrayList<>(dependencies.getOrDefault(component, Set.of()));
-        deps.sort(Comparator.comparing(i -> components.get(i).getFirst()));
-        for (int dependency : deps) {
-            visitComponent(dependency, dependencies, components, visited, visiting, ordered);
-        }
-        visiting.remove(component);
-        visited.add(component);
-        ordered.add(components.get(component));
     }
 
     private static void rejectSelfImport(String importerId, String importPath, String targetId) {
@@ -281,35 +297,64 @@ final class ImportGraph {
             return List.copyOf(components);
         }
 
-        private void strongConnect(String vertex) {
+        private void strongConnect(String root) {
+            // Explicit DFS frames preserve Tarjan low-link propagation and
+            // deterministic traversal without recursive Java stack frames.
+            ArrayDeque<Frame> pending = new ArrayDeque<>();
+            enter(root, null, pending);
+            while (!pending.isEmpty()) {
+                Frame frame = pending.peek();
+                if (frame.nextEdge < frame.edges.size()) {
+                    String next = frame.edges.get(frame.nextEdge++);
+                    if (!graph.containsKey(next)) continue;
+                    if (!index.containsKey(next)) {
+                        enter(next, frame.vertex, pending);
+                    } else if (onStack.contains(next)) {
+                        lowLink.put(frame.vertex,
+                                Math.min(lowLink.get(frame.vertex), index.get(next)));
+                    }
+                    continue;
+                }
+
+                pending.pop();
+                if (frame.parent != null) {
+                    lowLink.put(frame.parent,
+                            Math.min(lowLink.get(frame.parent), lowLink.get(frame.vertex)));
+                }
+                if (lowLink.get(frame.vertex).equals(index.get(frame.vertex))) {
+                    List<String> component = new ArrayList<>();
+                    String member;
+                    do {
+                        member = stack.pop();
+                        onStack.remove(member);
+                        component.add(member);
+                    } while (!member.equals(frame.vertex));
+                    component.sort(String::compareTo);
+                    components.add(List.copyOf(component));
+                }
+            }
+        }
+
+        private void enter(String vertex, String parent, ArrayDeque<Frame> pending) {
             int current = nextIndex++;
             index.put(vertex, current);
             lowLink.put(vertex, current);
             stack.push(vertex);
             onStack.add(vertex);
+            pending.push(new Frame(vertex, parent, graph.getOrDefault(vertex, Set.of())));
+        }
 
-            List<String> edges = new ArrayList<>(graph.getOrDefault(vertex, Set.of()));
-            edges.sort(String::compareTo);
-            for (String next : edges) {
-                if (!graph.containsKey(next)) continue;
-                if (!index.containsKey(next)) {
-                    strongConnect(next);
-                    lowLink.put(vertex, Math.min(lowLink.get(vertex), lowLink.get(next)));
-                } else if (onStack.contains(next)) {
-                    lowLink.put(vertex, Math.min(lowLink.get(vertex), index.get(next)));
-                }
-            }
+        private static final class Frame {
+            private final String vertex;
+            private final String parent;
+            private final List<String> edges;
+            private int nextEdge;
 
-            if (lowLink.get(vertex).equals(index.get(vertex))) {
-                List<String> component = new ArrayList<>();
-                String member;
-                do {
-                    member = stack.pop();
-                    onStack.remove(member);
-                    component.add(member);
-                } while (!member.equals(vertex));
-                component.sort(String::compareTo);
-                components.add(List.copyOf(component));
+            private Frame(String vertex, String parent, Set<String> outgoing) {
+                this.vertex = vertex;
+                this.parent = parent;
+                this.edges = new ArrayList<>(outgoing);
+                this.edges.sort(String::compareTo);
             }
         }
     }
