@@ -3386,6 +3386,10 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.NewExpr created) {
+                    if (NamedCallBinder.hasNamed(created.arguments())) {
+                        throw new IllegalArgumentException(
+                                "named constructor arguments require a verified constructor binding plan");
+                    }
                     evalSuspendableArguments(
                             task,
                             created.arguments(),
@@ -6149,6 +6153,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (NamedCallBinder.hasNamed(created.arguments())) {
+                    throw new IllegalArgumentException(
+                            "named constructor arguments require a verified constructor binding plan");
+                }
                 if (created.type().name().equals("Array")
                         || created.type().name().equals("List")) {
                     if (!created.arguments().isEmpty()) {
