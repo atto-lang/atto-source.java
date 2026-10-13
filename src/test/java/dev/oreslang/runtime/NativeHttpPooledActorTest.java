@@ -114,6 +114,7 @@ class NativeHttpPooledActorTest {
               stdio.println("AFTER_REQUEST_TIMEOUT");
               stdio.println(pool.workers_created);
               stdio.println(pool.workers_reused);
+              stdio.println(pool.workers_inflight);
               await server.shutdown(0);
               return;
             }
@@ -153,8 +154,8 @@ class NativeHttpPooledActorTest {
             work.get(30, TimeUnit.SECONDS);
         }
         String result = output.toString(StandardCharsets.UTF_8);
-        assertTrue(result.contains("AFTER_REQUEST_TIMEOUT\n1\n1"),
-            "request-local deadline killed or replaced the surviving pool worker: " + result);
+        assertTrue(result.contains("AFTER_REQUEST_TIMEOUT\n1\n1\n0"),
+            "request-local deadline killed a worker or retained a finished exchange: " + result);
     }
 
     @Test void gracefulShutdownLetsPooledActorFinishAnAlreadyAdmittedResponse() throws Exception {
