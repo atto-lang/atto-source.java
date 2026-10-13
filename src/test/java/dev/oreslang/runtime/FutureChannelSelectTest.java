@@ -193,6 +193,38 @@ final class FutureChannelSelectTest {
     }
 
     @Test
+    void selectableSourcesReduceToOneAtomicNextEventWithoutConsumingLosers() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var future = OresFuture.completed(55);
+        ChannelRuntime.Selectable<Integer> nextChannelEvent =
+                () -> ChannelRuntime.read(channel);
+        ChannelRuntime.Selectable<Integer> futureEvent =
+                () -> ChannelRuntime.await(future);
+        var sources = java.util.List.of(nextChannelEvent, futureEvent);
+
+        var first = ChannelRuntime.SelectSet.fromSelectables(sources)
+                .selectAsync(ChannelRuntime.SelectPolicy.FAIR).join();
+        assertEquals(1, first.index());
+        assertEquals(55, first.value());
+
+        assertTrue(channel.tryWrite(77));
+        var second = ChannelRuntime.SelectSet.fromSelectables(sources)
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY).join();
+        assertEquals(0, second.index());
+        assertEquals(77, second.value());
+    }
+
+    @Test
+    void selectableCannotForgeDefaultOrNullOperation() {
+        ChannelRuntime.Selectable<Integer> forgedDefault = ChannelRuntime::defaultCase;
+        ChannelRuntime.Selectable<Integer> nullOperation = () -> null;
+        assertThrows(IllegalArgumentException.class, () ->
+                ChannelRuntime.SelectSet.fromSelectables(java.util.List.of(forgedDefault)));
+        assertThrows(NullPointerException.class, () ->
+                ChannelRuntime.SelectSet.fromSelectables(java.util.List.of(nullOperation)));
+    }
+
+    @Test
     void immediateProbeOnPendingFutureRegistersNoWaiter() {
         var future = new OresFuture<Integer>();
         var set = ChannelRuntime.SelectSet.of(ChannelRuntime.await(future));
