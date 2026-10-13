@@ -9,6 +9,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 final class ImportGraphStressTest {
     private static String id(int value) {
@@ -41,6 +42,18 @@ final class ImportGraphStressTest {
         assertEquals(count, groups.getFirst().size());
         assertEquals(id(0), groups.getFirst().getFirst());
         assertEquals(id(count - 1), groups.getFirst().getLast());
+    }
+
+    @Test
+    void graphRejectsMissingTargetInsteadOfIgnoringDependency() {
+        Map<String, Set<String>> broken = Map.of(
+                "a.ores", Set.of("missing.ores"),
+                "b.ores", Set.of("a.ores"));
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ImportGraph.initializationGroups(broken));
+        assertTrue(failure.getMessage().contains("unresolved graph dependency"));
+        assertTrue(failure.getMessage().contains("missing.ores"));
     }
 
     @Test
