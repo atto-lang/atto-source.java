@@ -305,17 +305,67 @@ public final class OwnershipChecker {
         }
         if (node instanceof Iterable<?> children) {
             for (Object child : children) if (hasSourceSuspension(child, seen)) return true;
-        } else if (node instanceof java.lang.Record record
-                && node.getClass().getName().startsWith("dev.oreslang.ast.")) {
-            for (var component : record.getClass().getRecordComponents()) {
-                try {
-                    if (hasSourceSuspension(component.getAccessor().invoke(record), seen)) return true;
-                } catch (ReflectiveOperationException failure) {
-                    throw new IllegalStateException("cannot analyze source suspension", failure);
-                }
-            }
+        } else {
+            for (Object child : suspensionChildren(node)) if (hasSourceSuspension(child, seen)) return true;
         }
         return false;
+    }
+
+    /** Explicit AST traversal also works in native images without reflection metadata. */
+    private List<?> suspensionChildren(Object node) {
+        return switch (node) {
+            case Ast.BindingStmt s -> java.util.Arrays.asList(s.initializer());
+            case Ast.DestructureStmt s -> java.util.Arrays.asList(s.initializer());
+            case Ast.ReturnStmt s -> java.util.Arrays.asList(s.value());
+            case Ast.YieldStmt s -> java.util.Arrays.asList(s.value());
+            case Ast.ExprStmt s -> java.util.Arrays.asList(s.expression());
+            case Ast.DeferStmt s -> java.util.Arrays.asList(s.expression());
+            case Ast.BlockStmt s -> s.body();
+            case Ast.IfStmt s -> java.util.Arrays.asList(s.branches(), s.elseBody());
+            case Ast.IfBranch s -> java.util.Arrays.asList(s.condition(), s.body());
+            case Ast.MatchStmt s -> java.util.Arrays.asList(s.subject(), s.arms());
+            case Ast.MatchArm s -> java.util.Arrays.asList(s.guard(), s.body());
+            case Ast.SwitchStmt s -> java.util.Arrays.asList(s.subject(), s.cases(), s.defaultBody());
+            case Ast.SwitchCase s -> java.util.Arrays.asList(s.constants(), s.body());
+            case Ast.TryStmt s -> java.util.Arrays.asList(s.body(), s.catchBody(), s.finallyBody());
+            case Ast.SelectStmt s -> s.arms();
+            case Ast.SelectArm s -> java.util.Arrays.asList(s.channel(), s.value(), s.body());
+            case Ast.ForStmt s -> java.util.Arrays.asList(s.initializer(), s.condition(), s.update(), s.body());
+            case Ast.LoopStmt s -> s.body();
+            case Ast.ForOfStmt s -> java.util.Arrays.asList(s.iterable(), s.body());
+            case Ast.ForOfDestructureStmt s -> java.util.Arrays.asList(s.iterable(), s.body());
+            case Ast.CallExpr e -> java.util.Arrays.asList(e.callee(), e.arguments());
+            case Ast.RuntimeCallExpr e -> e.arguments();
+            case Ast.BinaryExpr e -> java.util.Arrays.asList(e.left(), e.right());
+            case Ast.UnaryExpr e -> java.util.Arrays.asList(e.operand());
+            case Ast.AssignExpr e -> java.util.Arrays.asList(e.target(), e.value());
+            case Ast.ConditionalExpr e -> java.util.Arrays.asList(e.condition(), e.whenTrue(), e.whenFalse());
+            case Ast.TypeTestExpr e -> java.util.Arrays.asList(e.value());
+            case Ast.PatternTestExpr e -> java.util.Arrays.asList(e.value());
+            case Ast.CastExpr e -> java.util.Arrays.asList(e.value());
+            case Ast.SpreadExpr e -> java.util.Arrays.asList(e.expression());
+            case Ast.MemberExpr e -> java.util.Arrays.asList(e.receiver());
+            case Ast.IndexExpr e -> java.util.Arrays.asList(e.receiver(), e.index());
+            case Ast.NewExpr e -> e.arguments();
+            case Ast.AwaitExpr e -> java.util.Arrays.asList(e.expression());
+            case Ast.ChannelOpExpr e -> java.util.Arrays.asList(e.channel(), e.value(), e.callbackBody());
+            case Ast.DynamicSelectExpr e -> java.util.Arrays.asList(e.cases());
+            case Ast.ListExpr e -> e.elements();
+            case Ast.TupleExpr e -> e.elements();
+            case Ast.ObjectExpr e -> e.fields();
+            case Ast.ObjectField e -> java.util.Arrays.asList(e.value());
+            case Ast.LambdaExpr ignored -> List.of();
+            case Ast.LiteralExpr ignored -> List.of();
+            case Ast.NameExpr ignored -> List.of();
+            case Ast.BreakStmt ignored -> List.of();
+            case Ast.ContinueStmt ignored -> List.of();
+            default -> {
+                if (node instanceof Ast.Expr || node instanceof Ast.Stmt) {
+                    throw new IllegalStateException("unhandled executable AST node in suspension analysis: " + node.getClass().getName());
+                }
+                yield List.of();
+            }
+        };
     }
 
     private void checkLoopBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
