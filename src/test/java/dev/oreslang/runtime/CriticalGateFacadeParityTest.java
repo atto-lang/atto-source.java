@@ -56,6 +56,35 @@ final class CriticalGateFacadeParityTest {
         assertThrows(IllegalStateException.class, core::newTicket);
     }
 
+    @Test void directCoreStopRetiresFacadeOwnerBeforeReusingLogicalTask() {
+        var core = new CriticalGate();
+        var facade = core.rwGate();
+        try (var scheduler = new OresScheduler(1)) {
+            scheduler.startSync(() -> {
+                var read = facade.newTicket(CriticalRwGate.Mode.READ);
+                assertTrue(read.enterAsync().isDone());
+                assertTrue(read.isHeld());
+
+                // STOP can retire the owning core without invoking facade.close().
+                core.closeAll();
+                assertFalse(read.isHeld());
+                assertEquals(0, core.activeReaderCount());
+                assertThrows(IllegalStateException.class,
+                        () -> facade.newTicket(CriticalRwGate.Mode.WRITE));
+
+                // The same logical scheduler task must not retain a phantom
+                // owner registration when it accesses an unrelated domain.
+                var unrelated = new CriticalRwGate();
+                var write = unrelated.newCriticalTicket();
+                assertTrue(write.enterAsync().isDone());
+                assertTrue(write.isHeld());
+                write.close();
+                unrelated.close();
+                return null;
+            }).join();
+        }
+    }
+
     @Test void recursiveSameDomainAccessCannotBypassFacade() {
         var core = new CriticalGate();
         try (var scheduler = new OresScheduler(1)) {
