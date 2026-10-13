@@ -576,7 +576,7 @@ public final class TypeChecker {
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
             argumentTypes.add(parameterType);
-            boolean structuralView = param.structural() || containsBorrowedStructuralView(parameterType);
+            boolean structuralView = param.structural() || containsActualBorrow(parameterType);
             if (structuralView && fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
                         "structural parameter '" + param.name() + "' cannot cross an actor mailbox boundary; "
@@ -1178,7 +1178,7 @@ public final class TypeChecker {
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
                 methodArgumentTypes.add(parameterType);
-                boolean structuralView = param.structural() || containsBorrowedStructuralView(parameterType);
+                boolean structuralView = param.structural() || containsActualBorrow(parameterType);
                 if (structuralView && klass.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
                             "structural parameter '" + param.name() + "' cannot cross actor method mailbox boundaries; "
@@ -3816,46 +3816,44 @@ public final class TypeChecker {
     }
 
     /**
-     * A borrowed structural shape cannot be hidden inside a nested collection
-     * or wrapper and then retained across suspension or actor transport.
-     * Unlike mutable parameter admission, this is transitive through the
-     * parameter's carried type, including opaque generic wrappers.
+     * Read-only record capability is distinct from borrowing. Only an explicit
+     * structural parameter or actual &T/&mut T loan carries a borrow lifetime.
+     * Nested borrowing cannot be concealed by a container or named wrapper.
      */
-    private boolean containsBorrowedStructuralView(Type type) {
+    private boolean containsActualBorrow(Type type) {
         Set<Type> visited = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
-        return containsBorrowedStructuralView(type, visited);
+        return containsActualBorrow(type, visited);
     }
 
-    private boolean containsBorrowedStructuralView(Type type, Set<Type> visited) {
+    private boolean containsActualBorrow(Type type, Set<Type> visited) {
         if (type == null || !visited.add(type)) return false;
-        Type current = deref(type);
-        if (current != type && !visited.add(current)) return false;
-        if (current instanceof Record record) {
-            return record.readOnly() || record.members().values().stream()
-                    .anyMatch(member -> containsBorrowedStructuralView(member, visited));
+        if (type instanceof Borrow) return true;
+        if (type instanceof Record record) {
+            return record.members().values().stream()
+                    .anyMatch(field -> containsActualBorrow(field, visited));
         }
-        if (current instanceof Union union) {
+        if (type instanceof Union union) {
             return union.options().stream()
-                    .anyMatch(option -> containsBorrowedStructuralView(option, visited));
+                    .anyMatch(member -> containsActualBorrow(member, visited));
         }
-        if (current instanceof ListType list) {
-            return containsBorrowedStructuralView(list.element(), visited);
+        if (type instanceof ListType list) {
+            return containsActualBorrow(list.element(), visited);
         }
-        if (current instanceof Tuple tuple) {
+        if (type instanceof Tuple tuple) {
             return tuple.elements().stream()
-                    .anyMatch(element -> containsBorrowedStructuralView(element, visited));
+                    .anyMatch(element -> containsActualBorrow(element, visited));
         }
-        if (current instanceof Named named) {
+        if (type instanceof Named named) {
             return named.arguments().stream()
-                    .anyMatch(argument -> containsBorrowedStructuralView(argument, visited));
+                    .anyMatch(argument -> containsActualBorrow(argument, visited));
         }
-        if (current instanceof Function function) {
-            return containsBorrowedStructuralView(function.result(), visited)
+        if (type instanceof Function function) {
+            return containsActualBorrow(function.result(), visited)
                     || function.parameters().stream()
-                    .anyMatch(argument -> containsBorrowedStructuralView(argument, visited));
+                    .anyMatch(argument -> containsActualBorrow(argument, visited));
         }
-        if (current instanceof SelfType receiver) {
-            return containsBorrowedStructuralView(receiver.bound(), visited);
+        if (type instanceof SelfType receiver) {
+            return containsActualBorrow(receiver.bound(), visited);
         }
         return false;
     }
@@ -7517,20 +7515,88 @@ public final class TypeChecker {
             // Method identity comes from a compiler witness, not a string name.
             if (actual.methodKeys().contains(required.getKey())
                     != expected.methodKeys().contains(required.getKey())) return false;
-            if (!assignable(candidate, required.getValue())) return false;
+            boolean methodSlot = actual.methodKeys().contains(required.getKey())
+                    && expected.methodKeys().contains(required.getKey())
+                    && candidate instanceof Function && required.getValue() instanceof Function;
+            // A readonly view is a direct projection; ordinary numeric
+            // promotion only applies to evaluated scalar values, not a
+            // field accessed through a different declared representation.
+            if (expected.readOnly() || methodSlot) {
+                // Compiler-known method slots are still zero-adapter calls:
+                // callable variance is sound only for representational
+                // subtyping, never an implicit numeric promotion.
+                if (!representationallyReadableField(candidate, required.getValue())) return false;
+            } else if (!assignable(candidate, required.getValue())) {
+                return false;
+            }
             // Writable slots must be genuinely invariant. Two-way assignability
             // is insufficient: Unknown, dynamic interop and permissive generic
             // relations can pass both directions without equal representations.
             // Compiler-owned callable selector slots are methods, not writable
             // fields; they retain contravariant parameters/covariant returns.
-            boolean methodSlot = actual.methodKeys().contains(required.getKey())
-                    && expected.methodKeys().contains(required.getKey())
-                    && candidate instanceof Function && required.getValue() instanceof Function;
             if (!expected.readOnly() && !methodSlot && !candidate.equals(required.getValue())) {
                 return false;
             }
         }
         return true;
+    }
+
+    /**
+     * A read-only structural field is a zero-copy projection, not an
+     * implicit conversion. Preserve nominal inheritance proofs for class
+     * references, but refuse numeric promotions and unresolved source
+     * Unknown/Generic claims inside recursively projected data.
+     */
+    private boolean representationallyReadableField(Type actual, Type expected) {
+        if (actual.equals(expected)) return true;
+        if (expected == Unknown.INSTANCE) return true; // opaque read
+        if (actual == Unknown.INSTANCE || actual instanceof Generic || expected instanceof Generic) return false;
+        if (actual instanceof Union source) {
+            return source.options().stream().allMatch(option -> representationallyReadableField(option, expected));
+        }
+        if (expected instanceof Union target) {
+            return target.options().stream().anyMatch(option -> representationallyReadableField(actual, option));
+        }
+        if (actual instanceof Record source && expected instanceof Record target) {
+            return structuralRecordAssignable(source, target);
+        }
+        if (actual instanceof Tuple source && expected instanceof Tuple target) {
+            if (source.kind() != target.kind() || source.elements().size() != target.elements().size()) return false;
+            for (int i = 0; i < source.elements().size(); i++) {
+                if (!representationallyReadableField(source.elements().get(i), target.elements().get(i))) return false;
+            }
+            return true;
+        }
+        if (actual instanceof Function source && expected instanceof Function target) {
+            if (source.async() != target.async()
+                    || !source.mutableParameters().equals(target.mutableParameters())
+                    || source.parameters().size() != target.parameters().size()) return false;
+            for (int i = 0; i < source.parameters().size(); i++) {
+                if (!representationallyReadableField(target.parameters().get(i), source.parameters().get(i))) return false;
+            }
+            return representationallyReadableField(source.result(), target.result());
+        }
+        if (actual instanceof Borrow source && expected instanceof Borrow target) {
+            if (target.mutable() && !source.mutable()) return false;
+            return representationallyReadableField(source.target(), target.target())
+                    && (!target.mutable() || representationallyReadableField(target.target(), source.target()));
+        }
+        if (actual instanceof ListType source && expected instanceof ListType target) {
+            // Mutable collections are invariant: do not reinterpret the
+            // element representation through a shape contract.
+            return source.element().equals(target.element());
+        }
+        if (actual instanceof Named source && expected instanceof Named target) {
+            if (source.name().equals(target.name())) {
+                // Generic argument containers are invariant unless proved
+                // otherwise by an explicit instantiation/witness.
+                return source.arguments().equals(target.arguments());
+            }
+            // Subclass/interface references have the same runtime reference
+            // representation; context-aware nominal checks prove the relation.
+            return assignable(actual, expected);
+        }
+        return actual instanceof StringLiteral && expected == Primitive.STRING;
     }
 
     private Named concreteClassReference(Ast.TypeRef ref, Ast.ClassDecl owner, Named ownerType) {
