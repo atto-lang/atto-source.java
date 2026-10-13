@@ -74,6 +74,8 @@ public final class CriticalGate {
         private Runnable deregisterActorResource = () -> { };
         private Runnable onClose = () -> { };
         private boolean closeListenerRegistered;
+        /** Captured actor incarnation, not a JVM carrier/thread affinity. */
+        private java.util.function.Consumer<Runnable> actorPhysicalExit;
         // Only host/embedder synchronous callers may wait on a physical thread.
         // Per-ticket signaling avoids waking every queued host thread.
         private java.util.concurrent.CountDownLatch synchronousWaiter;
@@ -92,6 +94,8 @@ public final class CriticalGate {
 
         private OresFuture<Void> request(boolean synchronous) {
             ActorRuntime actor = ActorRuntime.currentActorRuntime();
+            java.util.function.Consumer<Runnable> physicalExit = actor == null
+                    ? null : actor.captureCurrentActorCarrierExit();
             Object domain = OresScheduler.currentTaskDomain();
             if (domain == null) domain = ActorRuntime.currentActorExecutionDomain();
             if (domain == null) domain = synchronous ? Thread.currentThread() : this;
@@ -102,6 +106,7 @@ public final class CriticalGate {
                 }
                 requested = true;
                 logicalOwner = domain;
+                actorPhysicalExit = physicalExit;
                 if (heldByDomain(domain)) {
                     requested = false;
                     throw new IllegalStateException(
@@ -359,7 +364,9 @@ public final class CriticalGate {
 
     /** Drain exactly one writer or one FIFO cohort of readers. Monitor held. */
     private java.util.List<Ticket> drainLocked() {
-        if (owner != null || waiters.isEmpty()) return java.util.List.of();
+        // Domain shutdown is terminal: a concurrent ticket release must never
+        // hand off another permit after the close admission fence is installed.
+        if (domainClosed || owner != null || waiters.isEmpty()) return java.util.List.of();
         if (waiters.peekFirst().mode == Mode.WRITE && !readers.isEmpty()) {
             return java.util.List.of();
         }
@@ -414,73 +421,67 @@ public final class CriticalGate {
         return new Ticket(mode);
     }
 
-    /** Permanently revoke all tickets for a torn-down protection domain. */
+    /**
+     * Permanently close admission to this domain. Queued requests are cancelled
+     * immediately; a granted ticket owned by an actively executing actor stays
+     * physically held until that actor's TurnExecutor has fully unwound.
+     *
+     * This operation is intentionally nonblocking: a hostile or CPU-bound
+     * actor cannot park the STOP thread or critical metadata coordinator.
+     * Host-owned tickets lack a runtime physical-turn identity and remain
+     * subject to the embedder's own scope/lifetime discipline.
+     */
     public void closeAll() {
-        java.util.List<Ticket> revoke = new java.util.ArrayList<>();
-        java.util.List<Runnable> deregisterActor = new java.util.ArrayList<>();
-        java.util.List<Runnable> notifyWrappers = new java.util.ArrayList<>();
+        java.util.List<Ticket> queued;
+        java.util.List<Ticket> granted = new java.util.ArrayList<>();
+        CriticalRwGate facade;
         synchronized (COORDINATOR) {
             if (domainClosed) return;
-            domainClosed = true;
-            if (owner != null) revoke.add(owner);
-            revoke.addAll(readers.keySet());
-            revoke.addAll(waiters);
-            owner = null;
-            readers.clear();
-            heldDomains.clear();
-            waiters.clear();
-            for (Ticket ticket : revoke) {
-                ticket.closed = true;
-                ticket.granted = false;
+            domainClosed = true; // atomic with every request and FIFO grant
+            if (owner != null) granted.add(owner);
+            granted.addAll(readers.keySet());
+            queued = java.util.List.copyOf(waiters);
+            // Remove queued dependencies now: an unrelated actor must not
+            // observe a deadlocked wait-for edge to an already-closed domain.
+            for (Ticket ticket : queued) {
                 WAITING_ON.remove(ticket.logicalOwner, this);
-                deregisterActor.add(ticket.deregisterActorResource);
-                ticket.deregisterActorResource = () -> { };
-                notifyWrappers.add(ticket.onClose);
-                ticket.onClose = () -> { };
             }
+            waiters.clear();
+            // Do NOT clear owner/readers/heldDomains: those capabilities
+            // protect live actor guest turns until their ticket actually closes.
         }
-        // Whole-domain shutdown bypasses Ticket.close(); otherwise actor
-        // registration and RW facade wrappers would remain retained until
-        // their owning actor eventually stopped.
-        Throwable cleanupFailure = null;
-        for (Runnable deregister : deregisterActor) {
-            try {
-                deregister.run();
-            } catch (RuntimeException | Error failure) {
-                cleanupFailure = recordCleanupFailure(cleanupFailure, failure);
-            }
-        }
-        for (Runnable notify : notifyWrappers) {
-            try {
-                notify.run();
-            } catch (RuntimeException | Error failure) {
-                cleanupFailure = recordCleanupFailure(cleanupFailure, failure);
-            }
-        }
-        // A STOP may close the core gate directly, bypassing the RW facade's
-        // public close(). Invalidate that facade's owner registry before
-        // publishing terminal futures, or a stale owner can block an entirely
-        // different gate on the same logical task.
-        CriticalRwGate facade;
         synchronized (this) { facade = rwFacade; }
+        Throwable failure = null;
+        for (Ticket ticket : queued) {
+            try {
+                ticket.close();
+            } catch (RuntimeException | Error problem) {
+                failure = recordCleanupFailure(failure, problem);
+            }
+        }
+        for (Ticket ticket : granted) {
+            try {
+                java.util.function.Consumer<Runnable> afterExit = ticket.actorPhysicalExit;
+                if (afterExit == null) {
+                    ticket.close();
+                } else {
+                    afterExit.accept(ticket::close);
+                }
+            } catch (RuntimeException | Error problem) {
+                failure = recordCleanupFailure(failure, problem);
+            }
+        }
+        // The facade must stop taking new tickets, but it must not force-close
+        // a writer/reader still protecting an active guest turn. Underlying
+        // onClose callbacks retire those deferred wrappers after quiescence.
         if (facade != null) {
             try {
                 facade.onEngineClosed();
-            } catch (RuntimeException | Error failure) {
-                cleanupFailure = recordCleanupFailure(cleanupFailure, failure);
+            } catch (RuntimeException | Error problem) {
+                failure = recordCleanupFailure(failure, problem);
             }
         }
-        for (Ticket ticket : revoke) {
-            try {
-                ticket.admitted.failFromRuntime(
-                        new CancellationException("critical domain closed"));
-            } catch (RuntimeException | Error failure) {
-                cleanupFailure = recordCleanupFailure(cleanupFailure, failure);
-            } finally {
-                if (ticket.synchronousWaiter != null) ticket.synchronousWaiter.countDown();
-            }
-        }
-        throwCleanupFailure(cleanupFailure);
+        throwCleanupFailure(failure);
     }
 
     public int activeReaderCount() {
