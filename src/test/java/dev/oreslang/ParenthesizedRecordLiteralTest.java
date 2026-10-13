@@ -33,17 +33,48 @@ final class ParenthesizedRecordLiteralTest {
     }
 
     @Test
-    void recordIsOneValueWhenSpreadIsAbsent() {
+    void unspreadRecordIsOneArgumentAndPreservesReadonlyThroughGenerics() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc total({a: int, b: int} values): int {
-                    return values.a + values.b;
+                fnc identity<T>(T value): int {
+                    return 42;
                 }
                 pub routine main(): void {
-                    const result = total((b: 22, a: 20));
+                    const result = identity((b: 22, a: 20));
                     stdio.stdout.write(result);
                     return;
                 }
                 """)));
+    }
+
+    @Test
+    void unspreadReadonlyRecordCannotEraseReadonlyCapability() {
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc total({a: int, b: int} values): int {
+                            return values.a + values.b;
+                        }
+                        pub routine main(): void {
+                            const result = total((b: 22, a: 20));
+                            stdio.stdout.write(result);
+                            return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("readonly capability"), error.getMessage());
+    }
+
+    @Test
+    void recordSpreadRemainsRejectedUntilCheckedNamedCallPlanIsIntegrated() {
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc total(int a, int b): int {
+                            return a + b;
+                        }
+                        pub routine main(): void {
+                            stdio.stdout.write(total(...(b: 22, a: 20)));
+                            return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("statically known tuple"), error.getMessage());
     }
 
     @Test
