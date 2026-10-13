@@ -117,6 +117,34 @@ final class SymbolPropertyKeyCodecTest {
                 () -> SymbolPropertyKeyCodec.requireDistinct(tooMany));
     }
 
+    @Test void validatedKeyCollectionIsImmutableAndDoesNotAliasWireArrays() {
+        byte[] wire = SymbolPropertyKeyCodec.encode(OresSymbol.process("ready"));
+        List<Object> decoded = SymbolPropertyKeyCodec.decodeDistinctKeys(List.of(wire));
+        assertEquals(List.of(OresSymbol.process("ready")), decoded);
+        wire[wire.length - 1] = (byte) 'x';
+        assertEquals(OresSymbol.process("ready"), decoded.getFirst(),
+                "decoded keys must not change when a sender mutates its bytes");
+        assertThrows(UnsupportedOperationException.class, () -> decoded.add("evil"));
+    }
+
+    @Test void boundedKeyCollectionRejectsExcessiveAggregateBytes() {
+        List<byte[]> entries = new ArrayList<>();
+        for (int i = 0; i < 70; i++) {
+            entries.add(SymbolPropertyKeyCodec.encode(
+                    "x".repeat(16_000) + Integer.toString(i)));
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> SymbolPropertyKeyCodec.decodeDistinctKeys(entries));
+    }
+
+    @Test void wrongKindAndWireCannotAliasAfterDefensiveSnapshot() {
+        byte[] original = SymbolPropertyKeyCodec.encode(OresSymbol.process("ready"));
+        Object decoded = SymbolPropertyKeyCodec.decode(original);
+        original[3] = (byte) 0; // now says String
+        assertEquals(OresSymbol.process("ready"), decoded);
+        assertNotEquals("ready", decoded);
+    }
+
     private static byte[] wire(int kind, byte[] name) {
         return ByteBuffer.allocate(6 + name.length)
                 .put((byte) 'O').put((byte) 'K').put((byte) 1)
