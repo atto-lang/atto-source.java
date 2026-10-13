@@ -34,6 +34,27 @@ public final class OresContext implements AutoCloseable {
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
+    private final java.util.Set<NativeNioFutureReactor> nioListeners =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** Kernel-only listener admission; public source orchestration is std/net. */
+    public NativeNioFutureReactor listenNioLoopback(
+            String host, int port, int backlog, int maxConnections, int maxPending) {
+        if (ActorRuntime.inActorExecution())
+            throw new SecurityException("nonblocking TCP listeners are supervisor-only");
+        if (!"127.0.0.1".equals(host))
+            throw new SecurityException("experimental nonblocking TCP only binds loopback");
+        requirePermission(RuntimePermissions.Permission.NET, host + ":" + port,
+                "network.listen_nonblocking");
+        try {
+            NativeNioFutureReactor reactor = NativeNioFutureReactor.loopback(
+                    port, backlog, maxConnections, maxPending);
+            nioListeners.add(reactor);
+            return reactor;
+        } catch (java.io.IOException failure) {
+            throw new IllegalStateException("nonblocking TCP listen failed", failure);
+        }
+    }
     public AsyncNativeIo nativeIo() { return nativeIo; }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
@@ -428,6 +449,8 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        for (NativeNioFutureReactor reactor : nioListeners) reactor.close();
+        nioListeners.clear();
         nativeIo.close();
         http.close();
         RuntimeException failure = null;

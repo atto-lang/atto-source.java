@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * buffers and queued submission commands. The reactor may park in select()
  * only on its own host thread, never on an actor/root carrier.
  */
-final class NativeNioFutureReactor implements AutoCloseable {
+public final class NativeNioFutureReactor implements AutoCloseable {
     static final int MAX_IO_BYTES = 65536;
     private final Selector selector;
     private final ServerSocketChannel listener;
@@ -52,8 +52,9 @@ final class NativeNioFutureReactor implements AutoCloseable {
     private final ArrayDeque<OresFuture<Connection>> accepts = new ArrayDeque<>();
     private final Set<Connection> connections = new HashSet<>();
     private volatile Throwable terminalFailure;
+    private final OresFuture<Void> terminated = new OresFuture<>(() -> false, () -> { });
 
-    static NativeNioFutureReactor loopback(int port, int backlog,
+    public static NativeNioFutureReactor loopback(int port, int backlog,
                                            int maxConnections, int maxPending) throws IOException {
         if (port < 0 || port > 65535 || backlog <= 0 || backlog > 65535
                 || maxConnections < 1 || maxPending < 1 || maxPending > 65536) {
@@ -84,7 +85,7 @@ final class NativeNioFutureReactor implements AutoCloseable {
         thread.start();
     }
 
-    int localPort() throws IOException {
+    public int localPort() throws IOException {
         return ((InetSocketAddress) listener.getLocalAddress()).getPort();
     }
 
@@ -114,7 +115,7 @@ final class NativeNioFutureReactor implements AutoCloseable {
         selector.wakeup();
     }
 
-    OresFuture<Connection> acceptAsync() {
+    public OresFuture<Connection> acceptAsync() {
         if (!reserve()) return OresFuture.failed(
                 new RejectedExecutionException("TCP listener is closed or at capacity"));
         // Cancellation is deliberately declined until the operation's
@@ -131,7 +132,7 @@ final class NativeNioFutureReactor implements AutoCloseable {
         return future;
     }
 
-    final class Connection {
+    public final class Connection {
         private final SocketChannel channel;
         private ReadOp read;
         private WriteOp write;
@@ -141,7 +142,44 @@ final class NativeNioFutureReactor implements AutoCloseable {
 
         private Connection(SocketChannel channel) { this.channel = channel; }
 
-        OresFuture<byte[]> readAsync(int maximum) {
+        /**
+         * ABI representation for Oreslang Array<int>: owned immutable numeric data.
+         * Conversion occurs on the completing runtime thread; never a guest
+         * callback, and no byte array or ByteBuffer crosses the guest boundary.
+         */
+        public OresFuture<java.util.List<Long>> readBytesAsync(int maximum) {
+            OresFuture<byte[]> read = readAsync(maximum);
+            OresFuture<java.util.List<Long>> exported =
+                    new OresFuture<>(() -> false, () -> { });
+            read.whenCompleteRuntime((bytes, failure) -> {
+                if (failure != null) {
+                    exported.failFromRuntime(failure);
+                } else {
+                    java.util.ArrayList<Long> values = new java.util.ArrayList<>(bytes.length);
+                    for (byte b : bytes) values.add((long) (b & 0xff));
+                    exported.completeFromRuntime(java.util.List.copyOf(values));
+                }
+            });
+            return exported;
+        }
+
+        public OresFuture<Integer> writeBytesAsync(java.util.List<?> bytes) {
+            if (bytes == null || bytes.size() > MAX_IO_BYTES)
+                return OresFuture.failed(new IllegalArgumentException("invalid TCP write bytes"));
+            byte[] snapshot = new byte[bytes.size()];
+            for (int i = 0; i < bytes.size(); i++) {
+                Object item = bytes.get(i);
+                if (!(item instanceof Long) && !(item instanceof Integer))
+                    return OresFuture.failed(new IllegalArgumentException("TCP bytes must be integers"));
+                long number = ((Number) item).longValue();
+                if (number < 0 || number > 255)
+                    return OresFuture.failed(new IllegalArgumentException("TCP byte outside 0..255"));
+                snapshot[i] = (byte) number;
+            }
+            return writeAsync(snapshot);
+        }
+
+        public OresFuture<byte[]> readAsync(int maximum) {
             if (maximum < 1 || maximum > MAX_IO_BYTES)
                 return OresFuture.failed(new IllegalArgumentException("invalid read size"));
             if (!reserve()) return OresFuture.failed(
@@ -160,7 +198,7 @@ final class NativeNioFutureReactor implements AutoCloseable {
             return future;
         }
 
-        OresFuture<Integer> writeAsync(byte[] bytes) {
+        public OresFuture<Integer> writeAsync(byte[] bytes) {
             if (bytes == null || bytes.length > MAX_IO_BYTES)
                 return OresFuture.failed(new IllegalArgumentException("invalid write bytes"));
             // Snapshot before crossing threads: no mutable caller-owned buffer
@@ -184,7 +222,7 @@ final class NativeNioFutureReactor implements AutoCloseable {
             return future;
         }
 
-        OresFuture<Void> closeAsync() {
+        public OresFuture<Void> closeAsync() {
             if (closeRequested.compareAndSet(false, true)) {
                 post(() -> closeConnection(this, new IOException("TCP connection closed")));
             }
@@ -321,8 +359,14 @@ final class NativeNioFutureReactor implements AutoCloseable {
                 closeConnection(connection, failure);
             try { listener.close(); } catch (IOException ignored) { }
             try { selector.close(); } catch (IOException ignored) { }
+            terminated.completeFromRuntime(null);
             stopped.countDown();
         }
+    }
+
+    public OresFuture<Void> closeAsync() {
+        close();
+        return terminated;
     }
 
     boolean awaitTerminated(long timeoutMillis) throws InterruptedException {
