@@ -119,6 +119,15 @@ public final class ChannelRuntime {
             this.payloadSnapshotter = payloadSnapshotter;
         }
 
+        /**
+         * Public guest channel operations require both validation and an owned
+         * snapshot policy. Trusted internal mailbox/control channels use the
+         * unsealed constructor and never enter the guest channel namespace.
+         */
+        public boolean hasGuestDataPolicy() {
+            return payloadValidator != null && payloadSnapshotter != null;
+        }
+
         public int capacity() {
             return capacity;
         }
