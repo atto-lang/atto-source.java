@@ -848,6 +848,11 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
+                if (initializingClass != null
+                        && unary.operand() instanceof Ast.NameExpr selfName
+                        && selfName.name().equals("self")) {
+                    throw error("constructor cannot borrow partially initialized self");
+                }
                 boolean mutable = unary.operator().equals("&mut");
                 BorrowPlace place = borrowPlace(unary.operand(), scope);
                 if (mutable && !(unary.operand() instanceof Ast.NameExpr)) {
@@ -886,6 +891,12 @@ public final class OwnershipChecker {
                 throw error("rt " + runtime.operation() + " expects exactly one argument");
             }
             Ast.Expr argument = runtime.arguments().getFirst();
+            if (initializingClass != null
+                    && runtime.operation().equals("borrow")
+                    && argument instanceof Ast.NameExpr selfName
+                    && selfName.name().equals("self")) {
+                throw error("constructor cannot borrow partially initialized self");
+            }
             if (runtime.operation().equals("fail")) {
                 checkExpr(argument, scope, false);
                 return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
