@@ -149,6 +149,14 @@ public final class DeclaredEffectVerifier {
                     throw new IllegalArgumentException(
                             "read-only handle_state cannot write state, regardless of declared with effects");
                 }
+                // Acquiring an actor-state loan is itself a scoped effect:
+                // an empty callback cannot request a write capability under
+                // only with state.read (or read authority under state.write).
+                // Observed field operations still add independent effects.
+                callbackEffects.add(switch (callback.criticalMode()) {
+                    case NONE, READ -> FunctionEffects.Effect.STATE_READ;
+                    case EXCLUSIVE, WRITE -> FunctionEffects.Effect.STATE_WRITE;
+                });
                 effects.addAll(callbackEffects);
                 return;
             }
