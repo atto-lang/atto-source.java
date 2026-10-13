@@ -78,6 +78,38 @@ final class SelectAwaitFutureLanguageTest {
     }
 
     @Test
+    void dynamicSelectCaseFutureSharesResultAndWaiterProtocol() throws Exception {
+        String source = """
+                async fnc compute(): int { return 17; }
+                pub routine main(): void {
+                  val Channel<int> empty = Channel.new<int>(1);
+                  val Future<int> ready = compute();
+                  val SelectSet cases = SelectSet.new([
+                    SelectCase.read(empty),
+                    SelectCase.future(ready)
+                  ]);
+                  val Option<SelectResult> choice = select first from cases;
+                  stdio.stdout.write(choice.unwrap().index);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(choice.unwrap().value);
+                  return;
+                }
+                """;
+        OresCompiler.parseAndTypeCheck(source);
+        assertEquals("1:17", SelectNestedReturnContractTest.run(source));
+    }
+
+    @Test
+    void dynamicFutureCaseRejectsNonFutureAtTypecheck() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                pub routine main(): void {
+                  val bad = SelectCase.future(22);
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void legacyUnannotatedReadArmStaysSupported() throws Exception {
         String source = """
                 pub routine main(): void {
