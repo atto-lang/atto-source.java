@@ -154,6 +154,38 @@ final class StructuralLoanLaunderingRegressionTest {
     }
 
     @Test
+    void unionWithRecordArmCannotHideNominalClassIdentity() {
+        String source = """
+                define class Candidate as
+                    pub val int foo = 3;
+                end
+                fnc unsafe(): void {
+                    const disguised: record{foo: int} | string = new Candidate();
+                    return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertTrue(error.getMessage().contains("cannot implicitly convert"), error.getMessage());
+    }
+
+    @Test
+    void unionWithExplicitNominalArmCanRetainNominalIdentity() {
+        String source = """
+                define class Candidate as
+                    pub val int foo = 3;
+                end
+                fnc ok(): void {
+                    const correct: Candidate | record{foo: int} = new Candidate();
+                    return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+    }
+
+    @Test
     void explicitBorrowedStructuralClassParameterRemainsAdmitted() {
         String source = """
                 define class Candidate as
