@@ -1452,6 +1452,14 @@ public final class Parser {
     }
 
     private Ast.TypeRef parseTypeAtom() {
+        if (match(BANG)) return Ast.TypeRef.complement(parseTypeAtom());
+        if (match(TRUE)) return Ast.TypeRef.boolLiteral(true);
+        if (match(FALSE)) return Ast.TypeRef.boolLiteral(false);
+        if ((check(STRUCT) || (check(IDENT) && peek().lexeme().equals("record")))
+                && checkNext(LBRACE)) {
+            advance(); // 'struct' and 'record' denote a structural shape in type position.
+            return parseTypeAtom(); // the existing '{field: Type}' parser owns the braces
+        }
         if (match(TYPE)) {
             Ast.TypeRef marked = parseTypeAtom();
             if (marked.name().startsWith("$")) {
