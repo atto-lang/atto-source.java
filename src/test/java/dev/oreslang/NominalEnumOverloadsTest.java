@@ -197,4 +197,78 @@ final class NominalEnumOverloadsTest {
         }
         assertNotNull(symbolTable.get("Color"));
     }
+
+    @Test
+    void incompleteDiscriminatorProofMustNotSelectAnOtherwiseUniqueTarget() {
+        Signature colorColor = signature("go", "Color", "Color");
+        Signature modeMode = signature("go", "Mode", "Mode");
+        Map<String, String> enums = symbols();
+        assertThrows(IllegalArgumentException.class, () -> NominalEnumOverloads.select(
+                List.of(colorColor, modeMode), Map.of(0, enums.get("Color"))));
+        assertThrows(IllegalArgumentException.class, () -> NominalEnumOverloads.select(
+                List.of(colorColor, modeMode), Map.of(1, enums.get("Color"))));
+        assertThrows(IllegalArgumentException.class, () -> NominalEnumOverloads.select(
+                List.of(colorColor, modeMode), Map.of(0, enums.get("Color"), 1, enums.get("Mode"))));
+        assertSame(colorColor, NominalEnumOverloads.select(
+                List.of(colorColor, modeMode),
+                Map.of(0, enums.get("Color"), 1, enums.get("Color"))));
+        assertThrows(IllegalArgumentException.class, () -> NominalEnumOverloads.select(
+                List.of(colorColor, modeMode),
+                Map.of(0, enums.get("Color"), 1, enums.get("Color"), 2, "other")));
+    }
+
+    @Test
+    void primitiveAliasIsNotASeparateOverloadSignature() {
+        Signature upper = signature("go", "Color", "String");
+        Signature lower = signature("go", "Color", "string");
+        assertEquals(PairStatus.SAME_SIGNATURE, NominalEnumOverloads.compare(upper, lower));
+    }
+
+    @Test
+    void compilerBindsEqualLookingCallsByIdentityNotStructuralEquality() {
+        Ast.Program checked = TypeChecker.checkTypes(Parser.parse("""
+                fnc step(int value): int { return value + 1; }
+                fnc first(): int { return step(4); }
+                fnc second(): int { return step(4); }
+                pub routine main(): void {
+                    stdio.stdout.write(first());
+                    stdio.stdout.write(second());
+                }
+                """));
+        List<Ast.CallExpr> repeated = checked.boundDirectCalls().keySet().stream()
+                .filter(call -> call.callee() instanceof Ast.NameExpr named
+                        && named.name().equals("step"))
+                .toList();
+        assertEquals(2, repeated.size());
+        assertNotSame(repeated.get(0), repeated.get(1));
+        assertEquals(repeated.get(0), repeated.get(1),
+                "the AST record keys are structurally equal");
+        assertSame(checked.boundDirectCalls().get(repeated.get(0)),
+                checked.boundDirectCalls().get(repeated.get(1)));
+        assertThrows(UnsupportedOperationException.class, () ->
+                checked.boundDirectCalls().clear());
+    }
+
+    @Test
+    void graalRuntimeUsesTheStaticallyBoundDirectCallTargets() throws Exception {
+        String program = """
+                fnc step(int value): int { return value + 1; }
+                fnc first(): int { return step(4); }
+                fnc second(): int { return step(4); }
+                pub routine main(): void {
+                    stdio.stdout.write(first());
+                    stdio.stdout.write(second());
+                }
+                """;
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        try (org.graalvm.polyglot.Context context =
+                dev.oreslang.runtime.IsolatePolicy.developer()
+                        .restrictedContextBuilder(dev.oreslang.runtime.ExecutionProfile.serverJit())
+                        .out(output).build()) {
+            context.eval(org.graalvm.polyglot.Source.newBuilder(
+                    OresLanguage.ID, program, "nominal-static-bindings.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("55", output.toString(java.nio.charset.StandardCharsets.UTF_8));
+    }
 }
