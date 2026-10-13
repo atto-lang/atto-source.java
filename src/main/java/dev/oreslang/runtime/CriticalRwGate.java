@@ -206,9 +206,22 @@ public final class CriticalRwGate implements AutoCloseable {
             revoked = List.copyOf(tickets);
         }
         // Never call ticket callbacks under a facade or core monitor.
-        // Unregister logical ownership even for already-granted Futures:
-        // their successful completion cannot be turned into cancellation.
-        for (Ticket ticket : revoked) ticket.close();
+        // A granted core ticket may be intentionally retained until an
+        // executing actor's physical carrier unwinds. Do NOT bypass that
+        // quiescence barrier by closing its RW wrapper early. The core ticket
+        // invokes the registered onClose callback when its grant is released.
+        Throwable failure = null;
+        for (Ticket ticket : revoked) {
+            if (ticket.isHeld()) continue;
+            try {
+                ticket.close();
+            } catch (RuntimeException | Error problem) {
+                if (failure == null) failure = problem;
+                else if (failure != problem) failure.addSuppressed(problem);
+            }
+        }
+        if (failure instanceof Error error) throw error;
+        if (failure instanceof RuntimeException runtime) throw runtime;
     }
 
     @Override
