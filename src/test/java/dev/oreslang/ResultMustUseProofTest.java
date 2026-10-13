@@ -281,6 +281,20 @@ final class ResultMustUseProofTest {
     }
 
     @Test
+    void classFieldsCannotHideUntrackedResult() {
+        rejects("""
+                define class Holder as
+                  pub val Result<void, String> pending = Ok();
+                end
+                """);
+        rejects("""
+                define class Holder as
+                  pub val Option<Result<void, String>> pending = Some(Ok());
+                end
+                """);
+    }
+
+    @Test
     void everyBranchMayPropagateOrHandle() {
         accepts("""
                 fnc good(bool flag): Result<void, String> {
