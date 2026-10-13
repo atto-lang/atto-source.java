@@ -116,3 +116,36 @@ constructor-fill rules.
 This is intentionally a bounded, fail-closed static audit, not proof that
 all transitive effects and cleanup cases are safe. Actual Java/GraalVM
 execution evidence remains required.
+
+
+## Executed CI regression triage (2026-10-13)
+
+The exact older Java tree at commit 2702515 ran 1,831 Maven tests:
+9 failures and 1 error in fast CI; JVM profile showed the same baseline
+constructor/type/visibility regressions plus a deadline-reservation race.
+The updated source has NOT passed the full Maven/AOT/hybrid suite.
+
+The initializer admission now admits a statically resolved zero-argument
+function or static method only when the full body is a single return of a
+literal or closed scalar arithmetic expression. Synchronous declaration and
+name resolution must still hold; dynamic/parameterized calls, mutation,
+suspension and arbitrary constructor effects remain rejected. An existing
+zero-argument built-in Array initializer is admitted as the preexisting
+collection-construction form. Its native owned-resource failure behavior
+remains an explicit separate verification target.
+
+Tests now use pub for fields accessed by code outside the declaring class,
+including the source-identical Java/LLVM scalar constructor guest. The
+private visibility rule has not been weakened.
+
+Strict conformance inventory now registers exactly its active files.
+Three previously orphaned native defer/try-finally programs were preserved
+with identical Git blobs in contracts/v1/semantics/staging/, explicitly
+outside the admitted comparator fixture set. The strict orphan check remains
+unchanged; promotion requires real backend evidence and a cases.json entry.
+
+The deadline-reservation stress test formerly observed its quiescence
+callback latch before the TaskRunner finally-block released the semaphore.
+It now waits for the actual permit restoration with a bounded deadline
+and still fails on a persistent leak. This is a test synchronization fix,
+not a change to runtime reservation or notification semantics.
