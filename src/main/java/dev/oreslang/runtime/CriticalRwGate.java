@@ -17,6 +17,9 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class CriticalRwGate implements AutoCloseable {
     public static final int MAX_WAITERS = CriticalGate.MAX_WAITERS;
     public static final int MAX_ACTIVE_READERS = CriticalGate.MAX_ACTIVE_READERS;
+    // A facade tracks tickets from construction through retirement, including
+    // never-requested tickets. Bound that storage, not only the core wait queue.
+    public static final int MAX_TRACKED_TICKETS = MAX_ACTIVE_READERS + MAX_WAITERS;
     public enum Mode { READ, WRITE }
 
     private static final Object OWNER_LOCK = new Object();
@@ -168,6 +171,9 @@ public final class CriticalRwGate implements AutoCloseable {
         Objects.requireNonNull(mode, "mode");
         synchronized (this) {
             if (closed) throw new IllegalStateException("RW gate is closed");
+            if (tickets.size() >= MAX_TRACKED_TICKETS) {
+                throw new IllegalStateException("RW tracked ticket limit reached");
+            }
             Ticket ticket = new Ticket(mode);
             tickets.add(ticket);
             return ticket;
