@@ -10,6 +10,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Versioned, explicitly tagged key interchange, not a replacement for the
@@ -135,7 +136,10 @@ public final class SymbolPropertyKeyCodec {
         }
 
         boolean permits(AdmissionScope receivingScope, OresSymbol symbol) {
-            return scopes.getOrDefault(receivingScope, Set.of()).contains(symbol);
+            // v1 scoped userland exports admit only PROCESS Symbols. Stable
+            // UUID Symbols are not implicitly public or exportable to actors.
+            return symbol.kind() == OresSymbol.Kind.PROCESS
+                    && scopes.getOrDefault(receivingScope, Set.of()).contains(symbol);
         }
     }
 
@@ -152,8 +156,9 @@ public final class SymbolPropertyKeyCodec {
         Objects.requireNonNull(manifest, "trusted export manifest");
         Object key = decode(input);
         if (key instanceof OresSymbol symbol
-                && !symbol.publicToUntrustedCoreV1()
-                && !manifest.permits(receivingScope, symbol)) {
+                && (symbol.kind() != OresSymbol.Kind.PROCESS
+                    || !symbol.publicToUntrustedCoreV1()
+                    && !manifest.permits(receivingScope, symbol))) {
             throw new SecurityException("Symbol key is not exported to recipient scope");
         }
         return key;
@@ -173,20 +178,45 @@ public final class SymbolPropertyKeyCodec {
      * arrays after validation. Both per-entry and aggregate byte budgets apply.
      */
     public static List<Object> decodeDistinctKeys(List<byte[]> encodedKeys) {
+        return decodeDistinctKeysChecked(encodedKeys, SymbolPropertyKeyCodec::decode);
+    }
+
+    /** For untrusted bulk ingress, never call the permissive trusted decoder. */
+    public static List<Object> decodeDistinctKeysForUntrusted(List<byte[]> encodedKeys) {
+        return decodeDistinctKeysChecked(encodedKeys, SymbolPropertyKeyCodec::decodeForUntrusted);
+    }
+
+    /** Trusted receiver must resolve the authenticated destination scope. */
+    static List<Object> decodeDistinctKeysForUntrusted(
+            List<byte[]> encodedKeys, AdmissionScope receivingScope, ExportManifest manifest) {
+        Objects.requireNonNull(receivingScope, "receiving scope");
+        Objects.requireNonNull(manifest, "trusted export manifest");
+        return decodeDistinctKeysChecked(encodedKeys,
+                encoded -> decodeForUntrusted(encoded, receivingScope, manifest));
+    }
+
+    private static List<Object> decodeDistinctKeysChecked(
+            List<byte[]> encodedKeys, Function<byte[], Object> decodeKey) {
         Objects.requireNonNull(encodedKeys, "encoded keys");
         if (encodedKeys.size() > MAX_KEYS_PER_OBJECT) {
             throw new IllegalArgumentException("too many tagged keys");
         }
+        // Snapshot list membership; individual frames are snapshotted by decode().
+        // Return only decoded immutable identities to the eventual map builder.
+        List<byte[]> frames = List.copyOf(encodedKeys);
+        if (frames.size() > MAX_KEYS_PER_OBJECT) {
+            throw new IllegalArgumentException("too many tagged keys");
+        }
         Set<Object> distinct = new HashSet<>();
-        java.util.ArrayList<Object> decoded = new java.util.ArrayList<>(encodedKeys.size());
+        java.util.ArrayList<Object> decoded = new java.util.ArrayList<>(frames.size());
         long total = 0L;
-        for (byte[] encoded : encodedKeys) {
+        for (byte[] encoded : frames) {
             Objects.requireNonNull(encoded, "tagged key entry");
             total += encoded.length;
             if (total > MAX_KEY_SET_WIRE_BYTES) {
                 throw new IllegalArgumentException("tagged key collection exceeds byte budget");
             }
-            Object key = decode(encoded);
+            Object key = decodeKey.apply(encoded);
             if (!distinct.add(key)) {
                 throw new IllegalArgumentException(
                         "duplicate tagged String or Symbol key");
