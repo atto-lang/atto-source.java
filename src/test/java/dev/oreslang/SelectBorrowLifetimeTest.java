@@ -36,7 +36,7 @@ final class SelectBorrowLifetimeTest {
                   val Channel<int> ch = Channel.new<int>(1);
                   let Bar target = new Bar();
                   val &Bar view = rt borrow target;
-                  select {
+                  do select {
                     case readch ch: val received {
                       stdio.println(received);
                     }
@@ -117,7 +117,7 @@ final class SelectBorrowLifetimeTest {
                   val Channel<int> ch = Channel.new<int>(1);
                   let Bar target = new Bar();
                   val &Bar view = rt borrow target;
-                  select {
+                  do select {
                     case readch ch: val received {
                       stdio.println(view.foo);
                     }
@@ -137,7 +137,7 @@ final class SelectBorrowLifetimeTest {
                   val Channel<int> ch = Channel.new<int>(1);
                   let Bar target = new Bar();
                   val &Bar view = rt borrow target;
-                  nb select {
+                  do nb select {
                     case readch ch: val received {
                       stdio.println(view.foo);
                     }
@@ -153,7 +153,7 @@ final class SelectBorrowLifetimeTest {
                 actor fnc bad(): void {
                   val Channel<int> ch = Channel.new<int>(1);
                   val Array<int> target = [1, 2];
-                  nb select {
+                  do nb select {
                     case readch ch: val received {
                       stdio.println(target[0]);
                     }
@@ -170,7 +170,7 @@ final class SelectBorrowLifetimeTest {
                 actor fnc good(): void {
                   val Channel<int> ch = Channel.new<int>(1);
                   val int value = 7;
-                  nb select {
+                  do nb select {
                     case readch ch: val received {
                       stdio.println(value + received);
                     }
@@ -187,7 +187,7 @@ final class SelectBorrowLifetimeTest {
                 actor fnc good(): void {
                   val Channel<Array<int>> ch = Channel.new<Array<int>>(1);
                   val Array<int> value = [7, 8];
-                  nb select {
+                  do nb select {
                     case readch ch: val value {
                       stdio.println(value[0]);
                     }
@@ -205,7 +205,7 @@ final class SelectBorrowLifetimeTest {
                   val Channel<int> ch = Channel.new<int>(1);
                   let Bar target = new Bar();
                   val &Bar view = rt borrow target;
-                  nb select {
+                  do nb select {
                     case readch ch: val received {
                       stdio.println(received);
                     }
