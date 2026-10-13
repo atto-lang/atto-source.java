@@ -698,4 +698,66 @@ final class ActorSendContractTest {
         }
     }
 
+    @Test
+    void hostStopWaitsForDoneWhenFinalizationReadinessCallbackBlocks() throws Exception {
+        CountDownLatch initializerEntered = new CountDownLatch(1);
+        CountDownLatch releaseInitializer = new CountDownLatch(1);
+        CountDownLatch readinessCallbackEntered = new CountDownLatch(1);
+        CountDownLatch releaseReadinessCallback = new CountDownLatch(1);
+        CountDownLatch stopReturned = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> stopFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(() -> {
+                initializerEntered.countDown();
+                if (!releaseInitializer.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("initializer release timed out");
+                }
+                throw new IllegalStateException("deliberate initializer failure");
+            });
+            assertTrue(initializerEntered.await(5, TimeUnit.SECONDS));
+            actor.getReady().whenCompleteRuntime((value, failure) -> {
+                readinessCallbackEntered.countDown();
+                try {
+                    if (!releaseReadinessCallback.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("readiness observer release timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            Thread stopper = new Thread(() -> {
+                try {
+                    actor.stop();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                } finally {
+                    stopReturned.countDown();
+                }
+            }, "host-stop-awaits-actual-done");
+            stopper.start();
+            try {
+                // Stop is requested while the initializer still owns the actor
+                // carrier. Its READY Future has not been settled yet.
+                releaseInitializer.countDown();
+                assertTrue(readinessCallbackEntered.await(5, TimeUnit.SECONDS));
+                assertFalse(actor.getDone().isDone(),
+                        "DONE must follow completion of finalization READY callbacks");
+                assertFalse(stopReturned.await(100, TimeUnit.MILLISECONDS),
+                        "synchronous host stop must not return before DONE is published");
+            } finally {
+                releaseInitializer.countDown();
+                releaseReadinessCallback.countDown();
+                stopper.join(5_000);
+            }
+            assertFalse(stopper.isAlive(), "host stop must finish after the callback returns");
+            assertNull(stopFailure.get(), "host stop must not fail when child finalization completes");
+            assertTrue(actor.getDone().isDone());
+        } finally {
+            releaseInitializer.countDown();
+            releaseReadinessCallback.countDown();
+        }
+    }
+
 }
