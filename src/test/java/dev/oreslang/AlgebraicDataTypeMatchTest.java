@@ -181,6 +181,64 @@ final class AlgebraicDataTypeMatchTest {
     }
 
     @Test
+    void boundedFiniteDomainsProveCombinedPartialCoverage() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc option(Option<bool> value): int {
+                  match value over
+                    on Some(true) -> { return 1; }
+                    on Some(false) -> { return 0; }
+                    on None -> { return -1; }
+                  end
+                }
+                """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc result(Result<bool, bool> value): int {
+                  match value over
+                    on Ok(true) -> { return 1; }
+                    on Ok(false) -> { return 2; }
+                    on Err(true) -> { return 3; }
+                    on Err(false) -> { return 4; }
+                  end
+                }
+                """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc product(Tuple[bool, bool] value): int {
+                  match value over
+                    on (true, _) -> { return 1; }
+                    on (false, true) -> { return 2; }
+                    on (false, false) -> { return 3; }
+                  end
+                }
+                """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define enum Tiny as
+                    Waiting
+                    State: bool
+                end
+                fnc classify(Tiny value): int {
+                  match value over
+                    on Tiny.Waiting -> { return 0; }
+                    on Tiny.State(true) -> { return 1; }
+                    on Tiny.State(false) -> { return 2; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
+    void guardedFiniteCaseCannotDischargeAnExhaustiveProof() {
+        assertTrue(rejects("""
+                fnc partial(Option<bool> value): int {
+                  match value over
+                    on Some(true) when true -> { return 1; }
+                    on Some(false) -> { return 2; }
+                    on None -> { return 0; }
+                  end
+                }
+                """).getMessage().contains("non-exhaustive match"));
+    }
+
+    @Test
     void guestRuntimeDistinguishesIdenticalPayloadShapes() throws Exception {
         String sourceText = """
                 define enum Signal as
