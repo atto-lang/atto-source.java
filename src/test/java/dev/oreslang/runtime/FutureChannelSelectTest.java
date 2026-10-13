@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 /** Future completion and channel transfer must share one atomic select winner. */
@@ -101,6 +103,54 @@ final class FutureChannelSelectTest {
         var thrown = assertThrows(CompletionException.class, selected::join);
         assertEquals(failure, thrown.getCause());
         assertFalse(channel.tryRead().isPresent());
+    }
+
+    @Test
+    void concurrentChannelWriteAndFutureSettlementChooseExactlyOneWinner() throws Exception {
+        for (int round = 0; round < 64; round++) {
+            var channel = new ChannelRuntime.Channel<Integer>(1);
+            var producer = new OresFuture<Integer>();
+            var selected = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.read(channel), ChannelRuntime.await(producer))
+                    .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+            var go = new CountDownLatch(1);
+            Thread writer = Thread.startVirtualThread(() -> {
+                awaitStart(go);
+                assertTrue(channel.tryWrite(71));
+            });
+            Thread resolver = Thread.startVirtualThread(() -> {
+                awaitStart(go);
+                assertTrue(producer.completeFromRuntime(82));
+            });
+
+            go.countDown();
+            writer.join(5_000);
+            resolver.join(5_000);
+            assertFalse(writer.isAlive(), "writer stalled in round " + round);
+            assertFalse(resolver.isAlive(), "resolver stalled in round " + round);
+            var result = selected.get(5, TimeUnit.SECONDS);
+            if (result.index() == 0) {
+                assertEquals(71, result.value());
+                assertTrue(channel.tryRead().isEmpty());
+                assertEquals(82, producer.join());
+            } else {
+                assertEquals(1, result.index());
+                assertEquals(82, result.value());
+                assertEquals(71, channel.tryRead().orElseThrow());
+            }
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+        }
+    }
+
+    private static void awaitStart(CountDownLatch gate) {
+        try {
+            if (!gate.await(5, TimeUnit.SECONDS)) {
+                throw new AssertionError("concurrent select test gate timed out");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("concurrent select test interrupted", interrupted);
+        }
     }
 
     @Test
