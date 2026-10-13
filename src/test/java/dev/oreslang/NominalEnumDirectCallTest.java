@@ -143,4 +143,38 @@ final class NominalEnumDirectCallTest {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse(source)));
     }
+
+    @Test
+    void privateOverloadCannotBeCalledThroughPublicModuleFacade() {
+        String source = ENUMS + """
+                define module dispatch as
+                    pub fnc pick(Color c): int { return 1; }
+                    fnc pick(Mode m): int { return 2; }
+                end
+                fnc forbidden(): int {
+                    return dispatch.pick(Mode.Fast(1));
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("private"), failure.getMessage());
+    }
+
+    @Test
+    void aliasOrUnboundModuleAccessCannotDynamicallyChoosePublicEnumOverload() {
+        String source = ENUMS + """
+                define module dispatch as
+                    pub fnc pick(Color c): int { return 1; }
+                    fnc pick(Mode m): int { return 2; }
+                end
+                pub routine main(): void {
+                    val alias = dispatch;
+                    stdio.stdout.write(alias.pick(Color.Red()));
+                }
+                """;
+        // The type checker may reject first-class module aliases entirely.
+        // If it admits one, an unbound runtime call must still reject
+        // instead of selecting the only PUBLIC overload by iteration.
+        assertThrows(RuntimeException.class, () -> run(source));
+    }
 }
