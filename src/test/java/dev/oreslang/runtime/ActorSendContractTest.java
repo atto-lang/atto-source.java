@@ -531,4 +531,114 @@ final class ActorSendContractTest {
         }
     }
 
+    @Test
+    void blockedExitHookCannotPrematurelyCompleteDoneAndCanReenterStop() throws Exception {
+        CountDownLatch exitHookEntered = new CountDownLatch(1);
+        CountDownLatch exitHookRelease = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<ActorRuntime.ActorRef<Integer>> reference =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicInteger exitHooks = new AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<Throwable> stopperFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(domain -> {
+                exitHooks.incrementAndGet();
+                ActorRuntime.ActorRef<Integer> actor = reference.get();
+                if (actor != null) actor.stop(); // Reenter stop during physical retirement.
+                exitHookEntered.countDown();
+                try {
+                    if (!exitHookRelease.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("exit hook release timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("exit hook interrupted", interrupted);
+                }
+            });
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> { });
+            reference.set(actor);
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            Thread stopper = new Thread(() -> {
+                try {
+                    actor.stop();
+                } catch (Throwable failure) {
+                    stopperFailure.set(failure);
+                }
+            }, "actor-reentrant-exit-hook-stop");
+            stopper.start();
+            try {
+                assertTrue(exitHookEntered.await(5, TimeUnit.SECONDS));
+                assertFalse(actor.getDone().isDone(),
+                        "DONE must not precede completion of the exit hook");
+                assertFalse(actor.awaitTermination(75, TimeUnit.MILLISECONDS),
+                        "awaitTermination must not observe a partially retired actor");
+            } finally {
+                exitHookRelease.countDown();
+                stopper.join(5_000);
+            }
+            assertFalse(stopper.isAlive(), "reentrant stop must not deadlock finalization");
+            assertNull(stopperFailure.get(), "reentrant stop must not throw");
+            actor.getDone().get(5, TimeUnit.SECONDS);
+            assertEquals(1, exitHooks.get(), "exit hook must run exactly once");
+        } finally {
+            exitHookRelease.countDown();
+        }
+    }
+
+    @Test
+    void racingGuestFailureAndSupervisorStopNeverPublishDoneInsideTurn() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> stopperFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                entered.countDown();
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("turn release timed out");
+                }
+                throw new IllegalStateException("intentional actor failure");
+            });
+            actor.send(1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((java.util.Map<?, ?>) actorsField.get(runtime)).get(actor.id());
+            assertNotNull(cell);
+            var monitorField = cell.getClass().getDeclaredField("lifecycleLock");
+            monitorField.setAccessible(true);
+            Object monitor = monitorField.get(cell);
+            AtomicInteger settled = new AtomicInteger();
+            AtomicInteger underMonitor = new AtomicInteger();
+            actor.getDone().whenCompleteRuntime((value, failure) -> {
+                if (Thread.holdsLock(monitor)) underMonitor.incrementAndGet();
+                settled.incrementAndGet();
+            });
+
+            Thread stopper = new Thread(() -> {
+                try {
+                    actor.stop();
+                } catch (Throwable failure) {
+                    stopperFailure.set(failure);
+                }
+            }, "actor-failure-versus-stop");
+            stopper.start();
+            try {
+                assertFalse(actor.awaitTermination(75, TimeUnit.MILLISECONDS),
+                        "an active carrier must not publish DONE before turn exit");
+            } finally {
+                release.countDown();
+                stopper.join(5_000);
+            }
+            assertFalse(stopper.isAlive());
+            assertNull(stopperFailure.get());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(1, settled.get(), "DONE must settle exactly once");
+            assertEquals(0, underMonitor.get(), "DONE callbacks cannot run under lifecycleLock");
+        } finally {
+            release.countDown();
+        }
+    }
+
 }
