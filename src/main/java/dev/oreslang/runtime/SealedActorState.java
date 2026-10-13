@@ -203,6 +203,14 @@ public final class SealedActorState {
             throw new SecurityException("cannot upgrade a live critical read loan to write");
         }
         Access access = new Access(++serial, writable);
+        // All stored values are immutable scalars or flat immutable integer
+        // lists. A shallow map snapshot is consequently sufficient to restore
+        // the complete actor state on a synchronous failure. Never publish a
+        // partially applied critical write after an exception or result denial.
+        LinkedHashMap<String, Object> before = writable
+                ? new LinkedHashMap<>(values) : null;
+        int priorStringBytes = retainedStringBytes;
+        int priorListElements = retainedListElements;
         current = access;
         try {
             T result = callback.apply(access);
@@ -212,6 +220,14 @@ public final class SealedActorState {
             @SuppressWarnings("unchecked")
             T detached = (T) detachedResult(result);
             return detached;
+        } catch (RuntimeException | Error failure) {
+            if (writable) {
+                values.clear();
+                values.putAll(before);
+                retainedStringBytes = priorStringBytes;
+                retainedListElements = priorListElements;
+            }
+            throw failure;
         } finally {
             access.live = false;
             current = previous;
