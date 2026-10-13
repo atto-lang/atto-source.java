@@ -154,8 +154,8 @@ final class IntersectionTypeHardeningTest {
                 fnc consume({loan: &int} & {id: int} payload): void { return; }
                 """,
                 """
-                fnc produce(): {loan: &int} & {id: int} {
-                    return struct{loan: &int, id: int}{id: 1};
+                fnc passThrough({loan: &int} & {id: int} payload): {loan: &int} & {id: int} {
+                    return payload;
                 }
                 """)) {
             IllegalArgumentException problem = assertThrows(IllegalArgumentException.class,
