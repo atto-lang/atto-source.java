@@ -13,9 +13,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SelectSourceFlowSafetyTest {
     @Test
-    void discardedReturnRunsArmDeferAndContinuesExactlyOnce() throws Exception {
+    void blockingDoSelectReturnRunsDeferAndExitsEnclosingCallableExactlyOnce() throws Exception {
         String source = """
-                pub fnc main(): void {
+                pub fnc compute(): int {
                   do select {
                     default: {
                       defer stdio.stdout.write("cleanup:");
@@ -23,12 +23,15 @@ final class SelectSourceFlowSafetyTest {
                       return 77;
                     }
                   }
-                  stdio.stdout.write("continuing");
+                  return -1;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(compute());
                   return;
                 }
                 """;
-        assertWarnings(source, 1);
-        assertEquals("arm:cleanup:continuing", run(source));
+        assertWarnings(source, 0);
+        assertEquals("arm:cleanup:77", run(source));
     }
 
     @Test
@@ -58,9 +61,9 @@ final class SelectSourceFlowSafetyTest {
     }
 
     @Test
-    void discardedArmReturnPreservesItsOwnTryFinally() throws Exception {
+    void blockingDoSelectReturnPreservesItsOwnTryFinallyAndExits() throws Exception {
         String source = """
-                pub fnc main(): void {
+                pub fnc compute(): int {
                   do select {
                     default: {
                       try {
@@ -73,12 +76,15 @@ final class SelectSourceFlowSafetyTest {
                       }
                     }
                   }
-                  stdio.stdout.write("continuing");
+                  return -1;
+                }
+                pub routine main(): void {
+                  stdio.stdout.write(compute());
                   return;
                 }
                 """;
-        assertWarnings(source, 1);
-        assertEquals("arm:finally:continuing", run(source));
+        assertWarnings(source, 0);
+        assertEquals("arm:finally:11", run(source));
     }
 
     @Test
