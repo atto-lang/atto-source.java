@@ -51,6 +51,22 @@ class DiagnosticProof(unittest.TestCase):
         self.assertGreaterEqual(len(suite["cases"]), 10)
         self.assertEqual(len(digest), 64)
 
+    def test_distinct_case_ids_cannot_double_count_one_fixture(self):
+        import json
+        import shutil
+        import tempfile
+        suite, _ = run.validate_suite()
+        duplicate = dict(suite["cases"][0])
+        duplicate["id"] = "native.duplicate-fixture-regression"
+        suite["cases"].append(duplicate)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shutil.copytree(run.ROOT, root, dirs_exist_ok=True)
+            (root / "cases.json").write_text(json.dumps(suite))
+            with patch.object(run, "ROOT", root):
+                with self.assertRaisesRegex(ValueError, "duplicate fixture source"):
+                    run.validate_suite()
+
     def test_mutating_fixture_or_schema_changes_suite_identity(self):
         import shutil
         import tempfile

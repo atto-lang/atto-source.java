@@ -50,6 +50,8 @@ def validate_suite():
         if case["id"] in ids:
             raise ValueError("duplicate case: " + case["id"])
         ids.add(case["id"])
+        if case["source"] in files:
+            raise ValueError("duplicate fixture source: " + case["source"])
         f = (ROOT / case["source"]).resolve()
         if not f.is_relative_to((ROOT / "fixtures").resolve()) or not f.is_file():
             raise ValueError("invalid fixture: " + case["source"])
