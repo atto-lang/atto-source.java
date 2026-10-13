@@ -611,9 +611,11 @@ final class ActorSendContractTest {
             Object monitor = monitorField.get(cell);
             AtomicInteger settled = new AtomicInteger();
             AtomicInteger underMonitor = new AtomicInteger();
+            CountDownLatch receiptDelivered = new CountDownLatch(1);
             actor.getDone().whenCompleteRuntime((value, failure) -> {
                 if (Thread.holdsLock(monitor)) underMonitor.incrementAndGet();
                 settled.incrementAndGet();
+                receiptDelivered.countDown();
             });
 
             Thread stopper = new Thread(() -> {
@@ -634,6 +636,8 @@ final class ActorSendContractTest {
             assertFalse(stopper.isAlive());
             assertNull(stopperFailure.get());
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(receiptDelivered.await(5, TimeUnit.SECONDS),
+                    "observe callback publication before checking exactly-once accounting");
             assertEquals(1, settled.get(), "DONE must settle exactly once");
             assertEquals(0, underMonitor.get(), "DONE callbacks cannot run under lifecycleLock");
         } finally {
