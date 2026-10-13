@@ -111,6 +111,24 @@ description = "Suspendable legacy match must retain exclusive unique-arm semanti
 expected_stdout = "true\npositive\nfallback\n"
 
 [[case]]
+id = "ordered.suspendable"
+source = "ordered-suspendable.ores"
+kind = "run"
+java = "required"
+llvm = "pending"
+description = "Async ordered matching keeps first-match precedence for overlapping guards"
+expected_stdout = "first\n"
+
+[[case]]
+id = "reject.exclusive.free.guard"
+source = "exclusive-free-guard.ores"
+kind = "reject"
+java = "required"
+llvm = "pending"
+description = "Guards on mutable/free names cannot prove exclusive dispatch"
+diagnostic_contains = "overlapping exclusive match arms"
+
+[[case]]
 id = "reject.exclusive.overlap"
 source = "exclusive-overlap.ores"
 kind = "reject"
