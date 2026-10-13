@@ -1442,13 +1442,24 @@ public final class Parser {
     }
 
     private Ast.TypeRef parseTypeRef() {
-        Ast.TypeRef first = parseTypeAtom();
+        Ast.TypeRef first = parseTypeIntersection();
         if (!match(PIPE)) return first;
 
         List<Ast.TypeRef> options = new ArrayList<>();
         options.add(first);
-        do options.add(parseTypeAtom()); while (match(PIPE));
+        do options.add(parseTypeIntersection()); while (match(PIPE));
         return Ast.TypeRef.union(options);
+    }
+
+    // Intersection binds more tightly than union: A | B & C == A | (B & C).
+    // A leading AMP remains the existing borrowed-reference syntax (&T).
+    private Ast.TypeRef parseTypeIntersection() {
+        Ast.TypeRef first = parseTypeAtom();
+        if (!match(AMP)) return first;
+        List<Ast.TypeRef> parts = new ArrayList<>();
+        parts.add(first);
+        do parts.add(parseTypeAtom()); while (match(AMP));
+        return Ast.TypeRef.intersection(parts);
     }
 
     private Ast.TypeRef parseTypeAtom() {
@@ -1483,6 +1494,16 @@ public final class Parser {
             return Ast.TypeRef.tupleType(elements);
         }
 
+        // Type-position struct{...} and contextual record{...} are equivalent
+        // read-only structural *views*, not constructors or nominal values.
+        // The legacy bare {...} type keeps its existing writable capability.
+        // Only recognize "record" here when followed by '{', so ordinary
+        // functions/members named record remain valid identifiers.
+        boolean readonlyShape = false;
+        if ((check(STRUCT) || isContextualIdentifier("record")) && checkNext(LBRACE)) {
+            advance();
+            readonlyShape = true;
+        }
         if (match(LBRACE)) {
             java.util.LinkedHashMap<String, Ast.TypeRef> members = new java.util.LinkedHashMap<>();
             if (!check(RBRACE)) {
@@ -1496,7 +1517,9 @@ public final class Parser {
                 } while (match(COMMA));
             }
             consume(RBRACE, "expected '}' after record type");
-            return Ast.TypeRef.recordType(members);
+            return readonlyShape
+                    ? Ast.TypeRef.readonlyRecordType(members)
+                    : Ast.TypeRef.recordType(members);
         }
 
         if (match(TYPEOF)) {

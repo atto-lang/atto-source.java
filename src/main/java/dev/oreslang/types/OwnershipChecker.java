@@ -39,6 +39,8 @@ public final class OwnershipChecker {
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> intersectionAliases = new HashMap<>();
+    private final Set<String> ambiguousIntersectionAliases = new HashSet<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -92,6 +94,9 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    index(intersectionAliases, ambiguousIntersectionAliases, module.name(), alias.name(), alias);
+                }
             }
         }
     }
@@ -132,11 +137,86 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
+                else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    validateIntersectionFields(alias.target(), false, new HashSet<>());
+                }
             }
         }
     }
 
+    /**
+     * Until intersection field projections have a canonical ownership lowering,
+     * require every intersected record's field to be Copy. Otherwise a synthetic
+     * type alias could expose a move-only/borrowed field without tracking the
+     * move or lifetime of its original owner.
+     */
+    private void validateIntersectionFields(
+            Ast.TypeRef ref, boolean insideIntersection, Set<String> visitedAliases) {
+        if (ref == null) return; // implicit/inferred types carry no intersection
+        if (ref.isIntersection()) {
+            for (Ast.TypeRef part : ref.arguments()) {
+                validateIntersectionFields(part, true, visitedAliases);
+            }
+            return;
+        }
+        if (ref.isRecordType()) {
+            for (Map.Entry<String, Ast.TypeRef> field : ref.recordMembers().entrySet()) {
+                if (insideIntersection && !safeIntersectionCopyField(field.getValue(), new HashSet<>())) {
+                    throw error("intersection field '" + field.getKey()
+                            + "' is borrowed or move-only; ownership-aware field projection is not yet implemented");
+                }
+                validateIntersectionFields(field.getValue(), false, visitedAliases);
+            }
+            return;
+        }
+        if (ref.isBorrow()) {
+            validateIntersectionFields(ref.borrowedTarget(), false, visitedAliases);
+            return;
+        }
+        Ast.TypeAliasDecl alias = ambiguousIntersectionAliases.contains(ref.name())
+                ? null : intersectionAliases.get(ref.name());
+        if (insideIntersection && alias != null && !alias.genericParameters().isEmpty()) {
+            throw error("generic alias '" + ref.name()
+                    + "' inside an intersection requires ownership-aware generic field projection");
+        }
+        if (alias != null && alias.genericParameters().isEmpty() && ref.arguments().isEmpty()) {
+            if (!visitedAliases.add(ref.name())) return; // cyclic aliases fail earlier during type analysis
+            try {
+                validateIntersectionFields(alias.target(), insideIntersection, visitedAliases);
+            } finally {
+                visitedAliases.remove(ref.name());
+            }
+            return;
+        }
+        for (Ast.TypeRef part : ref.arguments()) {
+            validateIntersectionFields(part, false, visitedAliases);
+        }
+    }
+
+    private boolean safeIntersectionCopyField(Ast.TypeRef type, Set<String> visitedAliases) {
+        if (type.isBorrow() || type.isIntersection() || type.isRecordType()) return false;
+        if (type.isUnion()) return type.arguments().stream()
+                .allMatch(option -> safeIntersectionCopyField(option, visitedAliases));
+        Ast.TypeAliasDecl alias = ambiguousIntersectionAliases.contains(type.name())
+                ? null : intersectionAliases.get(type.name());
+        if (alias != null && alias.genericParameters().isEmpty() && type.arguments().isEmpty()) {
+            if (!visitedAliases.add(type.name())) return false;
+            try {
+                return safeIntersectionCopyField(alias.target(), visitedAliases);
+            } finally {
+                visitedAliases.remove(type.name());
+            }
+        }
+        return isCopyType(type);
+    }
+
     private void checkFunction(Ast.FunctionDecl fn) {
+        // The alias-only pass cannot guard inline parameter/return syntax.
+        // Check every callable boundary before ownership-place analysis.
+        for (Ast.Param param : fn.parameters()) {
+            validateIntersectionFields(param.type(), false, new HashSet<>());
+        }
+        validateIntersectionFields(fn.returnType(), false, new HashSet<>());
         Scope scope = new Scope(null, fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
@@ -161,6 +241,9 @@ public final class OwnershipChecker {
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.FieldDecl field : klass.fields()) {
             Ast.TypeRef fieldType = ownershipFieldType(field);
+            if (fieldType != null) {
+                validateIntersectionFields(fieldType, false, new HashSet<>());
+            }
             if (fieldType != null && fieldType.isBorrow()) {
                 throw error("field '" + klass.name() + "." + field.name()
                         + "' cannot store a borrowed reference; class/actor fields must own, copy, share, or proxy their state");
@@ -169,6 +252,9 @@ public final class OwnershipChecker {
 
         if (klass.constructor() != null) {
             Ast.ConstructorDecl constructor = klass.constructor();
+            for (Ast.Param param : constructor.parameters()) {
+                validateIntersectionFields(param.type(), false, new HashSet<>());
+            }
             Scope scope = new Scope(null);
             scope.define("self", new VarState(
                     Ast.TypeRef.borrowed(Ast.TypeRef.simple(klass.name()), true),
@@ -193,6 +279,13 @@ public final class OwnershipChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            validateIntersectionFields(method.returnType(), false, new HashSet<>());
+            if (method.explicitReceiverType() != null) {
+                validateIntersectionFields(method.explicitReceiverType(), false, new HashSet<>());
+            }
+            for (Ast.Param param : method.parameters()) {
+                validateIntersectionFields(param.type(), false, new HashSet<>());
+            }
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
                 if (klass.actorKind() != Ast.ActorKind.NONE) {
@@ -709,6 +802,9 @@ public final class OwnershipChecker {
     }
 
     private void checkBinding(Ast.BindingStmt binding, Scope scope) {
+        if (binding.declaredType() != null) {
+            validateIntersectionFields(binding.declaredType(), false, new HashSet<>());
+        }
         boolean recursiveLambda = binding.initializer() instanceof Ast.LambdaExpr;
         VarState placeholder = null;
         if (recursiveLambda) {
@@ -2205,7 +2301,12 @@ public final class OwnershipChecker {
             }
         }
 
-        for (Ast.Param param : lambda.parameters()) closure.define(param.name(), stateForParam(param));
+        // Lambda parameters are executable type boundaries too; checking only
+        // top-level functions would permit borrowed fields through inline ADTs.
+        for (Ast.Param param : lambda.parameters()) {
+            validateIntersectionFields(param.type(), false, new HashSet<>());
+            closure.define(param.name(), stateForParam(param));
+        }
         defineImplicitArguments(closure, lambda.parameters());
         int previousLoopDepth = loopDepth;
         boolean previousDiscard = discardingSelectReturn;

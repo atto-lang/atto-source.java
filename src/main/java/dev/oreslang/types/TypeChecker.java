@@ -3986,7 +3986,7 @@ public final class TypeChecker {
                                 ? entry.getValue()
                                 : overlayReadonlyCapabilities(sourceMember, entry.getValue()));
             }
-            return new Record(members, sourceRecord.readOnly() || targetRecord.readOnly());
+            return targetRecord.withMembers(members, sourceRecord.readOnly() || targetRecord.readOnly());
         }
         if (source instanceof ListType sourceList && target instanceof ListType targetList) {
             return new ListType(overlayReadonlyCapabilities(sourceList.element(), targetList.element()));
@@ -4254,7 +4254,7 @@ public final class TypeChecker {
                     remainder.put(member.getKey(), member.getValue());
                 }
             }
-            return new Record(remainder, record.readOnly());
+            return record.withMembers(remainder, record.readOnly());
         }
         if (source instanceof Union union) {
             List<Type> alternatives = new ArrayList<>(union.options().size());
@@ -4382,7 +4382,7 @@ public final class TypeChecker {
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, bindReceiverSelf(member, receiver)));
-            return new Record(members, record.readOnly());
+            return record.withMembers(members, record.readOnly());
         }
         return type;
     }
@@ -5027,7 +5027,11 @@ public final class TypeChecker {
                 // capability, including readonly members inside an explicit
                 // struct. A named structural contract needs the same shape
                 // overlay when the subject is a record.
-                if (subject instanceof Record) bindingType = targetShape;
+                if (subject instanceof Record) {
+                    // Structural patterns produce a read-only view rather than
+                    // granting writes merely because the pattern spells {x: T}.
+                    bindingType = targetShape.withMembers(targetShape.members(), true);
+                }
                 bindingType = overlayReadonlyCapabilities(subject, bindingType);
                 bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
             }
@@ -5154,7 +5158,12 @@ public final class TypeChecker {
         if (subject instanceof SelfType selfType) {
             return structuralPatternMayMatch(selfType.bound(), targetShape);
         }
-        if (subject instanceof Record) return assignable(subject, targetShape);
+        // Pattern testing only reads the subject. A readonly input must not
+        // become unreachable because the pattern spelling denotes a mutable
+        // record; the binding retains the subject's readonly capability.
+        if (subject instanceof Record) {
+            return assignable(subject, targetShape.withMembers(targetShape.members(), true));
+        }
         if (subject instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
@@ -5561,7 +5570,7 @@ public final class TypeChecker {
                     operator + " cannot use " + ref.name()
                             + " as a target: validate against a concrete runtime type");
         }
-        if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
+        if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isIntersection() || ref.isStringLiteral()
                 || ref.name().equals("$infer$") || ref.name().equals("self")
                 || ref.name().equals("Fnc") || ref.name().equals("Function")) {
             throw new IllegalArgumentException(
@@ -5646,7 +5655,7 @@ public final class TypeChecker {
             for (Map.Entry<String, Type> entry : record.members().entrySet()) {
                 members.put(entry.getKey(), resolveSharedGeneric(entry.getValue(), bindings));
             }
-            return new Record(members, record.readOnly());
+            return record.withMembers(members, record.readOnly());
         }
         return type;
     }
@@ -5993,16 +6002,29 @@ public final class TypeChecker {
         }
     }
 
+    private static void rejectUserMethodContractKey(String name) {
+        // Compiler method-slot keys carry special variance and are not data fields.
+        // A user-defined field with such a name must never become a method proof.
+        if (name.startsWith("instance$") && name.contains("$arity")
+                && name.contains("$generics")) {
+            throw new IllegalArgumentException(
+                    "field name '" + name + "' is reserved for compiler method contracts");
+        }
+    }
+
     private Record classShape(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
         Record cached = classShapeCache.get(klass);
         if (cached != null) return cached;
         if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
         Map<String, Type> members = new LinkedHashMap<>();
+        Set<String> methodKeys = new LinkedHashSet<>();
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent != null) {
                 Map<String, Type> parentBindings = parentBindings(parentRef, klass, parent);
-                for (Map.Entry<String, Type> inherited : classShape(parent, stack).members().entrySet()) {
+                Record parentShape = classShape(parent, stack);
+                methodKeys.addAll(parentShape.methodKeys());
+                for (Map.Entry<String, Type> inherited : parentShape.members().entrySet()) {
                     mergeMember(members, inherited.getKey(), substituteGenerics(inherited.getValue(), parentBindings),
                             "multiple inheritance of " + klass.name());
                 }
@@ -6010,16 +6032,21 @@ public final class TypeChecker {
         }
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = new SelfType(nominalClassType(klass));
-        for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
+        for (Ast.FieldDecl field : klass.fields()) {
+            rejectUserMethodContractKey(field.name());
+            mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
+        }
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
+            String methodKey = methodContractKey(method.name(), method.arity(), method.genericParameters().size());
+            methodKeys.add(methodKey);
             mergeMember(members,
-                    methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
+                    methodKey,
                     callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
                     "class " + klass.name());
         }
         stack.remove(klass);
-        Record result = new Record(members);
+        Record result = new Record(members, false, methodKeys);
         classShapeCache.put(klass, result);
         return result;
     }
@@ -6027,11 +6054,14 @@ public final class TypeChecker {
     private Record publicClassShape(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
         if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
         Map<String, Type> members = new LinkedHashMap<>();
+        Set<String> methodKeys = new LinkedHashSet<>();
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent != null) {
                 Map<String, Type> parentBindings = parentBindings(parentRef, klass, parent);
-                for (Map.Entry<String, Type> inherited : publicClassShape(parent, stack).members().entrySet()) {
+                Record parentShape = publicClassShape(parent, stack);
+                methodKeys.addAll(parentShape.methodKeys());
+                for (Map.Entry<String, Type> inherited : parentShape.members().entrySet()) {
                     mergeMember(members, inherited.getKey(), substituteGenerics(inherited.getValue(), parentBindings),
                             "public inheritance of " + klass.name());
                 }
@@ -6040,23 +6070,27 @@ public final class TypeChecker {
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = new SelfType(nominalClassType(klass));
         for (Ast.FieldDecl field : klass.fields()) {
+            rejectUserMethodContractKey(field.name());
             if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         }
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
+                String methodKey = methodContractKey(method.name(), method.arity(), method.genericParameters().size());
+                methodKeys.add(methodKey);
                 mergeMember(members,
-                        methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
+                        methodKey,
                         callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
                         "class " + klass.name());
             }
         }
         stack.remove(klass);
-        return new Record(members);
+        return new Record(members, false, methodKeys);
     }
 
     private Record interfaceShape(Ast.InterfaceDecl iface, Set<String> generics, Set<Ast.InterfaceDecl> stack) {
         if (!stack.add(iface)) throw new IllegalArgumentException("interface inheritance cycle involving '" + iface.name() + "'");
         Map<String, Type> members = new LinkedHashMap<>();
+        Set<String> methodKeys = new LinkedHashSet<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
@@ -6072,7 +6106,9 @@ public final class TypeChecker {
             }
             Map<String, Type> parentBindings = genericBindings(parent.genericParameters(), parentType.arguments(),
                     "interface " + parent.name());
-            for (Map.Entry<String, Type> inherited : interfaceShape(parent, Set.copyOf(parent.genericParameters()), stack).members().entrySet()) {
+            Record parentShape = interfaceShape(parent, Set.copyOf(parent.genericParameters()), stack);
+            methodKeys.addAll(parentShape.methodKeys());
+            for (Map.Entry<String, Type> inherited : parentShape.members().entrySet()) {
                 mergeMember(members, inherited.getKey(), substituteGenerics(inherited.getValue(), parentBindings),
                         "interface inheritance of " + iface.name());
             }
@@ -6080,16 +6116,19 @@ public final class TypeChecker {
         Type interfaceSelf = new SelfType(nominalInterfaceType(iface));
         for (Ast.InterfaceMember member : iface.members()) {
             if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                String methodKey = methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size());
+                methodKeys.add(methodKey);
                 mergeMember(members,
-                        methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
+                        methodKey,
                         callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, false, generics, interfaceSelf),
                         "interface " + iface.name());
             } else if (member instanceof Ast.InterfaceFieldDecl field) {
+                rejectUserMethodContractKey(field.name());
                 mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
             }
         }
         stack.remove(iface);
-        return new Record(members);
+        return new Record(members, false, methodKeys);
     }
 
     private Named inferConstructedClassType(
@@ -6689,10 +6728,9 @@ public final class TypeChecker {
 
         Type concrete = resolve(param.type(), generics, self);
         if (concrete instanceof Record record) {
-            // Structural parameters are observation-only borrowed views.
-            // Make that capability explicit in the type environment: merely
-            // declaring the parameter VAL does not prevent p.foo = value.
-            return new Record(record.members(), true);
+            // A structural parameter is an immutable borrowed view. Preserve
+            // that capability in the expected type, including for inline records.
+            return record.withMembers(record.members(), true);
         }
         Ast.InterfaceDecl iface = findInterface(param.type().name());
         if (iface != null) {
@@ -6703,7 +6741,7 @@ public final class TypeChecker {
             Record specialized = (Record) substituteGenerics(
                     shape,
                     genericBindings(iface.genericParameters(), named.arguments(), "interface " + iface.name()));
-            return new Record(specialized.members(), true);
+            return specialized.withMembers(specialized.members(), true);
         }
 
         Ast.ClassDecl klass = findClass(param.type().name());
@@ -6718,7 +6756,7 @@ public final class TypeChecker {
             }
             Type shape = publicClassShape(klass, new LinkedHashSet<>());
             Record specialized = (Record) substituteGenerics(shape, classGenericBindings(klass, named));
-            return new Record(specialized.members(), true);
+            return specialized.withMembers(specialized.members(), true);
         }
 
         throw new IllegalArgumentException(
@@ -7149,7 +7187,7 @@ public final class TypeChecker {
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, substituteGenerics(member, bindings)));
-            return new Record(members, record.readOnly());
+            return record.withMembers(members, record.readOnly());
         }
         return type;
     }
@@ -7521,6 +7559,10 @@ public final class TypeChecker {
         if (ref.isUnion()) {
             return Types.unionOf(ref.arguments().stream().map(option -> resolve(option, generics, self, allowNullMarker)).toList());
         }
+        if (ref.isIntersection()) {
+            return Types.intersectOf(ref.arguments().stream()
+                    .map(part -> resolve(part, generics, self, allowNullMarker)).toList());
+        }
         if (ref.isTupleType()) {
             Map<String, Ast.TypeRef> metadata = namedTypeParameters(ref);
             validateCollectionMetadata("Tuple", metadata);
@@ -7533,6 +7575,7 @@ public final class TypeChecker {
         if (ref.isRecordType()) {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Map.Entry<String, Ast.TypeRef> member : ref.recordMembers().entrySet()) {
+                rejectUserMethodContractKey(member.getKey());
                 members.put(member.getKey(), resolve(member.getValue(), generics, self, allowNullMarker));
             }
             return new Record(members, ref.isReadonlyRecordType());
@@ -7951,16 +7994,26 @@ public final class TypeChecker {
     }
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {
-        // Readonly destinations are observation-only, and may use structural
-        // width/covariance. Mutable destinations require write-safe field
-        // types, regardless of field name. Instance method signature variance
-        // is already enforced recursively in assignable(Function, Function).
+        // Read-only views must not acquire mutation authority via aliases.
         if (actual.readOnly() && !expected.readOnly()) return false;
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
             Type candidate = actual.members().get(required.getKey());
-            if (candidate == null || !assignable(candidate, required.getValue())) return false;
-            if (!expected.readOnly()
-                    && !assignable(required.getValue(), candidate)) return false;
+            if (candidate == null) return false;
+            // Method identity comes from a compiler witness, not a string name.
+            if (actual.methodKeys().contains(required.getKey())
+                    != expected.methodKeys().contains(required.getKey())) return false;
+            if (!assignable(candidate, required.getValue())) return false;
+            // Writable slots must be genuinely invariant. Two-way assignability
+            // is insufficient: Unknown, dynamic interop and permissive generic
+            // relations can pass both directions without equal representations.
+            // Compiler-owned callable selector slots are methods, not writable
+            // fields; they retain contravariant parameters/covariant returns.
+            boolean methodSlot = actual.methodKeys().contains(required.getKey())
+                    && expected.methodKeys().contains(required.getKey())
+                    && candidate instanceof Function && required.getValue() instanceof Function;
+            if (!expected.readOnly() && !methodSlot && !candidate.equals(required.getValue())) {
+                return false;
+            }
         }
         return true;
     }

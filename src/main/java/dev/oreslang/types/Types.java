@@ -44,9 +44,28 @@ public final class Types {
      * width/covariance; writable target members require invariant types so
      * references cannot regain mutation authority through aliases.
      */
-    public record Record(Map<String, Type> members, boolean readOnly) implements Type {
-        public Record { members = Map.copyOf(members); }
+    public record Record(Map<String, Type> members, boolean readOnly,
+                         java.util.Set<String> methodKeys) implements Type {
+        public Record {
+            members = Map.copyOf(members);
+            methodKeys = java.util.Set.copyOf(methodKeys);
+            for (String key : methodKeys) {
+                if (!(members.get(key) instanceof Function)) {
+                    throw new IllegalArgumentException(
+                            "compiler method slot '" + key + "' must contain a callable contract");
+                }
+            }
+        }
+        public Record(Map<String, Type> members, boolean readOnly) {
+            this(members, readOnly, java.util.Set.of());
+        }
         public Record(Map<String, Type> members) { this(members, false); }
+        /** Preserve compiler-proven method identity during type transformations. */
+        public Record withMembers(Map<String, Type> updated, boolean readonly) {
+            java.util.Set<String> surviving = new java.util.HashSet<>(methodKeys);
+            surviving.retainAll(updated.keySet());
+            return new Record(updated, readonly, surviving);
+        }
     }
 
     public record Function(
@@ -359,15 +378,26 @@ public final class Types {
         }
 
         if (from instanceof Record source && to instanceof Record target) {
-            // A readonly *view* may safely widen readable members, but an
-            // explicitly writable destination may not offer broader writes.
-            // In particular, {foo:int} must not become writable {foo:Any}.
+            // A readonly view cannot recover write permission via a structural alias.
             if (source.readOnly() && !target.readOnly()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
-                if (actual == null || !isAssignable(actual, required.getValue())) return false;
-                if (!target.readOnly()
-                        && !isAssignable(required.getValue(), actual)) return false;
+                if (actual == null) return false;
+                // A callable-valued data field is not an instance method.
+                if (source.methodKeys().contains(required.getKey())
+                        != target.methodKeys().contains(required.getKey())) return false;
+                if (!isAssignable(actual, required.getValue())) return false;
+                // Writable data slots require equal resolved types. Bidirectional
+                // assignability is not enough: Unknown/Generic can match both
+                // directions and would allow writes through an unsafe alias.
+                // Compiler-owned callable selector slots describe methods, which
+                // are immutable contracts and retain function variance.
+                boolean methodSlot = source.methodKeys().contains(required.getKey())
+                        && target.methodKeys().contains(required.getKey())
+                        && actual instanceof Function && required.getValue() instanceof Function;
+                if (!target.readOnly() && !methodSlot && !actual.equals(required.getValue())) {
+                    return false;
+                }
             }
             return true;
         }
@@ -442,6 +472,91 @@ public final class Types {
         if (flattened.size() == 1) return flattened.getFirst();
         flattened.sort(java.util.Comparator.comparing(Object::toString));
         return new Union(flattened);
+    }
+
+    /**
+     * A deliberately bounded first phase of intersection semantics.
+     *
+     * No nominal/class/trait implementation is synthesized here. Prove a
+     * representable intersection or fail closed, including for Generic/Unknown.
+     * In particular, coercive numeric assignability is NOT set intersection:
+     * int & float must not accidentally become int.
+     */
+    public static Type intersectOf(List<Type> types) {
+        if (types.isEmpty()) throw new IllegalArgumentException("intersection type requires at least one operand");
+        Type result = types.getFirst();
+        for (int i = 1; i < types.size(); i++) result = intersectOf(result, types.get(i));
+        return result;
+    }
+
+    public static Type intersectOf(Type left, Type right) {
+        Objects.requireNonNull(left);
+        Objects.requireNonNull(right);
+        if (left.equals(right)) return left;
+        if (left == Unknown.INSTANCE || right == Unknown.INSTANCE
+                || left instanceof Generic || right instanceof Generic) {
+            throw new IllegalArgumentException(
+                    "intersection involving an unresolved generic or unknown type requires a proven runtime contract");
+        }
+        if (left instanceof Union union) return intersectUnion(union, right);
+        if (right instanceof Union union) return intersectUnion(union, left);
+        if (left instanceof StringLiteral && right == Primitive.STRING) return left;
+        if (right instanceof StringLiteral && left == Primitive.STRING) return right;
+        if (left instanceof Record a && right instanceof Record b) {
+            if (a.readOnly() != b.readOnly()) {
+                throw new IllegalArgumentException(
+                        "intersection of readonly and mutable records requires per-member access capabilities");
+            }
+            java.util.TreeMap<String, Type> merged = new java.util.TreeMap<>(a.members());
+            for (Map.Entry<String, Type> field : b.members().entrySet()) {
+                Type existing = merged.get(field.getKey());
+                if (existing != null && a.methodKeys().contains(field.getKey())
+                        != b.methodKeys().contains(field.getKey())) {
+                    throw new IllegalArgumentException(
+                            "intersection field/method collision at '" + field.getKey() + "'");
+                }
+                if (existing == null) {
+                    merged.put(field.getKey(), field.getValue());
+                    continue;
+                }
+                if (!a.readOnly()) {
+                    if (!existing.equals(field.getValue())) {
+                        throw new IllegalArgumentException(
+                                "intersection conflicting writable field '" + field.getKey()
+                                        + "': " + existing + " vs " + field.getValue());
+                    }
+                } else {
+                    try {
+                        merged.put(field.getKey(), intersectOf(existing, field.getValue()));
+                    } catch (IllegalArgumentException failure) {
+                        throw new IllegalArgumentException(
+                                "intersection conflicting readonly field '" + field.getKey()
+                                        + "': " + failure.getMessage(), failure);
+                    }
+                }
+            }
+            java.util.Set<String> methodKeys = new java.util.HashSet<>(a.methodKeys());
+            methodKeys.addAll(b.methodKeys());
+            return new Record(merged, a.readOnly(), methodKeys);
+        }
+        throw new IllegalArgumentException(
+                "intersection has no proven common value or supported representation: "
+                        + left + " & " + right);
+    }
+
+    private static Type intersectUnion(Union union, Type other) {
+        java.util.ArrayList<Type> common = new java.util.ArrayList<>();
+        for (Type option : union.options()) {
+            // Only identical alternatives are provably safe in this phase.
+            if (option.equals(other)) common.add(option);
+            if (other instanceof Union candidate && candidate.options().contains(option)
+                    && !common.contains(option)) common.add(option);
+        }
+        if (common.isEmpty()) {
+            throw new IllegalArgumentException("intersection has no common union alternative: "
+                    + union + " & " + other);
+        }
+        return unionOf(common);
     }
 
     public static boolean isNumeric(Type type) {
