@@ -7748,6 +7748,23 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (pattern instanceof Ast.ConstructorPattern constructor) {
                 String name = constructor.constructor();
+                if (name.indexOf('.') > 0) {
+                    // Match a nominal enum tag BEFORE inspecting its payload.
+                    // Identical payload shapes in two variants are not equal.
+                    var expected = messageCase(name);
+                    if (expected == null) return false;
+                    if (!(value instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue tagged)
+                            || !tagged.qualifiedName().equals(expected.qualifiedName())
+                            || tagged.tag() != expected.tag()) return false;
+                    dev.oreslang.types.NominalEnumValueGuards.requirePayload(
+                            messageTypes, expected, tagged.payload());
+                    if (expected.sourcePayload() == null) {
+                        return constructor.arguments().isEmpty();
+                    }
+                    return constructor.arguments().size() == 1
+                            && patternMatches(constructor.arguments().getFirst(),
+                                    tagged.payload(), bindings);
+                }
                 if (name.equals("Some")) {
                     if (!(value instanceof OptionValue option) || !option.present() || constructor.arguments().size() != 1) return false;
                     return patternMatches(constructor.arguments().getFirst(), option.value(), bindings);
