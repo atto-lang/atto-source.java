@@ -6976,14 +6976,16 @@ public final class ActorRuntime implements AutoCloseable {
         private void afterPhysicalCarrierExit(Runnable callback) {
             Objects.requireNonNull(callback, "callback");
             synchronized (lifecycleLock) {
-                if (carrierActive) {
-                    // Bounded by actor-owned ticket quotas: one callback per
-                    // admitted ticket and a domain can close only once.
+                if (carrierActive || physicalExitCleanupActive) {
+                    // A callback may request another domain close while the
+                    // carrier-exit drain is already running. Queue it rather
+                    // than releasing that gate concurrently with a later turn
+                    // or clearing the finalization fence too early.
                     physicalExitCallbacks.addLast(callback);
                     return;
                 }
             }
-            callback.run(); // never execute guest-facing cleanup under lifecycleLock
+            callback.run(); // idle actor: never invoke callbacks under lifecycleLock
         }
 
         private void runBatch(Object dispatchTicket) {
@@ -7126,29 +7128,57 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 Error fatalClose = null;
-                try {
-                    for (Runnable close : afterCarrierClose) {
-                        try {
-                            close.run();
-                        } catch (Throwable failure) {
-                            // A misbehaving close observer cannot skip other
-                            // quiescence callbacks or silently preserve grants.
-                            fail(failure);
-                            if (failure instanceof Error error) {
-                                if (fatalClose == null) fatalClose = error;
-                                else if (fatalClose != error) fatalClose.addSuppressed(error);
+                // The drain itself owns the logical cleanup lease. Callback
+                // reentrancy or a concurrent closeAll can enqueue additional
+                // work until we atomically observe an empty queue under the
+                // lifecycle monitor. Clearing the fence sooner allows the
+                // next actor turn to race a still-live critical grant.
+                if (!afterCarrierClose.isEmpty()) {
+                    List<Runnable> batch = afterCarrierClose;
+                    boolean finished = false;
+                    try {
+                        while (true) {
+                            for (Runnable close : batch) {
+                                try {
+                                    close.run();
+                                } catch (Throwable failure) {
+                                    // A bad observer must not prevent the
+                                    // remaining grants from being revoked.
+                                    try {
+                                        fail(failure);
+                                    } catch (VirtualMachineError | ThreadDeath | LinkageError error) {
+                                        if (fatalClose == null) fatalClose = error;
+                                        else if (fatalClose != error) fatalClose.addSuppressed(error);
+                                    }
+                                    if (failure instanceof Error error) {
+                                        if (fatalClose == null) fatalClose = error;
+                                        else if (fatalClose != error) fatalClose.addSuppressed(error);
+                                    }
+                                }
+                            }
+                            synchronized (lifecycleLock) {
+                                if (physicalExitCallbacks.isEmpty()) {
+                                    physicalExitCleanupActive = false;
+                                    finished = true;
+                                    if (stopped.get()) finalizeStopLocked();
+                                    reschedule = reschedule || (!stopped.get()
+                                            && !forceKillFenced && !closed.get()
+                                            && !finalized && hasQueuedWorkLocked());
+                                    lifecycleLock.notifyAll();
+                                    break;
+                                }
+                                batch = List.copyOf(physicalExitCallbacks);
+                                physicalExitCallbacks.clear();
                             }
                         }
-                    }
-                } finally {
-                    if (!afterCarrierClose.isEmpty()) {
-                        synchronized (lifecycleLock) {
-                            physicalExitCleanupActive = false;
-                            if (stopped.get()) finalizeStopLocked();
-                            reschedule = reschedule || (!stopped.get()
-                                    && !forceKillFenced && !closed.get()
-                                    && !finalized && hasQueuedWorkLocked());
-                            lifecycleLock.notifyAll();
+                    } finally {
+                        if (!finished) {
+                            synchronized (lifecycleLock) {
+                                // Even if internal finalization throws, do
+                                // not leave an actor permanently fenced.
+                                physicalExitCleanupActive = false;
+                                lifecycleLock.notifyAll();
+                            }
                         }
                     }
                 }
