@@ -17,6 +17,41 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(20)
 final class ActorSendContractTest {
     @Test
+    void startupFactoryCannotDrainMailAdmittedWhileItWasRunning() throws Exception {
+        CountDownLatch startupEntered = new CountDownLatch(1);
+        CountDownLatch letStartupFinish = new CountDownLatch(1);
+        CountDownLatch observed = new CountDownLatch(1);
+        AtomicReference<OresFuture<Void>> startupSelfDrain = new AtomicReference<>();
+        AtomicInteger handled = new AtomicInteger();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnSharedTrusted(context -> {
+                startupEntered.countDown();
+                if (!letStartupFinish.await(5, TimeUnit.SECONDS))
+                    throw new AssertionError("startup gate timed out");
+                // No activeMail exists during actor factory initialization,
+                // but a queued send still cannot complete until startup yields.
+                startupSelfDrain.set(context.self().drain());
+                observed.countDown();
+                return (message, selfContext) -> handled.addAndGet(message);
+            });
+            assertTrue(startupEntered.await(5, TimeUnit.SECONDS));
+            ref.send(7);
+            letStartupFinish.countDown();
+            assertTrue(observed.await(5, TimeUnit.SECONDS));
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> startupSelfDrain.get().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("own active mailbox"));
+            ref.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(7, handled.get());
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            letStartupFinish.countDown();
+        }
+    }
+
+    @Test
     void actorCannotAwaitItsOwnActiveDrainButCanGracefullyStopAfterTurn() throws Exception {
         AtomicReference<OresFuture<Void>> forbiddenSelfDrain = new AtomicReference<>();
         CountDownLatch observed = new CountDownLatch(1);
