@@ -100,6 +100,44 @@ final class CriticalLogicalDeadlockTest {
         assertEquals(0, CriticalGate.waitingLogicalDomains());
     }
 
+    @Test void queuedLogicalOwnerCannotBypassWaitGraphByAcquiringFreeGate() {
+        CriticalGate blocked = new CriticalGate();
+        CriticalGate free = new CriticalGate();
+        var externalOwner = blocked.newTicket();
+        assertTrue(externalOwner.enterAsync().isDone());
+        java.util.concurrent.atomic.AtomicReference<CriticalGate.Ticket> pendingRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            scheduler.startSync(() -> {
+                var pending = blocked.newTicket();
+                pendingRef.set(pending);
+                assertFalse(pending.enterAsync().isDone());
+                assertEquals(1, CriticalGate.waitingLogicalDomains());
+
+                var denied = free.newTicket();
+                var failure = assertThrows(IllegalStateException.class, denied::enterAsync);
+                assertTrue(failure.getMessage().contains("while waiting"));
+                assertFalse(free.held(),
+                        "an immediately free second gate must not bypass the wait graph");
+                assertEquals(0, free.queuedCount());
+                assertEquals(1, CriticalGate.waitingLogicalDomains(),
+                        "rejected request must not discard the first wait dependency");
+                denied.close();
+                return null;
+            }).join();
+        } finally {
+            externalOwner.close();
+        }
+        var pending = pendingRef.get();
+        assertNotNull(pending);
+        assertTrue(pending.isHeld(), "the original pending admission must still succeed");
+        pending.close();
+        assertEquals(0, CriticalGate.waitingLogicalDomains());
+        assertFalse(blocked.held());
+        assertFalse(free.held());
+    }
+
     @Test void cancellationRetractsGlobalWaitDependency() {
         CriticalGate gate = new CriticalGate();
         var owner = gate.newTicket();
