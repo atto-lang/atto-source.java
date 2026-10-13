@@ -4050,7 +4050,23 @@ public final class OresEvalRootNode extends RootNode {
                 Object result = invoke(invocation);
                 if (result instanceof OresFuture<?> future
                         && !declaredFuture) {
-                    if (env.hasLiveMutexGuards() && !future.isDone()) {
+                    // A settled Future is a value, not a suspension: do not
+                    // publish Await or relinquish the actor's execution lease.
+                    // In particular, no-yield guards can remain held across
+                    // this already-committed result without re-entering the
+                    // scheduler or running another actor's mailbox turn.
+                    if (future.isDone()) {
+                        Object completed;
+                        try {
+                            completed = future.join();
+                        } catch (RuntimeException | Error completedFailure) {
+                            continuation.accept(task, null, completedFailure);
+                            return;
+                        }
+                        continuation.accept(task, completed, null);
+                        return;
+                    }
+                    if (env.hasLiveMutexGuards()) {
                         throw new IllegalStateException(
                                 "cannot suspend on an implicit Future while holding a live MutexGuard");
                     }
