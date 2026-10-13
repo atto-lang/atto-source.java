@@ -209,9 +209,17 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("Any") || klass.name().equals("Unknown")) {
+                        throw new IllegalArgumentException(
+                                "reserved type name '" + klass.name() + "' cannot be redeclared as a class");
+                    }
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    if (iface.name().equals("Any") || iface.name().equals("Unknown")) {
+                        throw new IllegalArgumentException(
+                                "reserved type name '" + iface.name() + "' cannot be redeclared as an interface/trait");
+                    }
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {

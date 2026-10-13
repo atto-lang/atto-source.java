@@ -37,9 +37,10 @@ public final class Types {
     public record ClassNamespace(String className) implements Type { }
 
     /**
-     * Closed structural record type. readOnly is a value capability, not a
-     * structural compatibility dimension: it prevents mutation from being
-     * regained through aliases while preserving ordinary shape matching.
+     * Closed structural record type. readOnly is a value capability that
+     * restricts both writes and assignability. Read-only target views support
+     * width/covariance; writable target members require invariant types so
+     * references cannot regain mutation authority through aliases.
      */
     public record Record(Map<String, Type> members, boolean readOnly) implements Type {
         public Record { members = Map.copyOf(members); }

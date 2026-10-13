@@ -184,6 +184,8 @@ final class AnyUnknownSoundnessTest {
         reject("fnc identity<Unknown>(Unknown value): Unknown { return value; }", "reserved type name");
         reject("type Any = int; fnc ok(): void { return; }", "reserved type name");
         reject("type Unknown = int; fnc ok(): void { return; }", "reserved type name");
+        reject("define class Any as end", "reserved type name");
+        reject("define interface Unknown end", "reserved type name");
     }
 
     @Test
