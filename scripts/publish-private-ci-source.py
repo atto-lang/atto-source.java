@@ -81,16 +81,28 @@ def require_preflight(repository, root):
     checked_repo(repository)
 
 
-def checked_policy_fingerprint(root):
+def checked_policy_fingerprint(root, repository):
     policy_dir = root / ".github"
     policy = policy_dir / "private-ci-approved-repositories.txt"
     if (not policy_dir.is_dir() or policy_dir.is_symlink()
             or not policy.is_file() or policy.is_symlink()):
         raise Denied("private CI approval policy missing or redirected")
     try:
-        return hashlib.sha256(policy.read_bytes()).digest()
-    except OSError as exc:
-        raise Denied("private CI approval policy cannot be read") from exc
+        contents = policy.read_bytes()
+        lines = contents.decode("utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise Denied("private CI approval policy cannot be read or decoded") from exc
+    approved = False
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        if not NAME.fullmatch(line):
+            raise Denied("private CI approval policy contains an invalid entry")
+        if line.casefold() == repository.casefold():
+            approved = True
+    if not approved:
+        raise Denied("destination approval was revoked or absent")
+    return hashlib.sha256(contents).digest()
 
 
 def collect_source(root):
@@ -138,7 +150,7 @@ def publish(repository, source, branch, trusted_root):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
-    approved_policy = checked_policy_fingerprint(trusted_root)
+    approved_policy = checked_policy_fingerprint(trusted_root, repository)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -155,7 +167,7 @@ def publish(repository, source, branch, trusted_root):
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     def authorize_write():
-        if checked_policy_fingerprint(trusted_root) != approved_policy:
+        if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
         checked_repo(repository)
 
