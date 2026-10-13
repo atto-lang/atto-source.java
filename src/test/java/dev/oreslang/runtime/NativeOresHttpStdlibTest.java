@@ -99,7 +99,7 @@ final class NativeOresHttpStdlibTest {
                         val Future<int> sending = net_core.write(rt borrow peer, wire_response);
                         val int written = await sending;
                         if head.status != 200 || !head.keep_alive; then break; fi
-                        let Array<int> rest = new Array<int>();
+                        let mut Array<int> rest = new Array<int>();
                         for (let int k = head.consumed; k < pending.size; k = k + 1) {
                           rest.add(pending.get(k));
                         }
