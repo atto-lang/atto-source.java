@@ -1867,6 +1867,14 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        // A syntactically recognized read/write operation is NOT an
+        // ordinary callable: until the compiler proves callback loans,
+        // effects and scheduler dispatch, it must never acquire a type.
+        if (expr instanceof Ast.ActorStateAccessExpr) {
+            throw new IllegalArgumentException(
+                    "sealed actor handle_state critical-read/write lowering is disabled "
+                            + "until ownership/effects and scheduler cleanup are verified");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
