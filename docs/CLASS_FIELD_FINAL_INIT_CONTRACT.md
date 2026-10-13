@@ -149,3 +149,26 @@ callback latch before the TaskRunner finally-block released the semaphore.
 It now waits for the actual permit restoration with a bounded deadline
 and still fails on a persistent leak. This is a test synchronization fix,
 not a change to runtime reservation or notification semantics.
+
+## Fail-closed eager initializer intrinsics (2026-10-13)
+
+During ordinary class field initialization, `rt` expressions are **not**
+implicitly constructor-safe merely because their operands are literals or
+copyable scalars. This includes `rt fail`, `rt take`, `rt borrow`,
+`rt share`, `rt copy`, `rt cooperate` and future runtime intrinsics.
+`rt fail` can unwind a partially built object, `take` can move storage,
+and the remaining intrinsics need a proven loan/copy/effect lifetime contract.
+
+The TypeChecker rejects these eager expressions until an explicit
+constructor-safe proof and failure cleanup model are implemented. It also
+rejects newly added expression AST kinds by default instead of treating an
+unknown node as effect-free. Literal values, ordinary scalar expressions and
+the tightly bounded synchronous scalar helper proof are unchanged; the
+existing zero-argument builtin Array constructor exception is unchanged.
+A stored lambda is not executed eagerly and remains subject to ordinary
+type/ownership checking.
+
+Regression tests cover each accepted-source `rt` operation and an
+arithmetic expression that nests `rt fail`. They are pending execution
+on the exact updated PR head. This is a static admission hardening, not
+evidence of JVM, native-image, or LLVM runtime parity.
