@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -106,6 +107,24 @@ final class HyphenatedCompoundKeywordTest {
                 () -> new Lexer("nb" + (char) 0x2013 + "select").scan());
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("fnc wrong(): void { nb - select { default: {} } }"));
+    }
+
+    @Test
+    void spacedCommentedAndSuffixedCriticalSpellingsCannotBecomeRwModifiers() {
+        String[] nearMisses = {
+            "pub fnc critical - read value(): int { return 1; }",
+            "pub fnc critical- read value(): int { return 1; }",
+            "pub fnc critical -read value(): int { return 1; }",
+            "pub fnc critical/*gap*/-read value(): int { return 1; }",
+            "pub fnc critical-readonly value(): int { return 1; }",
+            "pub fnc critical--read value(): int { return 1; }"
+        };
+        for (String source : nearMisses) {
+            IllegalArgumentException failure =
+                    assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+            assertFalse(failure.getMessage().contains("reader/writer critical declaration requires"),
+                    "noncontiguous or extended spelling must not be classified as a RW modifier: " + source);
+        }
     }
 
     @Test
