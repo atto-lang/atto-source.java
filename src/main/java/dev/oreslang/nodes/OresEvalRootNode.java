@@ -142,6 +142,14 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
+        /**
+         * Immutable effective method slots, constructed before the evaluator is
+         * published to actor carriers. Dispatch performs one selector lookup
+         * rather than scanning methods and recursively traversing parents.
+         * ClassDecl identity (not structural record equality) is intentional.
+         */
+        private final IdentityHashMap<Ast.ClassDecl, Map<CallableSelector, Ast.MethodDecl>>
+                callableSlots = new IdentityHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
@@ -196,6 +204,7 @@ public final class OresEvalRootNode extends RootNode {
             this.codeUnitId = normalizeUnitId(codeUnitId);
             indexImports();
             indexDeclarations();
+            indexCallableSlots();
         }
 
         private void indexImports() {
@@ -323,6 +332,69 @@ public final class OresEvalRootNode extends RootNode {
             if (previous != null && previous != value) {
                 ambiguous.add(name);
                 map.remove(name);
+            }
+        }
+
+        private void indexCallableSlots() {
+            // Class declarations appear under both qualified and unqualified
+            // keys. Visit each actual declaration only once, by identity.
+            Set<Ast.ClassDecl> unique =
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+            unique.addAll(classes.values());
+            for (Ast.ClassDecl klass : unique) {
+                compileCallableSlots(klass,
+                        java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+            }
+        }
+
+        private Map<CallableSelector, Ast.MethodDecl> compileCallableSlots(
+                Ast.ClassDecl klass, Set<Ast.ClassDecl> active) {
+            Map<CallableSelector, Ast.MethodDecl> ready = callableSlots.get(klass);
+            if (ready != null) return ready;
+            if (!active.add(klass)) {
+                throw new IllegalArgumentException(
+                        "inheritance cycle involving " + klass.name());
+            }
+            try {
+                Map<CallableSelector, Ast.MethodDecl> local = new HashMap<>();
+                for (Ast.MethodDecl method : klass.methods()) {
+                    CallableSelector selector = CallableSelector.of(method);
+                    if (local.putIfAbsent(selector, method) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate callable slot '" + selector.mangledName()
+                                        + "' on class '" + klass.name() + "'");
+                    }
+                }
+                Map<CallableSelector, Ast.MethodDecl> effective = new HashMap<>();
+                for (Ast.TypeRef parentRef : klass.parents()) {
+                    if (parentRef.name().equals("Object") || parentRef.name().equals("List"))
+                        continue;
+                    Ast.ClassDecl parent = findClass(parentRef.name());
+                    if (parent == null) continue;
+                    for (Map.Entry<CallableSelector, Ast.MethodDecl> inherited :
+                            compileCallableSlots(parent, active).entrySet()) {
+                        if (local.containsKey(inherited.getKey())) continue;
+                        Ast.MethodDecl old = effective.putIfAbsent(
+                                inherited.getKey(), inherited.getValue());
+                        // A true diamond shares one declaration identity.
+                        // Unrelated definitions cannot win via parent order.
+                        if (old != null && old != inherited.getValue()) {
+                            CallableSelector selector = inherited.getKey();
+                            throw new IllegalArgumentException(
+                                    "ambiguous inherited callable slot '"
+                                            + selector.name() + "' with arity "
+                                            + selector.arity() + " on class '"
+                                            + klass.name()
+                                            + "'; declare an explicit child override");
+                        }
+                    }
+                }
+                effective.putAll(local);
+                Map<CallableSelector, Ast.MethodDecl> frozen = Map.copyOf(effective);
+                callableSlots.put(klass, frozen);
+                return frozen;
+            } finally {
+                active.remove(klass);
             }
         }
 
@@ -7625,25 +7697,11 @@ public final class OresEvalRootNode extends RootNode {
             if (selector.kind() != CallableSelector.Kind.INSTANCE) {
                 throw new IllegalArgumentException("instance dispatch requires an INSTANCE selector");
             }
-            if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
-            for (Ast.MethodDecl method : klass.methods()) {
-                if (selector.matches(method)) {
-                    seen.remove(klass);
-                    return method;
-                }
+            Map<CallableSelector, Ast.MethodDecl> slots = callableSlots.get(klass);
+            if (slots == null) {
+                throw new IllegalStateException("class method dispatch table not linked: " + klass.name());
             }
-            for (Ast.TypeRef parentRef : klass.parents()) {
-                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
-                Ast.ClassDecl parent = findClass(parentRef.name());
-                if (parent == null) continue;
-                Ast.MethodDecl candidate = findMethod(parent, selector, seen);
-                if (candidate != null) {
-                    seen.remove(klass);
-                    return candidate;
-                }
-            }
-            seen.remove(klass);
-            return null;
+            return slots.get(selector);
         }
 
         private Ast.MethodDecl findStaticFunction(
@@ -7653,25 +7711,11 @@ public final class OresEvalRootNode extends RootNode {
             if (selector.kind() != CallableSelector.Kind.STATIC) {
                 throw new IllegalArgumentException("static dispatch requires a STATIC selector");
             }
-            if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
-            for (Ast.MethodDecl fn : klass.methods()) {
-                if (selector.matches(fn)) {
-                    seen.remove(klass);
-                    return fn;
-                }
+            Map<CallableSelector, Ast.MethodDecl> slots = callableSlots.get(klass);
+            if (slots == null) {
+                throw new IllegalStateException("class method dispatch table not linked: " + klass.name());
             }
-            for (Ast.TypeRef parentRef : klass.parents()) {
-                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
-                Ast.ClassDecl parent = findClass(parentRef.name());
-                if (parent == null) continue;
-                Ast.MethodDecl candidate = findStaticFunction(parent, selector, seen);
-                if (candidate != null) {
-                    seen.remove(klass);
-                    return candidate;
-                }
-            }
-            seen.remove(klass);
-            return null;
+            return slots.get(selector);
         }
 
         private List<Ast.MethodDecl> findStaticFunctionsByName(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
