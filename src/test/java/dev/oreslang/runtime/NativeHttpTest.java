@@ -16,6 +16,144 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
+        for (String kind : List.of("actor", "isoactor")) {
+            String output = run("""
+                define %s Worker as
+                  let int uses = 0;
+                  let String previous = "";
+                  receive(ActorMail<String> mail): void {
+                    if self.previous != ""; then
+                      try { http.claim(self.previous); stdio.println("STALE TOKEN ACCEPTED"); }
+                      catch (err) { stdio.println("stale-rejected"); }
+                    fi
+                    self.previous = mail.value;
+                    self.uses = self.uses + 1;
+                    val request = http.claim(mail.value);
+                    request.set_header("X-Reused", self.uses > 1 ? "yes" : "no");
+                    await request.respond(200, "text/plain", "ok");
+                    try { request.respond(200, "text/plain", "wrong"); stdio.println("CLOSED ACCEPTED"); }
+                    catch (err) { stdio.println("closed-rejected"); }
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                  val handler = http.handler("Worker").pooled(1);
+                  stdio.println(server.port);
+                  for (let int i = 0; i < 8; i = i + 1) {
+                    val request = await server.accept();
+                    val completion = request.completion;
+                    handler.dispatch(rt borrow mut request);
+                    await completion;
+                  }
+                  await server.shutdown(0);
+                  stdio.println(handler.created);
+                  stdio.println(handler.reused);
+                  stdio.println(server.active);
+                  return;
+                }
+                """.formatted(kind), port -> {
+                    for (int i = 1; i <= 8; i++) {
+                        HttpResponse<String> response = request(port, "GET", "/", "");
+                        assertEquals(200, response.statusCode());
+                        assertEquals(i > 1 ? "yes" : "no", response.headers().firstValue("X-Reused").orElseThrow());
+                    }
+                });
+            assertFalse(output.contains("ACCEPTED"), output);
+            assertEquals(7, output.split("stale-rejected", -1).length - 1, output);
+            assertEquals(8, output.split("closed-rejected", -1).length - 1, output);
+            assertTrue(output.contains("1\n7\n0\n"), output);
+        }
+    }
+
+    @Test void pooledWorkerDeathReleasesRequestAndReplacementServesFollowingRequests() throws Exception {
+        for (String kind : List.of("actor", "isoactor")) {
+            String output = run("""
+                define %s Worker as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    if request.target == "/fail"; then self.end(); return; fi
+                    await request.respond(200, "text/plain", "ok");
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                  val handler = http.handler("Worker").pooled(1);
+                  stdio.println(server.port);
+                  for (let int i = 0; i < 3; i = i + 1) {
+                    val request = await server.accept();
+                    val completion = request.completion;
+                    handler.dispatch(rt borrow mut request);
+                    await completion;
+                  }
+                  await server.shutdown(0);
+                  stdio.println(handler.created);
+                  stdio.println(handler.reused);
+                  stdio.println(server.active);
+                  return;
+                }
+                """.formatted(kind), port -> {
+                    assertEquals(500, request(port, "GET", "/fail", "").statusCode());
+                    assertEquals(200, request(port, "GET", "/ok", "").statusCode());
+                    assertEquals(200, request(port, "GET", "/ok", "").statusCode());
+                });
+            assertTrue(output.endsWith("2\n1\n0\n"), output);
+        }
+    }
+
+    @Test void pooledReceiveRemainsExclusiveAcrossAwaitUnderConcurrentRequests() throws Exception {
+        for (String kind : List.of("actor", "isoactor")) {
+            String output = run("""
+                define %s Worker as
+                  let bool receiving = false;
+                  val String identity = process.unique_id();
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    if self.receiving; then
+                      await request.respond(409, "text/plain", "overlap"); return;
+                    fi
+                    self.receiving = true;
+                    request.set_header("X-Worker", self.identity);
+                    await request.respond(200, "text/plain", "ok");
+                    self.receiving = false;
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 32, 1024, 5000);
+                  val handler = http.handler("Worker").pooled(2);
+                  stdio.println(server.port);
+                  for (let int i = 0; i < 32; i = i + 1) {
+                    val request = await server.accept();
+                    handler.dispatch(rt borrow mut request);
+                  }
+                  await server.shutdown(3000);
+                  stdio.println(handler.created);
+                  stdio.println(handler.reused);
+                  stdio.println(server.active);
+                  return;
+                }
+                """.formatted(kind), port -> {
+                    try (HttpClient client = HttpClient.newHttpClient()) {
+                        var pending = new java.util.ArrayList<CompletableFuture<HttpResponse<String>>>();
+                        for (int i = 0; i < 32; i++) pending.add(client.sendAsync(
+                            HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/"))
+                                .timeout(Duration.ofSeconds(8)).build(), HttpResponse.BodyHandlers.ofString()));
+                        var identities = new java.util.HashSet<String>();
+                        for (var future : pending) {
+                            var response = future.get(8, TimeUnit.SECONDS);
+                            assertEquals(200, response.statusCode());
+                            identities.add(response.headers().firstValue("X-Worker").orElseThrow());
+                        }
+                        assertEquals(2, identities.size());
+                    }
+                });
+            assertTrue(output.endsWith("2\n30\n0\n"), output);
+        }
+    }
+
     @Test void pathDecodingPreservesSegmentBoundariesAndRejectsAmbiguousBytes() {
         assertEquals(List.of(), NativeHttp.segments("/"));
         assertEquals(List.of("😀"), NativeHttp.segments("/😀"));
