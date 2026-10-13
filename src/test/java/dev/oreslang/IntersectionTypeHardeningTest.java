@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.Types;
@@ -140,5 +142,33 @@ final class IntersectionTypeHardeningTest {
                     return;
                 }
                 """, "argument");
+    }
+
+    @Test
+    void runtimeChecksBothStructuralRequirementsOnReturnedAlias() throws Exception {
+        String source = """
+                type Header = {request_id: int};
+                type Payload = {message: string};
+                type Event = Header & Payload;
+
+                fnc makeEvent(): Event {
+                    return Map.of("request_id", 9, "message", "ready");
+                }
+
+                pub fnc main(): void {
+                    const value = makeEvent();
+                    stdio.println(value.request_id);
+                    stdio.println(value.message);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "intersection.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("9\\nready\\n", output.toString(java.nio.charset.StandardCharsets.UTF_8));
     }
 }
