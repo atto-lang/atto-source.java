@@ -1,0 +1,309 @@
+// Canonical source for the std/error nominal type taxonomy (catalog v1).
+// Codes are durable identifiers; never reuse or renumber an existing code.
+// These are ordinary guest data types, NOT control effects. In particular,
+// throw/raise/panic/cancellation and host-fatal failures are NOT implemented here.
+// No Java interop, privileged runtime operations, mutable state or resources.
+//
+// Import examples:
+//   import class Error from "std/error";
+//   import class FileNotFoundError from "std/error";
+//
+// The manifest in contracts/v1/error-catalog.json must match this source.
+// This initial schema intentionally has no user-provided message/cause fields:
+// transport, ownership and diagnostic redaction require a separate parity gate.
+
+pub define class Error as
+  pub code(): int { return 0; }
+end
+
+pub define class ArgumentError extends Error as
+  pub code(): int { return 1000; }
+end
+
+pub define class InvalidArgumentError extends ArgumentError as
+  pub code(): int { return 1001; }
+end
+
+pub define class MissingArgumentError extends ArgumentError as
+  pub code(): int { return 1002; }
+end
+
+pub define class UnexpectedArgumentError extends ArgumentError as
+  pub code(): int { return 1003; }
+end
+
+pub define class ArityError extends ArgumentError as
+  pub code(): int { return 1004; }
+end
+
+pub define class TypeMismatchError extends ArgumentError as
+  pub code(): int { return 1005; }
+end
+
+pub define class CastError extends ArgumentError as
+  pub code(): int { return 1006; }
+end
+
+pub define class RangeError extends ArgumentError as
+  pub code(): int { return 1007; }
+end
+
+pub define class IndexError extends ArgumentError as
+  pub code(): int { return 1008; }
+end
+
+pub define class StateError extends Error as
+  pub code(): int { return 2000; }
+end
+
+pub define class InvalidStateError extends StateError as
+  pub code(): int { return 2001; }
+end
+
+pub define class AlreadyInitializedError extends StateError as
+  pub code(): int { return 2002; }
+end
+
+pub define class NotInitializedError extends StateError as
+  pub code(): int { return 2003; }
+end
+
+pub define class ClosedError extends StateError as
+  pub code(): int { return 2004; }
+end
+
+pub define class ReadOnlyError extends StateError as
+  pub code(): int { return 2005; }
+end
+
+pub define class ImmutableError extends StateError as
+  pub code(): int { return 2006; }
+end
+
+pub define class ConcurrentModificationError extends StateError as
+  pub code(): int { return 2007; }
+end
+
+pub define class StaleHandleError extends StateError as
+  pub code(): int { return 2008; }
+end
+
+pub define class IOError extends Error as
+  pub code(): int { return 3000; }
+end
+
+pub define class FileSystemError extends IOError as
+  pub code(): int { return 3090; }
+end
+
+pub define class FileNotFoundError extends FileSystemError as
+  pub code(): int { return 3001; }
+end
+
+pub define class FileAlreadyExistsError extends FileSystemError as
+  pub code(): int { return 3002; }
+end
+
+pub define class NotDirectoryError extends FileSystemError as
+  pub code(): int { return 3003; }
+end
+
+pub define class IsDirectoryError extends FileSystemError as
+  pub code(): int { return 3004; }
+end
+
+pub define class DirectoryNotEmptyError extends FileSystemError as
+  pub code(): int { return 3005; }
+end
+
+pub define class ReadOnlyFileSystemError extends FileSystemError as
+  pub code(): int { return 3006; }
+end
+
+pub define class EndOfFileError extends IOError as
+  pub code(): int { return 3007; }
+end
+
+pub define class BrokenPipeError extends IOError as
+  pub code(): int { return 3008; }
+end
+
+pub define class NetworkError extends IOError as
+  pub code(): int { return 4000; }
+end
+
+pub define class DnsResolutionError extends NetworkError as
+  pub code(): int { return 4001; }
+end
+
+pub define class ConnectionRefusedError extends NetworkError as
+  pub code(): int { return 4002; }
+end
+
+pub define class ConnectionResetError extends NetworkError as
+  pub code(): int { return 4003; }
+end
+
+pub define class ConnectionAbortedError extends NetworkError as
+  pub code(): int { return 4004; }
+end
+
+pub define class HostUnreachableError extends NetworkError as
+  pub code(): int { return 4005; }
+end
+
+pub define class NetworkUnreachableError extends NetworkError as
+  pub code(): int { return 4006; }
+end
+
+pub define class TlsHandshakeError extends NetworkError as
+  pub code(): int { return 4007; }
+end
+
+pub define class ProtocolError extends NetworkError as
+  pub code(): int { return 4008; }
+end
+
+pub define class TimingError extends Error as
+  pub code(): int { return 5000; }
+end
+
+pub define class TimeoutError extends TimingError as
+  pub code(): int { return 5001; }
+end
+
+pub define class DeadlineExceededError extends TimingError as
+  pub code(): int { return 5002; }
+end
+
+pub define class WouldBlockError extends TimingError as
+  pub code(): int { return 5003; }
+end
+
+pub define class RetryLimitExceededError extends TimingError as
+  pub code(): int { return 5004; }
+end
+
+pub define class BackpressureError extends TimingError as
+  pub code(): int { return 5005; }
+end
+
+pub define class RateLimitedError extends TimingError as
+  pub code(): int { return 5006; }
+end
+
+pub define class TimerConfigurationError extends TimingError as
+  pub code(): int { return 5007; }
+end
+
+pub define class ClockError extends TimingError as
+  pub code(): int { return 5008; }
+end
+
+pub define class DataError extends Error as
+  pub code(): int { return 6000; }
+end
+
+pub define class ParseError extends DataError as
+  pub code(): int { return 6001; }
+end
+
+pub define class SyntaxError extends DataError as
+  pub code(): int { return 6002; }
+end
+
+pub define class EncodingError extends DataError as
+  pub code(): int { return 6003; }
+end
+
+pub define class DecodingError extends DataError as
+  pub code(): int { return 6004; }
+end
+
+pub define class ValidationError extends DataError as
+  pub code(): int { return 6005; }
+end
+
+pub define class SerializationError extends DataError as
+  pub code(): int { return 6006; }
+end
+
+pub define class DeserializationError extends DataError as
+  pub code(): int { return 6007; }
+end
+
+pub define class SchemaMismatchError extends DataError as
+  pub code(): int { return 6008; }
+end
+
+pub define class SecurityError extends Error as
+  pub code(): int { return 7000; }
+end
+
+pub define class AccessDeniedError extends SecurityError as
+  pub code(): int { return 7001; }
+end
+
+pub define class AuthenticationError extends SecurityError as
+  pub code(): int { return 7002; }
+end
+
+pub define class AuthorizationError extends SecurityError as
+  pub code(): int { return 7003; }
+end
+
+pub define class CapabilityDeniedError extends SecurityError as
+  pub code(): int { return 7004; }
+end
+
+pub define class SignatureVerificationError extends SecurityError as
+  pub code(): int { return 7005; }
+end
+
+pub define class IntegrityError extends SecurityError as
+  pub code(): int { return 7006; }
+end
+
+pub define class SandboxViolationError extends SecurityError as
+  pub code(): int { return 7007; }
+end
+
+pub define class CertificateError extends SecurityError as
+  pub code(): int { return 7008; }
+end
+
+pub define class OperationError extends Error as
+  pub code(): int { return 8000; }
+end
+
+pub define class ArithmeticError extends OperationError as
+  pub code(): int { return 8001; }
+end
+
+pub define class DivisionByZeroError extends OperationError as
+  pub code(): int { return 8002; }
+end
+
+pub define class IntegerOverflowError extends OperationError as
+  pub code(): int { return 8003; }
+end
+
+pub define class NumericConversionError extends OperationError as
+  pub code(): int { return 8004; }
+end
+
+pub define class UnsupportedOperationError extends OperationError as
+  pub code(): int { return 8005; }
+end
+
+pub define class VersionMismatchError extends OperationError as
+  pub code(): int { return 8006; }
+end
+
+pub define class FeatureUnavailableError extends OperationError as
+  pub code(): int { return 8007; }
+end
+
+pub define class DependencyFailureError extends OperationError as
+  pub code(): int { return 8008; }
+end
