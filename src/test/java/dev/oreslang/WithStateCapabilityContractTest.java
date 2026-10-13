@@ -66,20 +66,43 @@ final class WithStateCapabilityContractTest {
                     "define actor A as let v: int = 0; end")));
     }
     @Test void actorSuperclassInheritanceCannotBypassSealedStateLayout() {
-        // The parser accepts an extends clause, but no actor kind may
-        // inherit unverified fields or callable state-bearing methods.
-        for (String declaration : new String[] {
-                "define actor Child extends Base as",
-                "define serial actor Child extends Base as"
-        }) {
-            Ast.Program parsed = Parser.parse(declaration
-                    + " ping(): int { return 1; } end");
-            IllegalArgumentException denied = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> ActorStateContract.verify(parsed), declaration);
-            assertTrue(denied.getMessage().contains("cannot extend a class"),
-                    denied::getMessage);
-        }
+        // Preserve explicit method-only same-kind actor inheritance.
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(
+                "shared actor Parent { pub fnc inherited(): int { return 1; } } "
+                + "shared actor Child extends Parent { "
+                + "pub fnc current(): int { return self.inherited(); } }")));
+
+        // Unknown or non-actor parents must never supply hidden instance
+        // storage, even when a separate type checker has not run yet.
+        Ast.Program unresolved = Parser.parse(
+                "define actor Child extends Base as ping(): int { return 1; } end");
+        var unresolvedError = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(unresolved));
+        assertTrue(unresolvedError.getMessage().contains("same-module actor"));
+
+        Ast.Program inheritedState = Parser.parse(
+                "shared actor Parent { state { v: int = 1; } } "
+                + "shared actor Child extends Parent { pub fnc current(): int { return 1; } }");
+        var storageError = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(inheritedState));
+        assertTrue(storageError.getMessage().contains("inherited storage"),
+                storageError::getMessage);
+
+        Ast.Program serial = Parser.parse(
+                "define serial actor Child extends Base as "
+                + "ping(): int { return 1; } end");
+        var serialError = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(serial));
+        assertTrue(serialError.getMessage().contains("serial actor superclass"),
+                serialError::getMessage);
+
+        Ast.Program mismatch = Parser.parse(
+                "isoactor Parent { } shared actor Child extends Parent { }");
+        var kindError = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(mismatch));
+        assertTrue(kindError.getMessage().contains("isolation kind"),
+                kindError::getMessage);
+
         // Implemented interfaces do not contribute unchecked instance
         // storage; they remain distinct from superclass inheritance.
         assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(
