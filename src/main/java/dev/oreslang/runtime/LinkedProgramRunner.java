@@ -22,6 +22,8 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -240,9 +242,14 @@ public final class LinkedProgramRunner {
                         }
                     }
 
+                    // Import discovery and linking are inert. Executable
+                    // Ores entrypoints initialize their own unit before main;
+                    // dependencies initialize on the first imported call.
+                    // Java entrypoints trigger Ores startup through their
+                    // explicit mixed-interop invocations below.
                     for (String id : ids) parsedUnits.get(id).execute(OresEvalRootNode.LINK_ONLY_COMMAND);
-                    for (List<String> group : build.initializationGroups()) {
-                        for (String id : group) parsedUnits.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+                    if (entryUnit.primaryLanguage() != MixedSourceUnit.PrimaryLanguage.JAVA) {
+                        parsedUnits.get(entryId).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
                     }
 
                     LinkedHashMap<String, MixedInteropBridge.Invoker> bridgeInvokers = new LinkedHashMap<>();
@@ -250,6 +257,9 @@ public final class LinkedProgramRunner {
                         Value unit = parsed.getValue();
                         bridgeInvokers.put(parsed.getKey(), (function, arguments) -> {
                             Object[] invocation = new Object[2 + arguments.length];
+                            // A Java-to-Ores call is an explicit execution
+                            // edge and must honor the same lazy startup gate.
+                            unit.execute(OresEvalRootNode.INIT_ONLY_COMMAND);
                             invocation[0] = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
                             invocation[1] = function;
                             System.arraycopy(arguments, 0, invocation, 2, arguments.length);
@@ -367,94 +377,135 @@ public final class LinkedProgramRunner {
             Map<String, MixedSourceUnit> units,
             OresProjectConfig projectConfig,
             Map<String, Map<String, String>> importResolutions) throws IOException {
-        Path normalized = unit.toAbsolutePath().normalize();
-        String id = unitId(normalized);
-        if (units.containsKey(id)) return;
+        // Explicit worklist prevents stack overflow for a deeply nested
+        // import chain. Reaching an already-loaded path is a normal graph edge.
+        ArrayDeque<Path> pending = new ArrayDeque<>();
+        Map<Path, String> realPathOwner = new LinkedHashMap<>();
+        Map<List<Object>, String> fileKeyOwner = new LinkedHashMap<>();
+        pending.push(unit);
 
-        MixedSourceUnit mixed = MixedSourceUnit.parse(normalized, Files.readString(normalized));
-        units.put(id, mixed);
-        if (!mixed.hasOresSource()) return;
-
-        Ast.Program program = Parser.parse(mixed.oresSource());
-        for (Ast.ImportDecl imported : program.imports()) {
-            ImportRules.validate(imported);
-            if (ImportRules.isJavaPath(imported.path())) continue;
-
-            if (CoreLibrarySources.isCoreImport(imported.path())) {
-                String targetId = CoreLibrarySources.unitId(imported.path());
-                recordImportResolution(importResolutions, id, imported.path(), targetId);
-                collectCoreImportClosure(imported.path(), units, importResolutions);
-                continue;
+        while (!pending.isEmpty()) {
+            Path normalized = pending.pop().toAbsolutePath().normalize();
+            String id = unitId(normalized);
+            if (units.containsKey(id)) continue;
+            if (!Files.isRegularFile(normalized)) {
+                throw new IllegalArgumentException("import source is not a regular file: " + id);
             }
 
-            String raw = imported.path().replace('\\', '/');
-            java.util.Optional<Path> target = projectConfig.resolveImport(normalized, imported.path());
-            if (target.isEmpty()) {
-                if (raw.startsWith(".") || Path.of(raw).isAbsolute()) {
-                    throw new IllegalArgumentException(
-                            "filesystem import '" + imported.path() + "' from '" + id + "' does not resolve to a file");
-                }
-                // Preserve the existing package-resolver boundary for bare
-                // imports that are not present in project/ORESLANG_PATH roots.
-                continue;
-            }
-
-            Path resolvedTarget = target.get().toAbsolutePath().normalize();
-            if (Files.isSameFile(normalized, resolvedTarget)) {
+            // Do not link two source-unit identities to one physical file.
+            // Merely normalizing ".." is insufficient for symlinks and
+            // hardlinks, which could otherwise initialize the same file twice.
+            Path real = normalized.toRealPath();
+            String prior = realPathOwner.putIfAbsent(real, id);
+            if (prior != null && !prior.equals(id)) {
                 throw new IllegalArgumentException(
-                        "source unit '" + id + "' cannot import itself via '" + imported.path() + "'");
+                        "source file identity alias: '" + id + "' and '" + prior
+                                + "' refer to the same physical file");
+            }
+            Object fileKey = Files.readAttributes(
+                    normalized, BasicFileAttributes.class).fileKey();
+            if (fileKey != null) {
+                List<Object> key = List.of(normalized.getFileSystem(), fileKey);
+                String previous = fileKeyOwner.putIfAbsent(key, id);
+                if (previous != null && !previous.equals(id)) {
+                    throw new IllegalArgumentException(
+                            "source file identity alias: '" + id + "' and '" + previous
+                                    + "' refer to the same physical file");
+                }
             }
 
-            String targetId = unitId(resolvedTarget);
-            recordImportResolution(importResolutions, id, imported.path(), targetId);
-            collectImportClosure(resolvedTarget, units, projectConfig, importResolutions);
+            MixedSourceUnit mixed = MixedSourceUnit.parse(normalized, Files.readString(normalized));
+            units.put(id, mixed);
+            if (!mixed.hasOresSource()) continue;
+
+            Ast.Program program = Parser.parse(mixed.oresSource());
+            for (Ast.ImportDecl imported : program.imports()) {
+                ImportRules.validate(imported);
+                if (ImportRules.isJavaPath(imported.path())) continue;
+
+                if (CoreLibrarySources.isCoreImport(imported.path())) {
+                    String targetId = CoreLibrarySources.unitId(imported.path());
+                    recordImportResolution(importResolutions, id, imported.path(), targetId);
+                    collectCoreImportClosure(imported.path(), units, importResolutions);
+                    continue;
+                }
+
+                String raw = imported.path().replace('\\', '/');
+                java.util.Optional<Path> target =
+                        projectConfig.resolveImport(normalized, imported.path());
+                if (target.isEmpty()) {
+                    if (raw.startsWith(".") || Path.of(raw).isAbsolute()) {
+                        throw new IllegalArgumentException(
+                                "filesystem import '" + imported.path() + "' from '" + id
+                                        + "' does not resolve to a file");
+                    }
+                    // A bare import not in project/ORESLANG_PATH remains the
+                    // package resolver's responsibility.
+                    continue;
+                }
+
+                Path resolvedTarget = target.get().toAbsolutePath().normalize();
+                if (Files.isSameFile(normalized, resolvedTarget)) {
+                    throw new IllegalArgumentException(
+                            "source unit '" + id + "' cannot import itself via '"
+                                    + imported.path() + "'");
+                }
+
+                String targetId = unitId(resolvedTarget);
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                pending.push(resolvedTarget);
+            }
         }
     }
 
-
     /**
-     * Collects only compiler-owned Oreslang sources under the reserved std/
-     * namespace. Neither the project manifest nor ORESLANG_PATH can override it.
+     * Iterative traversal for reserved compiler-owned std/ modules. They
+     * cannot import project or ambient Java sources.
      */
     private static void collectCoreImportClosure(
             String importPath,
             Map<String, MixedSourceUnit> units,
             Map<String, Map<String, String>> importResolutions) throws IOException {
-        String id = CoreLibrarySources.unitId(importPath);
-        if (units.containsKey(id)) return;
+        ArrayDeque<String> pending = new ArrayDeque<>();
+        pending.push(importPath);
+        while (!pending.isEmpty()) {
+            String current = pending.pop();
+            String id = CoreLibrarySources.unitId(current);
+            if (units.containsKey(id)) continue;
 
-        MixedSourceUnit mixed = MixedSourceUnit.parse(
-                id,
-                CoreLibrarySources.fileName(importPath),
-                CoreLibrarySources.source(importPath));
-        if (mixed.hasJavaSource()) {
-            throw new SecurityException(
-                    "packaged std/* modules must be native Oreslang, not Java source islands: "
-                            + importPath);
-        }
-
-        Ast.Program program = Parser.parse(mixed.oresSource());
-        // Validate the whole source before admitting any unit to the closure.
-        for (Ast.ImportDecl imported : program.imports()) {
-            ImportRules.validate(imported);
-            if (ImportRules.isJavaPath(imported.path())) {
-                throw new SecurityException("std/* cannot import Java host classes: "
-                        + importPath + " -> " + imported.path());
+            MixedSourceUnit mixed = MixedSourceUnit.parse(
+                    id, CoreLibrarySources.fileName(current), CoreLibrarySources.source(current));
+            if (mixed.hasJavaSource()) {
+                throw new SecurityException(
+                        "packaged std/* modules must be native Oreslang, not Java source islands: "
+                                + current);
             }
-            if (!CoreLibrarySources.isCoreImport(imported.path())) {
-                throw new IllegalArgumentException("std/* cannot import project or ambient modules: "
-                        + importPath + " -> " + imported.path());
-            }
-            CoreLibrarySources.unitId(imported.path());
-        }
 
-        units.put(id, mixed);
-        for (Ast.ImportDecl imported : program.imports()) {
-            String targetId = CoreLibrarySources.unitId(imported.path());
-            recordImportResolution(importResolutions, id, imported.path(), targetId);
-            collectCoreImportClosure(imported.path(), units, importResolutions);
+            Ast.Program program = Parser.parse(mixed.oresSource());
+            for (Ast.ImportDecl imported : program.imports()) {
+                ImportRules.validate(imported);
+                if (ImportRules.isJavaPath(imported.path())) {
+                    throw new SecurityException(
+                            "std/* cannot import Java host classes: "
+                                    + current + " -> " + imported.path());
+                }
+                if (!CoreLibrarySources.isCoreImport(imported.path())) {
+                    throw new IllegalArgumentException(
+                            "std/* cannot import project or ambient modules: "
+                                    + current + " -> " + imported.path());
+                }
+                CoreLibrarySources.unitId(imported.path());
+            }
+
+            units.put(id, mixed);
+            for (Ast.ImportDecl imported : program.imports()) {
+                String targetId = CoreLibrarySources.unitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                pending.push(imported.path());
+            }
         }
     }
+
 
     private static void recordImportResolution(
             Map<String, Map<String, String>> importResolutions,
