@@ -601,7 +601,7 @@ final class LanguageHardeningTest {
     void capabilityAdmissionTraversesMatchSwitchAndDestructureLoops() {
         Ast.Program inMatch = TypeChecker.check(Parser.parse("""
                 fnc hidden(int tag): void {
-                  match first tag
+                  do match first tag
                   _ -> {
                     val lock = SharedMutex.new(1);
                     return;
@@ -617,7 +617,7 @@ final class LanguageHardeningTest {
 
         Ast.Program inSwitch = TypeChecker.check(Parser.parse("""
                 fnc hidden(int tag): void {
-                  switch tag
+                  do switch tag
                   case 1 -> {
                     val lock = SharedMutex.new(1);
                   }
