@@ -5459,6 +5459,27 @@ public final class TypeChecker {
      * Guards only establish disjointness when the existing numerical guard
      * range proof can establish it; side-effecting/unknown guards never do.
      */
+    /**
+     * Numeric guard partitions are stable only when they compare the immutable
+     * value captured from the match subject. A same-named outer variable may
+     * change between guard evaluations (especially under suspension), so it
+     * cannot establish exclusivity.
+     */
+    private static boolean patternBindsGuardName(Ast.Pattern pattern, String name) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            return binding.name().equals(name);
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            return tuple.elements().stream()
+                    .anyMatch(member -> patternBindsGuardName(member, name));
+        }
+        if (pattern instanceof Ast.ConstructorPattern constructor) {
+            return constructor.arguments().stream()
+                    .anyMatch(member -> patternBindsGuardName(member, name));
+        }
+        return false;
+    }
+
     private void validateExclusiveMatchArms(
             List<Ast.MatchArm> arms, Type subject,
             Set<String> generics, Type self) {
@@ -5480,11 +5501,20 @@ public final class TypeChecker {
                         previous.pattern(), current.pattern(), subject, generics, self);
                 if (!exclusive && previous.guard() != null && current.guard() != null
                         && previous.pattern().equals(current.pattern())) {
+                    GuardRange leftRange = guardRange(previous.guard());
+                    GuardRange rightRange = guardRange(current.guard());
+                    // A free variable can change between tests. Never use it
+                    // to prove unique matching, even if two ranges appear
+                    // complementary in a single snapshot.
+                    boolean stableProjection = leftRange != null && rightRange != null
+                            && leftRange.variable().equals(rightRange.variable())
+                            && patternBindsGuardName(previous.pattern(), leftRange.variable());
                     // The same lexical name in two DIFFERENT patterns may
                     // refer to different tuple/record positions. Comparing
                     // their numerical guard ranges is sound only when both
                     // patterns bind that name to the exact same projection.
-                    exclusive = guardsProvablyDisjoint(previous.guard(), current.guard());
+                    exclusive = stableProjection
+                            && guardsProvablyDisjoint(previous.guard(), current.guard());
                 }
                 if (!exclusive) {
                     throw new IllegalArgumentException(
