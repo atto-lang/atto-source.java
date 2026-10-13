@@ -1,4 +1,4 @@
-# Circular imports
+# Circular imports — lazy execution
 
 Oreslang intentionally permits import cycles. Run:
 
@@ -6,19 +6,25 @@ Oreslang intentionally permits import cycles. Run:
 mvn -q -DskipTests exec:java -Dexec.args="examples/circular_imports/a.ores"
 ```
 
-`a.ores` imports `b_value` from `b.ores`, while `b.ores` imports
+`a.ores` imports `b_value` from `b.ores`, and `b.ores` imports
 `a_value` from `a.ores`.
 
-The host loader parses and validates the complete reachable graph, links every
-code unit, then runs file-level `fnc init() => void` hooks. The A/B strongly
-connected component is therefore fully linked before either init hook executes.
+The loader discovers and type-checks the complete graph, then links **all**
+code units without running imported initializers. Before entry `main()`,
+only the entry unit's `init()` executes. The imported unit's `init()`
+executes on the **first actual imported call**, and only once.
 
 Expected output:
 
 ```text
-init-a:B|init-b:A|main:AB
+init-a|main:Ainit-b|B
 ```
 
-Init order inside a cycle is deterministic by normalized code-unit id. The
-important semantic guarantee is the barrier: no init in the cycle can execute
-while another member of that cycle is still unloaded.
+A symbol's import or export alone is inert; a call is the execution boundary.
+If A.init calls B and B.init calls back into the still-initializing A,
+the runtime fails closed with a recursive initialization diagnostic rather
+than allowing a partially initialized unit to execute.
+
+The strongly connected component remains an all-linked-before-any-init
+barrier. Its member ordering is deterministic for link diagnostics, not an
+implicit eager initialization order.
