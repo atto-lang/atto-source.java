@@ -1549,12 +1549,24 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
-        // Keep these distinct from ordinary calls/identifiers. Exception
-        // effect checking, typed recovery and actor CONTROL delivery have
-        // not yet been lowered in the Java/Graal production compiler.
-        if (check(THROW) || check(RAISE) || check(PANIC) || check(RECOVER)) {
-            throw error(peek(), "typed exceptional effect '" + peek().lexeme()
-                    + "' requires checked exception and supervision lowering; source effect is not yet enabled");
+        // Parse typed guest error effects so the compiler can reject invalid
+        // operands BEFORE the separate fail-closed runtime-admission gate.
+        // This does not enable throw/raise/panic execution or actor CONTROL.
+        if (match(THROW, RAISE, PANIC)) {
+            Token keyword = previous();
+            Ast.ExceptionalEffectKind kind = switch (keyword.type()) {
+                case THROW -> Ast.ExceptionalEffectKind.THROW;
+                case RAISE -> Ast.ExceptionalEffectKind.RAISE;
+                case PANIC -> Ast.ExceptionalEffectKind.PANIC;
+                default -> throw new AssertionError("not an exceptional effect");
+            };
+            Ast.Expr errorValue = parseExpression();
+            consumeExpressionStatementTerminator(errorValue, "expected ';' after typed exceptional effect");
+            return new Ast.ExceptionalEffectStmt(kind, errorValue);
+        }
+        if (check(RECOVER)) {
+            throw error(peek(), "typed exceptional effect 'recover'"
+                    + " requires supervisor authority lowering; source effect is not yet enabled");
         }
         if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
         // "cb" is reserved for callback-bearing writech; it is not the

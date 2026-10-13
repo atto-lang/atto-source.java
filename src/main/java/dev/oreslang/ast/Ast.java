@@ -482,7 +482,7 @@ public final class Ast {
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
-            ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
+            ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt, ExceptionalEffectStmt { }
 
     /**
      * Binding rebinding and mutable access to the referent are independent capabilities.
@@ -553,6 +553,17 @@ public final class Ast {
         }
         public DestructureStmt(List<DestructureBinding> bindings, Expr initializer) {
             this(DestructureKind.SEQUENCE, bindings, initializer);
+        }
+    }
+
+    /** A typed guest error effect. This AST is admitted for static diagnostics only:
+     * runtime effect/actor CONTROL lowering must not be bypassed. */
+    public enum ExceptionalEffectKind { THROW, RAISE, PANIC }
+
+    public record ExceptionalEffectStmt(ExceptionalEffectKind kind, Expr error) implements Stmt {
+        public ExceptionalEffectStmt {
+            if (kind == null || error == null)
+                throw new IllegalArgumentException("exceptional effect requires a kind and Error operand");
         }
     }
 

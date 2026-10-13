@@ -66,6 +66,7 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    private boolean hasCanonicalStdErrorImport;
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -184,6 +185,12 @@ public final class TypeChecker {
 
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (imported.kind() == Ast.ImportKind.CLASS
+                    && (imported.path().equals("std/error")
+                        || imported.path().equals("std/error.ores"))
+                    && imported.names().contains("Error") && !imported.wildcard()) {
+                hasCanonicalStdErrorImport = true;
+            }
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 if (localNames.contains(name)) {
@@ -1438,6 +1445,31 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.ExceptionalEffectStmt effect) {
+            String keyword = effect.kind().name().toLowerCase(java.util.Locale.ROOT);
+            Type operand = deref(typeOf(effect.error(), env, generics, self));
+            // Only the actual std/error Error class identity is authoritative.
+            // In particular, similarly shaped interfaces, Any/Unknown, dynamic
+            // values and a forged local class named Error do not qualify.
+            Ast.ClassDecl standardRoot = hasCanonicalStdErrorImport ? findClass("Error") : null;
+            if (!(operand instanceof Named nominal)
+                    || standardRoot == null
+                    || !standardRoot.name().equals("Error")
+                    || standardRoot.actorKind() != Ast.ActorKind.NONE
+                    || !classTypeExtends(nominal, nominalClassType(standardRoot), new LinkedHashSet<>())) {
+                throw new IllegalArgumentException(
+                        "typed exceptional effect '" + keyword
+                        + "' requires a nominal std/error.Error value or subclass; got " + operand
+                        + ". Import class Error from \"std/error\" and narrow Any/Unknown explicitly");
+            }
+            // Do not enable exception effects by admitting an AST node alone:
+            // real throw-site trace capture, typed try/catch, defer/recover,
+            // scheduler cancellation and actor supervisor CONTROL are pending.
+            throw new IllegalArgumentException(
+                    "typed exceptional effect '" + keyword
+                    + "' has a valid std/error.Error operand but source effect is not yet enabled"
+                    + " until checked exception and actor supervisor lowering exists");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             boolean namedInference = binding.inferredTypeName() != null;
             Type declaredAhead = namedInference || binding.declaredType() == null
