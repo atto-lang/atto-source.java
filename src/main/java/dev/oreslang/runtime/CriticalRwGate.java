@@ -48,6 +48,10 @@ public final class CriticalRwGate implements AutoCloseable {
             this.mode = mode;
             this.underlying = engine.newTicket(mode == Mode.READ
                     ? CriticalGate.Mode.READ : CriticalGate.Mode.WRITE);
+            // A core ticket revoked by actor STOP must also retire this
+            // facade's cross-gate owner registry and strongly held wrapper.
+            // close() is idempotent, so normal wrapper release is safe too.
+            this.underlying.onClose(this::close);
         }
 
         public Mode mode() { return mode; }
