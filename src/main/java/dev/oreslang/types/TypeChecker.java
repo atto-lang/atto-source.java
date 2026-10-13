@@ -207,8 +207,8 @@ public final class TypeChecker {
                 byArity.getOrDefault(fn.parameters().size(), List.of());
         List<Ast.FunctionDecl> candidates = new ArrayList<>(previous);
         candidates.add(fn);
-        FreeCallableOverloads.requireUnambiguous(
-                candidates, taggedMessages.enums().keySet(), key);
+        FreeCallableOverloads.requireAppendOnly(
+                previous, fn, taggedMessages.enums().keySet(), key);
         byArity.put(fn.parameters().size(), List.copyOf(candidates));
         functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>())
                 .putIfAbsent(fn.parameters().size(), fn);
