@@ -127,8 +127,13 @@ public final class StaticConstantFolder {
         if (expression instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr owner) {
             Key target = new Key(owner.name(), member.member());
-            if (modules.containsKey(owner.name()) && fields.containsKey(target))
+            if (modules.containsKey(owner.name()) && fields.containsKey(target)) {
+                Ast.FieldDecl field = fields.get(target);
+                if (!owner.name().equals(module)
+                        && field.visibility() != Ast.Visibility.PUBLIC)
+                    throw new IllegalArgumentException("private module constant is not accessible: " + target);
                 return evaluate(target);
+            }
             throw new IllegalArgumentException("unresolved module constant " + target);
         }
         if (expression instanceof Ast.UnaryExpr unary) {
