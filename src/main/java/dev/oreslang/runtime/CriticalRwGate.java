@@ -267,6 +267,7 @@ public final class CriticalRwGate implements AutoCloseable {
         while (!waiters.isEmpty() && waiters.peekFirst().mode == Mode.READ
                 && readers.size() < MAX_ACTIVE_READERS) {
             Ticket next = waiters.removeFirst();
+            WAITING_COUNT.decrementAndGet();
             grantLocked(next);
             wake.add(next);
         }
