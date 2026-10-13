@@ -5825,11 +5825,26 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         where + " requires Channel<T>; got " + value);
             }
+            requireGuestDataChannel(channel, where);
             return (ChannelRuntime.Channel<Object>) channel;
         }
 
+        private static void requireGuestDataChannel(
+                ChannelRuntime.Channel<?> channel, String where) {
+            if (!channel.hasGuestDataPolicy()) {
+                throw new SecurityException(where
+                        + " cannot read or select an unsealed host/runtime channel; "
+                        + "guest Channel<T> must carry typed data and snapshot policies");
+            }
+        }
+
         private ChannelRuntime.SelectSet asSelectSet(Object value) {
-            if (value instanceof ChannelRuntime.SelectSet set) return set;
+            if (value instanceof ChannelRuntime.SelectSet set) {
+                for (ChannelRuntime.SelectCase selectCase : set.cases()) {
+                    requireSelectCase(selectCase);
+                }
+                return set;
+            }
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
             if (value instanceof List<?> list) {
@@ -5846,6 +5861,12 @@ public final class OresEvalRootNode extends RootNode {
 
         private ChannelRuntime.SelectCase requireSelectCase(Object value) {
             if (value instanceof ChannelRuntime.SelectCase selectCase) {
+                if (selectCase instanceof ChannelRuntime.ReadCase<?> read) {
+                    requireGuestDataChannel(read.channel(), "SelectCase.read");
+                }
+                if (selectCase instanceof ChannelRuntime.WriteCase<?> write) {
+                    requireGuestDataChannel(write.channel(), "SelectCase.write");
+                }
                 return selectCase;
             }
             throw new IllegalArgumentException(
@@ -9407,6 +9428,7 @@ public final class OresEvalRootNode extends RootNode {
             if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException("SelectCase.read expects Channel<T>");
             }
+            Evaluator.requireGuestDataChannel(channel, "SelectCase.read");
             return ChannelRuntime.read((ChannelRuntime.Channel) channel);
         }
 
@@ -9416,6 +9438,7 @@ public final class OresEvalRootNode extends RootNode {
             if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException("SelectCase.write expects Channel<T> as first argument");
             }
+            Evaluator.requireGuestDataChannel(channel, "SelectCase.write");
             Evaluator.requireChannelDataValue(args.get(1));
             return ChannelRuntime.write(
                     (ChannelRuntime.Channel) channel,
