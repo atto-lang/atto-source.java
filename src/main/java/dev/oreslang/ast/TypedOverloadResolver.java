@@ -1,0 +1,209 @@
+package dev.oreslang.ast;
+
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+
+/**
+ * Pure, immutable selection model for the future type-directed callable ABI.
+ *
+ * <p>It deliberately does not modify the existing arity-only compiler or runtime
+ * dispatch. A compiler may enable typed overload declarations only after the
+ * selected signature is carried to ownership analysis, interpreter lowering,
+ * native code, callbacks and method vtables. Until then this is an executable
+ * specification/oracle for deterministic overload ranking.
+ */
+public final class TypedOverloadResolver {
+    private TypedOverloadResolver() { }
+
+    public enum Domain { MODULE, INSTANCE, STATIC }
+    public enum Kind { PRIMITIVE, NOMINAL_ENUM, DYNAMIC }
+
+    public record TypeKey(Kind kind, String identity) {
+        public TypeKey {
+            Objects.requireNonNull(kind, "kind");
+            Objects.requireNonNull(identity, "identity");
+            if (identity.isBlank()) throw new IllegalArgumentException("blank overload type identity");
+            if (kind == Kind.PRIMITIVE && !PRIMITIVES.contains(identity)) {
+                throw new IllegalArgumentException("unsupported overload primitive: " + identity);
+            }
+            if (kind == Kind.NOMINAL_ENUM && (!identity.contains(".")
+                    || identity.startsWith(".") || identity.endsWith("."))) {
+                throw new IllegalArgumentException(
+                        "enum overload identity must be module-qualified, got: " + identity);
+            }
+            if (kind == Kind.DYNAMIC && !identity.equals("Any") && !identity.equals("Unknown")) {
+                throw new IllegalArgumentException("invalid dynamic type: " + identity);
+            }
+        }
+
+        public static TypeKey primitive(String name) {
+            // Both source spellings of the same built-in bool are one type.
+            return new TypeKey(Kind.PRIMITIVE,
+                    name.equals("boolean") ? "bool" : name);
+        }
+
+        public static TypeKey nominalEnum(String qualifiedName) {
+            return new TypeKey(Kind.NOMINAL_ENUM, qualifiedName);
+        }
+
+        public static TypeKey any() {
+            return new TypeKey(Kind.DYNAMIC, "Any");
+        }
+
+        public static TypeKey unknown() {
+            return new TypeKey(Kind.DYNAMIC, "Unknown");
+        }
+    }
+
+    // Deliberately restricted to primitives with a specified source-level
+    // conversion relation. Erased generic payloads, nominal classes and
+    // structural records are not safe type-discriminating overload keys.
+    private static final Set<String> PRIMITIVES =
+            Set.of("bool", "int", "float", "decimal", "complex", "String");
+
+    public record Signature(Domain domain, String qualifiedName, List<TypeKey> parameters) {
+        public Signature {
+            Objects.requireNonNull(domain, "domain");
+            Objects.requireNonNull(qualifiedName, "qualifiedName");
+            Objects.requireNonNull(parameters, "parameters");
+            if (qualifiedName.isBlank()) throw new IllegalArgumentException("missing callable name");
+            parameters = List.copyOf(parameters);
+            if (parameters.stream().anyMatch(t -> t.kind() == Kind.DYNAMIC)) {
+                throw new IllegalArgumentException(
+                        "Any/Unknown may not distinguish a typed overload declaration");
+            }
+        }
+
+        public int arity() {
+            return parameters.size();
+        }
+
+        /**
+         * Canonical, deterministic, injective symbol fragment. Length-hex
+         * encoding avoids collisions from dots, angle brackets, unicode,
+         * delimiter characters and otherwise plausible enum names.
+         * No Java reflection or erased generic type is consulted.
+         */
+        public String symbolId() {
+            StringBuilder result = new StringBuilder("$overload$v1$");
+            appendPart(result, domain.name());
+            appendPart(result, qualifiedName);
+            result.append(arity()).append('$');
+            for (TypeKey parameter : parameters) {
+                appendPart(result, parameter.kind().name());
+                appendPart(result, parameter.identity());
+            }
+            return result.toString();
+        }
+
+        private static void appendPart(StringBuilder out, String value) {
+            byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+            out.append(bytes.length).append('_')
+                    .append(HexFormat.of().formatHex(bytes)).append('$');
+        }
+    }
+
+    public record Candidate<T>(T declaration, Signature signature) {
+        public Candidate {
+            Objects.requireNonNull(declaration, "declaration");
+            Objects.requireNonNull(signature, "signature");
+        }
+    }
+
+    /**
+     * Select a single best candidate without source-order preference.
+     *
+     * <p>Candidate dominance is componentwise (Pareto), not total-score
+     * ranking: f(int,float) and f(float,int) are ambiguous for (int,int).
+     * The caller must still prove candidate accessibility, effects and
+     * ownership before publishing a resolved symbol.
+     */
+    public static <T> Candidate<T> select(
+            Domain domain, String qualifiedName, List<TypeKey> arguments,
+            List<Candidate<T>> candidates) {
+        Objects.requireNonNull(domain, "domain");
+        Objects.requireNonNull(qualifiedName, "qualifiedName");
+        arguments = List.copyOf(arguments);
+        candidates = List.copyOf(candidates);
+        if (arguments.stream().anyMatch(arg -> arg.kind() == Kind.DYNAMIC)) {
+            throw new IllegalArgumentException(
+                    "dynamic Any/Unknown cannot select a typed overload of " + qualifiedName
+                            + "; narrow or cast arguments explicitly");
+        }
+
+        Set<Signature> identities = new HashSet<>();
+        List<Candidate<T>> eligible = new ArrayList<>();
+        List<int[]> ranks = new ArrayList<>();
+        for (Candidate<T> candidate : candidates) {
+            Signature signature = candidate.signature();
+            if (signature.domain() != domain || !signature.qualifiedName().equals(qualifiedName)) {
+                continue;
+            }
+            if (!identities.add(signature)) {
+                throw new IllegalArgumentException("duplicate typed overload: " + signature);
+            }
+            if (signature.arity() != arguments.size()) continue;
+            int[] costs = new int[arguments.size()];
+            boolean accepts = true;
+            for (int i = 0; i < costs.length; i++) {
+                costs[i] = conversionCost(arguments.get(i), signature.parameters().get(i));
+                if (costs[i] < 0) {
+                    accepts = false;
+                    break;
+                }
+            }
+            if (accepts) {
+                eligible.add(candidate);
+                ranks.add(costs);
+            }
+        }
+        if (eligible.isEmpty()) {
+            throw new IllegalArgumentException("no matching overload of " + qualifiedName
+                    + " with arity " + arguments.size() + " and types " + arguments);
+        }
+        List<Candidate<T>> best = new ArrayList<>();
+        for (int i = 0; i < eligible.size(); i++) {
+            boolean dominated = false;
+            for (int j = 0; j < eligible.size(); j++) {
+                if (i != j && dominates(ranks.get(j), ranks.get(i))) {
+                    dominated = true;
+                    break;
+                }
+            }
+            if (!dominated) best.add(eligible.get(i));
+        }
+        if (best.size() != 1) {
+            throw new IllegalArgumentException("ambiguous overload of " + qualifiedName
+                    + " for " + arguments + ": "
+                    + best.stream().map(x -> x.signature().toString()).toList());
+        }
+        return best.getFirst();
+    }
+
+    private static boolean dominates(int[] a, int[] b) {
+        boolean strictlyBetter = false;
+        for (int i = 0; i < a.length; i++) {
+            if (a[i] > b[i]) return false;
+            if (a[i] < b[i]) strictlyBetter = true;
+        }
+        return strictlyBetter;
+    }
+
+    private static int conversionCost(TypeKey actual, TypeKey formal) {
+        if (actual.equals(formal)) return 0;
+        if (actual.kind() != Kind.PRIMITIVE || formal.kind() != Kind.PRIMITIVE) return -1;
+        // Mirror the current source type-checker's numeric assignment
+        // compatibility. A numeric promotion is still strictly less
+        // specific than exact identity; it is not promised to be lossless.
+        String from = actual.identity(), to = formal.identity();
+        if (from.equals("int") && (to.equals("float") || to.equals("decimal")
+                || to.equals("complex"))) return 1;
+        if ((from.equals("float") || from.equals("decimal")) && to.equals("complex")) return 1;
+        return -1;
+    }
+}
