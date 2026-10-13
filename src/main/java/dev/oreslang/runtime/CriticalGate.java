@@ -131,6 +131,7 @@ public final class CriticalGate {
         public void enterSync() {
             OresFuture<Void> ready = request(true);
             if (ActorRuntime.inActorExecution()
+                    || ActorRuntime.isActorCarrierThread()
                     || OresScheduler.current() != null
                     || OresScheduler.isSchedulerCarrierThread()) {
                 // Never park a scheduler/actor worker. Release and fail outside
