@@ -89,10 +89,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.approval.write_text("# approval revoked")
             return result
         with patch.object(pub, "gh_api", side_effect=revoke_after_blob):
-            with self.assertRaisesRegex(pub.Denied, "approval policy changed"):
+            with self.assertRaisesRegex(pub.Denied, "approval.*(revoked|changed)"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
         writes = [r for m, r, _ in self.route_calls if m == "POST"]
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
+    def test_initial_unapproved_policy_fails_even_with_stale_preflight(self):
+        self.approval.write_text("# reviewer removed the destination")
+        with self.assertRaisesRegex(pub.Denied, "revoked or absent"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_symlinked_approval_policy_fails_before_upload(self):
         self.approval.unlink()
