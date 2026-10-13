@@ -73,4 +73,87 @@ final class NativeOresHttpStdlibTest {
             Files.deleteIfExists(guest);
         }
     }
+    @Test void realOreslangHttpOverNioSupportsFragmentsPipeliningAndStrictFraming() throws Exception {
+        Path guest = Files.createTempFile("ores-http-over-net-", ".ores");
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            Files.writeString(guest, """
+                import module net_core from "std/net";
+                import module http_wire from "std/http";
+                pub async routine main(): void {
+                  val NioTcpListener listener = net_core.listen_loopback(0, 64, 16, 256);
+                  stdio.println(listener.port);
+                  for (let int i = 0; i < 4; i = i + 1) {
+                    val Future<NioTcpConnection> incoming = net_core.accept(rt borrow listener);
+                    val NioTcpConnection peer = await incoming;
+                    val Future<void> response = http_wire.serve_connection(peer);
+                    await response;
+                  }
+                  val Future<void> shutdown = net_core.close_listener(listener);
+                  await shutdown;
+                  return;
+                }
+                """);
+            java.io.PipedInputStream stream = new java.io.PipedInputStream(8192);
+            java.io.PipedOutputStream out = new java.io.PipedOutputStream(stream);
+            java.util.concurrent.Future<?> program = pool.submit(() -> {
+                try {
+                    LinkedProgramRunner.run(guest,
+                            IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK),
+                            ExecutionProfile.serverJit(), out, new ByteArrayOutputStream());
+                } catch (Exception error) { throw new RuntimeException(error); }
+                finally { try { out.close(); } catch (Exception ignored) { } }
+            });
+            java.util.concurrent.Future<String> announced = pool.submit(() -> {
+                try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(stream, StandardCharsets.UTF_8))) {
+                    return reader.readLine();
+                }
+            });
+            String portText = announced.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            if (portText == null) {
+                try { program.get(1, java.util.concurrent.TimeUnit.SECONDS); }
+                catch (java.util.concurrent.ExecutionException fail) { throw new AssertionError(fail.getCause()); }
+                fail("HTTP guest did not announce listener port");
+            }
+            int port = Integer.parseInt(portText.trim());
+            try (java.net.Socket socket = new java.net.Socket("127.0.0.1", port)) {
+                socket.setSoTimeout(5000);
+                socket.getOutputStream().write("GET /shared HTTP/1.1\\r\\nHost: loc".getBytes(StandardCharsets.US_ASCII));
+                socket.getOutputStream().flush();
+                socket.getOutputStream().write("alhost\\r\\nConnection: close\\r\\n\\r\\n".getBytes(StandardCharsets.US_ASCII));
+                String response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
+                assertTrue(response.startsWith("HTTP/1.1 200 OK\\r\\n"), response);
+                assertTrue(response.contains("Content-Length: 3\\r\\n"), response);
+                assertTrue(response.endsWith("ok\\n"), response);
+            }
+            try (java.net.Socket socket = new java.net.Socket("127.0.0.1", port)) {
+                socket.setSoTimeout(5000);
+                socket.getOutputStream().write((
+                        "GET /isolated HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n" +
+                        "GET /shared HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n")
+                        .getBytes(StandardCharsets.US_ASCII));
+                String response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
+                assertEquals(2, response.split("HTTP/1.1 200 OK", -1).length - 1, response);
+                assertTrue(response.contains("Connection: keep-alive"), response);
+                assertTrue(response.endsWith("ok\\n"), response);
+            }
+            for (String invalid : java.util.List.of(
+                    "GET /shared HTTP/1.1\\r\\nHost: localhost\\r\\nContent-Length: 0\\r\\n\\r\\n",
+                    "GET /shared HTTP/1.1\\r\\nConnection: close\\r\\n\\r\\n")) {
+                try (java.net.Socket socket = new java.net.Socket("127.0.0.1", port)) {
+                    socket.setSoTimeout(5000);
+                    socket.getOutputStream().write(invalid.getBytes(StandardCharsets.US_ASCII));
+                    String response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
+                    assertTrue(response.startsWith("HTTP/1.1 400 Bad Request\\r\\n"), response);
+                    assertTrue(response.contains("Content-Length: 0\\r\\n"), response);
+                }
+            }
+            program.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            pool.shutdownNow();
+            Files.deleteIfExists(guest);
+        }
+    }
+
 }
