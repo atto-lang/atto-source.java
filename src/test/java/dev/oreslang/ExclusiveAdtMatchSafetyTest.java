@@ -144,6 +144,50 @@ final class ExclusiveAdtMatchSafetyTest {
     }
 
     @Test
+    void mixedIntegerAndFloatingLiteralsAreNotExclusive() {
+        // Runtime treats 1L and 1.0 as numerically equal.
+        rejectsOverlap("""
+                fnc classify(int value, bool guard): int {
+                    match value;
+                        1 when guard -> { return 1; }
+                        1.0 when guard -> { return 2; }
+                        else -> { return 0; }
+                    end
+                }
+                """);
+    }
+
+    @Test
+    void differentMixedNumericLiteralsRemainProvablyDisjoint() {
+        accepts("""
+                fnc classify(int value, bool guard): int {
+                    match value;
+                        1 when guard -> { return 1; }
+                        2.0 when guard -> { return 2; }
+                        else -> { return 0; }
+                    end
+                }
+                """);
+    }
+
+    @Test
+    void orderedMatchRejectsNumericallyEquivalentDeadLiteralArm() {
+        String source = """
+                fnc classify(int value): int {
+                    match value over
+                        on 1 -> { return 1; }
+                        on 1.0 -> { return 2; }
+                        on _ -> { return 0; }
+                    end
+                }
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("unreachable match arm"),
+                error.toString());
+    }
+
+    @Test
     void exclusiveMatchesHaveAtMostOneFallbackArm() {
         String source = """
                 fnc classify(bool input): int {
