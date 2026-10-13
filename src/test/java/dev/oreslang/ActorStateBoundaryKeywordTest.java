@@ -330,6 +330,64 @@ final class ActorStateBoundaryKeywordTest {
     }
 
     @Test
+    void scalarLoanProofRejectsTypeConfusionAndUncheckedArithmetic() {
+        for (String state : List.of(
+                "value: int = true",
+                "value: float = 0.5",
+                "value: int = 0")) {
+            String callback = state.contains("= 0")
+                    ? "critical-read |s| -> s.value / 0"
+                    : "critical-read |s| -> s.value";
+            Ast.Program parsed = Parser.parse(
+                    "define actor Counter as state { " + state + "; } "
+                    + "pub get(): int { return self.handle_state(" + callback + "); } end");
+            Ast.ClassDecl actor = (Ast.ClassDecl)
+                    parsed.modules().getFirst().declarations().getFirst();
+            Ast.ActorStateAccessExpr access = (Ast.ActorStateAccessExpr)
+                    ((Ast.ReturnStmt) actor.methods().getFirst().body().getFirst()).value();
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.ActorStateLoanShapeChecker.analyze(actor, access));
+            assertTrue(error.getMessage().contains("state-loan effect violation"),
+                    state + " -> " + error.getMessage());
+        }
+
+        for (String assignment : List.of("true", "s.value == 0")) {
+            Ast.Program parsed = Parser.parse(
+                    "define actor Counter as state { value: int = 0; } "
+                    + "pub set(): int { return self.handle_state(critical-write |s| -> { "
+                    + "s.value = " + assignment + "; return s.value; }); } end");
+            Ast.ClassDecl actor = (Ast.ClassDecl)
+                    parsed.modules().getFirst().declarations().getFirst();
+            Ast.ActorStateAccessExpr access = (Ast.ActorStateAccessExpr)
+                    ((Ast.ReturnStmt) actor.methods().getFirst().body().getFirst()).value();
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.ActorStateLoanShapeChecker.analyze(actor, access));
+            assertTrue(error.getMessage().contains("incompatible scalar type"),
+                    assignment + " -> " + error.getMessage());
+        }
+    }
+
+    @Test
+    void scalarBoolReadIsTypedAndStillCannotLower() {
+        Ast.Program program = Parser.parse("""
+                define actor Counter as
+                    state { ready: bool = true }
+                    pub is_ready(): bool {
+                        return self.handle_state(critical-read |s| -> !s.ready);
+                    }
+                end
+                """);
+        Ast.ClassDecl actor = (Ast.ClassDecl)
+                program.modules().getFirst().declarations().getFirst();
+        Ast.ActorStateAccessExpr access = (Ast.ActorStateAccessExpr)
+                ((Ast.ReturnStmt) actor.methods().getFirst().body().getFirst()).value();
+        var effects = dev.oreslang.types.ActorStateLoanShapeChecker.analyze(actor, access);
+        assertEquals(java.util.Set.of("ready"), effects.reads());
+        assertTrue(effects.writes().isEmpty());
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(program));
+    }
+
+    @Test
     void scalarLoanEffectSummarySeparatesReadsFromWrites() {
         Ast.Program parsed = Parser.parse("""
                 define actor Counter as
