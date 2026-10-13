@@ -974,6 +974,25 @@ public final class TypeChecker {
         // child to declare an explicit local override/hide for that slot.
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
+        // Declaration-site initialization may read constructor arguments in
+        // the declaring class. Unlike constructor-body assignment, the
+        // initialized final slot becomes immutable before any body executes.
+        // This scope is local to klass; inherited initializers are validated
+        // against their own declaring class and cannot capture child params.
+        Ast.ConstructorDecl constructor = klass.constructor();
+        Env fieldInitializerEnv = new Env(null);
+        if (constructor != null) {
+            List<Type> initializerParameterTypes = new ArrayList<>(constructor.parameters().size());
+            for (Ast.Param param : constructor.parameters()) {
+                Type parameterType = resolveParam(param, classGenerics, self);
+                initializerParameterTypes.add(parameterType);
+                fieldInitializerEnv.define(
+                        param.name(), parameterType,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+            defineImplicitArguments(fieldInitializerEnv, initializerParameterTypes);
+        }
+
         for (Ast.FieldDecl field : klass.fields()) {
             // Parser checking is insufficient: generated/expanded ASTs must
             // not bypass the final/const member initialization contract.
@@ -996,7 +1015,7 @@ public final class TypeChecker {
                 currentClassOwner = klass;
                 lexicalClassOrigin = klass;
                 try {
-                    Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
+                    Type actual = typeOf(field.initializer(), fieldInitializerEnv, classGenerics, self);
                     requireReadonlyCapabilityPreserved(
                             actual,
                             fieldType,
@@ -1013,7 +1032,6 @@ public final class TypeChecker {
             }
         }
 
-        Ast.ConstructorDecl constructor = klass.constructor();
         if (constructor != null) {
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
