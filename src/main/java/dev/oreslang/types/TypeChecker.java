@@ -2015,6 +2015,16 @@ public final class TypeChecker {
                         Type actual = deref(typeOf(call.arguments().getFirst(), env, generics, self));
                         requireAssignable(actual, resolve(enumCase.sourcePayload(), generics, self),
                                 "payload for " + enumCase.qualifiedName());
+                        // The present numeric Type IR erases u8/i16/u32 width.
+                        // Do not accept a visibly out-of-range constant and
+                        // defer a guaranteed failure until the runtime.
+                        if (call.arguments().getFirst() instanceof Ast.LiteralExpr literal
+                                && Set.of("i8", "i16", "i32", "u8", "u16",
+                                        "u32", "u64", "uint").contains(
+                                        enumCase.sourcePayload().name())) {
+                            NominalEnumValueGuards.requirePayload(
+                                    taggedMessages, enumCase, literal.value());
+                        }
                     }
                     return new Named(enumCase.qualifiedName(), List.of());
                 }
@@ -7560,6 +7570,15 @@ public final class TypeChecker {
                 yield new Function(args.subList(0, args.size() - 1), args.getLast());
             }
             default -> {
+                if (taggedMessages != null
+                        && (taggedMessages.enums().containsKey(ref.name())
+                            || taggedMessages.patterns().containsKey(ref.name()))) {
+                    if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                        throw new IllegalArgumentException("enum/match pattern type '"
+                                + ref.name() + "' is not generic");
+                    }
+                    yield new Named(ref.name(), List.of());
+                }
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
                     validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
