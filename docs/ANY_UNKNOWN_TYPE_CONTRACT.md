@@ -214,3 +214,19 @@ Do not weaken the existing hardening for actor isolation or `SharedMutex`.
 Stage 1 is intentionally conservative: generic reification, validated foreign
 values, ownership-safe universal boxing, and LLVM support are **not** declared
 complete just because source-level `Any` and `Unknown` now parse.
+
+## Negative types and opaque inference: proof boundary
+
+The `Not<T>` / boolean-literal implementation from upstream `main` is
+integrated with the `Any` / source `Unknown` / inference-hole model.
+Disjointness checking rejects all opaque/unresolved inputs recursively;
+`T` cannot be admitted into `!U` based on a permissive assignment,
+unresolved generic, unchecked interop or an unknown structural member.
+`Types.Not` also cannot be boxed into `Any` before a runtime type
+witness exists. Compiler match-coverage proofs similarly do not treat
+opaque tops or inference holes as exhaustive evidence.
+
+This is a conservative proof system: rejecting an unproven negative
+constraint does not imply the value definitely overlaps the excluded
+domain. More precise runtime-negative-type checks require reified type
+descriptors and explicit validation.

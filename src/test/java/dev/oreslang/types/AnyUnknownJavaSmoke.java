@@ -28,6 +28,22 @@ public final class AnyUnknownJavaSmoke {
         var any = Types.Any.INSTANCE;
         var opaque = Types.UnknownValue.INSTANCE;
 
+        var notInteger = Types.notOf(integer);
+        check(!Types.isAssignable(any, notInteger),
+                "Any is never proof of negative type exclusion");
+        check(!Types.isAssignable(opaque, notInteger),
+                "source Unknown is never proof of negative type exclusion");
+        check(!Types.isAssignable(Types.Unknown.INSTANCE, notInteger),
+                "compiler-internal Unknown is never proof of exclusion");
+        check(Types.isAssignable(Types.Primitive.STRING, notInteger),
+                "provably disjoint string may satisfy !int");
+        check(!Types.areProvablyDisjoint(any, integer),
+                "Any must overlap conservatively with int");
+        check(!Types.areProvablyDisjoint(opaque, integer),
+                "source Unknown must overlap conservatively with int");
+        check(!Types.isAssignable(integer, Types.notOf(any)),
+                "no concrete value proves separation from Any");
+
         check(Types.isAssignable(integer, any), "int widens to Any");
         check(Types.isAssignable(integer, opaque), "int widens to Unknown");
         check(Types.isAssignable(any, opaque), "Any widens to Unknown");

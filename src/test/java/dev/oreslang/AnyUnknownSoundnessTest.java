@@ -106,6 +106,55 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void negativeTypeProofsRejectAllOpaqueSources() {
+        Types.Type notInt = Types.notOf(Types.Primitive.INT);
+        Types.InferenceHole hole = Types.newInferenceHole(Types.HoleOrigin.EMPTY_ARRAY);
+        for (Types.Type opaque : List.of(
+                Types.Any.INSTANCE,
+                Types.UnknownValue.INSTANCE,
+                Types.Unknown.INSTANCE,
+                hole,
+                new Types.Generic("T"))) {
+            assertFalse(Types.isAssignable(opaque, notInt),
+                    () -> "unproven type must not satisfy !int: " + opaque);
+            assertFalse(Types.areProvablyDisjoint(opaque, Types.Primitive.INT),
+                    () -> "opaque type cannot prove disjointness: " + opaque);
+        }
+        assertFalse(Types.isAssignable(Types.Primitive.INT,
+                Types.notOf(Types.UnknownValue.INSTANCE)));
+        assertFalse(Types.isAssignable(Types.Primitive.INT,
+                Types.notOf(Types.Any.INSTANCE)));
+        assertFalse(Types.isAssignable(Types.Primitive.INT,
+                Types.notOf(hole)));
+        assertTrue(Types.isAssignable(Types.Primitive.STRING, notInt));
+    }
+
+    @Test
+    void nestedOpaqueValuesCannotProveNegativeStructuralShapes() {
+        Types.Type excluded = new Types.Record(Map.of("foo", Types.Primitive.INT));
+        Types.Type hidden = new Types.Record(Map.of("foo", Types.UnknownValue.INSTANCE));
+        Types.Type unresolved = new Types.Record(Map.of(
+                "foo", Types.newInferenceHole(Types.HoleOrigin.OPTION_NONE)));
+        assertFalse(Types.isAssignable(hidden, Types.notOf(excluded)));
+        assertFalse(Types.isAssignable(unresolved, Types.notOf(excluded)));
+        assertFalse(Types.isAssignable(
+                new Types.ListType(Types.UnknownValue.INSTANCE),
+                Types.notOf(new Types.ListType(Types.Primitive.INT))));
+    }
+
+    @Test
+    void compilerRejectsOpaqueArgumentToNegativeContract() {
+        reject("""
+                fnc take(!int value): void {}
+                fnc bad(Any value): void { take(value); }
+                """, "argument");
+        reject("""
+                fnc take(!int value): void {}
+                fnc bad(Unknown value): void { take(value); }
+                """, "argument");
+    }
+
+    @Test
     void sourceTopsAreNotTheInternalInferenceHole() {
         assertNotEquals(Types.Any.INSTANCE, Types.Unknown.INSTANCE);
         assertNotEquals(Types.UnknownValue.INSTANCE, Types.Unknown.INSTANCE);
