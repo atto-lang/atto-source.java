@@ -93,6 +93,53 @@ final class NestedEnumLocalValueTest {
     }
 
     @Test
+    void recursiveCollectionEnumsRemainLocalAndRejectCyclicHostGraphs() {
+        String source = """
+                define enum Chain as
+                    Stop
+                    Next: List<Chain>
+                end
+                """;
+        var program = Parser.parse(source);
+        var types = TaggedMessageContracts.forTypes(program);
+        assertNull(types.requireCase("Chain.Next").payload());
+        assertThrows(IllegalArgumentException.class,
+                () -> TaggedMessageContracts.verify(program));
+
+        var stop = new TaggedMessageCodec.TaggedValue("Chain", "Stop", 1, null);
+        var next = new TaggedMessageCodec.TaggedValue("Chain", "Next", 2, List.of(stop));
+        assertDoesNotThrow(() -> NominalEnumValueGuards.requirePayload(
+                types, types.requireCase("Chain.Next"), List.of(next)));
+
+        var mutable = new java.util.ArrayList<Object>();
+        var cyclic = new TaggedMessageCodec.TaggedValue("Chain", "Next", 2, mutable);
+        mutable.add(cyclic);
+        assertThrows(IllegalArgumentException.class,
+                () -> NominalEnumValueGuards.requirePayload(
+                        types, types.requireCase("Chain.Next"), mutable));
+    }
+
+    @Test
+    void nestedLocalWidthEnumsAreNotSerializableActorMessages() {
+        String source = """
+                define enum Inner as
+                    Byte: u8
+                end
+                define enum Outer as
+                    Wrapped: Inner
+                end
+                define actor Worker as
+                    receive(ActorMail<Outer> mail): void {
+                        self.end();
+                        return;
+                    }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void nominalNestedLocalCasesRetainPayloadTypeAndAreNotWireValuesYet() {
         var program = Parser.parse(DECLS);
         var registry = TaggedMessageContracts.forTypes(program);
