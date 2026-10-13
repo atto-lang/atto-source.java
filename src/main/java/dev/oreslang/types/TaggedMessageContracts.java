@@ -78,13 +78,36 @@ public final class TaggedMessageContracts {
      * This is deliberately NOT a general permission for unknown classes,
      * inferred types, capabilities, Option/Result codecs or raw pointers.
      */
-    private static boolean locallyValidatedPayload(Ast.TypeRef type, int depth) {
-        if (type == null || depth > 32 || type.inferArguments() || type.isBorrow()
+    private static boolean locallyValidatedPayload(
+            Ast.TypeRef type, Map<String, Ast.EnumDecl> declarations,
+            Set<String> expanding, int depth, int[] nodes) {
+        if (type == null || depth > MessagePackCollectionCodec.MAX_DEPTH
+                || ++nodes[0] > MessagePackCollectionCodec.MAX_NODES
+                || type.inferArguments() || type.isBorrow()
                 || type.isNamedParameter() || type.isRecordType() || type.isUnion()
                 || type.isRepeatExact() || type.isRepeatMany()) return false;
         String name = type.name();
-        if (Set.of("u8", "i8", "u16", "i16", "u32", "i32", "u64", "uint",
-                "bigint").contains(name)) {
+        Ast.EnumDecl nominal = declarations.get(name);
+        if (nominal != null) {
+            if (!type.arguments().isEmpty()) return false;
+            // The graph pass already rejects unboxed recursive enum cycles.
+            // A recursive List<Enum> is a finite local value *type* and may
+            // contain arbitrarily many finite values, with runtime quotas.
+            // Short-circuit the descriptor cycle without granting a wire ABI.
+            if (!expanding.add(name)) return true;
+            try {
+                for (Ast.EnumCase variant : nominal.cases()) {
+                    if (variant.payload() != null
+                            && !locallyValidatedPayload(variant.payload(), declarations,
+                                    expanding, depth + 1, nodes)) return false;
+                }
+                return true;
+            } finally {
+                expanding.remove(name);
+            }
+        }
+        if (Set.of("u8", "i8", "u16", "i16", "u32", "i32", "u64",
+                "uint", "bigint").contains(name)) {
             return type.arguments().isEmpty();
         }
         if (Set.of("bool", "Bool", "boolean", "int", "i64", "float",
@@ -94,7 +117,8 @@ public final class TaggedMessageContracts {
         if (type.isSequenceShape()) {
             return !type.arguments().isEmpty()
                     && type.arguments().stream().allMatch(
-                            a -> locallyValidatedPayload(a, depth + 1));
+                            a -> locallyValidatedPayload(a, declarations,
+                                    expanding, depth + 1, nodes));
         }
         if (type.isTupleType() || Set.of("Tuple", "FixedArray", "FixedList",
                 "List", "Array").contains(name)) {
@@ -102,7 +126,8 @@ public final class TaggedMessageContracts {
             if (Set.of("List", "Array").contains(name)
                     && type.arguments().size() != 1) return false;
             return type.arguments().stream().allMatch(
-                    a -> locallyValidatedPayload(a, depth + 1));
+                    a -> locallyValidatedPayload(a, declarations,
+                            expanding, depth + 1, nodes));
         }
         return false;
     }
@@ -236,7 +261,8 @@ public final class TaggedMessageContracts {
                                     && hasExplicitBox(entry.payload());
                             boolean localScalarNoWire = unsupported.getMessage().startsWith(
                                     "type has no portable Serializable wire codec:")
-                                    && locallyValidatedPayload(entry.payload(), 0);
+                                    && locallyValidatedPayload(entry.payload(), sourceEnums,
+                                            new HashSet<>(), 0, new int[]{0});
                             if (!localOnly || (!boxedWire
                                     && !(indirect && recursiveWire) && !localScalarNoWire)) {
                                 throw unsupported;
