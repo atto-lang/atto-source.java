@@ -27,6 +27,29 @@ final class AlgebraicDataTypeMatchTest {
     }
 
     @Test
+    void maximalEnumWireTagAcceptsOptionalTrailingSeparators() {
+        for (String separator : new String[]{"", ",", ";"}) {
+            String source = "define enum Terminal as\n"
+                    + "    Last = 2147483647" + separator + "\n"
+                    + "end\n";
+            assertDoesNotThrow(() -> Parser.parse(source),
+                    "a final INT32_MAX tag may have a trailing separator");
+        }
+    }
+
+    @Test
+    void maximalEnumWireTagRejectsAnotherVariant() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse("""
+                        define enum Terminal as
+                            Last = 2147483647;
+                            TooLate
+                        end
+                        """));
+        assertTrue(error.getMessage().contains("after INT32_MAX"), error.toString());
+    }
+
+    @Test
     void nominalEnumMatchChecksEveryCaseAndBindsPayload() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(STATUS + """
                 fnc classify(Status value): int {
