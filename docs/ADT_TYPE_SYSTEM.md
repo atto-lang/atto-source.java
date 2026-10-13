@@ -73,7 +73,11 @@ A runtime nominal/type-pattern coverage check **must not** rely solely on
 assignment compatibility. In particular `int` can widen to `float` in an
 assignment, but an `int` runtime value does not satisfy `is type float`.
 For a union, every alternative must be independently covered by a
-runtime-compatible pattern. Otherwise `on float x` could falsely prove
+runtime-compatible pattern.
+The **same runtime semantics must control dead-arm/subsumption proofs**:
+`on float f` cannot shadow a following `on int i` merely because assignment
+allows numeric widening, and a `float` field shape cannot subsume an `int`
+field shape. Otherwise `on float x` could falsely prove
 exhaustive matching of `int | float`.
 
 
