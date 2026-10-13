@@ -130,6 +130,41 @@ final class SealedActorStateTest {
         }
     }
 
+    @Test void persistentListStateCannotExceedOwningActorHeapQuota() throws Exception {
+        var finished = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var worker = runtime.<Integer>spawnShared(() -> (mail, ctx) -> {
+                try {
+                    var slice = ctx.actorOwnedMemory().orElseThrow();
+                    long prior = slice.usedBytes();
+                    long pressureBytes = slice.remainingBytes() - 4096L;
+                    assertTrue(pressureBytes > 0);
+                    try (var pressure = slice.reserveHeap(pressureBytes)) {
+                        long alreadyCharged = slice.usedBytes();
+                        var initial = new java.util.ArrayList<Long>(
+                                java.util.Collections.nCopies(2048, 1L));
+                        assertThrows(IllegalStateException.class,
+                                () -> new SealedActorState(ctx.self().id(),
+                                        Map.of("items", "List[int]"),
+                                        Map.of("items", initial)));
+                        assertEquals(alreadyCharged, slice.usedBytes(),
+                                "constructor quota failure cannot retain actor memory");
+                    }
+                    assertEquals(prior, slice.usedBytes(),
+                            "temporary quota reservation must be fully refunded");
+                } catch (Throwable error) {
+                    failure.set(error);
+                } finally {
+                    finished.countDown();
+                }
+            });
+            worker.send(1);
+            assertTrue(finished.await(15, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+        }
+    }
+
     @Test void flatIntegerListsAreDetachedAtEveryActorStateBoundary() throws Exception {
         var failure = new AtomicReference<Throwable>();
         var finished = new CountDownLatch(1);
