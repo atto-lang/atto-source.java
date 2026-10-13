@@ -1,0 +1,11 @@
+// Native Image/AOT regression: a suspend critical WRITE ticket must
+// survive await/resume without parking a carrier or releasing prematurely.
+async fnc obtain(): int { return 37; }
+suspend critical fnc guarded(): int {
+    return (await obtain()) + 5;
+}
+async fnc outer(): int { return guarded(); }
+pub fnc main(): void {
+    stdio.stdout.write(await outer());
+    return;
+}
