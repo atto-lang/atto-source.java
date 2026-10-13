@@ -43,6 +43,7 @@ public final class CriticalGate {
         private boolean requested;
         private boolean granted;
         private boolean closed;
+        private boolean completionAttached;
         private Thread synchronousOwner;
         private Object logicalOwner;
         // Only host/embedder synchronous callers may wait on a physical thread.
@@ -163,8 +164,21 @@ public final class CriticalGate {
 
         /** Attach after scheduler start; already-settled completions run this too. */
         public void releaseOnCompletion(OresFuture<?> completion) {
-            Objects.requireNonNull(completion, "completion")
-                    .whenCompleteRuntime((value, failure) -> close());
+            Objects.requireNonNull(completion, "completion");
+            synchronized (COORDINATOR) {
+                if (closed) {
+                    throw new IllegalStateException(
+                            "cannot bind a released critical ticket");
+                }
+                if (completionAttached) {
+                    throw new IllegalStateException(
+                            "critical ticket completion already bound");
+                }
+                // A ticket has one terminal owner. Attaching multiple unrelated
+                // completions could release it while its admitted task is live.
+                completionAttached = true;
+            }
+            completion.whenCompleteRuntime((value, failure) -> close());
         }
 
         public boolean isHeld() {
