@@ -12,7 +12,7 @@ MODULE = Path(__file__).with_name("publish-private-ci-source.py")
 spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
-A, B, C, D = ("a"*40, "b"*40, "c"*40, "d"*40)
+A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 
 
 class DestinationBoundPublisherTests(unittest.TestCase):
@@ -41,10 +41,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
                                         + bytes([0]) + raw).hexdigest()}
+        if route == "repos/trusted/ci/git/trees":
+            # A fresh file tree and its parent root tree must be distinct.
+            return {"sha": E if "base_tree" in payload else D}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
-            "repos/trusted/ci/git/trees": {"sha": D},
             "repos/trusted/ci/git/commits": {"sha": A},
             "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
         }
@@ -71,6 +73,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {"path": "private-oreslang-source", "mode": "040000",
              "type": "tree", "sha": D}])
         self.assertEqual(writes[2][2]["base_tree"], B)
+        self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
