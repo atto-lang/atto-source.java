@@ -85,10 +85,13 @@ field_decl      = { annotation } visibility
                   | IDENT ":" type_ref [ "=" expression ] )
                   stmt_terminator ;
 type_first_class_field_decl
-                = { annotation } visibility [ "final" ] [ "mut" ] type_ref IDENT
+                = { annotation } visibility [ "final" [ "const" ] ] [ "mut" ] type_ref IDENT
                   ( ":" | "=" ) expression stmt_terminator ;
 (* In class bodies, type-first field declarations canonically use ':' for
-   initializers; '=' is accepted for source compatibility. 'final' is contextual
+   initializers; '=' is accepted for source compatibility. 'final const' is
+   a compatibility alias for a final field only when its initializer is an
+   admitted compile-time literal; other expressions fail closed until an
+   audited constant-expression evaluator exists. 'final' is contextual
    and fixes the field slot without implying deep immutability. The formatter
    rewrites only eligible field initializers, never assignment expressions,
    map/struct entries, labels, return types, or named type annotations. *)
