@@ -960,6 +960,7 @@ public final class TypeChecker {
         }
 
         validateFieldLayout(klass);
+        validateNoInheritedFinalFieldShadowing(klass);
 
         Set<String> effectiveFieldNames = new LinkedHashSet<>();
         for (ResolvedField field : effectiveFieldTargets(
@@ -5777,6 +5778,39 @@ public final class TypeChecker {
                 || valueSemanticNamed) {
             throw new IllegalArgumentException(
                     where + " must be an identity-bearing reference/handle value, but found " + value);
+        }
+    }
+
+    /**
+     * Explicit finality seals the member name across the whole ancestry,
+     * regardless of type equality, visibility, or intervening shadowing.
+     * Legacy val fields are intentionally not treated as final declarations.
+     */
+    private void validateNoInheritedFinalFieldShadowing(Ast.ClassDecl klass) {
+        Set<String> localNames = new HashSet<>();
+        for (Ast.FieldDecl field : klass.fields()) localNames.add(field.name());
+        Set<Ast.ClassDecl> visited = new HashSet<>();
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            rejectShadowedFinalAncestor(klass, klass, parentRef, localNames, visited);
+        }
+    }
+
+    private void rejectShadowedFinalAncestor(
+            Ast.ClassDecl child,
+            Ast.ClassDecl scope,
+            Ast.TypeRef parentRef,
+            Set<String> localNames,
+            Set<Ast.ClassDecl> visited) {
+        Ast.ClassDecl parent = resolveClassParent(parentRef, scope);
+        if (parent == null || !visited.add(parent)) return;
+        for (Ast.FieldDecl inherited : parent.fields()) {
+            if (inherited.finalDeclaration() && localNames.contains(inherited.name())) {
+                throw new IllegalArgumentException("class '" + child.name()
+                        + "' cannot shadow final field '" + parent.name() + "." + inherited.name() + "'");
+            }
+        }
+        for (Ast.TypeRef ancestor : parent.parents()) {
+            rejectShadowedFinalAncestor(child, parent, ancestor, localNames, visited);
         }
     }
 
