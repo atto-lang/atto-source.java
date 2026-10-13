@@ -42,6 +42,13 @@ final class WithUsingLoanSuspensionAuditTest {
                 "with state.read, state.write, suspend");
     }
 
+    @Test void explicitCooperationCannotRunInsideLiveStateLoan() {
+        rejected("self.handle_state(critical write |s| -> { rt cooperate; s.x = 2; return s.x; })",
+                "with state.read, state.write, suspend");
+        rejected("using state.write(critical |s| -> { rt cooperate; s.x = 2; return s.x; })",
+                "with state.read, state.write, suspend");
+    }
+
     @Test void stateLoansCannotBeNestedEvenWhenBothAreReads() {
         rejected("using state.read(|s| -> { return using state.read(|t| -> { return t.x; }); })",
                 "with state.read");
