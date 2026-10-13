@@ -1661,6 +1661,71 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(10)
+    @SuppressWarnings("unchecked")
+    void notificationCapacityIsolatedPerExecutionDomainAndReleasedAtTerminalState()
+            throws Exception {
+        var error = new AtomicReference<Throwable>();
+        var requester = Thread.ofPlatform().start(() -> {
+            Object domain = ActorRuntime.currentExecutionDomain();
+            java.util.concurrent.ConcurrentHashMap<Object, Integer> counts = null;
+            int max = 0;
+            try {
+                var field = OresMutex.Shared.class.getDeclaredField("DOMAIN_ASYNC_NOTIFICATIONS");
+                field.setAccessible(true);
+                counts = (java.util.concurrent.ConcurrentHashMap<Object, Integer>) field.get(null);
+                var limit = OresMutex.Shared.class.getDeclaredField("MAX_DOMAIN_ASYNC_NOTIFICATIONS");
+                limit.setAccessible(true);
+                max = limit.getInt(null);
+                assertNull(counts.get(domain),
+                        "fresh execution domain already retained a pending admission");
+                var saturated = OresMutex.shared(new int[]{0});
+                counts.put(domain, max);
+                try {
+                    var rejected = saturated.lockAsync();
+                    var outcome = assertThrows(java.util.concurrent.ExecutionException.class,
+                            () -> rejected.get(2, TimeUnit.SECONDS));
+                    assertInstanceOf(java.util.concurrent.RejectedExecutionException.class,
+                            outcome.getCause());
+                    assertEquals(max, counts.get(domain));
+                    var peerFailure = new AtomicReference<Throwable>();
+                    var peer = Thread.ofPlatform().start(() -> {
+                        try {
+                            var peerMutex = OresMutex.shared(new int[]{0});
+                            var guard = peerMutex.lockAsync().get(2, TimeUnit.SECONDS);
+                            guard.release();
+                        } catch (Throwable failure) {
+                            peerFailure.set(failure);
+                        }
+                    });
+                    peer.join(3_000);
+                    assertFalse(peer.isAlive());
+                    assertNull(peerFailure.get(), String.valueOf(peerFailure.get()));
+                    assertEquals(max, counts.get(domain));
+                } finally {
+                    counts.remove(domain, max);
+                }
+
+                var guard = saturated.lockAsync().get(2, TimeUnit.SECONDS);
+                guard.release();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (counts.containsKey(domain) && System.nanoTime() < deadline) {
+                    Thread.sleep(2);
+                }
+                assertNull(counts.get(domain),
+                        "terminal Future callback retained actor execution-domain admission");
+            } catch (Throwable failure) {
+                error.compareAndSet(null, failure);
+            } finally {
+                if (counts != null && max > 0) counts.remove(domain, max);
+            }
+        });
+        requester.join(7_000);
+        assertFalse(requester.isAlive());
+        assertNull(error.get(), String.valueOf(error.get()));
+    }
+
+    @Test
     void zeroDurationLockForRemainsTryOnly() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
         var owner = mutex.lock();
