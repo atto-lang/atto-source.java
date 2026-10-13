@@ -267,6 +267,80 @@ final class ActorStateBoundaryKeywordTest {
     }
 
     @Test
+    void typedStateReadWriteCallbacksHaveDedicatedNonCallableAst() {
+        Ast.Program program = Parser.parse("""
+                define actor Counter as
+                    state { value: int = 0 }
+                    pub get(): int {
+                        return self.handle_state(critical-read |s| -> s.value);
+                    }
+                    pub increment(): int {
+                        return self.handle_state(critical-write |s| -> {
+                            s.value = s.value + 1;
+                            return s.value;
+                        });
+                    }
+                end
+                """);
+        Ast.ClassDecl actor = (Ast.ClassDecl)
+                program.modules().getFirst().declarations().getFirst();
+        assertEquals(2, actor.methods().size());
+        assertNotNull(actor.actorState());
+        for (int i = 0; i < 2; i++) {
+            Ast.MethodDecl method = actor.methods().get(i);
+            Ast.ReturnStmt returns = (Ast.ReturnStmt) method.body().getFirst();
+            assertInstanceOf(Ast.ActorStateAccessExpr.class, returns.value());
+            Ast.ActorStateAccessExpr operation = (Ast.ActorStateAccessExpr) returns.value();
+            assertEquals(i == 0 ? Ast.StateAccessMode.READ : Ast.StateAccessMode.WRITE,
+                    operation.mode());
+            assertEquals("s", operation.callback().parameters().getFirst().name());
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(program),
+                "recognized state callbacks must not run before safe lowering");
+    }
+
+    @Test
+    void invalidStateCallbackShapesFailAtParser() {
+        for (String expression : List.of(
+                "self.handle_state(|s| -> s.value)",
+                "self.handle_state(critical-read |s, t| -> s.value)",
+                "self.handle_state(critical-read || -> 1)",
+                "self.handle_state(critical-write |int s| -> s)",
+                "self.handle_state(critical-read |self| -> 1)",
+                "self.handle_state(critical-write |state| -> 1)",
+                "self.handle_state(critical-read |s| -> 1, 2)",
+                "self.handle_state(critical-read 1)",
+                "self.handle_state(critical-write nlex |s| -> 1)")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("define actor Foo as pub get(): int { return "
+                            + expression + "; } end"), expression);
+        }
+    }
+
+    @Test
+    void syntheticStateOperationCannotPassTypeOrOwnershipChecking() {
+        Ast.LambdaExpr callback = new Ast.LambdaExpr(
+                List.of(new Ast.Param(Ast.TypeRef.inferred(), "s")),
+                new Ast.LiteralExpr(1L), null);
+        Ast.ActorStateAccessExpr forged = new Ast.ActorStateAccessExpr(
+                Ast.StateAccessMode.READ, callback);
+        assertNotNull(forged);
+        // Both independent compiler security boundaries must reject even
+        // when the protected actor has no state{} declaration.
+        Ast.Program parsed = Parser.parse("""
+                define actor Foo as
+                    pub get(): int {
+                        return self.handle_state(critical-read |s| -> 1);
+                    }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(parsed));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(parsed));
+    }
+
+    @Test
     void unsupportedReadWriteCallablesStillFailClosed() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 pub fnc critical-write update(): void { return; }
