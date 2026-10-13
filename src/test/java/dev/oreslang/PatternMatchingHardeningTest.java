@@ -464,6 +464,40 @@ final class PatternMatchingHardeningTest {
     }
 
     @Test
+    void numericWideningDoesNotMakeLaterTypeArmDead() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc classify(int | float value): int {
+                  match value over
+                    on float n -> { return 1; }
+                    on int n -> { return 2; }
+                  end
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc classify(int | float value): int {
+                  match value over
+                    on float n -> { return 1; }
+                    on 7 -> { return 2; }
+                    on int n -> { return 3; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
+    void structuralPatternWideningCannotShadowNarrowerRecord() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc classify({ value: int } | { value: float } arg): int {
+                  match arg over
+                    on structural { value: float } x -> { return 1; }
+                    on structural { value: int } x -> { return 2; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
     void switchIsConstantDispatchAndRejectsDuplicateCases() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int value): int {
