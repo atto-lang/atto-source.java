@@ -41,9 +41,28 @@ public final class Types {
      * structural compatibility dimension: it prevents mutation from being
      * regained through aliases while preserving ordinary shape matching.
      */
-    public record Record(Map<String, Type> members, boolean readOnly) implements Type {
-        public Record { members = Map.copyOf(members); }
+    public record Record(Map<String, Type> members, boolean readOnly,
+                         java.util.Set<String> methodKeys) implements Type {
+        public Record {
+            members = Map.copyOf(members);
+            methodKeys = java.util.Set.copyOf(methodKeys);
+            for (String key : methodKeys) {
+                if (!(members.get(key) instanceof Function)) {
+                    throw new IllegalArgumentException(
+                            "compiler method slot '" + key + "' must contain a callable contract");
+                }
+            }
+        }
+        public Record(Map<String, Type> members, boolean readOnly) {
+            this(members, readOnly, java.util.Set.of());
+        }
         public Record(Map<String, Type> members) { this(members, false); }
+        /** Preserve compiler-proven method identity during type transformations. */
+        public Record withMembers(Map<String, Type> updated, boolean readonly) {
+            java.util.Set<String> surviving = new java.util.HashSet<>(methodKeys);
+            surviving.retainAll(updated.keySet());
+            return new Record(updated, readonly, surviving);
+        }
     }
 
     public record Function(
@@ -151,9 +170,8 @@ public final class Types {
                 // directions and would allow writes through an unsafe alias.
                 // Compiler-owned callable selector slots describe methods, which
                 // are immutable contracts and retain function variance.
-                boolean methodSlot = required.getKey().startsWith("instance$")
-                        && required.getKey().contains("$arity")
-                        && required.getKey().contains("$generics")
+                boolean methodSlot = source.methodKeys().contains(required.getKey())
+                        && target.methodKeys().contains(required.getKey())
                         && actual instanceof Function && required.getValue() instanceof Function;
                 if (!target.readOnly() && !methodSlot && !actual.equals(required.getValue())) {
                     return false;
@@ -279,7 +297,9 @@ public final class Types {
                     }
                 }
             }
-            return new Record(merged, a.readOnly());
+            java.util.Set<String> methodKeys = new java.util.HashSet<>(a.methodKeys());
+            methodKeys.addAll(b.methodKeys());
+            return new Record(merged, a.readOnly(), methodKeys);
         }
         throw new IllegalArgumentException(
                 "intersection has no proven common value or supported representation: "
