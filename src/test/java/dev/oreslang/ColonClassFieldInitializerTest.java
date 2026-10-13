@@ -175,4 +175,20 @@ final class ColonClassFieldInitializerTest {
         assertTrue(foo.fields().get(2).mutableReferent());
         assertDoesNotThrow(() -> TypeChecker.check(program));
     }
+
+    @Test
+    void semicolonFreeFieldBoundaryAdmitsFinalMutAndMutOnFollowingLines() {
+        Ast.ClassDecl foo = (Ast.ClassDecl) Parser.parse("""
+                define class Foo as
+                  string label = "100"
+                  final mut Array<int> items: [1, 2]
+                  mut int count: 3
+                end
+                """).modules().getFirst().declarations().getFirst();
+        assertEquals(3, foo.fields().size());
+        assertEquals(Ast.BindingKind.VAL, foo.fields().get(1).bindingKind());
+        assertTrue(foo.fields().get(1).mutableReferent());
+        assertEquals(Ast.BindingKind.LET, foo.fields().get(2).bindingKind());
+        assertTrue(foo.fields().get(2).mutableReferent());
+    }
 }
