@@ -49,6 +49,10 @@
 - Link-only, init-once, failed unit and direct public-host gate tests.
 - Overloaded exports are one importable family; private function is not
   importable across a cycle.
+- Iterative SCC and topological ordering cover 10,000-unit chains and rings,
+  with deterministic ordering independent of source-map insertion order.
+- The file loader uses an iterative worklist and rejects symlink/hardlink
+  aliases that would create multiple code-unit identities for one source.
 
 ## Important remaining gaps
 
@@ -66,9 +70,10 @@
 4. **Native parity:** LLVM's frontend does not yet support multi-file import
    linking, and this PR does not claim native backend parity. Track in
    LLVM issue #341.
-5. **Stress and resolution:** Harden deep graphs, symlink alias identity,
-   module field evaluation, mixed Java bridges and graph-changing incremental
-   compilation with dedicated tests.
+5. **Remaining stress and resolution:** Validate the new deep-graph and
+   physical-file identity tests under CI; extend coverage to symlink escapes
+   from configured roots, mixed Java bridges, module field evaluation,
+   graph-changing incremental builds and scheduler-owned actor turns.
 
 All implementation claims above refer to source changes on a **draft PR**.
 GitHub Actions has not executed the branch's test suite successfully; no
