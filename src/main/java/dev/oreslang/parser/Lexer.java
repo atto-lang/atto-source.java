@@ -103,20 +103,20 @@ public final class Lexer {
         if (isAtEnd()) throw error("expected Symbol name or quoted name after '#'");
         String name;
         char ch = peek();
-        if (ch == '\\'' || ch == '"') {
+        if (ch == '\'' || ch == '"') {
             advance();
             char quote = ch;
             StringBuilder value = new StringBuilder();
             while (!isAtEnd() && peek() != quote) {
                 char c = advance();
-                if (c == '\\n') throw error("Symbol literal cannot contain an unescaped newline");
-                if (c == '\\\\') {
+                if (c == '\n') throw error("Symbol literal cannot contain an unescaped newline");
+                if (c == '\\') {
                     if (isAtEnd()) throw error("unterminated Symbol escape");
                     char escaped = advance();
                     value.append(switch (escaped) {
                         case 'u' -> unicodeEscape();
-                        case 'n' -> '\\n'; case 'r' -> '\\r'; case 't' -> '\\t';
-                        case '"' -> '"'; case '\\'' -> '\\''; case '\\\\' -> '\\\\';
+                        case 'n' -> '\n'; case 'r' -> '\r'; case 't' -> '\t';
+                        case '"' -> '"'; case '\'' -> '\''; case '\\' -> '\\';
                         default -> throw error("unsupported Symbol escape");
                     });
                 } else value.append(c);
