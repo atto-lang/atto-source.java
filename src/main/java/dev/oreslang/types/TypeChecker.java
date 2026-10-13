@@ -1403,6 +1403,13 @@ public final class TypeChecker {
         }
     }
 
+    private static boolean isMustUseVoidResult(Type type) {
+        return type instanceof Named named
+                && named.name().equals("Result")
+                && named.arguments().size() == 2
+                && named.arguments().getFirst() == Primitive.VOID;
+    }
+
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
         Env env = new Env(parent);
         Env previousTypeScope = currentTypeScope;
@@ -1417,6 +1424,16 @@ public final class TypeChecker {
                 }
             }
             for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+            // A Result<void,E> is not discharged by being named or probed.
+            // Check every tail path, including early returns and branch merges.
+            // Other Result payload forms remain a separate CFG/ownership gate.
+            for (int index = 0; index < body.size(); index++) {
+                if (!(body.get(index) instanceof Ast.BindingStmt binding)) continue;
+                Env.Binding value = env.bindings.get(binding.name());
+                if (value != null && isMustUseVoidResult(value.type())) {
+                    ResultMustUseProof.requireHandled(body.subList(index + 1, body.size()), binding.name());
+                }
+            }
         } finally {
             currentTypeScope = previousTypeScope;
         }
@@ -1617,7 +1634,13 @@ public final class TypeChecker {
             }
             return;
         }
-        if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.ExprStmt expression) {
+            Type result = typeOf(expression.expression(), env, generics, self);
+            if (isMustUseVoidResult(result)) {
+                throw new IllegalArgumentException("must-use Result<void,E> expression is discarded");
+            }
+            return;
+        }
         if (stmt instanceof Ast.DeferStmt defer) {
             if (defer.expression() instanceof Ast.LambdaExpr lambda && !lambda.parameters().isEmpty()) {
                 throw new IllegalArgumentException(
