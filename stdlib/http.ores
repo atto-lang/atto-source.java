@@ -63,7 +63,8 @@ define module http_wire as
       return new Head(405, head_end, 0, false, false);
     fi
     val int target_start = pos;
-    while pos < head_end && bytes.get(pos) != 32 {
+    loop {
+      if pos >= head_end || bytes.get(pos) == 32; then break; fi
       pos = pos + 1;
     }
     val int target_size = pos - target_start;
@@ -91,9 +92,11 @@ define module http_wire as
     let bool host_seen = false;
     let bool connection_seen = false;
     let bool keep_alive = true;
-    while pos < head_end - 2 {
+    loop {
+      if pos >= head_end - 2; then break; fi
       val int line_start = pos;
-      while pos + 1 < head_end && !(bytes.get(pos) == 13 && bytes.get(pos + 1) == 10) {
+      loop {
+        if pos + 1 >= head_end || (bytes.get(pos) == 13 && bytes.get(pos + 1) == 10); then break; fi
         pos = pos + 1;
       }
       if pos + 1 >= head_end || pos == line_start; then
