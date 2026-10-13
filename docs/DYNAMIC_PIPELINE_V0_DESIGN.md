@@ -318,3 +318,13 @@ Future typed pipeline results need an authenticated per-ingress reply
 correlation contract (request id, expected nominal result type, cancellation
 and late-reply fencing). Until that is implemented, reading a completion
 receipt as an application payload is a compile-time error.
+
+### Declaration namespace closure
+
+The follow-up audit extended reserved pipeline type-name admission to
+**enums, nominal pattern declarations, functions, and interfaces**,
+in addition to classes, aliases and modules. This blocks source code
+from constructing a separately declared nominal value named
+`PipelineDeliveryReceipt` and attempting to pass it through the
+runtime-issued receipt type contract. Guest negative regression tests
+cover the enum/pattern/function declaration paths explicitly.

@@ -93,6 +93,36 @@ final class DynamicPipelineGuestSourceTest {
                         """)));
     }
 
+    @Test void deliveryReceiptNameCannotBeHijackedByEnumOrPattern() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define enum PipelineDeliveryReceipt as
+                            Forged: int = 1
+                        end
+                        pub fnc main(): int { return 1; }
+                        """)),
+                "nominal enum spoofing must not redefine the runtime receipt");
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define enum OtherMessages as
+                            Data: int = 1
+                        end
+                        define pattern PipelineDeliveryReceipt as
+                            OtherMessages.Data
+                        end
+                        pub fnc main(): int { return 1; }
+                        """)),
+                "nominal match pattern must not redefine the runtime receipt");
+    }
+
+    @Test void pipelineRuntimeTypeNamesCannotBeDeclaredAsFunctions() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc PipelineDeliveryReceipt(): int { return 1; }
+                        pub fnc main(): int { return 1; }
+                        """)));
+    }
+
     @Test void rejectTooFewProviderArguments() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(
                 Parser.parse("pub fnc main(): void { "

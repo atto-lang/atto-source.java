@@ -157,7 +157,21 @@ public final class TypeChecker {
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
+                    if (isReservedPipelineBuiltin(fn.name())) {
+                        throw new IllegalArgumentException(
+                                "reserved dynamic pipeline function name: " + fn.name());
+                    }
                     putFunction(module.name(), fn);
+                } else if (decl instanceof Ast.EnumDecl enumerated) {
+                    if (isReservedPipelineBuiltin(enumerated.name())) {
+                        throw new IllegalArgumentException(
+                                "reserved dynamic pipeline enum name: " + enumerated.name());
+                    }
+                } else if (decl instanceof Ast.PatternDecl pattern) {
+                    if (isReservedPipelineBuiltin(pattern.name())) {
+                        throw new IllegalArgumentException(
+                                "reserved dynamic pipeline pattern name: " + pattern.name());
+                    }
                 } else if (decl instanceof Ast.ClassDecl klass) {
                     if (isReservedPipelineBuiltin(klass.name())) {
                         throw new IllegalArgumentException(
@@ -166,6 +180,10 @@ public final class TypeChecker {
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    if (isReservedPipelineBuiltin(iface.name())) {
+                        throw new IllegalArgumentException(
+                                "reserved dynamic pipeline interface name: " + iface.name());
+                    }
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
