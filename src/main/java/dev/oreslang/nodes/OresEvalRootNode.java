@@ -1962,21 +1962,15 @@ public final class OresEvalRootNode extends RootNode {
                                     if (destructure.kind()
                                             == Ast.DestructureKind.SEQUENCE) {
                                         List<?> items = asSequence(value);
-                                        if (items.size()
-                                                != destructure.bindings().size()) {
-                                            throw new IllegalArgumentException(
-                                                    "destructure arity mismatch");
-                                        }
-                                        for (int i = 0; i < items.size(); i++) {
-                                            Ast.DestructureBinding binding =
-                                                    destructure.bindings().get(i);
-                                            if (!binding.isDiscard()) {
-                                                env.define(
-                                                        binding.name(),
-                                                        items.get(i),
-                                                        binding.kind());
-                                            }
-                                        }
+                                        // A destructure selects a prefix. Evaluate
+                                        // the source once, and bind only requested
+                                        // positions; omitted suffix items are not
+                                        // new locals. Rest explicitly retains them.
+                                        bindSequenceDestructure(
+                                                items,
+                                                destructure.bindings(),
+                                                env,
+                                                "destructure");
                                     } else {
                                         for (Ast.DestructureBinding binding :
                                                 destructure.bindings()) {
@@ -8596,13 +8590,10 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             int fixedArity = restIndex >= 0 ? restIndex : bindings.size();
-            if (restIndex < 0 && items.size() != fixedArity) {
+            if (items.size() < fixedArity) {
                 throw new IllegalArgumentException(label + " arity mismatch: value has " + items.size()
-                        + " element(s), pattern has " + fixedArity);
-            }
-            if (restIndex >= 0 && items.size() < fixedArity) {
-                throw new IllegalArgumentException(label + " arity mismatch: value has " + items.size()
-                        + " element(s), pattern requires at least " + fixedArity + " before rest");
+                        + " element(s), pattern requires at least " + fixedArity
+                        + (restIndex >= 0 ? " before rest" : ""));
             }
 
             for (int i = 0; i < fixedArity; i++) {
