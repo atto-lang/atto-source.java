@@ -3483,14 +3483,14 @@ public final class TypeChecker {
                 Type exactValueType = typeOf(field.value(), env, generics, self);
                 if (members.putIfAbsent(
                         field.name(),
-                        object.inferredStruct()
+                        (object.inferredStruct() || object.recordLiteral())
                                 ? widenCollectionElement(exactValueType)
                                 : exactValueType) != null) {
                     throw new IllegalArgumentException(
                             "duplicate struct field '" + field.name() + "'");
                 }
             }
-            return new Record(members, object.inferredStruct());
+            return new Record(members, object.inferredStruct() || object.recordLiteral());
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
