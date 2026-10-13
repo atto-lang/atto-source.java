@@ -22,6 +22,103 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Regression proving the same actor receives successive HTTP exchanges. */
 class NativeHttpPooledActorTest {
 
+    @Test void saturatedHttpPoolReturns503ThenRecoversWithoutKillingWorker() throws Exception {
+        String program = """
+            define actor Worker as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                if request.target == "/hold"; then
+                  // Leave the exchange active without blocking the worker's
+                  // single-flight lane; each request has its own deadline.
+                  return;
+                fi
+                await request.respond(200, "text/plain", "recovered");
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val pool = http.pool_handler("Worker", 1);
+              val server = http.listen("127.0.0.1", 0, 80, 4096, 4000);
+              stdio.println(server.port);
+              for (let int i = 0; i < 64; i = i + 1) {
+                val request = await server.accept();
+                pool.dispatch(rt borrow mut request);
+              }
+              stdio.println("SATURATED");
+              stdio.println(pool.workers_inflight);
+              val overflow = await server.accept();
+              val rejected = overflow.completion;
+              pool.dispatch(rt borrow mut overflow);
+              stdio.println(await rejected);
+              stdio.println("OVERLOADED");
+              stdio.println(pool.workers_rejected);
+              stdio.println(pool.workers_alive);
+              val after = await server.accept();
+              val completion = after.completion;
+              pool.dispatch(rt borrow mut after);
+              stdio.println(await completion);
+              stdio.println("RECOVERED");
+              stdio.println(pool.workers_created);
+              stdio.println(pool.workers_reused);
+              stdio.println(pool.workers_inflight);
+              await server.shutdown(0);
+              stdio.println(server.active);
+              return;
+            }
+            """;
+        CompletableFuture<Integer> port = new CompletableFuture<>();
+        CompletableFuture<Void> saturated = new CompletableFuture<>();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public synchronized void write(byte[] bytes, int off, int length) {
+                super.write(bytes, off, length);
+                String value = toString(StandardCharsets.UTF_8);
+                int end = value.indexOf('\\n');
+                if (end >= 0 && !port.isDone())
+                    port.complete(Integer.parseInt(value.substring(0, end).trim()));
+                if (value.contains("SATURATED\\n64\\n")) saturated.complete(null);
+            }
+        };
+        try (Context context = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)
+                .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of()).out(output).build();
+             ExecutorService clients = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> work = clients.submit(() -> {
+                try (HttpClient http = HttpClient.newHttpClient()) {
+                    int listeningPort = port.get(10, TimeUnit.SECONDS);
+                    var pending = new java.util.ArrayList<CompletableFuture<HttpResponse<String>>>();
+                    for (int i = 0; i < 64; i++) {
+                        var request = HttpRequest.newBuilder(
+                                URI.create("http://127.0.0.1:" + listeningPort + "/hold"))
+                                .timeout(Duration.ofSeconds(12)).GET().build();
+                        pending.add(http.sendAsync(request, HttpResponse.BodyHandlers.ofString()));
+                    }
+                    saturated.get(15, TimeUnit.SECONDS);
+                    var overflow = HttpRequest.newBuilder(
+                            URI.create("http://127.0.0.1:" + listeningPort + "/overflow"))
+                            .timeout(Duration.ofSeconds(8)).GET().build();
+                    assertEquals(503, http.send(overflow, HttpResponse.BodyHandlers.ofString()).statusCode());
+                    // The original 64 exchanges release their permits at the
+                    // deadline. The persistent worker must remain reusable.
+                    for (var future : pending)
+                        assertEquals(504, future.get(15, TimeUnit.SECONDS).statusCode());
+                    var recover = HttpRequest.newBuilder(
+                            URI.create("http://127.0.0.1:" + listeningPort + "/recover"))
+                            .timeout(Duration.ofSeconds(8)).GET().build();
+                    var response = http.send(recover, HttpResponse.BodyHandlers.ofString());
+                    assertEquals(200, response.statusCode());
+                    assertEquals("recovered", response.body());
+                } catch (Exception failure) { throw new RuntimeException(failure); }
+            });
+            context.eval(Source.newBuilder(OresLanguage.ID, program,
+                    "pooled-capacity-recovery.ores").build());
+            work.get(35, TimeUnit.SECONDS);
+        }
+        String result = output.toString(StandardCharsets.UTF_8);
+        assertTrue(result.contains("SATURATED\\n64\\n503\\nOVERLOADED\\n1\\n1"),
+                "the 65th exchange must fail without killing the worker: " + result);
+        assertTrue(result.contains("200\\nRECOVERED\\n1\\n1\\n0\\n0"),
+                "deadline cleanup must free slots and allow healthy worker reuse: " + result);
+    }
+
     @Test void unexpectedlyEndedPooledWorkerAbortsInFlightExchangeAndRespawns() throws Exception {
         String program = """
             define actor Worker as
