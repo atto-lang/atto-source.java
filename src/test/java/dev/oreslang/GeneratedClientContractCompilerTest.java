@@ -64,4 +64,22 @@ final class GeneratedClientContractCompilerTest {
         assertTrue(checked.modules().get(0).declarations().stream()
                 .allMatch(decl -> decl instanceof dev.oreslang.ast.Ast.InterfaceDecl));
     }
+    @Test
+    void duplicateInterfaceAndContractParameterNamesFailClosedInBothSpellingOrders() {
+        for (String kind : new String[] { "interface", "contract" }) {
+            for (String arguments : new String[] {
+                    "String value, String value",
+                    "value: String, value: String",
+                    "structural String value, String value"
+            }) {
+                String source = "pub define " + kind
+                        + " Endpoint as fnc send(" + arguments + ") => String; end";
+                assertThrows(IllegalArgumentException.class,
+                        () -> OresCompiler.parseAndTypeCheck(source), source);
+            }
+            assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                    "pub define " + kind
+                            + " Endpoint as fnc send(String first, String second) => String; end"));
+        }
+    }
 }

@@ -763,6 +763,12 @@ public final class Parser {
                 List<String> memberGenerics = parseGenericParameters();
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
+                java.util.Set<String> parameterNames = new java.util.HashSet<>();
+                for (Ast.Param param : params) {
+                    if (!parameterNames.add(param.name())) {
+                        throw error(previous(), "duplicate interface/contract parameter name '" + param.name() + "'");
+                    }
+                }
                 consume(RPAREN, "expected ')' after interface parameters");
                 Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
