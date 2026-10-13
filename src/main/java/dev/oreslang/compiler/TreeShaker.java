@@ -30,6 +30,20 @@ public final class TreeShaker {
     public static Result shake(Ast.Program checkedProgram, BuildOptions options) {
         Objects.requireNonNull(checkedProgram, "checkedProgram");
         Objects.requireNonNull(options, "options");
+        // Public entrypoint, not just OresCompiler.compileForBuild: rewriting
+        // creates fresh AST call identities and discards preselected overload
+        // targets. Never emit a wrong function body from an optimized image.
+        for (Ast.ModuleDecl module : checkedProgram.modules()) {
+            Set<String> seen = new java.util.HashSet<>();
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn
+                        && !seen.add(fn.name() + "#" + fn.parameters().size())) {
+                    throw new IllegalArgumentException(
+                            "tree-shaken builds with same-arity nominal enum overloads "
+                                    + "require rebinding callable IDs after AST rewriting");
+                }
+            }
+        }
         return new Engine(checkedProgram, options).run();
     }
 
