@@ -134,16 +134,10 @@ final class TypedOverloadResolverTest {
 
     @Test
     void parsedSameArityPrimitiveAndEnumSignaturesAreRankedButNotYetAdmitted() {
+        // The enum parser is independently staged in PR #834. This test
+        // verifies signature handling from parsed type references without
+        // requiring that separate draft PR to have merged.
         var program = dev.oreslang.parser.Parser.parse("""
-                define enum Color as
-                  Red
-                  Blue
-                end
-                define enum Direction as
-                  North
-                  South
-                end
-
                 fnc describe(int value): int { return 1; }
                 fnc describe(float value): int { return 2; }
                 fnc describe(Color value): int { return 3; }
@@ -153,7 +147,7 @@ final class TypedOverloadResolverTest {
         List<Candidate<String>> candidates = new ArrayList<>();
         Map<String, String> enums =
                 Map.of("Color", "__root__.Color", "Direction", "__root__.Direction");
-        for (int i = 2; i < declarations.size(); i++) {
+        for (int i = 0; i < declarations.size(); i++) {
             Ast.FunctionDecl fn = (Ast.FunctionDecl) declarations.get(i);
             var params = fn.parameters().stream()
                     .map(p -> TypeKey.fromSource(p.type(), enums)).toList();
