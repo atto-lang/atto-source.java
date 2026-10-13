@@ -129,6 +129,26 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_nested_regular_source_files_keep_expected_paths(self):
+        directory = self.source / "nested"
+        directory.mkdir()
+        (directory / "inside.ores").write_text("safe")
+        _, count = self.publish()
+        self.assertEqual(count, 2)
+        new_tree = [payload for method, route, payload in self.route_calls
+                    if method == "POST" and route.endswith("/git/trees")]
+        self.assertEqual(len(new_tree), 1)
+        paths = [item["path"] for item in new_tree[0]["tree"]]
+        self.assertEqual(paths, ["private-oreslang-source/hello.ores",
+                                 "private-oreslang-source/nested/inside.ores"])
+
+    def test_directory_entry_quota_rejects_before_upload(self):
+        (self.source / "another.ores").write_text("another")
+        with patch.object(pub, "MAX_DIRECTORY_ENTRIES", 1):
+            with self.assertRaisesRegex(pub.Denied, "entry count"):
+                self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
     def test_parent_directory_swap_to_symlink_fails_before_upload(self):
         nested = self.source / "nested"
         nested.mkdir()
