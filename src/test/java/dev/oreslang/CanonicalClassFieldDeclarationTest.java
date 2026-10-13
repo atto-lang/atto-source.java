@@ -78,8 +78,8 @@ final class CanonicalClassFieldDeclarationTest {
     void staticCheckerAcceptsCanonicalFinalAndMutableFieldViews() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Sample as
-                  int number: 5;
-                  final int answer: 42;
+                  pub int number: 5;
+                  pub final int answer: 42;
                 end
                 pub fnc main(): int {
                   val Sample value = new Sample();
@@ -94,7 +94,7 @@ final class CanonicalClassFieldDeclarationTest {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                     define class Sample as
-                      final int answer: 42;
+                      pub final int answer: 42;
                       constructor() {
                         self.answer = 7;
                       }
@@ -120,7 +120,7 @@ final class CanonicalClassFieldDeclarationTest {
     void typeOnlyPathRejectsFixedFieldWriteWithoutRelyingOnOwnershipPass() {
         String bad = """
                 define class Holder as
-                  final int answer: 42;
+                  pub final int answer: 42;
                 end
                 fnc invalid(): void {
                   val Holder h = new Holder();
@@ -195,7 +195,7 @@ final class CanonicalClassFieldDeclarationTest {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                     define class Sample as
-                      final int answer: 42;
+                      pub final int answer: 42;
                     end
                     pub fnc main(): int {
                       val Sample sample = new Sample();
