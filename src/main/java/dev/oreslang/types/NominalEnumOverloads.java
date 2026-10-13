@@ -99,6 +99,37 @@ public final class NominalEnumOverloads {
     }
 
     /**
+     * Recover only the statically proven nominal enum declaration from a
+     * compiler-resolved argument type. A constructed Color.Red value has
+     * nominal owner Color; its case/wire tag/payload never enters the key.
+     * Unknown, unions, generics and unverified names provide NO proof.
+     */
+    public static String staticEnumArgumentSymbol(
+            Types.Type argument,
+            TaggedMessageContracts.Registry tagged,
+            Map<String, String> eligibleSymbols) {
+        if (!(argument instanceof Types.Named named) || !named.arguments().isEmpty()) {
+            return null;
+        }
+        String ownerName = named.name();
+        var owner = tagged.enums().get(ownerName);
+        if (owner == null) {
+            int separator = ownerName.lastIndexOf('.');
+            if (separator < 1) return null;
+            String possibleOwner = ownerName.substring(0, separator);
+            owner = tagged.enums().get(possibleOwner);
+            if (owner == null) return null;
+            final String qualifiedCase = ownerName;
+            if (owner.cases().stream().noneMatch(c ->
+                    c.qualifiedName().equals(qualifiedCase))) {
+                return null;
+            }
+            ownerName = possibleOwner;
+        }
+        return eligibleSymbols.get(ownerName);
+    }
+
+    /**
      * Produce a key only for enum or primitive parameter declarations.
      * Structural, generic, borrowed, union and dynamic types are ineligible.
      */
