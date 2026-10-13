@@ -1560,6 +1560,10 @@ final class MutexRuntimeTest {
                             + "even while all notification callbacks are blocked");
             assertFalse(fifth.get().isDone(),
                     "fifth terminal notification should wait behind blocked delivery workers");
+            assertFalse(fifth.get().cancel(false),
+                    "a physically revoked timed waiter must reject late cancellation");
+            assertFalse(fifth.get().isDone(),
+                    "late cancellation cannot replace the already claimed timeout");
         } finally {
             permitCallbacksToFinish.countDown();
             owner.release();
@@ -1575,6 +1579,17 @@ final class MutexRuntimeTest {
         }
         assertNull(callbackFailure.get(), String.valueOf(callbackFailure.get()));
         assertEquals(0, queuedAsyncReservations(mutex));
+        for (var quotaName : new String[]{"ASYNC_NOTIFICATIONS", "TIMED_NOTIFICATIONS"}) {
+            var quota = OresMutex.Shared.class.getDeclaredField(quotaName);
+            quota.setAccessible(true);
+            AtomicInteger pendingNotifications = (AtomicInteger) quota.get(null);
+            long settledBefore = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (pendingNotifications.get() != 0 && System.nanoTime() < settledBefore) {
+                Thread.sleep(2);
+            }
+            assertEquals(0, pendingNotifications.get(),
+                    quotaName + " retained capacity after blocked host callbacks released");
+        }
         var next = mutex.lockFor(Duration.ofSeconds(1)).orElseThrow();
         next.release();
     }
