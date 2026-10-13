@@ -3,6 +3,7 @@ package dev.oreslang.parser;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.OresSymbol;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -208,9 +209,9 @@ public final class StaticConstantFolder {
     private Object binary(String op, Object a, Object b) {
         try {
             if (op.equals("==") || op.equals("eq"))
-                return Objects.equals(a, b);
+                return constantEquals(a, b);
             if (op.equals("!=") || op.equals("neq"))
-                return !Objects.equals(a, b);
+                return !constantEquals(a, b);
             if (a instanceof Boolean x && b instanceof Boolean y) {
                 return switch (op) {
                     case "&&" -> x && y;
@@ -238,16 +239,17 @@ public final class StaticConstantFolder {
                 double left = x.doubleValue(), right = y.doubleValue();
                 if (!Double.isFinite(left) || !Double.isFinite(right))
                     return invalid("nonfinite compile-time numeric operand");
+                int compare = compareNumbers(x, y);
                 double result;
                 switch (op) {
                     case "+" -> result = left + right;
                     case "-" -> result = left - right;
                     case "*" -> result = left * right;
                     case "/" -> result = left / right;
-                    case "<" -> { return left < right; }
-                    case "<=" -> { return left <= right; }
-                    case ">" -> { return left > right; }
-                    case ">=" -> { return left >= right; }
+                    case "<" -> { return compare < 0; }
+                    case "<=" -> { return compare <= 0; }
+                    case ">" -> { return compare > 0; }
+                    case ">=" -> { return compare >= 0; }
                     default -> { return invalid("invalid compile-time numeric operator " + op); }
                 }
                 if (!Double.isFinite(result)) return invalid("nonfinite compile-time numeric result");
@@ -257,6 +259,32 @@ public final class StaticConstantFolder {
             throw new IllegalArgumentException("overflow or division by zero in constant expression", failure);
         }
         return invalid("incompatible operands in compile-time expression: " + op);
+    }
+
+    /**
+     * Symbol/String equality is strictly nominal; mixed numeric comparisons
+     * use exact integer-vs-float decimal comparison so integers beyond 2^53
+     * do not silently collapse onto adjacent floating point numbers.
+     */
+    private boolean constantEquals(Object a, Object b) {
+        if (a instanceof Number x && b instanceof Number y)
+            return compareNumbers(x, y) == 0;
+        return Objects.equals(a, b);
+    }
+
+    private int compareNumbers(Number x, Number y) {
+        if (x instanceof Long a && y instanceof Long b) return Long.compare(a, b);
+        if (x instanceof Integer a && y instanceof Integer b) return Integer.compare(a, b);
+        if (x instanceof Double a && y instanceof Double b) {
+            if (!Double.isFinite(a) || !Double.isFinite(b))
+                throw new IllegalArgumentException("nonfinite constant number");
+            return a < b ? -1 : a > b ? 1 : 0;
+        }
+        BigDecimal left = x instanceof Double a ? BigDecimal.valueOf(a)
+                : BigDecimal.valueOf(x.longValue());
+        BigDecimal right = y instanceof Double b ? BigDecimal.valueOf(b)
+                : BigDecimal.valueOf(y.longValue());
+        return left.compareTo(right);
     }
 
     private long exactIntegerDivision(long x, long y) {
