@@ -474,8 +474,14 @@ public final class Ast {
         }
     }
 
-    public record TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) implements Decl {
+    public record TypeAliasDecl(
+            String name, Visibility visibility, List<String> genericParameters, TypeRef target) implements Decl {
         public TypeAliasDecl { genericParameters = List.copyOf(genericParameters); }
+
+        /** Existing AST producers without an explicit visibility are private by default. */
+        public TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) {
+            this(name, Visibility.PRIVATE, genericParameters, target);
+        }
     }
 
     public enum BindingKind { CONST, VAL, LET }
@@ -484,11 +490,34 @@ public final class Ast {
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
-    /** Binding rebinding and mutable access to the referent are independent capabilities. */
+    /**
+     * Binding rebinding and mutable access to the referent are independent capabilities.
+     * inferredTypeName is compiler-only metadata for the local type alias introduced
+     * by `const T value = infer<T> struct {...}` or `infer<T> tuple (...)`.
+     */
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer,
-                              boolean mutableReferent) implements Stmt {
+                              boolean mutableReferent, String inferredTypeName) implements Stmt {
         public BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) {
-            this(kind, declaredType, name, initializer, kind == BindingKind.VAL);
+            this(kind, declaredType, name, initializer, kind == BindingKind.VAL, null);
+        }
+        public BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer,
+                           boolean mutableReferent) {
+            this(kind, declaredType, name, initializer, mutableReferent, null);
+        }
+        public BindingStmt {
+            if (inferredTypeName != null) {
+                if (kind != BindingKind.CONST || mutableReferent) {
+                    throw new IllegalArgumentException("named inferred types require an immutable const binding");
+                }
+                if (declaredType == null || !declaredType.name().equals(inferredTypeName)
+                        || !declaredType.arguments().isEmpty() || declaredType.inferArguments()) {
+                    throw new IllegalArgumentException("named inferred type must match the declared binding type");
+                }
+                if (!(initializer instanceof ObjectExpr object && object.inferredStruct())
+                        && !(initializer instanceof TupleExpr)) {
+                    throw new IllegalArgumentException("named inferred type requires infer struct or tuple literal");
+                }
+            }
         }
     }
     public record DestructureBinding(
@@ -778,7 +807,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -841,6 +870,8 @@ public final class Ast {
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
+    /** Evaluate one expression into Option<T>; only ordinary guest failures become None. */
+    public record TrapExpr(Expr expression) implements Expr { }
 
     public record ChannelOpExpr(
             ChannelOperation operation,
