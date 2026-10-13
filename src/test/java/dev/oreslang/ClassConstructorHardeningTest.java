@@ -158,6 +158,58 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void finalDeclarationCanUseConstructorParametersBeforeConstructorBody() throws Exception {
+        String source = """
+                define class User as
+                  final int age: supplied_age + 1;
+                  final int doubleAge: supplied_age * 2;
+
+                  constructor(int supplied_age) {
+                    return;
+                  }
+
+                  pub total(): int {
+                    return self.age + self.doubleAge;
+                  }
+                end
+
+                pub routine main(): void {
+                  val user = new User(10);
+                  stdio.stdout.write(user.total());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("31", run(source));
+    }
+
+    @Test
+    void finalDeclarationRejectsMissingConstructorParameter() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                    define class Missing as
+                      final int field: undeclared_argument;
+                      constructor(int actual_argument) { return; }
+                    end
+                    """)));
+        assertTrue(failure.getMessage().contains("undeclared_argument"));
+    }
+
+    @Test
+    void constructorCannotOverwriteDeclarationInitializedParameterField() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                    define class Unsafe as
+                      final int field: supplied_value;
+                      constructor(int supplied_value) {
+                        self.field = supplied_value + 1;
+                      }
+                    end
+                    """)));
+        assertTrue(failure.getMessage().contains("cannot reassign final class field"));
+    }
+
+    @Test
     void parserRejectsJavaStyleDuplicateNestedAndTypedConstructors() {
         IllegalArgumentException javaStyle = assertThrows(
                 IllegalArgumentException.class,
