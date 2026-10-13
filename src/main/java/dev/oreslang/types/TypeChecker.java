@@ -2213,6 +2213,7 @@ public final class TypeChecker {
                             Type reply = new Named("PipelineTypedReply", List.of());
                             if (call.typeArgumentsPresent()) {
                                 if (call.typeArguments().size() != 1
+                                        || call.typeArguments().getFirst().inferArguments()
                                         || !call.typeArguments().getFirst().arguments().isEmpty()) {
                                     throw new IllegalArgumentException(
                                             "PipelineRunner.send<ResultCase> expects one nominal result case");
@@ -2225,19 +2226,19 @@ public final class TypeChecker {
                                 }
                                 requireSerializableActorMessageType(
                                         new Named(resultName, List.of()), "PipelineRunner typed result");
-                                // The two cases must be admissible in at least
-                                // one statically declared closed mailbox domain.
-                                // Runtime route binding enforces the concrete
-                                // exact compiler-owned domain fingerprint.
+                                // Both cases must coexist in the SAME explicitly
+                                // declared closed mailbox pattern. Merely sharing
+                                // an enum owner is insufficient: a source may
+                                // expose distinct non-overlapping patterns.
+                                // Runtime route binding independently verifies
+                                // the exact compiler-owned domain fingerprint.
                                 boolean sharedDomain = taggedMessages.patterns().values()
                                         .stream().anyMatch(domain ->
                                             domain.cases().stream().anyMatch(candidate ->
                                                     candidate.qualifiedName().equals(tagged.name()))
                                             && domain.cases().stream().anyMatch(candidate ->
                                                     candidate.qualifiedName().equals(resultName)));
-                                if (!sharedDomain && !tagged.name().equals(resultName)
-                                        && !tagged.name().substring(0, tagged.name().indexOf('.'))
-                                                .equals(expected.owner())) {
+                                if (!sharedDomain) {
                                     throw new IllegalArgumentException(
                                             "pipeline outbound and result cases have no shared closed nominal domain");
                                 }
