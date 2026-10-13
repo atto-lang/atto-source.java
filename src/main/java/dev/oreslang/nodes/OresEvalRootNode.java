@@ -889,13 +889,30 @@ public final class OresEvalRootNode extends RootNode {
                 return new SourceFlow(SourceFlowKind.THROW, null, cause);
             }
 
+            private static boolean isHostFatal(Throwable failure) {
+                return failure instanceof VirtualMachineError
+                        || failure instanceof ThreadDeath
+                        || failure instanceof LinkageError;
+            }
+
             /**
              * A terminal failure wins over ordinary catch/return/throw from
-             * cleanup. It remains non-catchable to guest source code, but
-             * lexical finally and defer callbacks still run.
+             * cleanup. Host-fatal errors retain higher priority. Guest catch
+             * does not see terminal failures, but lexical cleanup still runs.
              */
             private static SourceFlow afterCleanup(
                     SourceFlow pending, SourceFlow cleanup) {
+                // JVM/process-fatal errors outrank ordinary actor
+                // cancellation; a cancelled task must never mask OOM,
+                // linkage corruption or forced ThreadDeath from cleanup.
+                if (isHostFatal(pending.failure())) return pending;
+                if (isHostFatal(cleanup.failure())) {
+                    if (pending.failure() != null
+                            && pending.failure() != cleanup.failure()) {
+                        cleanup.failure().addSuppressed(pending.failure());
+                    }
+                    return cleanup;
+                }
                 if (pending.kind() == SourceFlowKind.TERMINAL) {
                     if (cleanup.failure() != null && cleanup.failure() != pending.failure()) {
                         pending.failure().addSuppressed(cleanup.failure());
