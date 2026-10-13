@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -19,6 +21,8 @@ public final class SealedActorState {
     private static final int MAX_FIELDS = 256;
     private static final int MAX_STRING_BYTES = 64 * 1024;
     private static final int MAX_TOTAL_STRING_BYTES = 1024 * 1024;
+    private static final int MAX_LIST_ELEMENTS = 4096;
+    private static final int MAX_TOTAL_LIST_ELEMENTS = 16384;
 
     private final ActorRuntime.ActorId owner;
     private final LinkedHashMap<String, String> schema;
@@ -26,6 +30,7 @@ public final class SealedActorState {
     private Access current;
     private long serial;
     private int retainedStringBytes;
+    private int retainedListElements;
     private boolean retired;
 
     public SealedActorState(ActorRuntime.ActorId owner,
@@ -39,7 +44,7 @@ public final class SealedActorState {
         this.values = new LinkedHashMap<>();
         for (var item : this.schema.entrySet()) {
             switch (item.getValue()) {
-                case "int", "bool", "string", "String" -> { }
+                case "int", "bool", "string", "String", "List[int]" -> { }
                 default -> throw new UnsupportedOperationException(
                         "runtime actor state type is not yet lowered: " + item.getValue());
             }
@@ -47,12 +52,16 @@ public final class SealedActorState {
         }
         for (var entry : Objects.requireNonNull(defaults, "defaults").entrySet()) {
             validateValue(entry.getKey(), entry.getValue());
-            int size = stringBytes(entry.getValue());
-            if (size > MAX_TOTAL_STRING_BYTES - retainedStringBytes) {
-                throw new IllegalArgumentException("actor state string byte budget exceeded");
+            Object detached = ownedStateValue(entry.getKey(), entry.getValue());
+            int size = stringBytes(detached);
+            int listSize = listElements(detached);
+            if (size > MAX_TOTAL_STRING_BYTES - retainedStringBytes
+                    || listSize > MAX_TOTAL_LIST_ELEMENTS - retainedListElements) {
+                throw new IllegalArgumentException("actor state aggregate budget exceeded");
             }
             retainedStringBytes += size;
-            values.put(entry.getKey(), entry.getValue());
+            retainedListElements += listSize;
+            values.put(entry.getKey(), detached);
         }
     }
 
@@ -85,6 +94,7 @@ public final class SealedActorState {
                     || value instanceof Integer || value instanceof Long;
             case "bool" -> value instanceof Boolean;
             case "string", "String" -> value instanceof String;
+            case "List[int]" -> verifiedIntList(value) != null;
             default -> false;
         };
         if (!valid) {
@@ -92,6 +102,41 @@ public final class SealedActorState {
                     + "' expects " + expected + ", got "
                     + (value == null ? "null" : value.getClass().getSimpleName()));
         }
+    }
+
+    /** Accepted only for compiler-generated List[int] storage/results.
+     * Host-controlled List subclasses are rejected before any user-defined
+     * iterator/getter could run during the copy. This is intentionally a
+     * restrictive implementation until provenance-aware serializers exist. */
+    private static List<Long> verifiedIntList(Object value) {
+        if (!(value instanceof ArrayList<?> list)
+                || value.getClass() != ArrayList.class) {
+            throw new IllegalArgumentException(
+                    "List[int] state snapshots require a compiler-owned ArrayList");
+        }
+        if (list.size() > MAX_LIST_ELEMENTS) {
+            throw new IllegalArgumentException("actor state List[int] exceeds element quota");
+        }
+        ArrayList<Long> detached = new ArrayList<>(list.size());
+        for (Object item : list) {
+            if (!(item instanceof Byte || item instanceof Short
+                    || item instanceof Integer || item instanceof Long)) {
+                throw new IllegalArgumentException(
+                        "actor state List[int] contains non-integer or aliased element");
+            }
+            detached.add(((Number) item).longValue());
+        }
+        return detached;
+    }
+
+    private static int listElements(Object value) {
+        return value instanceof List<?> list ? list.size() : 0;
+    }
+
+    /** Stored state contains immutable flat integer elements, no host refs. */
+    private Object ownedStateValue(String name, Object value) {
+        return schema.get(name).equals("List[int]")
+                ? List.copyOf(verifiedIntList(value)) : value;
     }
 
     public final class Access {
@@ -115,20 +160,30 @@ public final class SealedActorState {
             if (value == Uninitialized.INSTANCE) {
                 throw new IllegalStateException("actor state key '" + name + "' is uninitialized");
             }
-            return value;
+            // Never expose the map's stored List identity, even to a
+            // short-lived read loan. Each projection has independent storage.
+            return value instanceof List<?> list
+                    ? new ArrayList<>(list) : value;
         }
         public void write(String name, Object value) {
             check();
             if (!writable) throw new SecurityException("critical read cannot write actor state");
             validateValue(name, value);
+            // Prepare and validate before publishing any part of the write.
+            Object detached = ownedStateValue(name, value);
             int previousBytes = stringBytes(values.get(name));
-            int nextBytes = stringBytes(value);
+            int nextBytes = stringBytes(detached);
+            int previousElements = listElements(values.get(name));
+            int nextElements = listElements(detached);
             if (nextBytes > MAX_TOTAL_STRING_BYTES
-                    - (retainedStringBytes - previousBytes)) {
-                throw new IllegalArgumentException("actor state string byte budget exceeded");
+                    - (retainedStringBytes - previousBytes)
+                    || nextElements > MAX_TOTAL_LIST_ELEMENTS
+                    - (retainedListElements - previousElements)) {
+                throw new IllegalArgumentException("actor state aggregate budget exceeded");
             }
-            values.put(name, value);
+            values.put(name, detached);
             retainedStringBytes = retainedStringBytes - previousBytes + nextBytes;
+            retainedListElements = retainedListElements - previousElements + nextElements;
         }
     }
 
@@ -151,17 +206,30 @@ public final class SealedActorState {
         current = access;
         try {
             T result = callback.apply(access);
-            if (!safeResult(result, 0)) {
-                throw new IllegalArgumentException("critical state access cannot escape in result");
-            }
-            return result;
+            // The callback's return value is not the state map's value.
+            // A flat List[int] is copied a second time on exit so even a
+            // callback-local mutable list cannot remain aliased to its caller.
+            @SuppressWarnings("unchecked")
+            T detached = (T) detachedResult(result);
+            return detached;
         } finally {
             access.live = false;
             current = previous;
         }
     }
 
-    private boolean safeResult(Object value, int depth) {
+    private static Object detachedResult(Object value) {
+        if (value instanceof List<?>) {
+            // A callback cannot launder an arbitrary host List or object
+            // graph through a claimed List[int] result.
+            return new ArrayList<>(verifiedIntList(value));
+        }
+        if (safeScalarResult(value)) return value;
+        throw new IllegalArgumentException(
+                "critical state access cannot escape in result");
+    }
+
+    private static boolean safeScalarResult(Object value) {
         // Never accept an arbitrary Number subclass: AtomicInteger/AtomicLong
         // and user-defined host Number types can be mutable and may retain
         // references to the active state loan through their own fields.
@@ -172,9 +240,8 @@ public final class SealedActorState {
                 || value instanceof java.math.BigInteger
                 || value instanceof java.math.BigDecimal
                 || value instanceof Boolean || value instanceof Character) return true;
-        // Avoid arbitrary mutable guest/Java wrappers and every possible
-        // deferred object; the source ownership checker must prove complex
-        // returned values before this boundary can be broadened.
+        // Arbitrary objects/closures, Futures and reference graphs remain
+        // forbidden until compiler-proven owned lowering exists.
         return false;
     }
 
@@ -193,6 +260,7 @@ public final class SealedActorState {
         retired = true;
         values.clear();
         retainedStringBytes = 0;
+        retainedListElements = 0;
     }
 
     public Set<String> declaredKeys() { return Set.copyOf(schema.keySet()); }
