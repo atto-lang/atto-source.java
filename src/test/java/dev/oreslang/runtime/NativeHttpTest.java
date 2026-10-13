@@ -95,6 +95,56 @@ class NativeHttpTest {
                 "repeated shutdown should settle without retaining admissions: " + output);
     }
 
+    @Test void pooledAdmissionIsBoundedUnderConcurrentReservationReleaseAndWorkerDeath() throws Exception {
+        var registry = new java.util.concurrent.ConcurrentHashMap<String, Set<Integer>>();
+        registry.put("worker", java.util.concurrent.ConcurrentHashMap.newKeySet());
+        final int capacity = 64;
+        final int contenders = 256;
+        var start = new CountDownLatch(1);
+        var finished = new CountDownLatch(contenders);
+        var accepted = new java.util.concurrent.atomic.AtomicInteger();
+        var rejected = new java.util.concurrent.atomic.AtomicInteger();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i < contenders; i++) {
+                final int request = i;
+                executor.submit(() -> {
+                    try {
+                        start.await();
+                        var result = NativeHttp.registerPoolAdmission(
+                            registry, "worker", request, capacity);
+                        if (result == NativeHttp.PoolAdmission.REGISTERED) accepted.incrementAndGet();
+                        else if (result == NativeHttp.PoolAdmission.FULL) rejected.incrementAndGet();
+                        else throw new AssertionError("live worker unexpectedly missing");
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(e);
+                    } finally {
+                        finished.countDown();
+                    }
+                });
+            }
+            start.countDown();
+            assertTrue(finished.await(10, TimeUnit.SECONDS));
+        }
+        assertEquals(capacity, accepted.get());
+        assertEquals(contenders - capacity, rejected.get());
+        assertEquals(capacity, registry.get("worker").size());
+
+        // Releasing one completed exchange must make room for exactly one
+        // subsequent reservation without exceeding the capacity.
+        int victim = registry.get("worker").iterator().next();
+        registry.get("worker").remove(victim);
+        assertEquals(NativeHttp.PoolAdmission.REGISTERED,
+            NativeHttp.registerPoolAdmission(registry, "worker", 1000, capacity));
+        assertTrue(registry.get("worker").size() <= capacity);
+
+        registry.remove("worker");
+        assertEquals(NativeHttp.PoolAdmission.WORKER_GONE,
+            NativeHttp.registerPoolAdmission(registry, "worker", 1001, capacity));
+        assertFalse(registry.containsKey("worker"),
+            "termination must not recreate an outstanding-exchange registry");
+    }
+
     @Test void pathDecodingPreservesSegmentBoundariesAndRejectsAmbiguousBytes() {
         assertEquals(List.of(), NativeHttp.segments("/"));
         assertEquals(List.of("😀"), NativeHttp.segments("/😀"));
