@@ -40,6 +40,11 @@ public final class TaggedMessageCodec implements MessagePackCollectionCodec.Mail
     private final String closedDomainIdentity;
     public String closedDomainIdentity() { return closedDomainIdentity; }
 
+    /** Exact compiler-compiled nominal case admission; no guest-selected schemas. */
+    public boolean permitsCase(String qualifiedCase) {
+        return qualifiedCase != null && byName.containsKey(qualifiedCase);
+    }
+
     public TaggedMessageCodec(TaggedMessageContracts.Domain domain) {
         Objects.requireNonNull(domain);
         if (domain.cases().isEmpty() || domain.cases().size() > 4096) {
