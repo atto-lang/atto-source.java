@@ -41,6 +41,9 @@ public final class TypeChecker {
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    // A name+arity slot may have an explicitly disjoint nominal enum/primitive
+    // family; all members are validated before any call is type-checked.
+    private final Map<String, Map<Integer, List<Ast.FunctionDecl>>> nominalFunctionFamilies = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
@@ -179,19 +182,41 @@ public final class TypeChecker {
         } else {
             ambiguousFunctions.add(fn.name());
             functions.remove(fn.name());
+            nominalFunctionFamilies.remove(fn.name());
         }
     }
 
     private void putFunctionSlot(String key, Ast.FunctionDecl fn) {
-        LinkedHashMap<Integer, Ast.FunctionDecl> family =
-                functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
-        Ast.FunctionDecl previous = family.putIfAbsent(fn.parameters().size(), fn);
-        if (previous != null) {
+        Map<Integer, List<Ast.FunctionDecl>> byArity =
+                nominalFunctionFamilies.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
+        List<Ast.FunctionDecl> previous =
+                byArity.getOrDefault(fn.parameters().size(), List.of());
+        List<Ast.FunctionDecl> candidates = new ArrayList<>(previous);
+        candidates.add(fn);
+        FreeCallableOverloads.requireUnambiguous(
+                candidates, taggedMessages.enums().keySet(), key);
+        byArity.put(fn.parameters().size(), List.copyOf(candidates));
+        functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>())
+                .putIfAbsent(fn.parameters().size(), fn);
+    }
+
+    /** Choose by statically known tag; ordinary type/loan/effect validation follows. */
+    private Ast.FunctionDecl selectFreeFunction(String key, int arity, List<Ast.Expr> arguments,
+            Env env, Set<String> generics, Type self) {
+        Map<Integer, List<Ast.FunctionDecl>> family = nominalFunctionFamilies.get(key);
+        List<Ast.FunctionDecl> candidates = family == null ? null : family.get(arity);
+        if (candidates == null || candidates.isEmpty()) return null;
+        if (candidates.size() == 1) return candidates.getFirst();
+        if (arguments.stream().anyMatch(arg -> arg instanceof Ast.SpreadExpr)) {
             throw new IllegalArgumentException(
-                    "callable '" + key + "' already has arity " + fn.parameters().size()
-                            + "; module/top-level overload identity is name + arity only; "
-                            + "parameter types and return types do not participate");
+                    "nominal-overloaded callable '" + key + "' requires explicit fixed arguments;"
+                    + " spread lowering must preserve static slot identity");
         }
+        List<Type> tags = new ArrayList<>(arguments.size());
+        for (Ast.Expr argument : arguments)
+            tags.add(deref(typeOf(argument, env, generics, self)));
+        return FreeCallableOverloads.chooseStatic(
+                candidates, tags, taggedMessages.enums().keySet(), key);
     }
 
     private static <T> void putQualified(Map<String, T> map, Set<String> ambiguous, String module, String name, T value, String kind) {
@@ -247,7 +272,7 @@ public final class TypeChecker {
             String category;
             if (decl instanceof Ast.FunctionDecl fn) {
                 name = fn.name();
-                category = fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "fnc";
+                category = "callable"; // kind does not contribute to overload identity
             } else if (decl instanceof Ast.ClassDecl klass) {
                 name = klass.name();
                 category = "class";
@@ -2071,7 +2096,8 @@ public final class TypeChecker {
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + functionName.name());
-                Ast.FunctionDecl target = findFunction(functionName.name(), arity);
+                Ast.FunctionDecl target = selectFreeFunction(
+                        functionName.name(), arity, call.arguments(), env, generics, self);
                 if (target != null) {
                     rejectImplicitClassCallable(functionName.name());
                     if (target.actorKind() != Ast.ActorKind.NONE
@@ -2108,9 +2134,9 @@ public final class TypeChecker {
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + namespace.name() + "." + qualifiedCall.member());
-                Ast.FunctionDecl target = findQualifiedFunction(
+                Ast.FunctionDecl target = selectFreeFunction(
                         namespace.name() + "." + qualifiedCall.member(),
-                        arity);
+                        arity, call.arguments(), env, generics, self);
                 if (target != null) {
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
@@ -2825,6 +2851,19 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr enumOwner
+                    && env.lookup(enumOwner.name()) == null) {
+                TaggedMessageContracts.Case variant =
+                        taggedCaseOrNull(enumOwner.name() + "." + member.member());
+                if (variant != null) {
+                    if (variant.sourcePayload() != null) {
+                        throw new IllegalArgumentException(
+                                "payload-bearing enum case '" + variant.qualifiedName()
+                                        + "' requires a constructor call");
+                    }
+                    return new Named(variant.qualifiedName(), List.of());
+                }
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
@@ -7855,7 +7894,9 @@ public final class TypeChecker {
             LinkedHashMap<Integer, Ast.FunctionDecl> family,
             String displayName) {
         if (family == null || family.isEmpty()) return null;
-        if (family.size() > 1) {
+        if (family.size() > 1 || (nominalFunctionFamilies.containsKey(displayName)
+                && nominalFunctionFamilies.get(displayName).values().stream()
+                        .anyMatch(variants -> variants.size() > 1))) {
             throw new IllegalArgumentException(
                     "overloaded callable '" + displayName
                             + "' must be called so name + arity can select a slot");
