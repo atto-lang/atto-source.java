@@ -118,8 +118,12 @@ final class SymbolPropertyKeyCodecTest {
         String stableName = "550e8400-e29b-41d4-a716-446655440000";
         OresSymbol stable = OresSymbol.stable(stableName);
         var scope = new SymbolPropertyKeyCodec.AdmissionScope("tenant-a", "worker", "v1");
+        assertThrows(IllegalArgumentException.class, () ->
+                new SymbolPropertyKeyCodec.ExportManifest(
+                        java.util.Map.of(scope, Set.of(stable))),
+                "STABLE exports must fail during manifest sealing");
         var manifest = new SymbolPropertyKeyCodec.ExportManifest(
-                java.util.Map.of(scope, Set.of(stable)));
+                java.util.Map.of(scope, Set.of(OresSymbol.process("tenant-a/exported"))));
         byte[] stableWire = SymbolPropertyKeyCodec.encode(stable);
         // v1 exports are restricted to PROCESS identities, regardless of
         // whether a trusted component mistakenly includes a stable one.
