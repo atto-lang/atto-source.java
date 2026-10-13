@@ -199,3 +199,37 @@ For a union source, every possible variant must have a sound compatible
 target arm. Regression coverage verifies both rejection and admission;
 this avoids inadvertently turning nominal subtype identity into automatic
 structural ownership.
+
+### Actor payload admission must match runtime transport
+
+Static field-shape compatibility is neither a runtime serializer nor a
+sendability proof. At actor message/return/output boundaries, a nominal
+type without a known runtime representation is rejected rather than
+implicitly treated as a serialized record. Explicitly supported actor
+identities (`ActorId`, `ActorGroupId`, `ActorKind`) and typed
+`ActorRef<Actor>` capabilities retain their dedicated rules; an actor
+reference is not the same thing as sending an actor instance by value.
+Untrusted actors cannot receive `ActorRef` capabilities.
+
+The current guest evaluator represents `Option<T>`/`Result<T,E>` as
+private tagged-variant objects, while `ActorRuntime.freeze` and
+`isolateCopy` do not yet implement their canonical tagged-value
+transport. Therefore the compiler deliberately rejects these variants
+at actor boundaries, **including nested occurrences**, instead of
+admitting calls that fail at mailbox delivery. This restriction applies
+only to actor transport; ordinary local `Option`/`Result` values remain
+valid. A future versioned tagged-value codec must preserve variant
+identity, recursive ownership/isolation, memory accounting, cycles and
+capability rejection across shared/private/untrusted actors before the
+actor boundary restriction can be relaxed.
+
+The regression coverage includes negative unresolved nominal and tagged
+sum cases, positive scalar actor identities and typed actor-reference
+admission, and separate explicit rejection for untrusted actor
+capabilities. The same-file actor dependency rule may reject some bad
+programs earlier than the mailbox validation; rejection precedence is
+not itself proof of a transport codec.
+
+Exact-head funded CI runs on the isolated mirror can validate compiler
+semantics, but they are not replacements for the complete JVM,
+GraalVM AOT/hybrid, and LLVM runtime-isolation suites.
