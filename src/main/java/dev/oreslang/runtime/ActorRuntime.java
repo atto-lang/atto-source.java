@@ -1437,15 +1437,26 @@ public final class ActorRuntime implements AutoCloseable {
          * Neither premature observation nor consumer cancellation can publish
          * a result or cancel the actors.
          */
-        public java.util.concurrent.CompletionStage<Object> completedReply() {
-            return physicalDone.asCompletionStage().thenApply(ignored -> {
+        public java.util.concurrent.CompletionStage<Object> completedReply(
+                java.util.concurrent.Executor trustedControl) {
+            Objects.requireNonNull(trustedControl, "trusted pipeline CONTROL executor");
+            // Never execute guest nominal decoding in the last stage's
+            // physical-finalization callback. A direct thenApply() executes
+            // on that callback carrier when a caller starts observing before
+            // whole-route DONE; large decoded values can park actor cleanup.
+            // Only a trusted CONTROL executor may run the copy/decoder.
+            return physicalDone.asCompletionStage().thenApplyAsync(ignored -> {
+                if (ActorRuntime.isActorCarrierThread() || ActorRuntime.inActorExecution()) {
+                    throw new SecurityException(
+                            "pipeline typed reply decoder cannot run on an actor DATA carrier");
+                }
                 byte[] committed = route.completedReplyFrame().get();
                 if (route.phase().get() != 2 * route.count() || committed == null) {
                     throw new IllegalStateException(
                             "pipeline completed without a compiler-validated typed reply");
                 }
                 return route.codec().decode(committed.clone());
-            });
+            }, trustedControl);
         }
     }
 
