@@ -194,3 +194,35 @@ observations. Converting one to a caller-owned `CompletableFuture` and
 completing/cancelling that local copy cannot publish a fabricated barrier,
 admit messages, or permit a topology swap. Only controller/runtime-owned
 producer completions change authoritative lifecycle state.
+
+## Transactional startup hardening (2026-10-12)
+
+The production host adapter now checks an actor's runtime-owned **allocation
+generation** against a snapshot taken just before invoking each provider.
+A provider returning an existing actor (including one allocated earlier
+in the *same* plan) is rejected. Existing actors returned by a hostile
+provider are **never** put into its rollback stop set.
+
+On failure after one or more successful provider allocations, startup
+issues STOP to every provisionally *acquired* actor and waits for each
+runtime-owned physical DONE receipt. An exceptional DONE is a final receipt;
+STOP submission alone is not. This bounded cleanup executes only on the
+trusted host caller. If any DONE remains unsettled, the adapter retains the
+references in quarantine and refuses further opens. In that case it raises
+a distinct incomplete-rollback failure rather than claiming successful
+cleanup or retrying possibly live actors.
+
+This closes the standard source-provider-fails-while-creating-sink gap,
+but a provider function that allocates an actor and throws **without
+returning its ActorRef** cannot be completely tracked by this host contract.
+Fully atomic provider construction should introduce a runtime-owned
+provisioning scope that records every allocation at creation time and
+performs generation-aware cleanup even when a provider throws before
+returning. True precompiled provider registration and a signed plugin
+manifest remain separate security/release gates.
+
+The controller's public completion observations remain non-authoritative.
+Tests distinguish partial-start physically acknowledged cleanup, a
+previously allocated actor that must NOT be stopped, and an actor that is
+improperly reused as the second stage of a new plan. This test suite is
+host-layer evidence, not a compiled Oreslang dynamic hot-swap guest.

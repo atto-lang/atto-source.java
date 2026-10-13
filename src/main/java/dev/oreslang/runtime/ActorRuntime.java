@@ -344,6 +344,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
+    private final AtomicLong actorRefBirthSequence = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -1846,6 +1847,7 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorRef<M> {
         private final ActorId id;
         private final ActorKind kind;
+        private final long allocatedAt;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
@@ -1862,6 +1864,11 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
             this.kind = kind;
+            this.allocatedAt = actorRefBirthSequence.updateAndGet(previous -> {
+                if (previous == Long.MAX_VALUE)
+                    throw new IllegalStateException("actor allocation sequence exhausted");
+                return previous + 1;
+            });
             readyFuture.whenCompleteRuntime((ignored, failure) -> {
                 if (failure != null) {
                     readyRefFuture.failFromRuntime(OresFuture.unwrap(failure));
@@ -4500,6 +4507,20 @@ public final class ActorRuntime implements AutoCloseable {
     /** Host-only ownership query for fail-closed provider admission. */
     public boolean ownsActorRef(ActorRef<?> ref) {
         return ref != null && ref.ownedBy(this);
+    }
+
+    /** Snapshot for trusted host factory admission. Never a guest API. */
+    public long actorAllocationMark() {
+        requireSupervisorContext("inspect actor allocation generation");
+        return actorRefBirthSequence.get();
+    }
+
+    /** A registered provider must return an actor allocated after its call began,
+     * not a previously captured live reference that belongs to another route. */
+    public boolean ownsFreshActorRefSince(ActorRef<?> ref, long mark) {
+        requireSupervisorContext("validate fresh provider actor");
+        return ref != null && ref.ownedBy(this) && ref.allocatedAt > mark
+                && actors.containsKey(ref.id());
     }
 
     public boolean isAlive(ActorRef<?> ref) {

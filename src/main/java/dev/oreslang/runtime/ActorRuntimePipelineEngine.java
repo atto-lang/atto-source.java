@@ -10,6 +10,11 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -23,6 +28,9 @@ public final class ActorRuntimePipelineEngine implements PipelineController.Engi
     private final ActorRuntime runtime;
     private final Executor controlExecutor;
     private final Map<String, PipelinePlan.ActorProvider> registry;
+    private static final long ROLLBACK_RECEIPT_TIMEOUT_SECONDS = 5;
+    private final AtomicReference<List<ActorRuntime.ActorRef<?>>> quarantined =
+            new AtomicReference<>(List.of());
 
     public ActorRuntimePipelineEngine(
             ActorRuntime runtime, Executor trustedControlExecutor,
@@ -46,6 +54,10 @@ public final class ActorRuntimePipelineEngine implements PipelineController.Engi
     @Override
     public PipelineController.Session open(PipelinePlan plan) {
         Objects.requireNonNull(plan, "plan");
+        if (!quarantined.get().isEmpty()) {
+            throw new IllegalStateException(
+                    "actor provider engine is quarantined after incomplete startup rollback");
+        }
         if (ActorRuntime.inActorExecution()) {
             throw new SecurityException("pipeline providers may run only in trusted host CONTROL");
         }
@@ -59,6 +71,7 @@ public final class ActorRuntimePipelineEngine implements PipelineController.Engi
         ActorRuntime.ActorStream stream;
         try {
             for (PipelinePlan.Stage stage : plan.stages()) {
+                long allocationMark = runtime.actorAllocationMark();
                 Object created = stage.provider().spawn();
                 if (!(created instanceof ActorRuntime.ActorRef<?> ref)) {
                     throw new SecurityException("provider did not return an ActorRuntime.ActorRef: "
@@ -70,6 +83,10 @@ public final class ActorRuntimePipelineEngine implements PipelineController.Engi
                 if (!runtime.ownsActorRef(ref)) {
                     throw new SecurityException("pipeline provider returned a foreign runtime actor");
                 }
+                if (!runtime.ownsFreshActorRefSince(ref, allocationMark)) {
+                    throw new SecurityException(
+                            "pipeline actor provider must create a fresh actor for each stage");
+                }
                 refs.add(ref);
             }
             // Atomically bind live unused same-runtime compiler-owned mailboxes.
@@ -78,14 +95,56 @@ public final class ActorRuntimePipelineEngine implements PipelineController.Engi
                 throw new SecurityException("planner nominal domain differs from compiler-owned runtime domain");
             }
         } catch (RuntimeException | Error failure) {
-            // A partial start remains a release blocker: best-effort STOP
-            // cannot certify physical retirement of every orphaned actor.
-            for (ActorRuntime.ActorRef<?> ref : refs) {
-                try { ref.stop(); } catch (RuntimeException ignored) { }
-            }
+            rollbackStartup(refs, failure);
             throw failure;
         }
         return new BoundSession(plan, stream, List.copyOf(refs));
+    }
+
+    /**
+     * STOP is a request, not an attested physical finalization. For all
+     * provisionally acquired actors, await runtime-owned DONE settlements
+     * before releasing the startup failure. Exceptional DONE proves terminal
+     * finalization too. Unsettled DONE permanently quarantines this engine.
+     */
+    private void rollbackStartup(List<ActorRuntime.ActorRef<?>> acquired,
+                                 Throwable startupFailure) {
+        if (acquired.isEmpty()) return;
+        List<ActorRuntime.ActorRef<?>> held = List.copyOf(acquired);
+        Throwable cleanupFailure = null;
+        for (ActorRuntime.ActorRef<?> ref : held) {
+            try { ref.stop(); }
+            catch (RuntimeException | Error failure) {
+                if (cleanupFailure == null) cleanupFailure = failure;
+                else cleanupFailure.addSuppressed(failure);
+            }
+        }
+        boolean completed = true;
+        for (ActorRuntime.ActorRef<?> ref : held) {
+            try {
+                ref.done().get(ROLLBACK_RECEIPT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            } catch (ExecutionException | CancellationException settledFailure) {
+                // A failure is a valid physical terminal receipt.
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                completed = false;
+                if (cleanupFailure == null) cleanupFailure = interrupted;
+            } catch (TimeoutException timeout) {
+                completed = false;
+                if (cleanupFailure == null) cleanupFailure = timeout;
+            }
+            if (!ref.done().isDone()) completed = false;
+        }
+        if (completed) {
+            if (cleanupFailure != null) startupFailure.addSuppressed(cleanupFailure);
+            return;
+        }
+        quarantined.set(held);
+        IllegalStateException failure = new IllegalStateException(
+                "actor startup rollback did not physically finalize; engine quarantined",
+                startupFailure);
+        if (cleanupFailure != null) failure.addSuppressed(cleanupFailure);
+        throw failure;
     }
 
     private final class BoundSession implements PipelineController.Session {
