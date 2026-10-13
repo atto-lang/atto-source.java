@@ -8582,13 +8582,13 @@ public final class OresEvalRootNode extends RootNode {
             int fixedArity = restIndex >= 0 ? restIndex : bindings.size();
             List<Object> items = new ArrayList<>();
             try {
-                // A prefix projection on a custom iterable must not exhaust a
-                // potentially unbounded iterator. When rest exists we must
-                // consume the full tail; otherwise stop at the last selected slot.
-                for (Object value : values) {
-                    if (restIndex < 0 && items.size() == fixedArity) break;
+                // Do not call next() for the first unrequested element: lazy
+                // iterators may have side effects or be unbounded. A rest
+                // binding explicitly requests the full remaining tail.
+                java.util.Iterator<?> cursor = values.iterator();
+                while ((restIndex >= 0 || items.size() < fixedArity) && cursor.hasNext()) {
                     context.schedulerSafepoint();
-                    items.add(value);
+                    items.add(cursor.next());
                 }
             } finally {
                 closeIterable(values);
