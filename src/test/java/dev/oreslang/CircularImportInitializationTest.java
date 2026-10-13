@@ -148,6 +148,50 @@ final class CircularImportInitializationTest {
     }
 
     @Test
+    void duplicateWildcardImportAliasesAreRejectedBeforeLinking() throws Exception {
+        Path a = tempDir.resolve("a.ores");
+        Path b = tempDir.resolve("b.ores");
+        Path c = tempDir.resolve("c.ores");
+        Files.writeString(a, """
+                import * as conflicting from "./b.ores";
+                import * as conflicting from "./c.ores";
+                pub routine main(): void { return; }
+                """);
+        Files.writeString(b, """
+                import * as reverse from "./a.ores";
+                pub fnc helper(): int { return 7; }
+                """);
+        Files.writeString(c, """
+                pub fnc helper(): int { return 8; }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> LinkedProgramRunner.validate(a));
+        assertTrue(failure.getMessage().contains("duplicate import binding 'conflicting'"),
+                failure.getMessage());
+    }
+
+    @Test
+    void wildcardAndNamedAliasesShareTheSameImportNamespace() throws Exception {
+        Path a = tempDir.resolve("a.ores");
+        Path b = tempDir.resolve("b.ores");
+        Files.writeString(a, """
+                import * as helper from "./b.ores";
+                import fnc helper from "./b.ores";
+                pub routine main(): void { return; }
+                """);
+        Files.writeString(b, """
+                import * as reverse from "./a.ores";
+                pub fnc helper(): int { return 7; }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> LinkedProgramRunner.validate(a));
+        assertTrue(failure.getMessage().contains("duplicate import binding 'helper'"),
+                failure.getMessage());
+    }
+
+    @Test
     void cyclesDoNotMakePrivateNamesImportable() throws Exception {
         Path a = tempDir.resolve("a.ores");
         Path b = tempDir.resolve("b.ores");
