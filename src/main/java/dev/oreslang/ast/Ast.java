@@ -518,12 +518,16 @@ public final class Ast {
             BindingKind kind,
             String name,
             boolean rest,
-            boolean mutableReferent) {
+            boolean mutableReferent,
+            TypeRef declaredType) {
+        public DestructureBinding(BindingKind kind, String name, boolean rest, boolean mutableReferent) {
+            this(kind, name, rest, mutableReferent, null);
+        }
         public DestructureBinding(BindingKind kind, String name, boolean rest) {
-            this(kind, name, rest, kind == BindingKind.VAL);
+            this(kind, name, rest, kind == BindingKind.VAL, null);
         }
         public DestructureBinding(BindingKind kind, String name) {
-            this(kind, name, false, kind == BindingKind.VAL);
+            this(kind, name, false, kind == BindingKind.VAL, null);
         }
 
         public DestructureBinding {
@@ -532,6 +536,9 @@ public final class Ast {
             }
             if (rest && "_".equals(name)) {
                 throw new IllegalArgumentException("rest destructure binding cannot be a discard");
+            }
+            if ("_".equals(name) && declaredType != null) {
+                throw new IllegalArgumentException("discard cannot have a declared type");
             }
         }
 
