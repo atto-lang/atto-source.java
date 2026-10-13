@@ -71,6 +71,14 @@ The selected name (`ArrayList`) must match the Java simple class name; `JArrayLi
 
 ### Circular imports and file initialization
 
+**Migration warning (not yet implemented end to end):** The current Java loader
+still runs imported `init()` hooks eagerly as described below. The accepted
+target contract requires inert imports and independent read-only constant data.
+Draft Java PR #857 replaces eager imported startup with lazy first execution,
+while draft Java PR #884 adds file/module `const` syntax and export checks.
+Neither branch has passing compiler/runtime parity verification; do not treat
+the legacy eager-init description below as the desired semantics.
+
 Import cycles are legal. Oreslang does not reject a program merely because its
 file/module graph contains a cycle such as `a.ores -> b.ores -> a.ores`.
 
@@ -348,6 +356,11 @@ distinct from an exact fixed multidimensional layout, whose extents belong in
 finite sequence shapes.
 
 ## Compile-time file/module constants (first-stage implementation)
+
+Named modules default to **private**. Only `define pub module Name as ... end`
+is exported to other files; a `pub` class, function, or constant inside a
+private named module does not bypass that module's privacy boundary. The
+file-root module retains individually exported `pub` declarations.
 
 At file root and inside a named module, `define pub const T name = literal;`
 and `pub const T name = literal;` are permitted; `define` is optional.
