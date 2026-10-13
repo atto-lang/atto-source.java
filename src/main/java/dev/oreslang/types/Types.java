@@ -230,9 +230,13 @@ public final class Types {
             // on which arguments may be mutated.
             if (!source.mutableParameters().equals(target.mutableParameters())) return false;
             for (int i = 0; i < source.parameters().size(); i++) {
-                if (!isAssignable(target.parameters().get(i), source.parameters().get(i))) return false;
+                // Function subtyping does not synthesize argument adapters.
+                // A primitive widening can be used for an evaluated scalar,
+                // not to replace a function value with a different ABI.
+                if (!isRepresentationallyReadable(
+                        target.parameters().get(i), source.parameters().get(i))) return false;
             }
-            return isAssignable(source.result(), target.result());
+            return isRepresentationallyReadable(source.result(), target.result());
         }
 
         return numericWidening(from, to);
