@@ -398,6 +398,69 @@ final class CircularImportInitializationTest {
     }
 
     @Test
+    void importedLiteralConstantDoesNotInitializeDependency() throws Exception {
+        Path entry = tempDir.resolve("constant-entry.ores");
+        Path dependency = tempDir.resolve("constant-dep.ores");
+        Files.writeString(entry, """
+                import * as dep from "./constant-dep.ores";
+                pub routine main(): void {
+                  stdio.stdout.write("before|");
+                  stdio.stdout.write(dep.tag);
+                  stdio.stdout.write("after|");
+                  dep.start();
+                  return;
+                }
+                """);
+        Files.writeString(dependency, """
+                pub const String tag = "static|";
+                fnc init(): void {
+                  stdio.stdout.write("init|");
+                  return;
+                }
+                pub fnc start(): void {
+                  stdio.stdout.write("called");
+                  return;
+                }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(entry,
+                IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                output, new ByteArrayOutputStream());
+        assertEquals("before|static|after|init|called",
+                output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void importedNonLoweredConstantFailsClosedWithoutRunningInitializer() throws Exception {
+        Path entry = tempDir.resolve("not-lowered-entry.ores");
+        Path dependency = tempDir.resolve("not-lowered-dep.ores");
+        Files.writeString(entry, """
+                import * as dep from "./not-lowered-dep.ores";
+                pub routine main(): void {
+                  stdio.stdout.write("before|");
+                  stdio.stdout.write(dep.tag);
+                  return;
+                }
+                """);
+        Files.writeString(dependency, """
+                pub const int tag = 1 + 2;
+                fnc init(): void {
+                  stdio.stdout.write("init-should-not-run");
+                  return;
+                }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> LinkedProgramRunner.run(entry,
+                        IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                        output, new ByteArrayOutputStream()));
+        assertTrue(String.valueOf(failure).contains("statically lowered")
+                        || String.valueOf(failure.getCause()).contains("statically lowered"),
+                () -> "expected explicit static-data diagnostic: " + failure);
+        assertEquals("before|", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void initHookHasAClosedLifecycleSignature() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc init(): void { return; }
