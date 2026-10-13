@@ -156,4 +156,23 @@ final class ColonClassFieldInitializerTest {
                 }
                 """)));
     }
+
+    @Test
+    void finalDoesNotConferMutableReferentCapability() {
+        Ast.Program program = Parser.parse("""
+                define class Foo as
+                  final Array<int> readOnly: [1, 2]
+                  final mut Array<int> writable: [3, 4]
+                  mut Array<int> mutableAndReassignable: [5]
+                end
+                """);
+        Ast.ClassDecl foo = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        assertEquals(Ast.BindingKind.VAL, foo.fields().get(0).bindingKind());
+        assertFalse(foo.fields().get(0).mutableReferent());
+        assertEquals(Ast.BindingKind.VAL, foo.fields().get(1).bindingKind());
+        assertTrue(foo.fields().get(1).mutableReferent());
+        assertEquals(Ast.BindingKind.LET, foo.fields().get(2).bindingKind());
+        assertTrue(foo.fields().get(2).mutableReferent());
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
 }
