@@ -232,3 +232,63 @@ Tests distinguish partial-start physically acknowledged cleanup, a
 previously allocated actor that must NOT be stopped, and an actor that is
 improperly reused as the second stage of a new plan. This test suite is
 host-layer evidence, not a compiled Oreslang dynamic hot-swap guest.
+
+## First-class Oreslang source execution (2026-10-12)
+
+The Java/GraalVM parser, type checker and evaluator now have an initial
+**working guest-language** lowering for:
+`new PipelinePlanner()`, `planner.add(name, || -> spawn Actor())`,
+`planner.build()`, `new PipelineController(plan)`,
+`controller.start()/pause()/replace()/resume()/close()`,
+and `runner.send()/get_done()`. The guest source is tested in
+`examples/actor-dynamic-pipeline-swap.ores`.
+
+The **compiler checks** that each provider is exactly an expression-bodied,
+zero-argument lambda containing `spawn` of a statically named actor, with
+no arguments and no captured constructor code. It forbids controller use
+inside actor execution, controls arity and message types, and reserves all
+four pipeline built-in type names against source namespace hijacking.
+
+The **evaluator** resolves provider names through its statically linked
+`ActorCodeExecutor` and compiler-owned closed nominal MessagePack v2 domain.
+It registers all nominally compatible local actor definitions at controller
+construction for future AOT-static hot replacement. No new bytecode, host
+class, remote URI, shared heap or guest eval payload is dynamically loaded.
+
+**Tested source behavior:** root creates Source, Transform and Sink through
+providers, executes a typed downstream/upstream round trip, awaits the
+runtime-authenticated physical DONE barrier, pauses, swaps Transform for the
+already-compiled TransformV2, resumes a new actor generation, executes a
+second typed round trip and closes. Source prints
+`DYNAMIC_PIPELINE_V1_19|DYNAMIC_PIPELINE_V2_24`.
+`DynamicPipelineGuestSourceTest` additionally checks rejection of an
+unsafe block/captured provider, forged controller argument, wrong arity,
+and source attempts to shadow the built-in class names.
+
+**Funded exact source test:** [GitHub Actions #38327861222](https://github.com/zed-pkg-test/java-app/actions/runs/38327861222).
+Confirmed 446/446 identical Git source blobs, all 1,539 Maven tests
+passed including 5 new guest source tests, host control tests and the
+independent 15-actor static guest regression. An earlier candidate
+incorrectly inspected arbitrary enum call receivers; exact-source CI
+caught the `Signal.Data` regression, and a subsequent guarded receiver
+check fixed it before green certification.
+
+### Explicit remaining gaps
+
+- `PipelineRunner.send` currently awaits and returns an unforgeable
+  completion **receipt**, not a typed guest result value. The result 19/24
+  in the fixture is observed via the source actor's output. Typed reply
+  correlation needs a separate language/runtime contract.
+- Only zero-arg, statically linked, synchronous actor spawn providers
+  are supported. Truly dynamic provider registration, asynchronous
+  factories, signed binary/component loading, and state snapshot/restore
+  are not implemented.
+- `pause` retires every actor; `resume` creates new instances. It does
+  not preserve actor-local state and does not park a live actor mid-turn.
+- A dedicated trusted root/control execution scheduler needs stronger
+  attestation; current guest bridge uses a separate virtual thread for
+  STOP and completion work. Runtime actor affinity and cancellation must
+  be verified under all backend carrier modes.
+- This tests **Java/GraalVM hosted guest execution**. GraalVM native-image
+  AOT, LLVM source compiler/runtime, cross-backend identity and FD3
+  causal trace parity have not yet been verified.
