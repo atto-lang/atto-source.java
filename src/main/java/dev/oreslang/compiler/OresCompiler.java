@@ -23,8 +23,19 @@ public final class OresCompiler {
     }
 
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
-    public record AnalysisResult(Ast.Program program, java.util.List<String> warnings) {
-        public AnalysisResult { warnings = java.util.List.copyOf(warnings); }
+    public record AnalysisResult(
+            Ast.Program program, java.util.List<String> warnings,
+            java.util.Map<Ast.CallExpr, Ast.FunctionDecl> resolvedFreeCalls) {
+        public AnalysisResult {
+            warnings = java.util.List.copyOf(warnings);
+            // Keep source AST identity semantics; record equality is NOT
+            // sufficient to distinguish distinct call sites.
+            resolvedFreeCalls = java.util.Collections.unmodifiableMap(
+                    new java.util.IdentityHashMap<>(resolvedFreeCalls));
+        }
+        public AnalysisResult(Ast.Program program, java.util.List<String> warnings) {
+            this(program, warnings, java.util.Map.of());
+        }
     }
 
     public static AnalysisResult parseAndTypeCheckWithDiagnostics(String source) {
@@ -34,7 +45,8 @@ public final class OresCompiler {
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
         OwnershipChecker.check(checked.program());
-        return new AnalysisResult(checked.program(), checked.warnings());
+        return new AnalysisResult(
+                checked.program(), checked.warnings(), checked.resolvedFreeCalls());
     }
 
     /**
