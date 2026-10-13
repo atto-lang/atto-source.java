@@ -139,6 +139,69 @@ final class EnumScalarPayloadRangeHardeningTest {
     }
 
     @Test
+    void enumCastRejectsImpossibleWidthButAcceptsLegalValue() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define enum Status as
+                    Active: u8
+                end
+                fnc invalid(): Status {
+                    return 256 as Status.Active;
+                }
+                """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define enum Status as
+                    Active: u8
+                end
+                fnc valid(): Status {
+                    return 255 as Status.Active;
+                }
+                """)));
+    }
+
+    @Test
+    void numericLiteralCasePatternsCannotRepresentOutOfRangeValues() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define enum Status as
+                    Active: u8
+                    Idle
+                end
+                fnc impossible(Status value): int {
+                    match value over
+                        on Status.Active(256) -> { return 1; }
+                        on Status.Active(_) -> { return 2; }
+                        on Status.Idle -> { return 0; }
+                    end
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define enum Status as
+                    Pair: Tuple[bool, u8]
+                    Idle
+                end
+                fnc impossible(Status value): int {
+                    match value over
+                        on Status.Pair as (true, 256) -> { return 1; }
+                        on Status.Pair as (_, _) -> { return 2; }
+                        on Status.Idle -> { return 0; }
+                    end
+                }
+                """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define enum Status as
+                    Active: u8
+                    Idle
+                end
+                fnc legal(Status value): int {
+                    match value over
+                        on Status.Active(255) -> { return 1; }
+                        on Status.Active(_) -> { return 2; }
+                        on Status.Idle -> { return 0; }
+                    end
+                }
+                """)));
+    }
+
+    @Test
     void enumAndPatternNamesCannotShadowExistingTypeNamespaces() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define enum Option as
