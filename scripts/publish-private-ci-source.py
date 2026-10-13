@@ -105,44 +105,102 @@ def checked_policy_fingerprint(root, repository):
     return hashlib.sha256(contents).digest()
 
 
-def collect_source(root):
+def collect_source(root, trusted_root):
+    """Snapshot regular files using descriptor-relative, no-follow traversal.
+
+    O_NOFOLLOW on the final file is insufficient when a parent directory can
+    be replaced with a symlink between path validation and file open. All
+    descendants are opened relative to directory descriptors anchored at
+    the trusted checkout, so a rename cannot redirect them outside it.
+    """
+    if (not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY")
+            or not hasattr(os, "O_NONBLOCK")):
+        raise Denied("OS cannot enforce descriptor-relative no-follow reads")
     if root.is_symlink() or not root.is_dir():
         raise Denied("source path must be a real directory")
-    if not hasattr(os, "O_NOFOLLOW"):
-        raise Denied("operating system cannot enforce no-follow source reads")
+    try:
+        trusted = trusted_root.resolve(strict=True)
+        source = root.resolve(strict=True)
+        relative = source.relative_to(trusted)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise Denied("source directory escapes trusted checkout") from exc
+
+    directories = []
     entries = []
-    size = 0
-    for current, dirs, files in os.walk(root, followlinks=False):
-        for d in dirs:
-            path = Path(current) / d
-            if path.is_symlink() or d == ".git":
-                raise Denied("source directory contains a symlink or .git directory")
-        for name in files:
-            path = Path(current) / name
-            if path.is_symlink() or not path.is_file() or name == ".git":
-                raise Denied("source contains symlink, special file, or .git object")
-            rel = path.relative_to(root).as_posix()
-            if any(ord(ch) < 32 for ch in rel) or "\\" in rel:
-                raise Denied("source path contains unsupported characters")
+    total = 0
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+    def walk(directory_fd, prefix, depth):
+        nonlocal total
+        if depth > 64:
+            raise Denied("source directory nesting exceeds safety limit")
+        try:
+            names = sorted(os.listdir(directory_fd))
+        except OSError as exc:
+            raise Denied("source directory cannot be listed safely") from exc
+        for name in names:
+            if (name in (".", "..", ".git")
+                    or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
+                    or "\\" in name):
+                raise Denied("source path contains unsupported name")
+            rel = prefix + name
             try:
-                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-                with os.fdopen(fd, "rb") as stream:
-                    metadata = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(metadata.st_mode):
-                        raise Denied("source file is not regular")
-                    data = stream.read(MAX_SINGLE + 1)
+                metadata = os.stat(name, dir_fd=directory_fd,
+                                   follow_symlinks=False)
+                if stat.S_ISDIR(metadata.st_mode):
+                    child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
+                    try:
+                        if not stat.S_ISDIR(os.fstat(child_fd).st_mode):
+                            raise Denied("source directory changed during traversal")
+                        walk(child_fd, rel + "/", depth + 1)
+                    finally:
+                        os.close(child_fd)
+                elif stat.S_ISREG(metadata.st_mode):
+                    file_fd = os.open(name, file_flags, dir_fd=directory_fd)
+                    try:
+                        with os.fdopen(file_fd, "rb") as stream:
+                            metadata = os.fstat(stream.fileno())
+                            if not stat.S_ISREG(metadata.st_mode):
+                                raise Denied("source file changed type during traversal")
+                            # A hardlink can point to bytes outside the approved
+                            # directory despite no symbolic link being present.
+                            if metadata.st_nlink != 1:
+                                raise Denied("hardlinked source files are not allowed")
+                            if metadata.st_size > MAX_SINGLE:
+                                raise Denied("file exceeds source mirror limit")
+                            data = stream.read(MAX_SINGLE + 1)
+                    finally:
+                        # os.fdopen() owns and closes file_fd on all exits.
+                        pass
+                    if len(data) > MAX_SINGLE:
+                        raise Denied("file exceeds source mirror limit")
+                    total += len(data)
+                    if total > MAX_BYTES or len(entries) >= MAX_FILES:
+                        raise Denied("source mirror exceeds bounded capacity")
+                    mode = "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
+                    entries.append((rel, data, mode))
+                else:
+                    raise Denied("source contains symlink or special file")
             except OSError as exc:
-                raise Denied("source file changed or cannot be read safely") from exc
-            if len(data) > MAX_SINGLE:
-                raise Denied("file exceeds source mirror limit")
-            size += len(data)
-            if size > MAX_BYTES or len(entries) >= MAX_FILES:
-                raise Denied("source mirror exceeds bounded capacity")
-            mode = "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
-            entries.append((rel, data, mode))
+                raise Denied("source path changed or cannot be opened safely") from exc
+
+    try:
+        anchor_fd = os.open(trusted, directory_flags)
+        directories.append(anchor_fd)
+        for component in relative.parts:
+            child_fd = os.open(component, directory_flags,
+                               dir_fd=directories[-1])
+            directories.append(child_fd)
+        walk(directories[-1], "", 0)
+    except OSError as exc:
+        raise Denied("source checkout path changed during traversal") from exc
+    finally:
+        for fd in reversed(directories):
+            os.close(fd)
     if not entries:
         raise Denied("source directory is empty")
-    return sorted(entries, key=lambda x: x[0])
+    return sorted(entries, key=lambda item: item[0])
 
 
 def publish(repository, source, branch, trusted_root):
@@ -157,7 +215,7 @@ def publish(repository, source, branch, trusted_root):
         checked_source.relative_to(trusted)
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
-    files = collect_source(source)
+    files = collect_source(source, trusted_root)
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
