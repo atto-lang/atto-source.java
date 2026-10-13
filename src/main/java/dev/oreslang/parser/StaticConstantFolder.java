@@ -36,6 +36,7 @@ public final class StaticConstantFolder {
     private final Map<Key, Boolean> visiting = new HashMap<>();
     private final ArrayDeque<Key> stack = new ArrayDeque<>();
     private int steps;
+    private int expressionDepth;
 
     private StaticConstantFolder(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
@@ -93,6 +94,10 @@ public final class StaticConstantFolder {
         visiting.put(key, true);
         stack.push(key);
         try {
+            // Validate the entire expression tree, including dead/short-circuited
+            // branches, before folding any values. Runtime calls must not be
+            // smuggled into a const through 'false && userCall()'.
+            requireClosedExpression(field.initializer(), 0);
             Object value = eval(field.initializer(), key.module());
             memo.put(key, value);
             return value;
@@ -102,10 +107,39 @@ public final class StaticConstantFolder {
         }
     }
 
+    private void requireClosedExpression(Ast.Expr expr, int depth) {
+        if (depth >= MAX_RECURSION_DEPTH)
+            throw new IllegalArgumentException("compile-time expression exceeds depth limit");
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return;
+        if (expr instanceof Ast.MemberExpr member && member.receiver() instanceof Ast.NameExpr) return;
+        if (expr instanceof Ast.UnaryExpr unary) {
+            requireClosedExpression(unary.operand(), depth + 1);
+            return;
+        }
+        if (expr instanceof Ast.BinaryExpr binary) {
+            requireClosedExpression(binary.left(), depth + 1);
+            requireClosedExpression(binary.right(), depth + 1);
+            return;
+        }
+        if (expr instanceof Ast.ConditionalExpr choice) {
+            requireClosedExpression(choice.condition(), depth + 1);
+            requireClosedExpression(choice.whenTrue(), depth + 1);
+            requireClosedExpression(choice.whenFalse(), depth + 1);
+            return;
+        }
+        throw new IllegalArgumentException("file/module const requires a closed compile-time expression; "
+                + "guest calls, allocations and runtime expressions are forbidden: "
+                + expr.getClass().getSimpleName());
+    }
+
     private Object eval(Ast.Expr expression, String module) {
         if (++steps > MAX_EXPRESSION_STEPS)
             throw new IllegalArgumentException("compile-time constant evaluation step limit exceeded");
-
+        if (++expressionDepth > MAX_RECURSION_DEPTH) {
+            expressionDepth--;
+            throw new IllegalArgumentException("compile-time evaluation expression depth exceeded");
+        }
+        try {
         if (expression instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null || value instanceof Long || value instanceof Integer
@@ -166,6 +200,9 @@ public final class StaticConstantFolder {
         throw new IllegalArgumentException(
                 "file/module const requires statically evaluable data; guest calls, allocations "
                         + "and runtime expressions are forbidden: " + expression.getClass().getSimpleName());
+        } finally {
+            expressionDepth--;
+        }
     }
 
     private Object binary(String op, Object a, Object b) {
