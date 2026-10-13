@@ -1961,7 +1961,18 @@ public final class TypeChecker {
                         "indexed assignment requires an array/list or tuple; structs have a closed static field set");
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
+            // Rebinding a Result can discard an outstanding failure after a
+            // previous proof of handling. Until SSA/flow obligations are
+            // versioned across writes, Result<void,E> storage is write-once.
+            if (isMustUseVoidResult(targetType)) {
+                throw new IllegalArgumentException(
+                        "must-use Result<void,E> cannot be reassigned until per-write handling is proven");
+            }
             Type value = typeOf(assignment.value(), env, generics, self);
+            if (isMustUseVoidResult(value) && !isMustUseVoidResult(targetType)) {
+                throw new IllegalArgumentException(
+                        "must-use Result<void,E> cannot be erased by assignment to " + where);
+            }
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
             if (assignment.target() instanceof Ast.MemberExpr member
