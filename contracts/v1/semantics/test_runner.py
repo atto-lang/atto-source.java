@@ -33,6 +33,22 @@ class DiagnosticProof(unittest.TestCase):
         self.assertGreaterEqual(len(suite["cases"]), 10)
         self.assertEqual(len(digest), 64)
 
+    def test_all_defer_and_finally_snapshots_have_explicit_backend_gates(self):
+        suite, _ = run.validate_suite()
+        cases = {case["id"]: case for case in suite["cases"]}
+        for name, expected_exit in (
+            ("native.defer-lifo-cfg", 111),
+            ("native.defer-field-return", 42),
+            ("native.try-finally-return-snapshot", 42),
+        ):
+            with self.subTest(name=name):
+                case = cases[name]
+                self.assertEqual(case["kind"], "native_exit")
+                self.assertEqual(case["expected_exit"], expected_exit)
+                self.assertEqual(case["backends"]["graal"], "required")
+                self.assertEqual(case["backends"]["llvm"], "pending")
+                self.assertTrue(case["pending_reason"])
+
     def test_mutating_fixture_or_schema_changes_suite_identity(self):
         import shutil
         import tempfile
@@ -173,11 +189,16 @@ class ComparatorParityProof(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("SUITE_COMPLETE=no", summary)
 
-    def test_strict_gate_accepts_complete_fixture_suite_with_pinned_heads(self):
+    def test_strict_gate_rejects_real_pending_fixture_with_pinned_heads(self):
+        # A pending LLVM native-defer case is not full parity, even when both
+        # report revisions match the expected source heads. Only the fully
+        # required subset may be validated as complete.
+        self.assertTrue(any("pending" in case["backends"].values()
+                            for case in self.suite["cases"]))
         status, summary = self.compare(strict=True, revisions=self.sha)
-        self.assertEqual(status, 0)
-        self.assertIn("SUITE_COMPLETE=yes", summary)
-        self.assertIn("BACKEND_PENDING=0", summary)
+        self.assertEqual(status, 1)
+        self.assertIn("SUITE_COMPLETE=no", summary)
+        self.assertIn("BACKEND_PENDING=", summary)
 
     def test_strict_gate_demands_pinned_heads(self):
         with self.assertRaisesRegex(ValueError, "requires pinned"):
