@@ -35,9 +35,12 @@ publisher checks the live GitHub identity and `visibility=private` /
 immediately before each write. Every GitHub API write is constructed from
 that **same validated owner/repo**, rather than a caller-provided URL, Git
 remote, shell command or separate destination argument. It creates blobs,
-a tree, a commit, and a **new** `ci/oreslang-*` ref under the fixed
-`private-oreslang-source/` prefix. Existing branches, including `main`,
-are never updated.
+then a **fresh standalone source tree with no `base_tree`**, followed by a
+root tree that replaces the **entire** `private-oreslang-source/` directory
+in the destination's default tree. This removes stale files from previous
+snapshots while preserving unrelated destination workflows and files.
+Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
+branches, including `main`, are never updated.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
