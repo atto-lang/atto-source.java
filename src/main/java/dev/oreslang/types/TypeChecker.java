@@ -992,7 +992,13 @@ public final class TypeChecker {
             if (field.compileTimeRequired()) {
                 // Pure AST evaluation only. Never run guest methods, imports,
                 // type initializers, user-defined operators or host calls.
-                CompileTimeConstantEvaluator.evaluate(field.initializer());
+                try {
+                    CompileTimeConstantEvaluator.evaluate(field.initializer());
+                } catch (IllegalArgumentException error) {
+                    throw new IllegalArgumentException(
+                            "invalid final const field '" + klass.name() + "."
+                                    + field.name() + "': " + error.getMessage(), error);
+                }
             }
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
