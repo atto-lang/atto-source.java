@@ -1755,6 +1755,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         /** Successful completion covers messages admitted before this call.
          * Processing failures, cancellation or stop-before-processing fail it.
+         * If the caller is this actor and has unprocessed accepted messages,
+         * the returned Future fails instead of waiting for its own execution
+         * lease to complete. Use gracefulStop() for self-shutdown.
          * No carrier thread blocks awaiting the barrier. */
         public OresFuture<Void> drain() {
             return ActorRuntime.this.drain(this);
@@ -4540,7 +4543,9 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /** Non-cancellable observer over all mail accepted before this call.
-     * This is a processed-message barrier, not an actor termination barrier. */
+     * This is a processed-message barrier, not an actor termination barrier.
+     * Self-drain of unprocessed mail fails closed to prevent a scheduling
+     * cycle; the admission snapshot and self-caller guard are atomic. */
     public OresFuture<Void> drain(ActorRef<?> ref) {
         requireCallerRuntimeAffinity("drain actor messages");
         Objects.requireNonNull(ref, "ref");
@@ -6299,6 +6304,14 @@ public final class ActorRuntime implements AutoCloseable {
                 final long target = nextUserMessageSequence - 1L;
                 if (lastProcessedUserMessageSequence >= target)
                     return OresFuture.completed(null);
+                // Do this inside the admission monitor. Checking only for an
+                // active mail outside this lock races concurrent senders and
+                // misses factory/startup turns with accepted, unprocessed mail.
+                // The actor cannot complete its own pending drain until it
+                // yields the single-writer execution lease.
+                if (!shutdownBarrier && currentActor.get() == this)
+                    return OresFuture.failed(new IllegalStateException(
+                            "an actor cannot drain its own active mailbox turn"));
                 // Public observers are bounded independently of mailbox slots:
                 // a stalled actor must not permit unlimited host-side Futures.
                 // gracefulStop reserves at most one extra waiter and cannot be

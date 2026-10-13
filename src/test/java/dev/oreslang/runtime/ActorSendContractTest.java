@@ -16,6 +16,68 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(20)
 final class ActorSendContractTest {
     @Test
+    void startupFactoryCannotDrainMailAdmittedWhileItWasRunning() throws Exception {
+        CountDownLatch startupEntered = new CountDownLatch(1);
+        CountDownLatch letStartupFinish = new CountDownLatch(1);
+        CountDownLatch observed = new CountDownLatch(1);
+        AtomicReference<OresFuture<Void>> startupSelfDrain = new AtomicReference<>();
+        AtomicInteger handled = new AtomicInteger();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnSharedTrusted(context -> {
+                startupEntered.countDown();
+                if (!letStartupFinish.await(5, TimeUnit.SECONDS))
+                    throw new AssertionError("startup gate timed out");
+                // No activeMail exists during actor factory initialization,
+                // but a queued send still cannot complete until startup yields.
+                startupSelfDrain.set(context.self().drain());
+                observed.countDown();
+                return (message, selfContext) -> handled.addAndGet(message);
+            });
+            // Actor initialization is lazy until ready or first send.
+            ref.getReady();
+            assertTrue(startupEntered.await(5, TimeUnit.SECONDS));
+            ref.send(7);
+            letStartupFinish.countDown();
+            assertTrue(observed.await(5, TimeUnit.SECONDS));
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> startupSelfDrain.get().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("own active mailbox"));
+            ref.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(7, handled.get());
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            letStartupFinish.countDown();
+        }
+    }
+
+    @Test
+    void actorCannotAwaitItsOwnActiveDrainButCanGracefullyStopAfterTurn() throws Exception {
+        AtomicReference<OresFuture<Void>> forbiddenSelfDrain = new AtomicReference<>();
+        CountDownLatch observed = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                forbiddenSelfDrain.set(context.self().drain());
+                // A self shutdown is different: it must seal now but only
+                // terminate once the active receive completes.
+                context.self().gracefulStop();
+                observed.countDown();
+            });
+            ref.send(1);
+            assertTrue(observed.await(5, TimeUnit.SECONDS));
+            OresFuture<Void> rejected = forbiddenSelfDrain.get();
+            assertNotNull(rejected);
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> rejected.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("own active mailbox"));
+            ref.getDone().get(5, TimeUnit.SECONDS);
+            assertFalse(ref.isAlive());
+        }
+    }
+
+    @Test
     void actorRefIsOpaqueGenerationBoundAndSendAfterStopIsTyped() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicInteger count = new AtomicInteger();
@@ -156,6 +218,56 @@ final class ActorSendContractTest {
                             .address().runtimeId());
         }
     }
+    @Test
+    void successfulDrainObserversCanReenterGracefulStopWithoutHoldingLifecycleMonitor()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch callbackObserved = new CountDownLatch(1);
+        AtomicInteger callbacksUnderLock = new AtomicInteger();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                entered.countDown();
+                if (!release.await(5, TimeUnit.SECONDS))
+                    throw new AssertionError("test actor timed out");
+            });
+            ref.send(1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var actors = (java.util.Map<?, ?>) actorsField.get(runtime);
+            Object cell = actors.get(ref.id());
+            assertNotNull(cell);
+            var monitorField = cell.getClass().getDeclaredField("lifecycleLock");
+            monitorField.setAccessible(true);
+            Object lifecycleMonitor = monitorField.get(cell);
+
+            OresFuture<Void> processed = ref.drain();
+            processed.whenCompleteRuntime((ignored, failure) -> {
+                if (Thread.holdsLock(lifecycleMonitor)) callbacksUnderLock.incrementAndGet();
+                try {
+                    if (failure != null) throw new AssertionError("unexpected drain failure", failure);
+                    ref.gracefulStop();
+                } catch (Throwable unexpected) {
+                    callbackFailure.set(unexpected);
+                } finally {
+                    callbackObserved.countDown();
+                }
+            });
+
+            release.countDown();
+            assertTrue(callbackObserved.await(5, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get(), "drain callback must safely reenter lifecycle");
+            assertEquals(0, callbacksUnderLock.get(),
+                    "successful drain callbacks must never hold lifecycleLock");
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+        }
+    }
+
     @Test
     void failedDrainObserverCallbacksRunOutsideActorLifecycleMonitor() throws Exception {
         CountDownLatch entered = new CountDownLatch(1);
