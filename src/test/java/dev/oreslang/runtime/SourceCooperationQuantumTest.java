@@ -157,7 +157,8 @@ final class SourceCooperationQuantumTest {
         assertEquals(long.class, counter.getType());
         counter.setLong(q, (1L << 32) - 64);
         for (int i = 1; i <= 64; i++) {
-            assertEquals(i == 64, q.completedBackedgeNeedsCheck());
+            assertTrue(q.completedBackedgeNeedsCheck(),
+                    "already-overdue budget must never restore 64-step batching");
         }
         assertEquals(1L << 32, q.completedBackedgesThisDispatch());
         assertTrue(q.shouldCooperateAtCheck());
