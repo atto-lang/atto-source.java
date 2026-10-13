@@ -3832,7 +3832,7 @@ public final class TypeChecker {
                                 ? entry.getValue()
                                 : overlayReadonlyCapabilities(sourceMember, entry.getValue()));
             }
-            return new Record(members, sourceRecord.readOnly() || targetRecord.readOnly());
+            return targetRecord.withMembers(members, sourceRecord.readOnly() || targetRecord.readOnly());
         }
         if (source instanceof ListType sourceList && target instanceof ListType targetList) {
             return new ListType(overlayReadonlyCapabilities(sourceList.element(), targetList.element()));
@@ -4100,7 +4100,7 @@ public final class TypeChecker {
                     remainder.put(member.getKey(), member.getValue());
                 }
             }
-            return new Record(remainder, record.readOnly());
+            return record.withMembers(remainder, record.readOnly());
         }
         if (source instanceof Union union) {
             List<Type> alternatives = new ArrayList<>(union.options().size());
@@ -4222,7 +4222,7 @@ public final class TypeChecker {
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, bindReceiverSelf(member, receiver)));
-            return new Record(members, record.readOnly());
+            return record.withMembers(members, record.readOnly());
         }
         return type;
     }
@@ -4780,7 +4780,7 @@ public final class TypeChecker {
                 if (subject instanceof Record) {
                     // Structural patterns produce a read-only view rather than
                     // granting writes merely because the pattern spells {x: T}.
-                    bindingType = new Record(targetShape.members(), true);
+                    bindingType = targetShape.withMembers(targetShape.members(), true);
                 }
                 bindingType = overlayReadonlyCapabilities(subject, bindingType);
                 bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
@@ -4908,7 +4908,7 @@ public final class TypeChecker {
         // become unreachable because the pattern spelling denotes a mutable
         // record; the binding retains the subject's readonly capability.
         if (subject instanceof Record) {
-            return assignable(subject, new Record(targetShape.members(), true));
+            return assignable(subject, targetShape.withMembers(targetShape.members(), true));
         }
         if (subject instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
@@ -4956,8 +4956,8 @@ public final class TypeChecker {
             // Pattern subsumption compares readable shapes, not assignment
             // capabilities. Both patterns are non-mutating predicates.
             return structuralRecordAssignable(
-                    new Record(laterShape.members(), true),
-                    new Record(earlierShape.members(), true));
+                    laterShape.withMembers(laterShape.members(), true),
+                    earlierShape.withMembers(earlierShape.members(), true));
         }
         if (earlier instanceof Ast.StructuralPattern a && later instanceof Ast.TypePattern b) {
             Type ar = deref(resolve(a.target(), generics, self));
@@ -5239,7 +5239,7 @@ public final class TypeChecker {
             for (Map.Entry<String, Type> entry : record.members().entrySet()) {
                 members.put(entry.getKey(), resolveSharedGeneric(entry.getValue(), bindings));
             }
-            return new Record(members, record.readOnly());
+            return record.withMembers(members, record.readOnly());
         }
         return type;
     }
@@ -6272,7 +6272,7 @@ public final class TypeChecker {
         if (concrete instanceof Record record) {
             // A structural parameter is an immutable borrowed view. Preserve
             // that capability in the expected type, including for inline records.
-            return new Record(record.members(), true);
+            return record.withMembers(record.members(), true);
         }
         Ast.InterfaceDecl iface = findInterface(param.type().name());
         if (iface != null) {
@@ -6283,7 +6283,7 @@ public final class TypeChecker {
             Record specialized = (Record) substituteGenerics(
                     shape,
                     genericBindings(iface.genericParameters(), named.arguments(), "interface " + iface.name()));
-            return new Record(specialized.members(), true);
+            return specialized.withMembers(specialized.members(), true);
         }
 
         Ast.ClassDecl klass = findClass(param.type().name());
@@ -6298,7 +6298,7 @@ public final class TypeChecker {
             }
             Type shape = publicClassShape(klass, new LinkedHashSet<>());
             Record specialized = (Record) substituteGenerics(shape, classGenericBindings(klass, named));
-            return new Record(specialized.members(), true);
+            return specialized.withMembers(specialized.members(), true);
         }
 
         throw new IllegalArgumentException(
@@ -6721,7 +6721,7 @@ public final class TypeChecker {
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, substituteGenerics(member, bindings)));
-            return new Record(members, record.readOnly());
+            return record.withMembers(members, record.readOnly());
         }
         return type;
     }
@@ -7431,9 +7431,8 @@ public final class TypeChecker {
             // relations can pass both directions without equal representations.
             // Compiler-owned callable selector slots are methods, not writable
             // fields; they retain contravariant parameters/covariant returns.
-            boolean methodSlot = required.getKey().startsWith("instance$")
-                    && required.getKey().contains("$arity")
-                    && required.getKey().contains("$generics")
+            boolean methodSlot = actual.methodKeys().contains(required.getKey())
+                    && expected.methodKeys().contains(required.getKey())
                     && candidate instanceof Function && required.getValue() instanceof Function;
             if (!expected.readOnly() && !methodSlot && !candidate.equals(required.getValue())) {
                 return false;
