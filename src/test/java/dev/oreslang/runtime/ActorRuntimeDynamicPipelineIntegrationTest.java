@@ -136,10 +136,12 @@ final class ActorRuntimeDynamicPipelineIntegrationTest {
                             "TransformV2", v2, "Sink", sink));
             PipelineController controller = new PipelineController(original, engine);
             PipelineRunner first = controller.start();
-            assertInstanceOf(ActorRuntimePipelineEngine.DeliveryReceipt.class,
-                    first.send(new TaggedMessageCodec.TaggedValue(
-                            "Signal", "Data", 1, 5L))
-                            .toCompletableFuture().get(10, TimeUnit.SECONDS));
+            Object firstReply = first.send(new TaggedMessageCodec.TaggedValue(
+                    "Signal", "Data", 1, 5L))
+                    .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(new TaggedMessageCodec.TaggedValue(
+                    "Signal", "Result", 2, 15L), firstReply,
+                    "runner must return the actual compiler-checked reverse message");
             assertEquals(15L, observed.remove(), "V1 did not return expected typed result");
             assertEquals(0, observed.size());
             first.getDone().toCompletableFuture().get(10, TimeUnit.SECONDS);
@@ -155,9 +157,15 @@ final class ActorRuntimeDynamicPipelineIntegrationTest {
                     new TaggedMessageCodec.TaggedValue(
                             "Signal", "Data", 1, 5L))
                     .toCompletableFuture().get(10, TimeUnit.SECONDS));
-            second.send(new TaggedMessageCodec.TaggedValue(
+            Object secondReply = second.send(new TaggedMessageCodec.TaggedValue(
                     "Signal", "Data", 1, 5L))
                     .toCompletableFuture().get(10, TimeUnit.SECONDS);
+            assertEquals(new TaggedMessageCodec.TaggedValue(
+                    "Signal", "Result", 2, 31L), secondReply,
+                    "replaced generation must return the new backward typed message");
+            assertEquals(new TaggedMessageCodec.TaggedValue(
+                    "Signal", "Result", 2, 15L), firstReply,
+                    "hot replacement must not mutate a previous generation's result");
             assertEquals(31L, observed.remove(), "V2 hot replacement not in effect");
             second.getDone().toCompletableFuture().get(10, TimeUnit.SECONDS);
             controller.close().toCompletableFuture().get(10, TimeUnit.SECONDS);
