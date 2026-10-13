@@ -50,7 +50,7 @@ final class SymbolMapGuestSourceTest {
                     let m = new Map<Symbol | String, int>();
                     m[#ready] = 5;
                     m["ready"] = 9;
-                    if (m[#ready] eq 5) and (m["ready"] eq 9) then
+                    if (m[#ready] eq 5) && (m["ready"] eq 9) then
                         stdio.stdout.write("separate");
                     else
                         stdio.stdout.write("aliased");
