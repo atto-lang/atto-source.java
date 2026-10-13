@@ -6444,6 +6444,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final Set<AutoCloseable> ownedResources = ConcurrentHashMap.newKeySet();
         /** Delays DONE publication until revocation callbacks finish off-lock. */
         private boolean resourceRevocationActive;
+        /** Held permits must outlive an already-running physical actor turn. */
+        private boolean resourceRevocationDeferred;
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
@@ -6955,6 +6957,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void runBatch(Object dispatchTicket) {
+            // A STOP may be admitted while guest code is still executing.
+            // Transfer its resources only after TurnExecutor has returned and
+            // the physical carrier lease is released, never while holding the
+            // lifecycle monitor or while shared critical state is in use.
+            List<AutoCloseable> afterCarrierRevoke = List.of();
+            boolean finishDeferredResourceRevocation = false;
             // Nested or obsolete dispatch attempts must not mutate the
             // thread-local authority of an already executing actor.
             boolean previousCarrier = Boolean.TRUE.equals(ACTOR_CARRIER.get());
@@ -7060,6 +7068,14 @@ public final class ActorRuntime implements AutoCloseable {
                                     && !finalized
                                     && hasQueuedWorkLocked();
                         }
+                        // Snapshot only once the execution lease is physically
+                        // gone; callbacks below may wake another actor or host.
+                        if (resourceRevocationDeferred && !carrierActive) {
+                            resourceRevocationDeferred = false;
+                            afterCarrierRevoke = List.copyOf(ownedResources);
+                            ownedResources.clear();
+                            finishDeferredResourceRevocation = true;
+                        }
                         lifecycleLock.notifyAll();
                     }
                 } finally {
@@ -7067,6 +7083,9 @@ public final class ActorRuntime implements AutoCloseable {
                         if (previousCarrier) ACTOR_CARRIER.set(Boolean.TRUE);
                         else ACTOR_CARRIER.remove();
                     }
+                }
+                if (finishDeferredResourceRevocation) {
+                    finishResourceRevocation(afterCarrierRevoke);
                 }
                 if (reschedule) schedule();
             }
@@ -7315,11 +7334,30 @@ public final class ActorRuntime implements AutoCloseable {
             terminateTree(cancellation, true);
         }
 
+        private void finishResourceRevocation(List<AutoCloseable> revoke) {
+            try {
+                for (AutoCloseable resource : revoke) {
+                    try {
+                        resource.close();
+                    } catch (Exception ignored) {
+                        // Continue draining other actor-owned capabilities.
+                    }
+                }
+            } finally {
+                synchronized (lifecycleLock) {
+                    resourceRevocationActive = false;
+                    finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
+            }
+        }
+
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<AutoCloseable> revoke;
             boolean ownsRevocation;
+            boolean deferRevocation = false;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -7338,8 +7376,17 @@ public final class ActorRuntime implements AutoCloseable {
                 ownsRevocation = !resourceRevocationActive;
                 if (ownsRevocation) {
                     resourceRevocationActive = true;
-                    revoke = List.copyOf(ownedResources);
-                    ownedResources.clear();
+                    // STOP is an admission fence, not physical preemption.
+                    // Releasing a held writer while its actor is still
+                    // executing would let another actor enter the same domain.
+                    deferRevocation = carrierActive;
+                    if (deferRevocation) {
+                        resourceRevocationDeferred = true;
+                        revoke = List.of();
+                    } else {
+                        revoke = List.copyOf(ownedResources);
+                        ownedResources.clear();
+                    }
                 } else {
                     revoke = List.of();
                 }
@@ -7350,22 +7397,8 @@ public final class ActorRuntime implements AutoCloseable {
             // Closing a ticket settles Futures and can invoke callbacks.
             // Never execute this work under lifecycleLock or the gate's
             // global metadata coordinator.
-            if (ownsRevocation) {
-                try {
-                    for (AutoCloseable resource : revoke) {
-                        try {
-                            resource.close();
-                        } catch (Exception ignored) {
-                            // STOP must still revoke the remaining resources.
-                        }
-                    }
-                } finally {
-                    synchronized (lifecycleLock) {
-                        resourceRevocationActive = false;
-                        finalizeStopLocked();
-                        lifecycleLock.notifyAll();
-                    }
-                }
+            if (ownsRevocation && !deferRevocation) {
+                finishResourceRevocation(revoke);
             }
 
             // Cancellation removes channel/select waiter registrations before
