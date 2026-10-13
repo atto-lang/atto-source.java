@@ -76,7 +76,7 @@ final class ImportSelectorSyntaxTest {
                   pub fnc value(): int { return 1; }
                 end
 
-                shared actor Worker {
+                pub shared actor Worker {
                   pub fnc value(): int { return 2; }
                 }
 
@@ -107,6 +107,42 @@ final class ImportSelectorSyntaxTest {
                 """);
 
         LinkedProgramRunner.validate(main);
+    }
+
+    @Test
+    void privateActorCannotBeImportedEvenThroughCircularReferences() throws Exception {
+        Path a = temp.resolve("actor-a.ores");
+        Path b = temp.resolve("actor-b.ores");
+        Files.writeString(a, """
+                import actor Worker from "./actor-b.ores";
+                pub fnc a_value(): int { return 7; }
+                pub routine main(): void { return; }
+                """);
+        Files.writeString(b, """
+                import fnc a_value from "./actor-a.ores";
+                shared actor Worker {
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> LinkedProgramRunner.validate(a));
+        assertTrue(failure.getMessage().contains("does not match an exported declaration"),
+                failure.getMessage());
+
+        Files.writeString(b, """
+                import fnc a_value from "./actor-a.ores";
+                pub shared actor Worker {
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                }
+                """);
+        LinkedProgramRunner.validate(a);
     }
 
     @Test
