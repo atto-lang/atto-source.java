@@ -130,7 +130,9 @@ public final class CriticalGate {
         /** Synchronous callers cannot suspend; never park an actor or ROOT carrier. */
         public void enterSync() {
             OresFuture<Void> ready = request(true);
-            if (ActorRuntime.inActorExecution() || OresScheduler.current() != null) {
+            if (ActorRuntime.inActorExecution()
+                    || OresScheduler.current() != null
+                    || OresScheduler.isSchedulerCarrierThread()) {
                 // Never park a scheduler/actor worker. Release and fail outside
                 // the monitor, because Future settlement runs callbacks.
                 boolean admittedNow;
