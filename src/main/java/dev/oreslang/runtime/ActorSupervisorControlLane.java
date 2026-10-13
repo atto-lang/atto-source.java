@@ -101,10 +101,11 @@ final class ActorSupervisorControlLane {
      */
     synchronized java.util.List<ActorRuntime.ActorFailureNotice> drainPublished() {
         java.util.ArrayList<ActorRuntime.ActorFailureNotice> failures = new java.util.ArrayList<>();
-        for (Slot slot : slots.values()) {
+        for (var iterator = slots.values().iterator(); iterator.hasNext();) {
+            Slot slot = iterator.next();
             if (slot.notice != null) {
                 failures.add(slot.notice);
-                slots.remove(slot.child);
+                iterator.remove();
             }
         }
         head = null;
