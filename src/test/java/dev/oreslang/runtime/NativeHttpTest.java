@@ -16,6 +16,60 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void pooledAdmissionAndCompletionChurnNeverOversubscribesOrRecreatesWorker() throws Exception {
+        final int capacity = 64;
+        for (int round = 0; round < 5; round++) {
+            var registry = new ConcurrentHashMap<String, Set<Integer>>();
+            registry.put("worker", ConcurrentHashMap.newKeySet());
+            for (int initial = 0; initial < capacity; initial++) {
+                assertEquals(NativeHttp.PoolAdmission.REGISTERED,
+                        NativeHttp.registerPoolAdmission(registry, "worker", initial, capacity));
+            }
+            CountDownLatch start = new CountDownLatch(1);
+            var futures = new java.util.ArrayList<Future<?>>();
+            try (ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor()) {
+                // 64 completions race 256 new admissions against the *same*
+                // worker key. Both must use the map's atomic compute boundary.
+                for (int initial = 0; initial < capacity; initial++) {
+                    final int completed = initial;
+                    futures.add(threads.submit(() -> {
+                        start.await();
+                        NativeHttp.releasePoolAdmission(registry, "worker", completed);
+                        return null;
+                    }));
+                }
+                for (int request = capacity; request < capacity + 256; request++) {
+                    final int candidate = request;
+                    futures.add(threads.submit(() -> {
+                        start.await();
+                        var result = NativeHttp.registerPoolAdmission(
+                                registry, "worker", candidate, capacity);
+                        assertNotEquals(NativeHttp.PoolAdmission.WORKER_GONE, result);
+                        return null;
+                    }));
+                }
+                start.countDown();
+                for (var future : futures) future.get(15, TimeUnit.SECONDS);
+            }
+            assertTrue(registry.get("worker").size() <= capacity,
+                    "concurrent releases must not permit more than 64 outstanding states");
+            // Fill any free slots deterministically after churn.
+            for (int value = 1000; registry.get("worker").size() < capacity; value++)
+                assertEquals(NativeHttp.PoolAdmission.REGISTERED,
+                        NativeHttp.registerPoolAdmission(registry, "worker", value, capacity));
+            assertEquals(capacity, registry.get("worker").size());
+            assertEquals(NativeHttp.PoolAdmission.FULL,
+                    NativeHttp.registerPoolAdmission(registry, "worker", 9999, capacity));
+
+            registry.remove("worker"); // termination revokes admission
+            NativeHttp.releasePoolAdmission(registry, "worker", 9999);
+            NativeHttp.releasePoolAdmission(registry, "worker", 0);
+            assertEquals(NativeHttp.PoolAdmission.WORKER_GONE,
+                    NativeHttp.registerPoolAdmission(registry, "worker", 10000, capacity));
+            assertFalse(registry.containsKey("worker"), "late completion must not resurrect an actor");
+        }
+    }
+
     @Test void capacityAwarePoolSelectionSkipsFullSlotsAndRotatesFairly() {
         int[] used = {64, 7, 64, 0};
         var available = (java.util.function.IntPredicate) slot -> used[slot] < 64;
