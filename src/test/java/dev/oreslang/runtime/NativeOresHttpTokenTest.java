@@ -38,16 +38,16 @@ final class NativeOresHttpTokenTest {
         try {
             Files.writeString(entry, """
                 import module net_core from "std/net";
-                import module http_wire from "std/http";
+                import module http_server from "std/http_server";
                 pub async routine main(): void {
                   val NioTcpListener listener = net_core.listen_loopback(0, 64, 8, 128);
                   stdio.println(listener.port);
                   val Future<String> accepting_first = net_core.accept_token(rt borrow listener);
                   val String first = await accepting_first;
-                  val Future<void> first_task = http_wire.serve_token(first);
+                  val Future<void> first_task = http_server.serve_token(first);
                   val Future<String> accepting_second = net_core.accept_token(rt borrow listener);
                   val String second = await accepting_second;
-                  val Future<void> second_task = http_wire.serve_token(second);
+                  val Future<void> second_task = http_server.serve_token(second);
                   await second_task;
                   await first_task;
                   val Future<void> shutdown = net_core.close_listener(listener);

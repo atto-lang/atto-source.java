@@ -1,0 +1,35 @@
+// Permissioned async HTTP connection lifecycle; parse/serialize stays pure.
+import module net_core from "std/net";
+import module http_wire from "std/http";
+
+define module http_server as
+  // A task-safe opaque token, not a raw host handle, crosses the async task
+  // boundary. Runtime verifies context ownership/revocation on every call.
+  // Actor execution is still denied pending explicit supervised actor grants.
+  pub async fnc serve_token(String ticket): void {
+    let mut Array<int> pending = new Array<int>();
+    loop {
+      val http_wire.Head head = http_wire.parse_head(rt borrow pending);
+      if head.status == 0; then
+        val Future<Array<int>> incoming = net_core.read_token(rt copy ticket, 2048);
+        val Array<int> chunk = await incoming;
+        if chunk.size == 0; then break; fi
+        for (const b of chunk) { pending.add(b); }
+      else
+        val Array<int> reply = http_wire.response(head.status, head.keep_alive, head.head_only);
+        val Future<int> sending = net_core.write_token(rt copy ticket, reply);
+        val int written = await sending;
+        if head.status != 200 || !head.keep_alive; then break; fi
+        let mut Array<int> rest = new Array<int>();
+        for (let int i = head.consumed; i < pending.size; i = i + 1) {
+          rest.add(pending.get(i));
+        }
+        pending = rest;
+      fi
+    }
+    val Future<void> closed = net_core.close_token(ticket);
+    await closed;
+    return;
+  }
+
+end
