@@ -942,10 +942,12 @@ public final class TypeChecker {
                     || fieldInitializerMaySuspend(op.whenTrue())
                     || fieldInitializerMaySuspend(op.whenFalse());
         }
-        if (expr instanceof Ast.CallExpr call) {
-            return call.callee() instanceof Ast.LambdaExpr
-                    || fieldInitializerMaySuspend(call.callee())
-                    || call.arguments().stream().anyMatch(this::fieldInitializerMaySuspend);
+        if (expr instanceof Ast.CallExpr) {
+            // No verified transitive non-suspension/escape summary exists for
+            // arbitrary dynamic or named calls during object construction.
+            // In particular, checking only call operands misses awaited or
+            // callback-publishing effects inside the callee.
+            return true;
         }
         if (expr instanceof Ast.NewExpr created)
             return created.arguments().stream().anyMatch(this::fieldInitializerMaySuspend);
@@ -1062,7 +1064,8 @@ public final class TypeChecker {
                     && fieldInitializerMaySuspend(field.initializer())) {
                 throw new IllegalArgumentException("class field initializer '"
                         + klass.name() + "." + field.name()
-                        + "' cannot await, select, or suspend during object construction");
+                        + "' cannot await, select, call, or suspend during object construction "
+                        + "without a proven transitive effect bound");
             }
             // Parser checking is insufficient: generated/expanded ASTs must
             // not bypass the final/const member initialization contract.
