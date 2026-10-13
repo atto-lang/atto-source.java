@@ -34,6 +34,8 @@ final class ActorSendContractTest {
                 observed.countDown();
                 return (message, selfContext) -> handled.addAndGet(message);
             });
+            // Actor initialization is lazy until ready or first send.
+            ref.getReady();
             assertTrue(startupEntered.await(5, TimeUnit.SECONDS));
             ref.send(7);
             letStartupFinish.countDown();
