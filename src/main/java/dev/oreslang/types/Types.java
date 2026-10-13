@@ -266,6 +266,17 @@ public final class Types {
             } else if (!flattened.contains(type)) flattened.add(type);
         }
         if (flattened.isEmpty()) return Unknown.INSTANCE;
+        // Normalize only when every arm can safely widen to the top type.
+        // In this first-stage runtime, borrows/functions/unchecked capabilities
+        // deliberately are not implicit members of Any or source Unknown.
+        if (flattened.contains(UnknownValue.INSTANCE)
+                && flattened.stream().allMatch(type -> isAssignable(type, UnknownValue.INSTANCE))) {
+            return UnknownValue.INSTANCE;
+        }
+        if (flattened.contains(Any.INSTANCE)
+                && flattened.stream().allMatch(type -> isAssignable(type, Any.INSTANCE))) {
+            return Any.INSTANCE;
+        }
         if (flattened.size() == 1) return flattened.getFirst();
         flattened.sort(java.util.Comparator.comparing(Object::toString));
         return new Union(flattened);

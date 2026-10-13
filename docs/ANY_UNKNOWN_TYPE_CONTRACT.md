@@ -66,6 +66,12 @@ make `value is Numbers` executable before reification. Runtime casts
 for currently reifiable scalar/nominal types must be tested under execution,
 not just type checking.
 
+Source unions with a safe top normalize predictably: `Any | int` becomes
+`Any`; `Unknown | Any` becomes `Unknown`. Non-boxable borrows/callables
+cannot be erased by this simplification. Type checks also reject unknown
+nominal names without guest runtime recognition, rather than silently testing
+a Java host class or always returning false.
+
 ## Actor, async, and channel boundaries
 
 Opaque top types conceal callable/borrow/ownership provenance. Until a runtime

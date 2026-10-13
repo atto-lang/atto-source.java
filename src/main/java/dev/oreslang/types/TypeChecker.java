@@ -5247,7 +5247,20 @@ public final class TypeChecker {
         }
         if (type instanceof Primitive primitive
                 && primitive != Primitive.VOID && primitive != Primitive.NULL) return;
-        if (type instanceof Named named && named.arguments().isEmpty()) return;
+        if (type instanceof Named named && named.arguments().isEmpty()) {
+            // A source name alone does not make a runtime type: reject
+            // unchecked/unknown nominal names that the guest runtime cannot
+            // possibly recognize.
+            if (findClass(named.name()) != null || findInterface(named.name()) != null
+                    || Set.of("Generator", "Iterator", "AsyncGenerator", "AsyncIterator",
+                              "IteratorResult", "Option", "Result", "Array", "List")
+                            .contains(named.name())) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    operator + " cannot test '" + named.name()
+                            + "': no verified Oreslang runtime type descriptor exists");
+        }
         throw new IllegalArgumentException(
                 operator + " cannot test " + type
                         + " without verified runtime type information; "

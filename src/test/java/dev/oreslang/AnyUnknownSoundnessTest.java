@@ -125,6 +125,25 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void opaqueUnionNormalizationRespectsSafeWidening() {
+        assertEquals(Types.Any.INSTANCE,
+                Types.unionOf(Types.Any.INSTANCE, Types.Primitive.INT));
+        assertEquals(Types.UnknownValue.INSTANCE,
+                Types.unionOf(Types.UnknownValue.INSTANCE, Types.Any.INSTANCE));
+        assertEquals(Types.UnknownValue.INSTANCE,
+                Types.unionOf(Types.UnknownValue.INSTANCE, Types.Primitive.INT));
+        assertInstanceOf(Types.Union.class,
+                Types.unionOf(Types.Any.INSTANCE,
+                        new Types.Borrow(Types.Primitive.INT, false)));
+    }
+
+    @Test
+    void unregisteredNominalTypesCannotProduceFakeRuntimeMatches() {
+        reject("fnc bad(Any value): bool { return value is UnregisteredNominal; }",
+                "no verified Oreslang runtime type descriptor");
+    }
+
+    @Test
     void noUnverifiedPayloadCanEvadeActorOrChannelChecks() {
         reject("fnc bad(Channel<Any> ch): void { return; }", "cannot conceal an Any/Unknown payload");
         reject("fnc bad(Channel<Array<Unknown>> ch): void { return; }", "cannot conceal an Any/Unknown payload");
