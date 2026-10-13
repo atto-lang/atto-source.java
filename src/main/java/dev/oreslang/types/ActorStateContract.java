@@ -143,6 +143,16 @@ public final class ActorStateContract {
                     if (!keys.containsKey(def.name())) {
                         throw new IllegalArgumentException("unknown actor state default key '" + def.name() + "'");
                     }
+                    if (!detachedScalarStateType(keys.get(def.name()))
+                            && !isInlineActorStateDefault(def.value())) {
+                        // Actor constructors have no state loan to fence
+                        // external aliases. Reject reference-valued defaults
+                        // sourced from globals, calls, member access or FFI.
+                        // Inline literals still need per-actor allocation proof
+                        // at the runtime lowering boundary.
+                        throw new IllegalArgumentException(
+                                "actor state reference default requires verified owned initialization");
+                    }
                 }
             }
         }
@@ -423,6 +433,40 @@ public final class ActorStateContract {
                 }
             }
         }
+    }
+
+    /**
+     * Only a closed tree of new inline literal containers may initialize a
+     * reference-valued state key. There must be no external source, callback,
+     * constructor, or runtime intrinsic that can inject a live alias. This
+     * source check alone does not prove runtime actor-local allocation.
+     */
+    private static boolean isInlineActorStateDefault(Ast.Expr value) {
+        if (value instanceof Ast.LiteralExpr literal) {
+            Object v = literal.value();
+            return v == null || v instanceof String || v instanceof Boolean
+                    || v instanceof Byte || v instanceof Short
+                    || v instanceof Integer || v instanceof Long
+                    || v instanceof Float || v instanceof Double
+                    || v instanceof java.math.BigInteger
+                    || v instanceof java.math.BigDecimal
+                    || v instanceof Ast.Imaginary;
+        }
+        if (value instanceof Ast.ListExpr list) {
+            return list.elements().stream().allMatch(ActorStateContract::isInlineActorStateDefault);
+        }
+        if (value instanceof Ast.TupleExpr tuple) {
+            return tuple.elements().stream().allMatch(ActorStateContract::isInlineActorStateDefault);
+        }
+        if (value instanceof Ast.ObjectExpr object) {
+            return object.fields().stream().allMatch(
+                    field -> isInlineActorStateDefault(field.value()));
+        }
+        if (value instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("+") || unary.operator().equals("-"))) {
+            return isInlineActorStateDefault(unary.operand());
+        }
+        return false;
     }
 
     /** A direct sibling state field is already actor-owned; an arbitrary
