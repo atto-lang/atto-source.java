@@ -29,7 +29,7 @@ public final class CoreLibrarySources {
     private static final int MAX_MODULE_SEGMENTS = 32;
     // Closed registry: a classpath resource must never create an unapproved
     // stdlib module. Update deliberately when adding a new native .ores module.
-    private static final Set<String> PACKAGED_SOURCES = Set.of("core.ores", "testing.ores", "assert.ores", "net.ores");
+    private static final Set<String> PACKAGED_SOURCES = Set.of("core.ores", "testing.ores", "assert.ores", "net.ores", "http.ores");
 
     private CoreLibrarySources() { }
 
