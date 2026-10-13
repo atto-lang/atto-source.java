@@ -3327,6 +3327,7 @@ public final class OwnershipChecker {
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
                     "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
+            case "Symbol" -> type.arguments().isEmpty() && findClass("Symbol") == null;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
