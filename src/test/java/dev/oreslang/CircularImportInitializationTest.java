@@ -22,7 +22,7 @@ final class CircularImportInitializationTest {
     Path tempDir;
 
     @Test
-    void twoFilesMayImportEachOtherAndInitRunsOnlyAfterBothAreLinked() throws Exception {
+    void twoFilesMayImportEachOtherAndDependencyInitWaitsForFirstCall() throws Exception {
         Path a = tempDir.resolve("a.ores");
         Path b = tempDir.resolve("b.ores");
 
@@ -34,9 +34,7 @@ final class CircularImportInitializationTest {
                 }
 
                 fnc init(): void {
-                  stdio.stdout.write("init-a:");
-                  stdio.stdout.write(b_value());
-                  stdio.stdout.write("|");
+                  stdio.stdout.write("init-a|");
                   return;
                 }
 
@@ -56,9 +54,7 @@ final class CircularImportInitializationTest {
                 }
 
                 fnc init(): void {
-                  stdio.stdout.write("init-b:");
-                  stdio.stdout.write(a_value());
-                  stdio.stdout.write("|");
+                  stdio.stdout.write("init-b|");
                   return;
                 }
                 """);
@@ -72,7 +68,7 @@ final class CircularImportInitializationTest {
                 output,
                 error);
 
-        assertEquals("init-a:B|init-b:A|main:AB", output.toString(StandardCharsets.UTF_8));
+        assertEquals("init-a|main:Ainit-b|B", output.toString(StandardCharsets.UTF_8));
 
         List<List<String>> groups = build.initializationGroups();
         assertEquals(1, groups.size(), "the A<->B cycle should form one initialization barrier");
@@ -169,6 +165,126 @@ final class CircularImportInitializationTest {
                 IllegalArgumentException.class,
                 () -> LinkedProgramRunner.validate(a));
         assertTrue(failure.getMessage().contains("does not match an exported declaration"));
+    }
+
+    @Test
+    void importWithoutCallNeverExecutesImportedInit() throws Exception {
+        Path a = tempDir.resolve("a.ores");
+        Path b = tempDir.resolve("b.ores");
+
+        Files.writeString(a, """
+                import fnc b_value from "./b.ores";
+                pub fnc a_value(): String { return "A"; }
+                pub routine main(): void {
+                  stdio.stdout.write("main");
+                  return;
+                }
+                """);
+        Files.writeString(b, """
+                import fnc a_value from "./a.ores";
+                fnc init(): void {
+                  stdio.stdout.write("forbidden-init");
+                  return;
+                }
+                pub fnc b_value(): String { return "B"; }
+                """);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                a, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                output, new ByteArrayOutputStream());
+        assertEquals("main", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void firstCallInitializesImportedModuleExactlyOnce() throws Exception {
+        Path a = tempDir.resolve("a.ores");
+        Path b = tempDir.resolve("b.ores");
+        Files.writeString(a, """
+                import fnc b_value from "./b.ores";
+                pub fnc a_value(): String { return "A"; }
+                pub routine main(): void {
+                  stdio.stdout.write(b_value());
+                  stdio.stdout.write(b_value());
+                  return;
+                }
+                """);
+        Files.writeString(b, """
+                import fnc a_value from "./a.ores";
+                fnc init(): void {
+                  stdio.stdout.write("init-b|");
+                  return;
+                }
+                pub fnc b_value(): String { return a_value(); }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                a, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                output, new ByteArrayOutputStream());
+        assertEquals("init-b|AA", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void recursiveInitializationViaCycleFailsClosed() throws Exception {
+        Path a = tempDir.resolve("a.ores");
+        Path b = tempDir.resolve("b.ores");
+        Files.writeString(a, """
+                import fnc b_value from "./b.ores";
+                pub fnc a_value(): String { return "A"; }
+                fnc init(): void {
+                  stdio.stdout.write(b_value());
+                  return;
+                }
+                pub routine main(): void { return; }
+                """);
+        Files.writeString(b, """
+                import fnc a_value from "./a.ores";
+                fnc init(): void {
+                  stdio.stdout.write(a_value());
+                  return;
+                }
+                pub fnc b_value(): String { return "B"; }
+                """);
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> LinkedProgramRunner.run(
+                        a, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                        new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        assertTrue(String.valueOf(failure).contains("recursive initialization")
+                        || String.valueOf(failure.getCause()).contains("recursive initialization"),
+                () -> "expected recursive init diagnostic, got " + failure);
+    }
+
+    @Test
+    void failingLazyImportedInitDoesNotRunImportedFunctionBody() throws Exception {
+        Path a = tempDir.resolve("a.ores");
+        Path b = tempDir.resolve("b.ores");
+        Files.writeString(a, """
+                import fnc b_value from "./b.ores";
+                pub fnc a_value(): String { return "A"; }
+                pub routine main(): void {
+                  stdio.stdout.write("before|");
+                  b_value();
+                  return;
+                }
+                """);
+        Files.writeString(b, """
+                import fnc a_value from "./a.ores";
+                fnc init(): void {
+                  val values = arr[1];
+                  val invalid = values[9];
+                  return;
+                }
+                pub fnc b_value(): void {
+                  stdio.stdout.write("should-not-run");
+                  return;
+                }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        assertThrows(RuntimeException.class,
+                () -> LinkedProgramRunner.run(
+                        a, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                        output, new ByteArrayOutputStream()));
+        assertEquals("before|", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
