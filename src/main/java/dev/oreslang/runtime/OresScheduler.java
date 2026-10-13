@@ -409,7 +409,8 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
-    private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
+    private final class TaskRunner<T> implements BiConsumer<Object, Throwable>,
+            CriticalRwGate.FencedLogicalOwner {
         private static final int NEW = 0;
         private static final int QUEUED = 1;
         private static final int RUNNING = 2;
@@ -438,6 +439,16 @@ public final class OresScheduler implements AutoCloseable {
             this.task = task;
             this.completion = new OresFuture<>(
                     this::admitCancellation, this::cancelFromFuture);
+        }
+
+        @Override
+        public void cancelAndReleaseAfterUnwind(Runnable release) {
+            Objects.requireNonNull(release, "release");
+            // Even when the task has already returned Done, publishing its
+            // Future waits for afterCarrierTurn(): never free a critical permit
+            // from a foreign callback while the guest stack is still live.
+            completion.whenCompleteRuntime((value, failure) -> release.run());
+            completion.cancel(false);
         }
 
         private void scheduleInitial() {
