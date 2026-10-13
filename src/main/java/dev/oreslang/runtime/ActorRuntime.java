@@ -330,12 +330,14 @@ public final class ActorRuntime implements AutoCloseable {
             Optional<ActorId> parent,
             ActorKind actorKind,
             ExceptionBoundaryPolicy.Terminal terminal,
+            Optional<ExceptionBoundaryPolicy.Terminal> secondary,
             String diagnosticType) {
         public ActorFailureNotice {
             Objects.requireNonNull(actor, "actor");
             Objects.requireNonNull(parent, "parent");
             Objects.requireNonNull(actorKind, "actorKind");
             Objects.requireNonNull(terminal, "terminal");
+            Objects.requireNonNull(secondary, "secondary");
             Objects.requireNonNull(diagnosticType, "diagnosticType");
             if (!terminal.failed()) {
                 throw new IllegalArgumentException("normal actor return has no failure notice");
@@ -347,7 +349,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (failure instanceof GuestEffectSignal effect) {
             return ExceptionBoundaryPolicy.actorTerminal(effect.effect(), effect.originCode());
         }
-        if (failure instanceof CancellationException) {
+        if (failure instanceof CancellationException
+                || failure instanceof ActorCancellationSignal) {
             return ExceptionBoundaryPolicy.actorTerminal(ExceptionBoundaryPolicy.Effect.CANCEL);
         }
         if (failure instanceof VirtualMachineError
@@ -358,6 +361,17 @@ public final class ActorRuntime implements AutoCloseable {
         // Arbitrary Java exceptions are not guest Throw/Raise. Treat a host
         // actor crash as Panic without fabricating a typed guest origin.
         return ExceptionBoundaryPolicy.actorTerminal(ExceptionBoundaryPolicy.Effect.PANIC);
+    }
+
+    private static int effectPriority(ExceptionBoundaryPolicy.Effect effect) {
+        return switch (effect) {
+            case RETURN -> 0;
+            case THROW -> 1;
+            case RAISE -> 2;
+            case PANIC -> 3;
+            case CANCEL -> 4;
+            case HOST_FATAL -> 5;
+        };
     }
 
     public enum CarrierBackend { NATIVE_PTHREAD, JVM_THREAD_POOL }
@@ -1873,6 +1887,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
         private final AtomicReference<ActorFailureNotice> terminalFailureNotice =
+                new AtomicReference<>();
+        // Retain one bounded typed secondary cleanup cause; never export
+        // a mutable Throwable across the supervisor boundary.
+        private final AtomicReference<ExceptionBoundaryPolicy.Terminal> secondaryFailure =
                 new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
@@ -6828,6 +6846,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 ref.id(), parent == null
                                         ? Optional.empty() : Optional.of(parent.ref.id()),
                                 kind, actorTerminalOf(terminalForNotice),
+                                Optional.ofNullable(ref.secondaryFailure.get()),
                                 terminalForNotice.getClass().getName()));
             }
             try {
@@ -7326,11 +7345,10 @@ public final class ActorRuntime implements AutoCloseable {
                     try {
                         runFinalCleanupIfNeeded();
                     } catch (Throwable cleanupFailure) {
-                        // Cleanup is the final guest action. Preserve its
-                        // failure for ActorRef.failure/done before finalization.
-                        ref.terminationCause.compareAndSet(
-                                null,
-                                cleanupFailure);
+                        // Cleanup is the final guest action. Higher-priority
+                        // cleanup failures supersede prior failures, preserving
+                        // one typed secondary cause without exporting Throwable.
+                        recordCleanupFailure(cleanupFailure);
                     }
                 }
                 try {
@@ -7368,6 +7386,29 @@ public final class ActorRuntime implements AutoCloseable {
             }
             sourceReceiveSuspended = false;
             activeMail = null;
+        }
+
+        private void recordCleanupFailure(Throwable cleanupFailure) {
+            var cleanup = actorTerminalOf(cleanupFailure);
+            while (true) {
+                Throwable prior = ref.terminationCause.get();
+                if (prior == null) {
+                    if (ref.terminationCause.compareAndSet(null, cleanupFailure)) {
+                        return;
+                    }
+                    continue;
+                }
+                var original = actorTerminalOf(prior);
+                if (effectPriority(cleanup.origin()) > effectPriority(original.origin())) {
+                    if (ref.terminationCause.compareAndSet(prior, cleanupFailure)) {
+                        ref.secondaryFailure.compareAndSet(null, original);
+                        return;
+                    }
+                    continue;
+                }
+                ref.secondaryFailure.compareAndSet(null, cleanup);
+                return;
+            }
         }
 
         private void fail(Throwable failure) {
