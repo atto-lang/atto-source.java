@@ -133,6 +133,38 @@ final class ActorSupervisorControlLane {
         return failures;
     }
 
+    /**
+     * Allocation-free fallback publication into already-reserved root slots.
+     * Both monitors cover only metadata; no guest callback can run here.
+     * An in-flight failure precedes the pending FIFO. A failed target publish
+     * leaves the source slot untouched, so no notice can be silently lost.
+     */
+    synchronized void transferPublishedTo(ActorSupervisorControlLane root) {
+        Objects.requireNonNull(root, "root");
+        if (root == this) {
+            throw new IllegalArgumentException("cannot transfer CONTROL to its own lane");
+        }
+        for (var iterator = slots.values().iterator(); iterator.hasNext();) {
+            Slot slot = iterator.next();
+            if (slot.inFlight) {
+                root.publish(slot.notice);
+                iterator.remove();
+                slot.inFlight = false;
+                --inFlight;
+            }
+        }
+        while (head != null) {
+            Slot slot = head;
+            root.publish(slot.notice);
+            head = slot.next;
+            slot.next = null;
+            slot.queued = false;
+            --pending;
+            slots.remove(slot.child);
+        }
+        tail = null;
+    }
+
     synchronized int pendingCount() { return pending; }
     synchronized int reservedCount() { return slots.size(); }
 
