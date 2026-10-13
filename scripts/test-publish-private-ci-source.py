@@ -62,11 +62,31 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         writes = [(m, r, p) for m, r, p in self.route_calls if m == "POST"]
         self.assertEqual([r for _, r, _ in writes], [
             "repos/trusted/ci/git/blobs", "repos/trusted/ci/git/trees",
-            "repos/trusted/ci/git/commits", "repos/trusted/ci/git/refs"])
+            "repos/trusted/ci/git/trees", "repos/trusted/ci/git/commits",
+            "repos/trusted/ci/git/refs"])
         self.assertEqual(writes[-1][2]["ref"], "refs/heads/ci/oreslang-test")
-        self.assertEqual(writes[1][2]["tree"][0]["path"],
-                         "private-oreslang-source/hello.ores")
+        self.assertEqual(writes[1][2]["tree"][0]["path"], "hello.ores")
+        self.assertNotIn("base_tree", writes[1][2])
+        self.assertEqual(writes[2][2]["tree"], [
+            {"path": "private-oreslang-source", "mode": "040000",
+             "type": "tree", "sha": D}])
+        self.assertEqual(writes[2][2]["base_tree"], B)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
+
+    def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
+        # Assume base_tree contains a stale private-oreslang-source/secret.ores.
+        # A new isolated source tree MUST NOT be based on that default tree.
+        (self.source / "current.ores").write_text("new source")
+        self.publish()
+        tree_writes = [payload for method, route, payload in self.route_calls
+                       if method == "POST" and route.endswith("/git/trees")]
+        self.assertEqual(len(tree_writes), 2)
+        self.assertNotIn("base_tree", tree_writes[0])
+        self.assertEqual([item["path"] for item in tree_writes[0]["tree"]],
+                         ["current.ores", "hello.ores"])
+        self.assertEqual(tree_writes[1]["tree"], [
+            {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
+        self.assertEqual(tree_writes[1]["base_tree"], B)
 
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
@@ -137,10 +157,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(count, 2)
         new_tree = [payload for method, route, payload in self.route_calls
                     if method == "POST" and route.endswith("/git/trees")]
-        self.assertEqual(len(new_tree), 1)
+        self.assertEqual(len(new_tree), 2)
         paths = [item["path"] for item in new_tree[0]["tree"]]
-        self.assertEqual(paths, ["private-oreslang-source/hello.ores",
-                                 "private-oreslang-source/nested/inside.ores"])
+        self.assertEqual(paths, ["hello.ores", "nested/inside.ores"])
+        self.assertNotIn("base_tree", new_tree[0])
+        self.assertEqual(new_tree[1]["tree"][0]["path"], "private-oreslang-source")
 
     def test_directory_entry_quota_rejects_before_upload(self):
         (self.source / "another.ores").write_text("another")
