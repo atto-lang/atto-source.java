@@ -1,326 +1,177 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.CancellationException;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Runtime-only, non-thread-affine reader/writer admission gate.
+ * A reader/writer API on the ORIGINAL legacy CriticalGate admission engine.
  *
- * <p>This is an admission substrate, NOT public source-language lowering.
- * The compiler must still prove protected-state effects and bind every
- * generated critical callable to the same owning gate. In particular a
- * successful Future is not permission to execute after STOP/cancellation:
- * the admitted continuation must check its ticket is still held.</p>
- *
- * <p>Each gate uses its own short metadata monitor, plus a small global
- * identity registry for fail-closed nested logical-owner admission.
- * Neither monitor waits for permits or runs guest code. Waiters suspend
- * on OresFuture and resume through OresScheduler.</p>
+ * <p>Construct a standalone gate for a distinct protection domain, or obtain
+ * the cached facade from CriticalGate.rwGate() when old and new critical
+ * callables protect the same receiver, class or code unit. All tickets on
+ * that domain share FIFO queues, reader cohorts and deadlock detection.</p>
  */
 public final class CriticalRwGate implements AutoCloseable {
-    public static final int MAX_WAITERS = 8192;
-
+    public static final int MAX_WAITERS = CriticalGate.MAX_WAITERS;
+    public static final int MAX_ACTIVE_READERS = CriticalGate.MAX_ACTIVE_READERS;
     public enum Mode { READ, WRITE }
 
-    private enum State { NEW, QUEUED, GRANTED, CLOSED }
-
-    // Domain registration is brief and cross-gate. Queue state is protected
-    // by a distinct gate-local monitor: an unrelated tenant's gate must not
-    // contend on one process-global admission/queue monitor.
-    private static final Object DOMAIN_COORDINATOR = new Object();
-    private static final java.util.concurrent.atomic.AtomicInteger WAITING_COUNT =
-            new java.util.concurrent.atomic.AtomicInteger();
-    private final Object coordinator = new Object();
-    public static final int MAX_ACTIVE_READERS = MAX_WAITERS;
-
-    // A domain may request one RW ticket at a time. Until generalized
-    // ordering/reentrancy is proven, nested critical acquisitions fail closed.
-    // Unlike thread identities these tokens survive scheduler await/resume.
-    private static final IdentityHashMap<Object, Ticket> DOMAINS =
+    private static final Object OWNER_LOCK = new Object();
+    private static final IdentityHashMap<Object, Ticket> OWNERS =
             new IdentityHashMap<>();
 
-    private final ArrayDeque<Ticket> waiters = new ArrayDeque<>();
-    private final IdentityHashMap<Ticket, Boolean> readers = new IdentityHashMap<>();
-    private Ticket writer;
+    private final CriticalGate engine;
+    private final Set<Ticket> tickets = ConcurrentHashMap.newKeySet();
     private boolean closed;
+
+    public CriticalRwGate() { this(new CriticalGate()); }
+
+    CriticalRwGate(CriticalGate engine) {
+        this.engine = Objects.requireNonNull(engine, "engine");
+    }
 
     public final class Ticket implements AutoCloseable {
         private final Mode mode;
-        private final OresFuture<Void> admitted = new OresFuture<>(this::close);
-        private State state = State.NEW; // guarded by COORDINATOR
-        private boolean completionAttached; // guarded by COORDINATOR
-        private Object domain;
+        private final CriticalGate.Ticket underlying;
+        private boolean requested;
+        private boolean closed;
+        private boolean completionAttached;
+        private Object ownerDomain;
 
         private Ticket(Mode mode) {
-            this.mode = Objects.requireNonNull(mode, "mode");
+            this.mode = mode;
+            this.underlying = engine.newTicket(mode == Mode.READ
+                    ? CriticalGate.Mode.READ : CriticalGate.Mode.WRITE);
         }
 
-        public Mode mode() {
-            return mode;
-        }
+        public Mode mode() { return mode; }
 
-        /**
-         * Request a logical permit without blocking any physical carrier.
-         * The resulting Future must be awaited by a compiler-lowered task.
-         */
-        public OresFuture<Void> enterAsync() {
-            Object caller = OresScheduler.currentTaskDomain();
-            if (caller == null) caller = ActorRuntime.currentActorExecutionDomain();
-            if (caller == null) caller = this; // independent detached host async request
-            return request(caller);
-        }
-
-        /**
-         * Synchronous critical entry: only host embedders may wait on an OS
-         * thread. A contended actor/scheduler call fails without parking.
-         * Host recursion uses thread identity to reject same-domain nesting.
-         */
-        public void enterSync() {
-            Object caller = OresScheduler.currentTaskDomain();
-            if (caller == null) caller = ActorRuntime.currentActorExecutionDomain();
-            boolean onCarrier = ActorRuntime.inActorExecution()
-                    || OresScheduler.current() != null;
-            if (caller == null) caller = Thread.currentThread();
-            OresFuture<Void> ready = request(caller);
-            if (onCarrier) {
-                if (!isHeld()) {
-                    close();
-                    throw new IllegalStateException(
-                            "contended synchronous critical admission would park an actor/scheduler carrier");
+        private void registerOwner(Object identity) {
+            synchronized (this) {
+                if (requested || closed)
+                    throw new IllegalStateException("RW ticket already requested or closed");
+                synchronized (OWNER_LOCK) {
+                    Ticket held = OWNERS.get(identity);
+                    if (held != null) {
+                        if (held.mode == Mode.READ && mode == Mode.WRITE)
+                            throw new IllegalStateException("read-to-write critical upgrade is forbidden");
+                        throw new IllegalStateException(
+                                "recursive logical nested critical RW admission is not verified");
+                    }
+                    OWNERS.put(identity, this);
+                    ownerDomain = identity;
                 }
-                return;
+                requested = true;
             }
+        }
+
+        private void unregisterOwner() {
+            Object identity;
+            synchronized (this) { identity = ownerDomain; ownerDomain = null; }
+            if (identity != null) {
+                synchronized (OWNER_LOCK) { OWNERS.remove(identity, this); }
+            }
+        }
+
+        private Object logicalOwner(boolean synchronous) {
+            Object identity = OresScheduler.currentTaskDomain();
+            if (identity == null) identity = ActorRuntime.currentActorExecutionDomain();
+            if (identity == null) identity = synchronous ? Thread.currentThread() : this;
+            return identity;
+        }
+
+        public OresFuture<Void> enterAsync() {
+            registerOwner(logicalOwner(false));
             try {
-                ready.join();
-                if (!isHeld()) {
-                    throw new CancellationException("critical permit revoked before host entry");
-                }
+                OresFuture<Void> readiness = underlying.enterAsync();
+                readiness.whenCompleteRuntime((value, failure) -> {
+                    if (failure != null) unregisterOwner();
+                });
+                return readiness;
             } catch (RuntimeException | Error failure) {
                 close();
                 throw failure;
             }
         }
 
-        private OresFuture<Void> request(Object caller) {
-            boolean grantNow = false;
-            synchronized (coordinator) {
-                if (state != State.NEW) {
-                    throw new IllegalStateException("RW ticket already requested or closed");
-                }
-                if (closed) throw new IllegalStateException("RW gate is closed");
-                boolean canEnter = waiters.isEmpty() && writer == null
-                        && (mode == Mode.READ
-                            ? readers.size() < MAX_ACTIVE_READERS : readers.isEmpty());
-                if (!canEnter && waiters.size() >= MAX_WAITERS) {
-                    throw new IllegalStateException("RW gate wait queue is full");
-                }
-                // Strict lock order: gate-local coordinator before the small
-                // process-wide domain registry. Never acquire them in reverse.
-                synchronized (DOMAIN_COORDINATOR) {
-                    Ticket prior = DOMAINS.get(caller);
-                    if (prior != null) {
-                        if (prior.mode == Mode.READ && mode == Mode.WRITE) {
-                            throw new IllegalStateException(
-                                    "read-to-write critical upgrade is forbidden");
-                        }
-                        throw new IllegalStateException(
-                                "recursive logical nested critical RW acquisition requires verified reentrancy/lock ordering");
-                    }
-                    DOMAINS.put(caller, this);
-                }
-                domain = caller;
-                if (canEnter) {
-                    grantLocked(this);
-                    grantNow = true;
-                } else {
-                    state = State.QUEUED;
-                    waiters.addLast(this);
-                    WAITING_COUNT.incrementAndGet();
-                }
+        public void enterSync() {
+            registerOwner(logicalOwner(true));
+            try {
+                underlying.enterSync();
+            } catch (RuntimeException | Error failure) {
+                close();
+                throw failure;
             }
-            if (grantNow) admitted.completeFromRuntime(null);
-            return admitted;
         }
 
-        /**
-         * Observe admission only after requesting it. An unrequested ticket
-         * cannot be used as an await point: that would suspend forever.
-         */
         public OresFuture<Void> admission() {
-            synchronized (coordinator) {
-                if (state == State.NEW) {
+            synchronized (this) {
+                if (!requested && !closed)
                     throw new IllegalStateException("RW admission was not requested");
-                }
-                return admitted;
             }
+            return underlying.admission();
         }
 
-        /**
-         * Bind exactly one owning task completion to the ticket. The callback
-         * revokes either a pending admission or an active grant on cancellation,
-         * return or failure. Do not bind unrelated task lifetimes.
-         */
         public void releaseOnCompletion(OresFuture<?> completion) {
             Objects.requireNonNull(completion, "completion");
-            synchronized (coordinator) {
-                if (state == State.CLOSED) {
-                    throw new IllegalStateException("cannot bind a released RW ticket");
-                }
-                if (completionAttached) {
+            synchronized (this) {
+                if (closed) throw new IllegalStateException("cannot bind a released RW ticket");
+                if (completionAttached)
                     throw new IllegalStateException("RW ticket completion already bound");
-                }
                 completionAttached = true;
             }
-            // Completion may already be settled; never execute callbacks under
-            // the metadata coordinator or the guest's critical region.
-            completion.whenCompleteRuntime((value, error) -> close());
+            completion.whenCompleteRuntime((value, failure) -> close());
         }
 
-        public boolean isHeld() {
-            synchronized (coordinator) {
-                return state == State.GRANTED && !closed;
-            }
-        }
+        public boolean isHeld() { return underlying.isHeld(); }
 
         @Override
         public void close() {
-            List<Ticket> wake = List.of();
-            synchronized (coordinator) {
-                if (state == State.CLOSED) return;
-                State former = state;
-                state = State.CLOSED;
-                if (domain != null) {
-                    synchronized (DOMAIN_COORDINATOR) {
-                        DOMAINS.remove(domain, this);
-                    }
-                }
-                if (former == State.QUEUED) {
-                    if (waiters.remove(this)) WAITING_COUNT.decrementAndGet();
-                    // A cancelled queued writer may have been the only
-                    // barrier keeping later readers behind active readers.
-                    // Re-evaluate the new FIFO head immediately, without
-                    // waiting for those unrelated readers to exit.
-                    wake = drainLocked();
-                } else if (former == State.GRANTED) {
-                    if (mode == Mode.READ) {
-                        readers.remove(this);
-                    } else if (writer == this) {
-                        writer = null;
-                    }
-                    wake = drainLocked();
-                }
+            synchronized (this) {
+                if (closed) return;
+                closed = true;
             }
-            // Never run Future callbacks inside the coordinator monitor.
-            admitted.failFromRuntime(new CancellationException("RW ticket released"));
-            publish(wake);
+            try { underlying.close(); }
+            finally {
+                unregisterOwner();
+                tickets.remove(this);
+            }
         }
-    }
-
-    /**
-     * Legacy source `critical` is exclusively WRITE. Callers migrating from
-     * CriticalGate must use this ticket on the SAME object/static/file gate
-     * as the READ and WRITE modes; independent gates do not synchronize.
-     */
-    public Ticket newCriticalTicket() {
-        return newTicket(Mode.WRITE);
     }
 
     public Ticket newTicket(Mode mode) {
         Objects.requireNonNull(mode, "mode");
-        synchronized (coordinator) {
+        synchronized (this) {
             if (closed) throw new IllegalStateException("RW gate is closed");
-        }
-        return new Ticket(mode);
-    }
-
-    /** Must be called under the gate-local coordinator with no active writer. */
-    private void grantLocked(Ticket ticket) {
-        ticket.state = State.GRANTED;
-        if (ticket.mode == Mode.READ) {
-            readers.put(ticket, Boolean.TRUE);
-        } else {
-            if (writer != null || !readers.isEmpty()) {
-                throw new IllegalStateException("RW writer overlap invariant");
-            }
-            writer = ticket;
+            Ticket ticket = new Ticket(mode);
+            tickets.add(ticket);
+            return ticket;
         }
     }
 
-    /**
-     * Strict FIFO cohort admission. A writer at queue head is admitted only
-     * once all prior readers exit; readers behind a writer cannot overtake it.
-     */
-    private List<Ticket> drainLocked() {
-        if (closed || writer != null || waiters.isEmpty()) return List.of();
-        if (waiters.peekFirst().mode == Mode.WRITE) {
-            if (!readers.isEmpty()) return List.of();
-            Ticket next = waiters.removeFirst();
-            WAITING_COUNT.decrementAndGet();
-            grantLocked(next);
-            return List.of(next);
-        }
-        List<Ticket> wake = new ArrayList<>();
-        while (!waiters.isEmpty() && waiters.peekFirst().mode == Mode.READ
-                && readers.size() < MAX_ACTIVE_READERS) {
-            Ticket next = waiters.removeFirst();
-            WAITING_COUNT.decrementAndGet();
-            grantLocked(next);
-            wake.add(next);
-        }
-        return wake;
-    }
+    /** An existing unqualified source critical always requests WRITE. */
+    public Ticket newCriticalTicket() { return newTicket(Mode.WRITE); }
 
-    private static void publish(List<Ticket> wake) {
-        for (Ticket ticket : wake) {
-            // close/cancel may have invalidated a grant before notification.
-            if (ticket.isHeld()) ticket.admitted.completeFromRuntime(null);
-        }
-    }
-
-    public int queuedCount() {
-        synchronized (coordinator) { return waiters.size(); }
-    }
+    public int queuedCount() { return engine.queuedCount(); }
+    public int activeReaderCount() { return engine.activeReaderCount(); }
+    public boolean hasWriter() { return engine.hasWriter(); }
 
     public static int waitingLogicalDomains() {
-        return WAITING_COUNT.get();
+        return CriticalGate.waitingLogicalDomains();
     }
 
-    public int activeReaderCount() {
-        synchronized (coordinator) { return readers.size(); }
-    }
-
-    public boolean hasWriter() {
-        synchronized (coordinator) { return writer != null; }
-    }
-
-    /** Revoke every outstanding grant, pending waiter and future resume. */
     @Override
     public void close() {
-        List<Ticket> revoke = new ArrayList<>();
-        synchronized (coordinator) {
+        List<Ticket> revoked;
+        synchronized (this) {
             if (closed) return;
             closed = true;
-            revoke.addAll(readers.keySet());
-            if (writer != null) revoke.add(writer);
-            revoke.addAll(waiters);
-            readers.clear();
-            writer = null;
-            WAITING_COUNT.addAndGet(-waiters.size());
-            waiters.clear();
-            synchronized (DOMAIN_COORDINATOR) {
-                for (Ticket ticket : revoke) {
-                    ticket.state = State.CLOSED;
-                    if (ticket.domain != null) DOMAINS.remove(ticket.domain, ticket);
-                }
-            }
+            revoked = List.copyOf(tickets);
         }
-        for (Ticket ticket : revoke) {
-            ticket.admitted.failFromRuntime(
-                    new CancellationException("RW gate closed during admission"));
-        }
+        engine.closeAll();
+        for (Ticket ticket : revoked) ticket.close();
     }
 }
