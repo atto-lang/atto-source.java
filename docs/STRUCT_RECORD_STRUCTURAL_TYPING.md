@@ -87,26 +87,39 @@ Unknown/Generic, nested mutable projections and methods; explicit
 LLVM rejection or matching lowering for syntax/shape checks, and shared
 positive/negative conformance cases. No parity or green build is claimed.
 
-### Suspension and actor admission
+### Suspension, actor transport, and owned vs borrowed values
 
-Type-position `struct{...}` / `record{...}` (and aliases that resolve to
-readonly shape views) must not provide a `mut` parameter or cross an actor
-mailbox. These borrowed parameter views are prohibited for `async`,
-`suspend` / `suspends`, and `generator` callables. The same prohibition
-applies to explicit `structural {...}` parameters. This is a capability and
-lifetime rule, not a statement that an owned immutable struct can never be
-copied/serialized for async or actor use.
+`Record.readOnly` is a field-write capability, **not a loan**. Ordinary
+parameters spelled `record{foo: int}` and `struct{foo: int}` are readonly
+**owned value contracts**: ownership may transfer across async/suspends/actor
+boundaries when the payload passes the existing static sendability checker,
+and the transport provides value isolation. Nested readonly records are
+likewise permitted if they contain no unowned or unsafe capabilities.
 
-An eventual explicit owned/copy conversion may relax this restriction only
-with ownership, serialization, and cancellation-safe lifetime proof.
+An explicitly qualified `structural T` parameter is different: it is a
+borrowed, read-only *view*, valid only for the synchronous call. Actor
+mailboxes, async, suspend/suspends, and generators must reject this
+view. Explicit `&T` or `&mut T` references, even when nested inside
+records, tuples, lists, unions, callbacks or generic wrappers, are also
+borrowed and must not escape via suspension or mailbox transport.
 
-### Nested borrowed structural views
+The static `Types.Borrow` and `Ast.Param.structural` establish loan
+provenance. Neither the type checker nor the ownership checker may infer
+a borrow solely from `Record.readOnly`. This prevents immutable owned
+structs from becoming accidentally unsendable. Actor boundary checks
+must still reject data containing mutable identity-bearing class
+instances, functions, host resources, unresolved generics, or other
+unsendable capabilities. Passing an owned readonly shape never grants
+mutation permission to the recipient.
 
-A readonly shape view nested inside `List<record{...}>`, a tuple, union,
-function signature, or named generic wrapper remains borrowed. It must not
-be passed to a suspending/async/generator function or actor message by hiding
-it under a container type. The compiler recursively inspects the carried
-type, with a cycle guard. This does not mean owned immutable structs are
-intrinsically unsendable; explicit ownership-safe copies need a separate
-contract. Mutable access checks on the *outer container* are separate from
-mutation of a readonly projected member.
+`mut record{...}` as a function parameter remains rejected to prevent
+confusion between rebinding ownership and granting write access to a
+readonly structural field contract. A separate source-level rebinding
+feature could relax this without permitting record field mutation.
+
+### Regression gates
+
+Run Java/JUnit and both ownership + type-checker passes against
+owned readonly parameters in async and actor functions, actual explicit
+borrows in direct/nested positions, and explicit structural views.
+Validate execution, AOT/hybrid, and native LLVM parity before merging.
