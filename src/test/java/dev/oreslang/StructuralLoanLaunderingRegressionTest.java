@@ -125,6 +125,35 @@ final class StructuralLoanLaunderingRegressionTest {
     }
 
     @Test
+    void typedOwnedRecordBindingCannotHideNominalClassIdentity() {
+        String source = """
+                define class Candidate as
+                    pub val int foo = 3;
+                end
+                fnc unsafe(): void {
+                    const alias: record{foo: int} = new Candidate();
+                    return;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(parsed));
+        assertTrue(error.getMessage().contains("cannot implicitly convert"),
+                error.getMessage());
+    }
+
+    @Test
+    void explicitBorrowReturnOfIncomingLoanIsStillValid() {
+        String source = """
+                fnc identity(&int value): &int {
+                    return value;
+                }
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        assertDoesNotThrow(() -> OwnershipChecker.check(parsed));
+    }
+
+    @Test
     void explicitBorrowedStructuralClassParameterRemainsAdmitted() {
         String source = """
                 define class Candidate as
