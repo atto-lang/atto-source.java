@@ -22,8 +22,6 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
-    // Syntactically enclosed conditions must not contain hidden assignment expressions.
-    private int predicateDepth;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -2600,24 +2598,19 @@ public final class Parser {
     }
 
     private Ast.Expr parseCondition() {
-        predicateDepth++;
-        try {
-            Ast.Expr expression = normalizeLegacyConditionPipe(parseLogicalOr());
-            // Legacy condition-only comma means logical AND. Prefer && in new code.
-            while (match(COMMA)) {
-                expression = new Ast.BinaryExpr(
-                        "&&",
-                        expression,
-                        normalizeLegacyConditionPipe(parseLogicalOr()));
-            }
-            if (check(EQUAL)) {
-                throw error(peek(),
-                        "assignment '=' is not allowed in a condition; use 'eq' or '==' for equality");
-            }
-            return expression;
-        } finally {
-            predicateDepth--;
+        Ast.Expr expression = normalizeLegacyConditionPipe(parseLogicalOr());
+        // Legacy condition-only comma means logical AND. Prefer && in new code.
+        while (match(COMMA)) {
+            expression = new Ast.BinaryExpr(
+                    "&&",
+                    expression,
+                    normalizeLegacyConditionPipe(parseLogicalOr()));
         }
+        if (check(EQUAL)) {
+            throw error(peek(),
+                    "assignment '=' is not allowed in a condition; use 'eq' or '==' for equality");
+        }
+        return expression;
     }
 
     private Ast.Expr normalizeLegacyConditionPipe(Ast.Expr expr) {
@@ -2829,10 +2822,6 @@ public final class Parser {
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parseConditional();
         if (match(EQUAL)) {
-            if (predicateDepth > 0) {
-                throw error(previous(),
-                        "assignment '=' is not allowed in a condition; use 'eq' or '==' for equality");
-            }
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
                 throw error(previous(), "assignment target must be a local, field, or index");
             }
