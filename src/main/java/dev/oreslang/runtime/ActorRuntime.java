@@ -1405,6 +1405,18 @@ public final class ActorRuntime implements AutoCloseable {
         return cell == null ? null : cell::afterPhysicalCarrierExit;
     }
 
+    /** Package-private physical-turn diagnostic for deterministic shutdown races. */
+    boolean isActorPhysicalLaneQuiescent(ActorRef<?> ref) {
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) throw new IllegalArgumentException("foreign ActorRef");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) return true;
+        synchronized (cell.lifecycleLock) {
+            return !cell.carrierActive && !cell.physicalExitCleanupActive
+                    && !cell.scheduled.get() && cell.activeTurns == 0;
+        }
+    }
+
     /** Package-private leak diagnostic for actor-owned runtime capabilities. */
     int trackedActorResourceCount(ActorRef<?> ref) {
         Objects.requireNonNull(ref, "ref");
