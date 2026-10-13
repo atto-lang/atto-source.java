@@ -115,4 +115,32 @@ final class NominalEnumDirectCallTest {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.checkTypes(Parser.parse(methods)));
     }
+
+    @Test
+    void treeShakingMustNotEraseCompilerBoundOverloadIdentities() {
+        String family = ENUMS + """
+                fnc choose(Color c): int { return 1; }
+                fnc choose(Mode m): int { return 2; }
+                pub routine main(): void { stdio.stdout.write(choose(Color.Red())); }
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                dev.oreslang.compiler.OresCompiler.compileForBuild(
+                        family, dev.oreslang.compiler.BuildOptions.executable()));
+        assertTrue(error.getMessage().contains("rebinding callable IDs"),
+                error.getMessage());
+    }
+
+    @Test
+    void directCallableValuesOfSameArityNeedExplicitSignatureSpecialization() {
+        String source = ENUMS + """
+                fnc choose(Color c): int { return 1; }
+                fnc choose(Mode m): int { return 2; }
+                fnc bad(): void {
+                    val cb = choose;
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+    }
 }
