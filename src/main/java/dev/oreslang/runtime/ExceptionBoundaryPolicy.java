@@ -7,10 +7,10 @@ import java.util.Objects;
  * only an actor, task, or root domain boundary promotes unhandled errors to
  * Panic. This does not enable guest exceptional syntax or wire the actor VM.
  *
- * Original diagnostics are copied to trusted, immutable host-owned data
- * before the failing domain can be retired. The numeric origin code matches
- * the 32-bit native EffectStatus ABI; raw Throwable/guest references must not
- * cross a supervision boundary.
+ * This pure policy retains only the effect class and unsigned 32-bit origin
+ * code. A future integrated actor terminalization path must separately copy
+ * bounded diagnostics into trusted host-owned storage before domain retirement.
+ * A raw Throwable or guest reference must not cross actor supervision.
  */
 public final class ExceptionBoundaryPolicy {
     private ExceptionBoundaryPolicy() { }
