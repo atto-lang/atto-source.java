@@ -263,6 +263,24 @@ final class ResultMustUseProofTest {
     }
 
     @Test
+    void moduleBindingsCannotStoreUntrackedResult() {
+        rejects("""
+                define module pending as
+                  pub val Result<void, String> value = Ok();
+                end
+                """);
+    }
+
+    @Test
+    void nestedResultInsideErrorPayloadRequiresProof() {
+        rejects("""
+                fnc bad(): Result<void, Result<void, String>> {
+                  return Ok();
+                }
+                """);
+    }
+
+    @Test
     void everyBranchMayPropagateOrHandle() {
         accepts("""
                 fnc good(bool flag): Result<void, String> {
