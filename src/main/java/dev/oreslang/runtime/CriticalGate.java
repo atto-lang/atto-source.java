@@ -452,13 +452,9 @@ public final class CriticalGate {
         }
         synchronized (this) { facade = rwFacade; }
         Throwable failure = null;
-        for (Ticket ticket : queued) {
-            try {
-                ticket.close();
-            } catch (RuntimeException | Error problem) {
-                failure = recordCleanupFailure(failure, problem);
-            }
-        }
+        // Preserve the established first-failure ordering for an immediate
+        // host-owned grant versus queued observers. Actor-owned grants are
+        // only scheduled here; no physical-carrier waiting occurs.
         for (Ticket ticket : granted) {
             try {
                 java.util.function.Consumer<Runnable> afterExit = ticket.actorPhysicalExit;
@@ -467,6 +463,13 @@ public final class CriticalGate {
                 } else {
                     afterExit.accept(ticket::close);
                 }
+            } catch (RuntimeException | Error problem) {
+                failure = recordCleanupFailure(failure, problem);
+            }
+        }
+        for (Ticket ticket : queued) {
+            try {
+                ticket.close();
             } catch (RuntimeException | Error problem) {
                 failure = recordCleanupFailure(failure, problem);
             }
