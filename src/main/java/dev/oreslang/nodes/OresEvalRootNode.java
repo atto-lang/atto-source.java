@@ -5944,6 +5944,14 @@ public final class OresEvalRootNode extends RootNode {
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
+                if (literal.value() instanceof dev.oreslang.runtime.OresSymbol symbol
+                        && ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED
+                        && !symbol.publicToUntrustedCoreV1()) {
+                    // Runtime backstop: dynamically reached imported/module code,
+                    // not only syntactically local actor source, must obey the
+                    // exact same Symbol namespace-admission policy.
+                    throw new SecurityException("Symbol is not visible to untrusted actor");
+                }
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
                 return literal.value();
             }
