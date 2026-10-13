@@ -587,10 +587,11 @@ fnc dispatch(Option<{v: int, label: string}> incoming): void {
 ```
 
 `do match` is the explicit statement/no-collected-result spelling.
-The parser records that intent in the MatchStmt AST. The currently
-implemented match statement has no expression-returning counterpart;
-adding an expression `match` with collected results is future
-compiler/runtime work, not silently implied by this parser change.
+The parser records that intent in the MatchStmt AST. A `return` inside a
+chosen arm still returns from the **containing function/method**, not just
+the pattern arm. The currently implemented match statement has no
+expression-returning counterpart; adding an expression `match` with
+collected results is future compiler/runtime work.
 
 `on Some as {v}` binds the `v` field of the `Some` tagged payload,
 provided its declared type is a **record/struct** with that field.
@@ -621,6 +622,16 @@ fnc receive(Channel<{x: int, y: string}> messages): void {
 The `let` before `{x,y}` determines binding mutability, not ownership
 of the original message. Selection consumes one payload; field
 projections do not perform another `readch`. `when` is canonical.
+
+A blocking or immediate `do select` executes its chosen arm in the
+**enclosing callable**. Thus `return x` inside that arm is an ordinary
+nonlocal callable return, exactly as in `do match` and `do switch`.
+The leading `do` means procedural/no collected expression value;
+it **does not** mean that returns are discarded. The compatibility
+`do nb select` is different: its arm runs later as a detached
+continuation after the containing callable has continued, so its
+returns are necessarily arm-local and its returned values are discarded.
+It cannot return from the already continued caller.
 In a **synchronous** `do match` or `do select`, an explicit `return`
 inside a winning arm returns from the enclosing callable. The arrow
 does not create an implicit arm-local function. By contrast,
