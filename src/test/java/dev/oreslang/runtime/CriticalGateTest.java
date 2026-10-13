@@ -6,6 +6,52 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class CriticalGateTest {
     @Test
+    void domainCloseRunsOverOneHundredThousandAdmissionReleaseTransitions() {
+        // 20,000 independently torn-down domains * at least six state
+        // transitions each: grant, queue, queue, cancel/release, close, settle.
+        // Alternate operation ordering to replay near-grant/close edges.
+        for (int n = 0; n < 20_000; n++) {
+            CriticalGate gate = new CriticalGate();
+            var writer = gate.newTicket(CriticalGate.Mode.WRITE);
+            var reader = gate.newTicket(CriticalGate.Mode.READ);
+            var last = gate.newTicket(CriticalGate.Mode.WRITE);
+            assertTrue(writer.enterAsync().isDone());
+            var readAdmission = reader.enterAsync();
+            var lastAdmission = last.enterAsync();
+            assertFalse(readAdmission.isDone());
+            switch (n & 3) {
+                case 0 -> {
+                    readAdmission.cancel(false);
+                    gate.closeAll();
+                }
+                case 1 -> {
+                    gate.closeAll();
+                    readAdmission.cancel(false);
+                }
+                case 2 -> {
+                    writer.close();
+                    gate.closeAll();
+                }
+                default -> {
+                    lastAdmission.cancel(false);
+                    writer.close();
+                    gate.closeAll();
+                }
+            }
+            assertTrue(readAdmission.isDone());
+            assertTrue(lastAdmission.isDone());
+            assertFalse(writer.isHeld());
+            assertFalse(reader.isHeld());
+            assertFalse(last.isHeld());
+            assertEquals(0, gate.queuedCount());
+            assertEquals(0, gate.activeReaderCount());
+            assertFalse(gate.hasWriter());
+            gate.closeAll(); // idempotence
+        }
+        assertEquals(0, CriticalGate.waitingLogicalDomains());
+    }
+
+    @Test
     void domainClosePreservesErrorPriorityAfterEarlierObserverException() {
         CriticalGate gate = new CriticalGate();
         var owner = gate.newTicket();
