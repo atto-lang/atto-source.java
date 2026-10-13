@@ -154,4 +154,17 @@ UnsafeYield ==
 UnsafeNext == OtherNext \/ UnsafeYield
 UnsafeSpec == Init /\ [][UnsafeNext]_vars
 
+(* Deliberately unsafe model of double-publication of an external effect.
+   This is separate from the loan-handoff mutation, so each counterexample
+   identifies one invariant and one bug class. TypeOK is intentionally
+   omitted from the replay mutation's config: effects = 2 is expected to
+   violate the exactly-once bound and must be reported by that invariant. *)
+ReplayEffect ==
+    /\ phase = "Running"
+    /\ effects < 2
+    /\ effects' = effects + 1
+    /\ UNCHANGED <<phase, loan, carrier, fuel, sinceYield, resumes>>
+ReplayNext == (OtherNext \/ Yield) \/ ReplayEffect
+ReplaySpec == Init /\ [][ReplayNext]_vars
+
 =============================================================
