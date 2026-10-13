@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -49,6 +50,44 @@ public final class TypedOverloadResolver {
 
         public static TypeKey nominalEnum(String qualifiedName) {
             return new TypeKey(Kind.NOMINAL_ENUM, qualifiedName);
+        }
+
+        /**
+         * Bridge for parsed Oreslang parameter/argument type references.
+         *
+         * <p>The caller must provide enum identities produced by lexical
+         * resolution, NOT a guessed short-name comparison. Generic payload
+         * types cannot be overload discriminants without reified descriptors.
+         * Type aliases must be expanded by TypeChecker before using this.
+         */
+        public static TypeKey fromSource(
+                Ast.TypeRef type, Map<String, String> resolvedEnumTypes) {
+            Objects.requireNonNull(type, "type");
+            Objects.requireNonNull(resolvedEnumTypes, "resolvedEnumTypes");
+            if (type.inferArguments() || !type.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "generic/erased/compound type cannot distinguish an overload: " + type);
+            }
+            return switch (type.name()) {
+                case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                        "int", "uint", "bigint" -> primitive("int");
+                case "f32", "f64", "float" -> primitive("float");
+                case "decimal" -> primitive("decimal");
+                case "complex64", "complex128", "complex" -> primitive("complex");
+                case "bool", "Bool" -> primitive("bool");
+                case "boolean" -> primitive("bool");
+                case "string", "String" -> primitive("String");
+                case "Any" -> any();
+                case "Unknown" -> unknown();
+                default -> {
+                    String identity = resolvedEnumTypes.get(type.name());
+                    if (identity == null) {
+                        throw new IllegalArgumentException(
+                                "unresolved or unsupported overload-discriminating type: " + type);
+                    }
+                    yield nominalEnum(identity);
+                }
+            };
         }
 
         public static TypeKey any() {
