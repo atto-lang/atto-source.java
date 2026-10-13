@@ -5045,47 +5045,79 @@ public final class TypeChecker {
 
     private boolean matchProvablyExhaustive(
             List<Ast.MatchArm> arms, Type subject, Set<String> generics, Type self) {
-        for (Ast.MatchArm arm : arms) {
-            if (arm.guard() == null
-                    && patternCoversType(arm.pattern(), subject, generics, self)) {
-                return true;
-            }
+        // A constructor name does not cover its entire variant when the
+        // payload pattern is refutable: Some(0) + None leaves Some(1).
+        // Guards never contribute to an exhaustiveness proof.
+        List<Ast.Pattern> unguarded = arms.stream()
+                .filter(arm -> arm.guard() == null)
+                .map(Ast.MatchArm::pattern)
+                .toList();
+        return patternsProvablyExhaustive(unguarded, subject, generics, self, 0);
+    }
+
+    private boolean patternsProvablyExhaustive(
+            List<Ast.Pattern> patterns,
+            Type subject,
+            Set<String> generics,
+            Type self,
+            int depth) {
+        // Recursive user-defined types must not exhaust the checker stack.
+        // A failed proof is a compile-time rejection, never runtime coverage.
+        if (depth >= 32) return false;
+        for (Ast.Pattern pattern : patterns) {
+            if (patternCoversType(pattern, subject, generics, self)) return true;
         }
 
-        // Finite unions are exhaustively covered when every alternative is
-        // completely covered by at least one unguarded arm.
         if (subject instanceof Union union) {
             return union.options().stream().allMatch(option ->
-                    arms.stream().anyMatch(arm ->
-                            arm.guard() == null
-                                    && patternCoversType(
-                                            arm.pattern(), option, generics, self)));
+                    patternsProvablyExhaustive(patterns, option, generics, self, depth + 1));
         }
 
         if (subject == Primitive.BOOL) {
             boolean yes = false, no = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.LiteralPattern literal) {
-                if (Boolean.TRUE.equals(literal.value())) yes = true;
-                if (Boolean.FALSE.equals(literal.value())) no = true;
+            for (Ast.Pattern pattern : patterns) {
+                if (pattern instanceof Ast.LiteralPattern literal) {
+                    if (Boolean.TRUE.equals(literal.value())) yes = true;
+                    if (Boolean.FALSE.equals(literal.value())) no = true;
+                }
             }
             return yes && no;
         }
-        if (subject instanceof Named named && named.name().equals("Option")) {
-            boolean some = false, none = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                some |= c.constructor().equals("Some");
-                none |= c.constructor().equals("None");
+
+        if (subject instanceof Named named
+                && named.name().equals("Option") && named.arguments().size() == 1) {
+            boolean none = false;
+            List<Ast.Pattern> somePayloads = new ArrayList<>();
+            for (Ast.Pattern pattern : patterns) {
+                if (!(pattern instanceof Ast.ConstructorPattern ctor)) continue;
+                if (ctor.constructor().equals("None") && ctor.arguments().isEmpty()) none = true;
+                if (ctor.constructor().equals("Some") && ctor.arguments().size() == 1) {
+                    somePayloads.add(ctor.arguments().getFirst());
+                }
             }
-            return some && none;
+            return none && patternsProvablyExhaustive(
+                    somePayloads, named.arguments().getFirst(), generics, self, depth + 1);
         }
-        if (subject instanceof Named named && named.name().equals("Result")) {
-            boolean ok = false, err = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                ok |= c.constructor().equals("Ok");
-                err |= c.constructor().equals("Err");
+
+        if (subject instanceof Named named
+                && named.name().equals("Result") && named.arguments().size() == 2) {
+            List<Ast.Pattern> okPayloads = new ArrayList<>();
+            List<Ast.Pattern> errPayloads = new ArrayList<>();
+            for (Ast.Pattern pattern : patterns) {
+                if (!(pattern instanceof Ast.ConstructorPattern ctor)
+                        || ctor.arguments().size() != 1) continue;
+                if (ctor.constructor().equals("Ok")) okPayloads.add(ctor.arguments().getFirst());
+                if (ctor.constructor().equals("Err")) errPayloads.add(ctor.arguments().getFirst());
             }
-            return ok && err;
+            return patternsProvablyExhaustive(
+                    okPayloads, named.arguments().get(0), generics, self, depth + 1)
+                    && patternsProvablyExhaustive(
+                            errPayloads, named.arguments().get(1), generics, self, depth + 1);
         }
+
+        // Open/infinite domains require an irrefutable pattern. More elaborate
+        // coverage proofs (e.g. multiple partially covering tuple rows) can
+        // be added without weakening this soundness boundary.
         return false;
     }
 
@@ -5097,6 +5129,10 @@ public final class TypeChecker {
         if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.BindingPattern) {
             return true;
         }
+        // Unknown/generic subjects cannot be exhausted by a particular
+        // nominal or structural type pattern. Assignment compatibility with
+        // Unknown is deliberately permissive, but coverage must not be.
+        if (subject == Unknown.INSTANCE || subject instanceof Generic) return false;
         if (pattern instanceof Ast.TypePattern typed) {
             Type target = deref(resolve(typed.type(), generics, self));
             return assignable(subject, target);
