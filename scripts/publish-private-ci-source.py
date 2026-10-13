@@ -149,7 +149,7 @@ def publish(repository, source, branch, trusted_root):
         })
         blob_sha = valid_sha(blob.get("sha"))
         expected = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
-                                + b"\\0" + data).hexdigest()
+                                + bytes([0]) + data).hexdigest()
         if blob_sha != expected:
             raise Denied("uploaded blob digest does not match local source bytes")
         elements.append({"path": PREFIX + "/" + rel, "mode": mode,
