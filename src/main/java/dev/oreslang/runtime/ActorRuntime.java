@@ -425,6 +425,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
+    /** The host currently retiring an actor must never synchronously wait on
+     * its own finalization or on a nested actor shutdown from a cleanup hook. */
+    private final ThreadLocal<ActorCell<?>> finalizingOnThread = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
@@ -3266,6 +3269,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void requireBlockingHostContext(String operation) {
+        if (finalizingOnThread.get() != null) {
+            throw new IllegalStateException(
+                    operation + " cannot block from inside an actor finalization callback");
+        }
         if (inActorExecution()
                 || inActorGroupMailmanExecution()
                 || OresScheduler.current() != null) {
@@ -4339,10 +4346,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         cell.stop();
 
-        // Only a host/supervisor stop is a synchronization point. Actor turns
-        // may stop self/descendants but must never park a bounded carrier while
-        // waiting for another actor to finalize.
-        if (currentActor.get() != null) return;
+        // Only an ordinary host/supervisor stop is a synchronization
+        // point. Actor turns and callback-capable finalization hooks may
+        // request another stop, but must never park waiting on a retirement
+        // barrier that can only complete when their own callback returns.
+        if (currentActor.get() != null || finalizingOnThread.get() != null) return;
 
         try {
             cell.awaitFinalized(CLOSE_WAIT_NANOS);
@@ -5867,6 +5875,10 @@ public final class ActorRuntime implements AutoCloseable {
 
     @Override
     public void close() {
+        if (finalizingOnThread.get() != null) {
+            throw new IllegalStateException(
+                    "ActorRuntime.close cannot block from inside an actor finalization callback");
+        }
         requireSupervisorContext("close an ActorRuntime");
 
         final boolean firstClose;
@@ -6431,90 +6443,97 @@ public final class ActorRuntime implements AutoCloseable {
                 sourceScheduler = null;
             }
 
-            Throwable fatal = null;
-            if (scheduler != null) {
-                try {
-                    scheduler.close();
-                } catch (Throwable failure) {
-                    ref.terminationCause.compareAndSet(null, failure);
-                    if (failure instanceof VirtualMachineError
-                            || failure instanceof ThreadDeath
-                            || failure instanceof LinkageError) fatal = failure;
+            ActorCell<?> previousFinalizer = finalizingOnThread.get();
+            finalizingOnThread.set(this);
+            try {
+                Throwable fatal = null;
+                if (scheduler != null) {
+                    try {
+                        scheduler.close();
+                    } catch (Throwable failure) {
+                        ref.terminationCause.compareAndSet(null, failure);
+                        if (failure instanceof VirtualMachineError
+                                || failure instanceof ThreadDeath
+                                || failure instanceof LinkageError) fatal = failure;
+                    }
                 }
-            }
-            // The pending mailbox and control lanes are closed by stop().
-            // Run resource releases outside lifecycleLock; callbacks may acquire
-            // other actor monitors or complete runtime-owned Futures inline.
-            try {
-                drainMailboxReservations();
-            } catch (Throwable failure) {
-                ref.terminationCause.compareAndSet(null, failure);
-                if (fatal == null && (failure instanceof VirtualMachineError
-                        || failure instanceof ThreadDeath
-                        || failure instanceof LinkageError)) fatal = failure;
-            }
-            synchronized (lifecycleLock) {
-                staticSelectCursors.clear();
-                codeActorState = null;
-            }
-            try {
-                outputStream.close(ref.terminationCause.get());
-            } catch (Throwable failure) {
-                ref.terminationCause.compareAndSet(null, failure);
-                if (fatal == null && (failure instanceof VirtualMachineError
-                        || failure instanceof ThreadDeath
-                        || failure instanceof LinkageError)) fatal = failure;
-            }
-            if (memorySlice != null) {
+                // The pending mailbox and control lanes are closed by stop().
+                // Run resource releases outside lifecycleLock; callbacks may acquire
+                // other actor monitors or complete runtime-owned Futures inline.
                 try {
-                    memorySlice.close();
+                    drainMailboxReservations();
                 } catch (Throwable failure) {
                     ref.terminationCause.compareAndSet(null, failure);
                     if (fatal == null && (failure instanceof VirtualMachineError
                             || failure instanceof ThreadDeath
                             || failure instanceof LinkageError)) fatal = failure;
                 }
-            }
-            try {
-                actorExitHook.accept(executionDomain);
-            } catch (Throwable failure) {
-                ref.terminationCause.compareAndSet(null, failure);
-                if (fatal == null && (failure instanceof VirtualMachineError
-                        || failure instanceof ThreadDeath
-                        || failure instanceof LinkageError)) fatal = failure;
-            }
-            try {
-                unregisterActor(this);
-            } catch (Throwable failure) {
-                ref.terminationCause.compareAndSet(null, failure);
-                if (fatal == null && (failure instanceof VirtualMachineError
-                        || failure instanceof ThreadDeath
-                        || failure instanceof LinkageError)) fatal = failure;
-            }
+                synchronized (lifecycleLock) {
+                    staticSelectCursors.clear();
+                    codeActorState = null;
+                }
+                try {
+                    outputStream.close(ref.terminationCause.get());
+                } catch (Throwable failure) {
+                    ref.terminationCause.compareAndSet(null, failure);
+                    if (fatal == null && (failure instanceof VirtualMachineError
+                            || failure instanceof ThreadDeath
+                            || failure instanceof LinkageError)) fatal = failure;
+                }
+                if (memorySlice != null) {
+                    try {
+                        memorySlice.close();
+                    } catch (Throwable failure) {
+                        ref.terminationCause.compareAndSet(null, failure);
+                        if (fatal == null && (failure instanceof VirtualMachineError
+                                || failure instanceof ThreadDeath
+                                || failure instanceof LinkageError)) fatal = failure;
+                    }
+                }
+                try {
+                    actorExitHook.accept(executionDomain);
+                } catch (Throwable failure) {
+                    ref.terminationCause.compareAndSet(null, failure);
+                    if (fatal == null && (failure instanceof VirtualMachineError
+                            || failure instanceof ThreadDeath
+                            || failure instanceof LinkageError)) fatal = failure;
+                }
+                try {
+                    unregisterActor(this);
+                } catch (Throwable failure) {
+                    ref.terminationCause.compareAndSet(null, failure);
+                    if (fatal == null && (failure instanceof VirtualMachineError
+                            || failure instanceof ThreadDeath
+                            || failure instanceof LinkageError)) fatal = failure;
+                }
 
-            // Release the physical-finalization barrier before callbacks, but
-            // only after all retirement work and registry cleanup have returned.
-            synchronized (lifecycleLock) {
-                finalized = true;
-                lifecycleLock.notifyAll();
-            }
-            Throwable terminal = ref.terminationCause.get();
-            if (!ref.readyFuture.isDone()) {
-                ref.readyFuture.failFromRuntime(
-                        terminal == null
-                                ? new ActorTerminatedException(ref.id(), kind, null)
-                                : terminal);
-            }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
-            finalizedFuture.completeFromRuntime(null);
+                // Release the physical-finalization barrier before callbacks, but
+                // only after all retirement work and registry cleanup have returned.
+                synchronized (lifecycleLock) {
+                    finalized = true;
+                    lifecycleLock.notifyAll();
+                }
+                Throwable terminal = ref.terminationCause.get();
+                if (!ref.readyFuture.isDone()) {
+                    ref.readyFuture.failFromRuntime(
+                            terminal == null
+                                    ? new ActorTerminatedException(ref.id(), kind, null)
+                                    : terminal);
+                }
+                if (terminal == null) ref.doneFuture.completeFromRuntime(null);
+                else ref.doneFuture.failFromRuntime(terminal);
+                finalizedFuture.completeFromRuntime(null);
 
-            // Child DONE and finalization receipts are visible before a
-            // stopping parent's last-child barrier is released.
-            if (parent != null) parent.childFinalized(this);
-            if (fatal instanceof VirtualMachineError vm) throw vm;
-            if (fatal instanceof ThreadDeath death) throw death;
-            if (fatal instanceof LinkageError linkage) throw linkage;
+                // Child DONE and finalization receipts are visible before a
+                // stopping parent's last-child barrier is released.
+                if (parent != null) parent.childFinalized(this);
+                if (fatal instanceof VirtualMachineError vm) throw vm;
+                if (fatal instanceof ThreadDeath death) throw death;
+                if (fatal instanceof LinkageError linkage) throw linkage;
+            } finally {
+                if (previousFinalizer == null) finalizingOnThread.remove();
+                else finalizingOnThread.set(previousFinalizer);
+            }
         }
 
         private void childFinalized(ActorCell<?> child) {
