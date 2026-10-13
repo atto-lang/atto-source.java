@@ -39,6 +39,7 @@ import java.util.function.BiConsumer;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
@@ -62,11 +63,16 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
+    private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
     private static final long UNTRUSTED_MIN_FUEL = 256L;
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
+    /** Current actor-owned source task's logical quota, never a carrier's quota. */
+    private static final ThreadLocal<UntrustedLogicalQuota> CURRENT_UNTRUSTED_QUOTA =
+            new ThreadLocal<>();
     private static final ThreadLocal<ActorGroupMailmanExecution> CURRENT_ACTOR_GROUP_MAILMAN =
             new ThreadLocal<>();
     /**
@@ -445,6 +451,10 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher) {
+        // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
+        // admission gate: the underlying JVM and direct-buffer cleaner still GC.
+        ActorHeapAdmission.requireSupportedJvmMode(
+                System.getProperty("ores.runtime.gc.mode", "hybrid"));
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
@@ -1495,7 +1505,149 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        // Do not mint multiple independent root budgets from one physical
+        // mailbox turn. While one source-task cohort is live, its nested
+        // tasks share the same quota; a second top-level task fails closed.
+        // Separate actor messages cannot defeat this rule while a source task
+        // is still suspended.
+        UntrustedLogicalQuota inheritedQuota = CURRENT_UNTRUSTED_QUOTA.get();
+        synchronized (cell.lifecycleLock) {
+            // Unlike the physical-cohort count, this remains charged while a
+            // terminal Future subscriber is blocked AFTER guest quiescence.
+            if (cell.activeUntrustedTimedAdmissions >=
+                    UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS) {
+                throw new RejectedExecutionException(
+                        "untrusted actor timed source-task admission is full");
+            }
+            if (inheritedQuota == null) {
+                if (cell.activeUntrustedSourceQuota != null) {
+                    throw new SecurityException(
+                            "untrusted actor already has an active logical source-task quota");
+                }
+                long nowCpu = currentThreadCpuNanos();
+                long alreadyCpu = nowCpu >= 0 && cell.turnStartedCpuNanos >= 0
+                        ? Math.max(0L, nowCpu - cell.turnStartedCpuNanos) : 0L;
+                inheritedQuota = new UntrustedLogicalQuota(
+                        ActorRuntime.this,
+                        cell.ref.id(),
+                        cell.policy.maxWallTime().toNanos(),
+                        cell.untrustedFuelRemaining,
+                        cell.turnStartedWallNanos,
+                        alreadyCpu,
+                        System::nanoTime,
+                        ActorRuntime::currentThreadCpuNanos);
+                cell.activeUntrustedSourceQuota = inheritedQuota;
+            } else if (inheritedQuota != cell.activeUntrustedSourceQuota
+                    || !inheritedQuota.ownedBy(ActorRuntime.this, cell.ref.id())) {
+                throw new SecurityException(
+                        "untrusted source-task quota belongs to a different actor or runtime");
+            }
+            // Task creation is not itself a source loop backedge. Without a
+            // count cap, nested spawn can retain arbitrarily many queued
+            // tasks (and eventually overflow the signed reference counter)
+            // before hitting a fuel safepoint.
+            if (cell.activeUntrustedSourceTaskCount >= INTERNAL_CONTINUATION_SLOTS) {
+                throw new RejectedExecutionException(
+                        "untrusted actor logical source-task cohort is full");
+            }
+            cell.activeUntrustedSourceTaskCount++;
+            cell.activeUntrustedTimedAdmissions++;
+        }
+
+        UntrustedLogicalQuota quota = inheritedQuota;
+        AtomicBoolean physicalQuiescenceConfirmed = new AtomicBoolean();
+        AtomicBoolean terminalSubscribersDrained = new AtomicBoolean();
+        AtomicBoolean releasedTimedAdmission = new AtomicBoolean();
+        Runnable releaseTimedAdmissionOnce = () -> {
+            if (releasedTimedAdmission.compareAndSet(false, true)) {
+                synchronized (cell.lifecycleLock) {
+                    if (cell.activeUntrustedTimedAdmissions <= 0) {
+                        throw new IllegalStateException(
+                                "untrusted timed source-task admission underflow");
+                    }
+                    cell.activeUntrustedTimedAdmissions--;
+                }
+            }
+        };
+        Runnable releaseTimedWhenSafe = () -> {
+            if (physicalQuiescenceConfirmed.get()
+                    && terminalSubscribersDrained.get()) {
+                releaseTimedAdmissionOnce.run();
+            }
+        };
+        AtomicBoolean released = new AtomicBoolean();
+        Runnable retireOnce = () -> {
+            if (released.compareAndSet(false, true)) {
+                try {
+                    releaseUntrustedSourceTask(cell, quota);
+                } finally {
+                    // A completed Future is not proof that an untrusted
+                    // physical carrier has exited the actor boundary.
+                    physicalQuiescenceConfirmed.set(true);
+                    releaseTimedWhenSafe.run();
+                }
+            }
+        };
+        Runnable notificationsDrained = () -> {
+            terminalSubscribersDrained.set(true);
+            releaseTimedWhenSafe.run();
+        };
+        OresFuture<T> future;
+        try {
+            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
+                UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
+                CURRENT_UNTRUSTED_QUOTA.set(quota);
+                boolean entered = false;
+                try {
+                    quota.enter();
+                    entered = true;
+                    quota.check();
+                    OresScheduler.Step<T> result = task.resume(resume);
+                    quota.check();
+                    return result;
+                } finally {
+                    try {
+                        if (entered) quota.leave();
+                    } finally {
+                        if (previous == null) CURRENT_UNTRUSTED_QUOTA.remove();
+                        else CURRENT_UNTRUSTED_QUOTA.set(previous);
+                    }
+                }
+            }, retireOnce, quota.remainingWallNanos(),
+                    new UntrustedActorQuotaExceededException(
+                            UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                            "untrusted logical task exceeded wall-time budget while suspended"),
+                    notificationsDrained);
+        } catch (RuntimeException | Error failure) {
+            // No task was admitted. Release the pre-reserved quota slot.
+            // The scheduler's own retirement callback also claims this
+            // once, including a failure published before start() returns.
+            try {
+                retireOnce.run();
+            } finally {
+                releaseTimedAdmissionOnce.run();
+            }
+            throw failure;
+        }
+        // A caller may cancel the Future while the source turn is still
+        // executing. The scheduler invokes retireOnce ONLY after guest
+        // carrier quiescence, not merely when the Future settles.
+        return future;
+    }
+
+    private void releaseUntrustedSourceTask(
+            ActorCell<?> cell, UntrustedLogicalQuota quota) {
+        synchronized (cell.lifecycleLock) {
+            if (cell.activeUntrustedSourceQuota != quota) return;
+            if (cell.activeUntrustedSourceTaskCount <= 0) {
+                throw new IllegalStateException(
+                        "untrusted logical source-task quota retirement underflow");
+            }
+            if (--cell.activeUntrustedSourceTaskCount == 0) {
+                cell.activeUntrustedSourceQuota = null;
+            }
+        }
     }
 
     private boolean ownFuture(
@@ -4727,6 +4879,23 @@ public final class ActorRuntime implements AutoCloseable {
             throw new ActorCancellationSignal("actor execution stopped");
         }
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
+            UntrustedLogicalQuota logicalQuota = CURRENT_UNTRUSTED_QUOTA.get();
+            if (logicalQuota != null) {
+                if (!logicalQuota.ownedBy(this, cell.ref.id())) {
+                    throw new SecurityException(
+                            "untrusted source-task quota escaped its actor");
+                }
+                logicalQuota.chargeSafepoint();
+                return;
+            }
+            // Once a logical cohort exists, an unrelated synchronous mailbox
+            // turn cannot consume a fresh physical quota in parallel. The
+            // compiler must run its continuation within the owning task or
+            // wait until that cohort is fully retired.
+            if (cell.activeUntrustedSourceQuota != null) {
+                throw new SecurityException(
+                        "untrusted actor safepoint outside active logical source-task quota");
+            }
             cell.untrustedSafepoints++;
             if (--cell.untrustedFuelRemaining < 0) {
                 throw new UntrustedActorQuotaExceededException(
@@ -4761,6 +4930,155 @@ public final class ActorRuntime implements AutoCloseable {
             return -1L;
         }
         return THREAD_MX_BEAN.getCurrentThreadCpuTime();
+    }
+
+    /**
+     * Resource debt belongs to one logical UNTRUSTED source task tree.
+     * No physical carrier identity, await, or cooperate may reinitialize it.
+     *
+     * <p>All segments run under the owning actor's single-writer mailbox lease.
+     * A second simultaneous segment is rejected rather than racing accounting.
+     * CPU use is accumulated per carrier segment; comparing CPU readings from
+     * two different carrier threads directly is invalid.</p>
+     */
+    static final class UntrustedLogicalQuota {
+        private final ActorRuntime ownerRuntime;
+        private final ActorId ownerActor;
+        private final long wallBudgetNanos;
+        private final long startedNanos;
+        private final LongSupplier wallClock;
+        private final LongSupplier cpuClock;
+        private long fuelRemaining;
+        private long cpuUsedNanos;
+        private long segmentCpuStarted = -1L;
+        private boolean segmentActive;
+
+        // Test-only deterministic constructor; production always binds owner.
+        UntrustedLogicalQuota(
+                long wallBudgetNanos,
+                long fuelRemaining,
+                long startedNanos,
+                long initialCpuNanos,
+                LongSupplier wallClock,
+                LongSupplier cpuClock) {
+            this(null, null, wallBudgetNanos, fuelRemaining, startedNanos,
+                    initialCpuNanos, wallClock, cpuClock);
+        }
+
+        UntrustedLogicalQuota(
+                ActorRuntime ownerRuntime,
+                ActorId ownerActor,
+                long wallBudgetNanos,
+                long fuelRemaining,
+                long startedNanos,
+                long initialCpuNanos,
+                LongSupplier wallClock,
+                LongSupplier cpuClock) {
+            if (wallBudgetNanos <= 0 || fuelRemaining < 0 || initialCpuNanos < 0) {
+                throw new IllegalArgumentException("invalid untrusted logical quota");
+            }
+            this.ownerRuntime = ownerRuntime;
+            this.ownerActor = ownerActor;
+            this.wallBudgetNanos = wallBudgetNanos;
+            this.fuelRemaining = fuelRemaining;
+            this.startedNanos = startedNanos;
+            this.cpuUsedNanos = initialCpuNanos;
+            this.wallClock = Objects.requireNonNull(wallClock, "wallClock");
+            this.cpuClock = Objects.requireNonNull(cpuClock, "cpuClock");
+        }
+
+        boolean ownedBy(ActorRuntime runtime, ActorId actor) {
+            return ownerRuntime == runtime && Objects.equals(ownerActor, actor);
+        }
+
+        /** Remaining cohort wall time, including elapsed suspended time. */
+        synchronized long remainingWallNanos() {
+            long elapsed = wallClock.getAsLong() - startedNanos;
+            // Overflow, an already-expired quota or a late child all expire
+            // immediately. Never create another full budget for a child.
+            if (elapsed < 0 || elapsed >= wallBudgetNanos) return 0L;
+            return wallBudgetNanos - elapsed;
+        }
+
+        synchronized void enter() {
+            if (ownerRuntime != null) {
+                ActorExecutionContext context = CURRENT_ACTOR_EXECUTION.get();
+                if (context == null || context.runtime() != ownerRuntime
+                        || !context.actorId().equals(ownerActor)) {
+                    throw new SecurityException(
+                            "untrusted source-task quota entered outside its actor");
+                }
+            }
+            if (segmentActive) {
+                throw new IllegalStateException(
+                        "untrusted task tried overlapping carrier segments");
+            }
+            segmentCpuStarted = cpuClock.getAsLong();
+            segmentActive = true;
+        }
+
+        synchronized void chargeSafepoint() {
+            requireActive();
+            if (fuelRemaining == 0L) {
+                throw new UntrustedActorQuotaExceededException(
+                        UntrustedActorQuotaExceededException.Resource.FUEL,
+                        "untrusted logical task exhausted execution fuel");
+            }
+            fuelRemaining--;
+            check();
+        }
+
+        synchronized void check() {
+            requireActive();
+            long elapsed = wallClock.getAsLong() - startedNanos;
+            // Fail closed on a monotonic clock overflow instead of treating
+            // overflow as a new unspent deadline.
+            if (elapsed < 0 || elapsed > wallBudgetNanos) {
+                throw new UntrustedActorQuotaExceededException(
+                        UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                        "untrusted logical task exceeded wall-time budget");
+            }
+            long cpu = accruedCpu();
+            if (cpu > wallBudgetNanos) {
+                throw new UntrustedActorQuotaExceededException(
+                        UntrustedActorQuotaExceededException.Resource.CPU_TIME,
+                        "untrusted logical task exceeded CPU-time budget");
+            }
+        }
+
+        synchronized void leave() {
+            requireActive();
+            try {
+                long now = cpuClock.getAsLong();
+                if (segmentCpuStarted >= 0 && now >= segmentCpuStarted) {
+                    cpuUsedNanos = saturatingSum(cpuUsedNanos, now - segmentCpuStarted);
+                }
+            } finally {
+                // Even an unexpected JVM CPU-counter failure must not strand
+                // the quota's execution lease on the old carrier.
+                segmentCpuStarted = -1L;
+                segmentActive = false;
+            }
+        }
+
+        private long accruedCpu() {
+            long current = cpuClock.getAsLong();
+            if (segmentCpuStarted < 0 || current < segmentCpuStarted) {
+                return cpuUsedNanos; // CPU clock unavailable: fuel/wall still enforced.
+            }
+            return saturatingSum(cpuUsedNanos, current - segmentCpuStarted);
+        }
+
+        private void requireActive() {
+            if (!segmentActive) {
+                throw new IllegalStateException(
+                        "untrusted logical quota used outside carrier segment");
+            }
+        }
+
+        private static long saturatingSum(long a, long b) {
+            return a > Long.MAX_VALUE - b ? Long.MAX_VALUE : a + b;
+        }
     }
 
     private static long untrustedFuelBudget(IsolatePolicy policy) {
@@ -6153,6 +6471,11 @@ public final class ActorRuntime implements AutoCloseable {
         private long turnStartedCpuNanos = -1L;
         private long untrustedFuelRemaining;
         private long untrustedSafepoints;
+        /** One live logical quota cohort per untrusted actor. Guarded by lifecycleLock. */
+        private volatile UntrustedLogicalQuota activeUntrustedSourceQuota;
+        private int activeUntrustedSourceTaskCount;
+        /** Timed admission persists until both guest quiescence and terminal drain. */
+        private int activeUntrustedTimedAdmissions;
         private Behavior<M> behavior;
 
         private ActorCell(

@@ -127,11 +127,20 @@ param           = type_ref [ "mut" ] IDENT
                 | "@Structural" type_ref IDENT
                 | IDENT "structural" type_ref ;
 
-binding_decl    = { annotation } binding_kind
+binding_decl    = named_inferred_binding
+                | { annotation } binding_kind
                   ( IDENT ":" type_ref
                   | [ type_ref ] IDENT )
                   "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
+named_inferred_binding
+                = "const" IDENT IDENT "=" named_inferred_literal stmt_terminator ;
+named_inferred_literal
+                = "infer" "<" IDENT ">" (
+                    "struct" "{" [ struct_value_field { "," struct_value_field } ] "}"
+                  | "tuple" "(" expression { "," expression } ")" ) ;
+(* The first type IDENT of named_inferred_binding must equal the IDENT after infer<...>.
+   Named inference is currently a local immutable binding, not an arbitrary expression. *)
 
 destructure_stmt= [ binding_kind ] sequence_pattern "=" expression stmt_terminator
                 | [ binding_kind ] object_pattern "=" expression stmt_terminator ;
@@ -165,6 +174,7 @@ statement       = binding_decl
                 | select_stmt
                 | defer_stmt
                 | for_stmt
+                | while_stmt
                 | loop_stmt
                 | expression stmt_terminator ;
 
@@ -174,6 +184,7 @@ block_stmt      = "block" block ;
 break_stmt      = "break" stmt_terminator ;
 continue_stmt   = "continue" stmt_terminator ;
 loop_stmt       = "loop" block ;
+while_stmt      = "while" ( "(" condition ")" | condition ) [ ";" ] loop_body ;
 
 if_stmt         = "if" condition
                   ( block
@@ -302,7 +313,8 @@ typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" lambda_body ;
 lambda_body     = block | expression ;
 
-tuple_literal   = "(" expression "," expression { "," expression } ")" ;
+tuple_literal   = "tuple" "(" [ argument_list ] ")"
+                | "(" expression "," expression { "," expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 inferred_struct_literal
@@ -465,6 +477,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Anonymous structs always have a closed compile-time-known field set.
      infer struct{...} is canonical; whitespace before the initializer is optional.
      Computed/backtick struct keys are rejected.
+   - Local const T value = infer<T> struct{...} binds a compiler-only inferred
+     type name T (a closed struct type, NOT structural{...}); const T value =
+     infer<T> tuple (...) does the same for a finite positional tuple.
+     Both T spellings must match. Nested lexical scopes can reuse the type but
+     cannot shadow or escape it. The type-name alias is erased at runtime.
+     The user-facing type T = struct{...} spelling and typed match<Input,Output>
+     remain separate design work; consult the named-inferred-types proposal.
    - DynamicStruct<T> and obj{...} are not language value forms. Open-ended
      keyed collections must use a dedicated collection abstraction rather than
      changing an anonymous struct's shape at runtime.
