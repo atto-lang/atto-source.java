@@ -1,0 +1,13 @@
+syntax = "proto3";
+package oreslang.std.error.v1;
+
+// Versioned wire envelope for error diagnostics, not actor supervisor CONTROL.
+// 1: schema, 2: code, 3: name, 4: message, 5: guest-only callable frames.
+// A compact export omits optional fields 4/5; no stack capture is implicit.
+message GuestError {
+  uint32 schema = 1;
+  uint32 code = 2;
+  string name = 3;
+  optional string message = 4;
+  repeated string stack = 5;
+}
