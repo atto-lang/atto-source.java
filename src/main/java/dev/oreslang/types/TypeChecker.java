@@ -969,8 +969,9 @@ public final class TypeChecker {
             // only zero-argument ctorless objects with literal-only fields:
             // no methods execute, no owned resources are acquired, and no
             // partially initialized child can escape into user callbacks.
-            if (created.type().name().equals("Array") && created.arguments().isEmpty())
-                return false; // existing built-in zero-arg collection allocator
+            if (created.type().name().equals("Array") && created.arguments().isEmpty()
+                    && findClass("Array") == null)
+                return false; // built-in zero-arg allocator, never a shadowing guest class
             if (!created.arguments().isEmpty() || !created.type().arguments().isEmpty())
                 return true;
             Ast.ClassDecl nested = findClass(created.type().name());
