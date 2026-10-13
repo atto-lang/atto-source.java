@@ -332,6 +332,47 @@ final class ActorTypedTerminalBoundaryTest {
     }
 
     @Test
+    void delayedAsyncRaiseAfterRegistrationPreservesActorPanic() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var spawned = new java.util.concurrent.atomic.AtomicReference<
+                    ActorRuntime.ActorRef<String>>();
+            var source = new java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>>();
+            var producer = new java.util.concurrent.atomic.AtomicReference<
+                    OresFuture.Callback<Integer>>();
+            OresFuture<Object> outcome = runtime.invokeAsync(
+                    ActorRuntime.ActorKind.SHARED, "delayed-raise",
+                    (String message, ActorRuntime.ActorContext<String> context) -> {
+                        spawned.set(context.self());
+                        OresFuture<Integer> suspended = OresFuture.fromCallback(producer::set);
+                        source.set(suspended);
+                        return (Object) suspended;
+                    });
+
+            // Wait until the actor has registered its continuation. A producer
+            // callback must never run guest failure handling on the producer.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while ((source.get() == null
+                    || source.get().pendingRuntimeWaiterCount() == 0)
+                    && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertNotNull(source.get(), "actor never created the delayed Future");
+            assertEquals(1, source.get().pendingRuntimeWaiterCount(),
+                    "actor continuation must be installed before producer rejection");
+            assertNotNull(producer.get());
+            assertFalse(outcome.isDone(), "one-shot result must await actor finalization");
+            producer.get().reject(ActorRuntime.GuestEffectSignal.raising(1004));
+
+            var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> outcome.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.GuestEffectSignal.class, failure.getCause());
+            assertTerminated(spawned.get(), RAISE, 1004);
+            assertEquals(0, source.get().pendingRuntimeWaiterCount(),
+                    "completed producer must not retain the actor continuation");
+        }
+    }
+
+    @Test
     void compilerEffectSignalRejectsOutOfRangeCodes() {
         assertThrows(IllegalArgumentException.class,
                 () -> ActorRuntime.GuestEffectSignal.throwing(-1));
