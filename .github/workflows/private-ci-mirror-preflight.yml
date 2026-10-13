@@ -5,12 +5,14 @@ on:
       - 'scripts/check-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/run-in-private-ci-destination.sh'
+      - '.github/private-ci-approved-repositories.txt'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
   push:
     paths:
       - 'scripts/check-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/run-in-private-ci-destination.sh'
+      - '.github/private-ci-approved-repositories.txt'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
 permissions:
   contents: read
