@@ -170,4 +170,59 @@ final class SelectDestructuringTest {
         }
         assertEquals("42:Bob", output.toString(StandardCharsets.UTF_8));
     }
+    @Test
+    void runtimeSelectProjectsRecordFieldsWithoutChangingSourceShape() throws Exception {
+        String code = """
+                pub routine main(): void {
+                  val Channel<{foo: string, bar: int}> records =
+                      Channel.new<{foo: string, bar: int}>(1);
+                  writech records, struct{foo: string, bar: int}{foo: "ok", bar: 7};
+                  select {
+                    when readch records: const {foo: string} -> {
+                      stdio.stdout.write(foo);
+                    }
+                  }
+                  return;
+                }
+                """;
+        accepts(code);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, code, "select-record-projection.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("ok", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void preventsDuplicateVariablesAndIllegalRestCaptureInsideSelectArm() {
+        IllegalArgumentException duplicate = rejects("""
+                fnc receive(Channel<[int, string]> tuples): void {
+                  select {
+                    when readch tuples: const [int x, string x] -> {
+                      return;
+                    }
+                  }
+                  return;
+                }
+                """);
+        assertTrue(duplicate.getMessage().contains("duplicate select destructure binding"),
+                duplicate.getMessage());
+
+        IllegalArgumentException rest = rejects("""
+                fnc receive(Channel<[int, string]> tuples): void {
+                  select {
+                    when readch tuples: const [...tail, int id] -> {
+                      return;
+                    }
+                  }
+                  return;
+                }
+                """);
+        assertTrue(rest.getMessage().contains("select rest destructure must be final"),
+                rest.getMessage());
+    }
+
 }
