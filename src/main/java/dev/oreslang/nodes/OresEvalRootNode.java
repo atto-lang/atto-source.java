@@ -2469,7 +2469,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.SelectArm arm = select.arms().get(selected.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if ((arm.operation() == Ast.ChannelOperation.READ
+                    || arm.operation() == Ast.ChannelOperation.AWAIT)
                     && arm.bindingName() != null) {
                 armEnv.define(arm.bindingName(), selected.value(), arm.bindingKind());
             }
@@ -5320,6 +5321,14 @@ public final class OresEvalRootNode extends RootNode {
                     case WRITE -> cases.add(ChannelRuntime.write(
                             requireChannel(eval(arm.channel(), env), "writech select case"),
                             eval(arm.value(), env)));
+                    case AWAIT -> {
+                        Object future = eval(arm.channel(), env);
+                        if (!(future instanceof OresFuture<?> typedFuture)) {
+                            throw new IllegalArgumentException(
+                                    "when await requires Oreslang Future<T> (not a host callback)");
+                        }
+                        cases.add(ChannelRuntime.await(typedFuture));
+                    }
                 }
             }
             return new ChannelRuntime.SelectSet(
@@ -5357,7 +5366,8 @@ public final class OresEvalRootNode extends RootNode {
 
             Ast.SelectArm arm = selected.arms().get(result.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if ((arm.operation() == Ast.ChannelOperation.READ
+                    || arm.operation() == Ast.ChannelOperation.AWAIT)
                     && arm.bindingName() != null) {
                 armEnv.define(
                         arm.bindingName(),
