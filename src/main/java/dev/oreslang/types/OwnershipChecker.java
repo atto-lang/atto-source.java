@@ -1927,6 +1927,18 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
+        // A parameter without 'structural' or explicit '&T' requires
+        // ownership of its argument. An immutable structural view is still
+        // a loan even when its projected type looks like an owned record.
+        // Reject the source loan before it can be laundered through a normal
+        // by-value callable (not just when the target is an actor).
+        if (argument.kind == ValueKind.IMM_BORROW || argument.kind == ValueKind.MUT_BORROW
+                || argument.borrowSource != null
+                || (argument.type != null && argument.type.isBorrow())) {
+            throw error(callable + " argument " + position
+                    + " cannot transfer borrowed structural data to an owned parameter;"
+                    + " use an explicit structural view or an owned copy");
+        }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
