@@ -379,8 +379,17 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.FunctionDecl preboundFunction(Ast.CallExpr call, String name) {
             Ast.FunctionDecl resolved = program.boundDirectCalls().get(call);
             if (resolved != null) {
-                if (!resolved.name().equals(name)) {
-                    throw new IllegalStateException("compiler-bound function name mismatch");
+                String declarationModule = declarationModules.get(resolved);
+                if (!resolved.name().equals(name)
+                        || declarationModule == null
+                        || ambiguousFunctions.contains(name)
+                        || !declarationModule.equals(unqualifiedFunctionOwners.get(name))) {
+                    throw new IllegalStateException(
+                            "compiler-bound direct target is not a callable of this code unit/name");
+                }
+                if (call.arguments().stream().noneMatch(Ast.SpreadExpr.class::isInstance)
+                        && resolved.parameters().size() != call.arguments().size()) {
+                    throw new IllegalStateException("compiler-bound direct target arity mismatch");
                 }
                 // Never inspect runtime argument values to select this target.
                 // TypeChecker has already validated arity, generic arguments,
@@ -401,6 +410,7 @@ public final class OresEvalRootNode extends RootNode {
             if (module.owner() != this
                     || !resolved.name().equals(member)
                     || resolved.visibility() != Ast.Visibility.PUBLIC
+                    || args.size() != resolved.parameters().size()
                     || module.module().declarations().stream().noneMatch(decl -> decl == resolved)) {
                 throw new IllegalStateException(
                         "compiler-bound module callable does not belong to the resolved namespace");
