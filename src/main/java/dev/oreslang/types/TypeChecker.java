@@ -1528,7 +1528,7 @@ public final class TypeChecker {
             if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                 List<Type> elementTypes = sequenceDestructureTypes(source, destructure.bindings());
                 for (int i = 0; i < destructure.bindings().size(); i++) {
-                    defineDestructureBinding(env, destructure.bindings().get(i), elementTypes.get(i));
+                    defineDestructureBinding(env, destructure.bindings().get(i), elementTypes.get(i), generics, self);
                 }
             } else {
                 Set<String> selectedMembers = new LinkedHashSet<>();
@@ -1540,10 +1540,7 @@ public final class TypeChecker {
                     Type bindingType = binding.rest()
                             ? objectDestructureRestType(source, selectedMembers)
                             : objectDestructureMemberType(source, binding.name());
-                    requireMutableReferentCompatible(
-                            bindingType, binding.mutableReferent(),
-                            "destructure binding '" + binding.name() + "'");
-                    env.define(binding.name(), bindingType, binding.kind());
+                    defineDestructureBinding(env, binding, bindingType, generics, self);
                 }
             }
             return;
@@ -1753,7 +1750,7 @@ public final class TypeChecker {
             List<Type> elementTypes = sequenceDestructureTypes(element, loop.bindings());
             Env loopEnv = new Env(env);
             for (int i = 0; i < loop.bindings().size(); i++) {
-                defineDestructureBinding(loopEnv, loop.bindings().get(i), elementTypes.get(i));
+                defineDestructureBinding(loopEnv, loop.bindings().get(i), elementTypes.get(i), generics, self);
             }
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
             env.restoreInitialization(afterIterable);
@@ -3969,8 +3966,17 @@ public final class TypeChecker {
         }
     }
 
-    private void defineDestructureBinding(Env env, Ast.DestructureBinding binding, Type type) {
+    private void defineDestructureBinding(
+            Env env, Ast.DestructureBinding binding, Type extracted,
+            Set<String> generics, Type self) {
         if (binding.isDiscard()) return;
+        Type type = extracted;
+        if (binding.declaredType() != null) {
+            Type declared = resolve(binding.declaredType(), generics, self);
+            type = overlayReadonlyCapabilities(extracted, declared);
+            requireAssignable(extracted, type,
+                    "typed destructure binding '" + binding.name() + "'");
+        }
         requireMutableReferentCompatible(
                 type, binding.mutableReferent(),
                 "destructure binding '" + binding.name() + "'");
