@@ -54,6 +54,34 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void sourceIdenticalNativeScalarConstructorGuestReturnsForty() throws Exception {
+        // Must remain byte-identical to LLVM's
+        // tests/fixtures/class-scalar-constructor-arithmetic-native.ores.
+        String sourceText = """
+                define class Pair as
+                  pub final int a: start + 1;
+                  pub final mut int b: start * 2;
+                  constructor(int start) { return; }
+                end
+                pub fnc main(): int {
+                  let Pair p = new Pair(13);
+                  return p.a + p.b;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(sourceText)));
+        org.graalvm.polyglot.Source source = org.graalvm.polyglot.Source
+                .newBuilder(OresLanguage.ID, sourceText, "scalar-constructor-parity.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (org.graalvm.polyglot.Context context =
+                org.graalvm.polyglot.Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false)
+                        .build()) {
+            assertEquals(40, context.eval(source).asInt());
+        }
+    }
+
+    @Test
     void retainPlainScalarInitializer() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
                     define class Safe as
