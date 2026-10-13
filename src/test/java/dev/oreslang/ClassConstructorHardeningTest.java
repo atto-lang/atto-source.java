@@ -241,6 +241,42 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void fieldInitializerCannotSuspendEvenInsideAnArithmeticExpression() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                    define class Unsafe as
+                      final int value: 1 + (await someFuture());
+                    end
+                    """)));
+        assertTrue(failure.getMessage().contains(
+                "cannot await, select, or suspend during object construction"));
+    }
+
+    @Test
+    void fieldInitializerCannotCapturePartiallyInitializedSelf() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                    define class Unsafe as
+                      final int a: 1;
+                      final int b: self.a + 1;
+                    end
+                    """)));
+        assertTrue(failure.getMessage().contains("self"));
+    }
+
+    @Test
+    void ordinaryClassFieldInitializersAreOwnershipChecked() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Good as
+                  final int answer: 40 + 2;
+                  constructor() { return; }
+                end
+                """)));
+    }
+
+    @Test
     void parserRejectsJavaStyleDuplicateNestedAndTypedConstructors() {
         IllegalArgumentException javaStyle = assertThrows(
                 IllegalArgumentException.class,
