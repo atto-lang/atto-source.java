@@ -3592,8 +3592,24 @@ public final class OresEvalRootNode extends RootNode {
                 // Preserve the reference result; await only actor initialization.
                 future = actorRef.readyRef();
             } else if (value instanceof Awaitable<?> awaitable) {
+                // Projecting an arbitrary host Awaitable may invoke user code
+                // or register callbacks. Rejection after projection is too
+                // late: a live no-yield guard must prevent the projection
+                // itself, not merely the eventual scheduler Await.
+                if (env.hasLiveMutexGuards()) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "cannot project an Awaitable while holding a live MutexGuard"));
+                    return;
+                }
                 future = awaitable.getAwaited();
             } else if (value instanceof CompletionStage<?> stage) {
+                // from(stage) can register a completion callback. Do not arm
+                // that callback before checking the no-yield authority.
+                if (env.hasLiveMutexGuards()) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "cannot adapt a CompletionStage while holding a live MutexGuard"));
+                    return;
+                }
                 future = OresFuture.from(stage);
             } else {
                 continuation.accept(
