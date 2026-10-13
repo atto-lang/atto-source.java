@@ -103,6 +103,21 @@ final class ImportGraph {
         Set<String> available = programs.keySet();
         for (Map.Entry<String, Ast.Program> entry : programs.entrySet()) {
             String importer = entry.getKey();
+            // Bindings are a namespace, not ordered shadowing declarations.
+            // Catch all collisions before attempting Java host resolution or
+            // linking any peer in a circular import group.
+            Map<String, String> exposed = new LinkedHashMap<>();
+            for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                ImportRules.validate(imported);
+                for (String name : ImportRules.exposedBindings(imported)) {
+                    String earlier = exposed.putIfAbsent(name, imported.path());
+                    if (earlier != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate import binding '" + name + "' in '" + importer
+                                        + "' from '" + earlier + "' and '" + imported.path() + "'");
+                    }
+                }
+            }
             for (Ast.ImportDecl imported : entry.getValue().imports()) {
                 String targetId = resolveImportUnitId(importer, imported, available, importResolutions);
                 if (targetId == null) continue; // package resolver owns unresolved non-relative imports.
@@ -196,6 +211,20 @@ final class ImportGraph {
      */
     static List<List<String>> initializationGroups(Map<String, Set<String>> dependencies) {
         if (dependencies.isEmpty()) return List.of();
+
+        for (Map.Entry<String, Set<String>> unit : dependencies.entrySet()) {
+            if (unit.getValue() == null) {
+                throw new IllegalArgumentException(
+                        "null dependency set for source unit '" + unit.getKey() + "'");
+            }
+            for (String target : unit.getValue()) {
+                if (!dependencies.containsKey(target)) {
+                    throw new IllegalArgumentException(
+                            "unresolved graph dependency '" + target
+                                    + "' imported by '" + unit.getKey() + "'");
+                }
+            }
+        }
 
         Tarjan tarjan = new Tarjan(dependencies);
         List<List<String>> components = tarjan.components();
