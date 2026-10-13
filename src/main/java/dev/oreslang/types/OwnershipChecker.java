@@ -2731,6 +2731,12 @@ public final class OwnershipChecker {
             return state == null ? Ast.TypeRef.inferred() : state.type;
         }
         if (expr instanceof Ast.NewExpr created) return created.type();
+        if (expr instanceof Ast.TrapExpr trapped) {
+            // Preserve the Option wrapper during generic call inference, even
+            // when the operand is a local or literal rather than a CallExpr.
+            return new Ast.TypeRef("Option", List.of(
+                    syntacticType(trapped.expression(), scope)), false);
+        }
         if (expr instanceof Ast.UnaryExpr unary) {
             Ast.TypeRef operand = syntacticType(unary.operand(), scope);
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {

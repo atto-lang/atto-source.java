@@ -3405,6 +3405,11 @@ public final class Parser {
         if (expression instanceof Ast.BinaryExpr binary) {
             return containsExpressionBodyLambda(binary.left()) || containsExpressionBodyLambda(binary.right());
         }
+        if (expression instanceof Ast.TrapExpr trapped) {
+            // A call-site trap must never hide an expression-bodied lambda
+            // from the required explicit statement/class-field terminator.
+            return containsExpressionBodyLambda(trapped.expression());
+        }
         if (expression instanceof Ast.UnaryExpr unary) {
             return containsExpressionBodyLambda(unary.operand());
         }
