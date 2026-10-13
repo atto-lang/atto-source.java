@@ -1351,9 +1351,9 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
-                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
+                if (declaresSuspension(fn.async(), fn.annotations())) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name(),
-                        fn.suspends() ? "suspends call " + fn.name() : null);
+                        declaresSuspension(fn.async(), fn.annotations()) ? "suspends call " + fn.name() : null);
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -1371,7 +1371,7 @@ public final class OwnershipChecker {
                         signature.parameters(),
                         scope,
                         "function " + namespace.name() + "." + qualified.member(),
-                        fn.suspends() ? "suspends call " + fn.name() : null);
+                        declaresSuspension(fn.async(), fn.annotations()) ? "suspends call " + fn.name() : null);
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -1436,7 +1436,7 @@ public final class OwnershipChecker {
                             signature.parameters(),
                             scope,
                             "static function " + staticClass.name() + "." + staticFunction.name(),
-                            staticFunction.suspends() ? "suspends call " + staticFunction.name() : null);
+                            declaresSuspension(staticFunction.async(), staticFunction.annotations()) ? "suspends call " + staticFunction.name() : null);
                     Ast.TypeRef callResult = callableResultType(signature.result(), staticFunction.async(), false);
                     return new ValueInfo(callResult, kindOfType(callResult), null);
                 }
@@ -1582,12 +1582,12 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
-                if (method.suspends()) checkSuspensionBorrows(scope, "suspends call " + method.name());
+                if (declaresSuspension(method.async(), method.annotations())) checkSuspensionBorrows(scope, "suspends call " + method.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(),
                         member.receiver(), method.explicitReceiverType() != null
                                 && method.explicitReceiverType().isBorrow()
                                 && method.explicitReceiverType().mutableBorrow(),
-                        method.suspends() ? "suspends call " + method.name() : null);
+                        declaresSuspension(method.async(), method.annotations()) ? "suspends call " + method.name() : null);
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
                     throw error("method '" + target.owner().name() + "." + method.name()
@@ -1827,6 +1827,25 @@ public final class OwnershipChecker {
     private record CallLoan(VarState state, boolean mutable) {}
 
     /** Reserve direct argument borrows through the entire call argument list. */
+    /**
+     * A declaration has no `suspends()` AST field. Until effect inference is
+     * carried in the typed IR, treat async functions and declarations that
+     * explicitly admit suspension/blocking as potential handoff boundaries.
+     * An upper-bound declaration is not evidence of non-suspension.
+     */
+    private boolean declaresSuspension(boolean async, List<Ast.Annotation> annotations) {
+        if (async) return true;
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("$using$")) continue;
+            for (Ast.TypeRef effect : annotation.arguments()) {
+                if (effect.name().equals("suspend") || effect.name().equals("block")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private void reserveCallLoan(Ast.Expr argument, Ast.Param param, Scope scope, List<CallLoan> loans) {
         boolean structural = param.structural() && !param.type().isBorrow();
         if (!structural && !param.type().isBorrow()) return;
@@ -1854,7 +1873,7 @@ public final class OwnershipChecker {
             }
         }
         if (source == null) return; // Pure temporary or module/static namespace.
-        VarState owner = borrowPlace(source, scope).owner();
+        VarState owner = borrowOwner(source, scope);
         boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
         reserveStateCallLoan(owner, mutable, loans);
     }
