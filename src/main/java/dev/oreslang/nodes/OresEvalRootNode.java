@@ -2463,9 +2463,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.SelectArm arm = select.arms().get(selected.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
-                    && arm.bindingName() != null) {
-                armEnv.define(arm.bindingName(), selected.value(), arm.bindingKind());
+            if (arm.operation() == Ast.ChannelOperation.READ) {
+                try {
+                    bindSelectedReadPayload(arm, selected.value(), armEnv);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, SourceFlow.throwing(failure));
+                    return;
+                }
             }
             runBlock(task, arm.body(), armEnv, (t, flow) ->
                     continuation.accept(t,
@@ -5351,12 +5355,8 @@ public final class OresEvalRootNode extends RootNode {
 
             Ast.SelectArm arm = selected.arms().get(result.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
-                    && arm.bindingName() != null) {
-                armEnv.define(
-                        arm.bindingName(),
-                        result.value(),
-                        arm.bindingKind());
+            if (arm.operation() == Ast.ChannelOperation.READ) {
+                bindSelectedReadPayload(arm, result.value(), armEnv);
             }
 
             if (!detached) {
@@ -8566,6 +8566,44 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
+
+        /**
+         * Bind only the winning readch payload. Pattern projection is staged
+         * inside an arm-local scope, so failed shape validation cannot leak
+         * a partially bound record into the enclosing callable.
+         */
+        private void bindSelectedReadPayload(
+                Ast.SelectArm arm, Object value, Env destination) {
+            if (arm.destructureKind() == Ast.DestructureKind.SEQUENCE) {
+                bindSequenceDestructure(
+                        iterableValues(value, destination),
+                        arm.destructureBindings(),
+                        destination,
+                        "select readch destructure");
+                return;
+            }
+            if (arm.destructureKind() == Ast.DestructureKind.OBJECT) {
+                Set<String> selected = new LinkedHashSet<>();
+                for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                    if (!binding.rest()) selected.add(binding.name());
+                }
+                LinkedHashMap<String, Object> staged = new LinkedHashMap<>();
+                for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                    staged.put(binding.name(),
+                            binding.rest()
+                                    ? destructureRestObject(value, selected)
+                                    : destructureMember(value, binding.name(), destination));
+                }
+                for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                    destination.define(
+                            binding.name(), staged.get(binding.name()), binding.kind());
+                }
+                return;
+            }
+            if (arm.bindingName() != null) {
+                destination.define(arm.bindingName(), value, arm.bindingKind());
+            }
+        }
 
         private void bindSequenceDestructure(
                 Iterable<?> values,
