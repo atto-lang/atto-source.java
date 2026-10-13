@@ -104,6 +104,21 @@ final class ImportGraph {
         Set<String> available = programs.keySet();
         for (Map.Entry<String, Ast.Program> entry : programs.entrySet()) {
             String importer = entry.getKey();
+            // Bindings are a namespace, not ordered shadowing declarations.
+            // Catch all collisions before attempting Java host resolution or
+            // linking any peer in a circular import group.
+            Map<String, String> exposed = new LinkedHashMap<>();
+            for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                ImportRules.validate(imported);
+                for (String name : ImportRules.exposedBindings(imported)) {
+                    String earlier = exposed.putIfAbsent(name, imported.path());
+                    if (earlier != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate import binding '" + name + "' in '" + importer
+                                        + "' from '" + earlier + "' and '" + imported.path() + "'");
+                    }
+                }
+            }
             for (Ast.ImportDecl imported : entry.getValue().imports()) {
                 String targetId = resolveImportUnitId(importer, imported, available, importResolutions);
                 if (targetId == null) continue; // package resolver owns unresolved non-relative imports.
@@ -133,11 +148,15 @@ final class ImportGraph {
                 if (module.name().equals(name) && module.visibility() == Ast.Visibility.PUBLIC) matches++;
                 continue;
             }
-            // An exported member of a private named module is not a file export.
-            // Root-level declarations retain their own independent pub flags.
+
+            // A public declaration in a private named module is not a file export.
             if (!module.name().equals(Parser.ROOT_MODULE)
                     && module.visibility() != Ast.Visibility.PUBLIC) continue;
 
+            // An overloaded function family is one exported name, not one
+            // import candidate per arity. Different modules exporting the
+            // same name remain ambiguous.
+            boolean matchedFunctionFamily = false;
             for (Ast.Decl decl : module.declarations()) {
                 boolean matched = switch (kind) {
                     case FUNCTION -> decl instanceof Ast.FunctionDecl fn
@@ -147,8 +166,8 @@ final class ImportGraph {
                             && fn.genericParameters().isEmpty()
                             && fn.name().equals(name);
                     case ACTOR -> decl instanceof Ast.ClassDecl klass
-                            && klass.actorKind() != Ast.ActorKind.NONE
                             && klass.visibility() == Ast.Visibility.PUBLIC
+                            && klass.actorKind() != Ast.ActorKind.NONE
                             && klass.name().equals(name);
                     case CLASS -> decl instanceof Ast.ClassDecl klass
                             && klass.visibility() == Ast.Visibility.PUBLIC
@@ -180,7 +199,14 @@ final class ImportGraph {
                                     && klass.name().equals(name));
                     case MODULE -> false;
                 };
-                if (matched) matches++;
+                if (matched) {
+                    if (decl instanceof Ast.FunctionDecl
+                            && (kind == Ast.ImportKind.FUNCTION || kind == Ast.ImportKind.ALL)) {
+                        if (matchedFunctionFamily) continue;
+                        matchedFunctionFamily = true;
+                    }
+                    matches++;
+                }
             }
         }
         return matches;
@@ -193,6 +219,20 @@ final class ImportGraph {
      */
     static List<List<String>> initializationGroups(Map<String, Set<String>> dependencies) {
         if (dependencies.isEmpty()) return List.of();
+
+        for (Map.Entry<String, Set<String>> unit : dependencies.entrySet()) {
+            if (unit.getValue() == null) {
+                throw new IllegalArgumentException(
+                        "null dependency set for source unit '" + unit.getKey() + "'");
+            }
+            for (String target : unit.getValue()) {
+                if (!dependencies.containsKey(target)) {
+                    throw new IllegalArgumentException(
+                            "unresolved graph dependency '" + target
+                                    + "' imported by '" + unit.getKey() + "'");
+                }
+            }
+        }
 
         Tarjan tarjan = new Tarjan(dependencies);
         List<List<String>> components = tarjan.components();
@@ -214,34 +254,50 @@ final class ImportGraph {
         List<Integer> componentIds = new ArrayList<>(componentDeps.keySet());
         componentIds.sort(Comparator.comparing(i -> components.get(i).getFirst()));
 
+        // Iterative dependency-first traversal: importing a very deep chain
+        // must not exhaust the Java compiler's native call stack.
         List<List<String>> ordered = new ArrayList<>();
         Set<Integer> visited = new HashSet<>();
         Set<Integer> visiting = new HashSet<>();
         for (int component : componentIds) {
-            visitComponent(component, componentDeps, components, visited, visiting, ordered);
+            if (visited.contains(component)) continue;
+            ArrayDeque<ComponentFrame> pending = new ArrayDeque<>();
+            pending.push(new ComponentFrame(component, componentDeps, components));
+            visiting.add(component);
+            while (!pending.isEmpty()) {
+                ComponentFrame current = pending.peek();
+                if (current.nextDependency < current.dependencies.size()) {
+                    int dependency = current.dependencies.get(current.nextDependency++);
+                    if (visited.contains(dependency)) continue;
+                    if (!visiting.add(dependency)) {
+                        throw new IllegalStateException(
+                                "condensed import graph unexpectedly contains a cycle");
+                    }
+                    pending.push(new ComponentFrame(dependency, componentDeps, components));
+                } else {
+                    pending.pop();
+                    visiting.remove(current.component);
+                    visited.add(current.component);
+                    ordered.add(components.get(current.component));
+                }
+            }
         }
         return List.copyOf(ordered);
     }
 
-    private static void visitComponent(
-            int component,
-            Map<Integer, Set<Integer>> dependencies,
-            List<List<String>> components,
-            Set<Integer> visited,
-            Set<Integer> visiting,
-            List<List<String>> ordered) {
-        if (visited.contains(component)) return;
-        if (!visiting.add(component)) {
-            throw new IllegalStateException("condensed import graph unexpectedly contains a cycle");
+    private static final class ComponentFrame {
+        private final int component;
+        private final List<Integer> dependencies;
+        private int nextDependency;
+
+        private ComponentFrame(
+                int component,
+                Map<Integer, Set<Integer>> componentDeps,
+                List<List<String>> components) {
+            this.component = component;
+            this.dependencies = new ArrayList<>(componentDeps.getOrDefault(component, Set.of()));
+            this.dependencies.sort(Comparator.comparing(i -> components.get(i).getFirst()));
         }
-        List<Integer> deps = new ArrayList<>(dependencies.getOrDefault(component, Set.of()));
-        deps.sort(Comparator.comparing(i -> components.get(i).getFirst()));
-        for (int dependency : deps) {
-            visitComponent(dependency, dependencies, components, visited, visiting, ordered);
-        }
-        visiting.remove(component);
-        visited.add(component);
-        ordered.add(components.get(component));
     }
 
     private static void rejectSelfImport(String importerId, String importPath, String targetId) {
@@ -278,35 +334,64 @@ final class ImportGraph {
             return List.copyOf(components);
         }
 
-        private void strongConnect(String vertex) {
+        private void strongConnect(String root) {
+            // Explicit DFS frames preserve Tarjan low-link propagation and
+            // deterministic traversal without recursive Java stack frames.
+            ArrayDeque<Frame> pending = new ArrayDeque<>();
+            enter(root, null, pending);
+            while (!pending.isEmpty()) {
+                Frame frame = pending.peek();
+                if (frame.nextEdge < frame.edges.size()) {
+                    String next = frame.edges.get(frame.nextEdge++);
+                    if (!graph.containsKey(next)) continue;
+                    if (!index.containsKey(next)) {
+                        enter(next, frame.vertex, pending);
+                    } else if (onStack.contains(next)) {
+                        lowLink.put(frame.vertex,
+                                Math.min(lowLink.get(frame.vertex), index.get(next)));
+                    }
+                    continue;
+                }
+
+                pending.pop();
+                if (frame.parent != null) {
+                    lowLink.put(frame.parent,
+                            Math.min(lowLink.get(frame.parent), lowLink.get(frame.vertex)));
+                }
+                if (lowLink.get(frame.vertex).equals(index.get(frame.vertex))) {
+                    List<String> component = new ArrayList<>();
+                    String member;
+                    do {
+                        member = stack.pop();
+                        onStack.remove(member);
+                        component.add(member);
+                    } while (!member.equals(frame.vertex));
+                    component.sort(String::compareTo);
+                    components.add(List.copyOf(component));
+                }
+            }
+        }
+
+        private void enter(String vertex, String parent, ArrayDeque<Frame> pending) {
             int current = nextIndex++;
             index.put(vertex, current);
             lowLink.put(vertex, current);
             stack.push(vertex);
             onStack.add(vertex);
+            pending.push(new Frame(vertex, parent, graph.getOrDefault(vertex, Set.of())));
+        }
 
-            List<String> edges = new ArrayList<>(graph.getOrDefault(vertex, Set.of()));
-            edges.sort(String::compareTo);
-            for (String next : edges) {
-                if (!graph.containsKey(next)) continue;
-                if (!index.containsKey(next)) {
-                    strongConnect(next);
-                    lowLink.put(vertex, Math.min(lowLink.get(vertex), lowLink.get(next)));
-                } else if (onStack.contains(next)) {
-                    lowLink.put(vertex, Math.min(lowLink.get(vertex), index.get(next)));
-                }
-            }
+        private static final class Frame {
+            private final String vertex;
+            private final String parent;
+            private final List<String> edges;
+            private int nextEdge;
 
-            if (lowLink.get(vertex).equals(index.get(vertex))) {
-                List<String> component = new ArrayList<>();
-                String member;
-                do {
-                    member = stack.pop();
-                    onStack.remove(member);
-                    component.add(member);
-                } while (!member.equals(vertex));
-                component.sort(String::compareTo);
-                components.add(List.copyOf(component));
+            private Frame(String vertex, String parent, Set<String> outgoing) {
+                this.vertex = vertex;
+                this.parent = parent;
+                this.edges = new ArrayList<>(outgoing);
+                this.edges.sort(String::compareTo);
             }
         }
     }
