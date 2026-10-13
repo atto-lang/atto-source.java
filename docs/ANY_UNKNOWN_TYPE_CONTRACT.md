@@ -60,7 +60,9 @@ not change language semantics.
 **Current guard:** parameterized `is` / `as` is rejected until those checks
 use authentic reified guest runtime type arguments. Do not replace the guard
 with Java `instanceof List` or content-sampling. Neither can establish
-`List<T>` on empty or heterogeneously corrupted collections. Runtime casts
+`List<T>` on empty or heterogeneously corrupted collections. **The checker must
+inspect fully resolved alias targets**; `type Numbers = Array<int>` must not
+make `value is Numbers` executable before reification. Runtime casts
 for currently reifiable scalar/nominal types must be tested under execution,
 not just type checking.
 

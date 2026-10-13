@@ -1931,11 +1931,7 @@ public final class TypeChecker {
             requireRuntimeReifiableType(test.targetType(), "is");
             Type source = deref(typeOf(test.value(), env, generics, self));
             Type target = deref(resolve(test.targetType(), generics, self));
-            if (target instanceof Generic) {
-                throw new IllegalArgumentException(
-                        "is cannot test generic type parameter '" + test.targetType()
-                                + "' without a reified runtime type witness");
-            }
+            requireResolvedRuntimeReifiableType(target, "is");
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible type test: " + source + " cannot be " + target);
             }
@@ -1950,11 +1946,7 @@ public final class TypeChecker {
             requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
-            if (target instanceof Generic) {
-                throw new IllegalArgumentException(
-                        "as cannot cast to generic type parameter '" + cast.targetType()
-                                + "' without a reified runtime type witness");
-            }
+            requireResolvedRuntimeReifiableType(target, "as");
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible cast: " + source + " cannot be cast to " + target);
             }
@@ -4707,11 +4699,7 @@ public final class TypeChecker {
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
             Type source = deref(typeOf(test.value(), sourceEnv, generics, self));
             Type target = deref(resolve(test.targetType(), generics, self));
-            if (target instanceof Generic) {
-                throw new IllegalArgumentException(
-                        "is cannot test generic type parameter '" + test.targetType()
-                                + "' without a reified runtime type witness");
-            }
+            requireResolvedRuntimeReifiableType(target, "is");
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible type refinement: " + source + " cannot be " + target);
             }
@@ -4788,11 +4776,7 @@ public final class TypeChecker {
         if (pattern instanceof Ast.TypePattern typed) {
             requireRuntimeReifiableType(typed.type(), "type pattern");
             Type target = deref(resolve(typed.type(), generics, self));
-            if (target instanceof Generic) {
-                throw new IllegalArgumentException(
-                        "type pattern cannot test generic type parameter '" + typed.type()
-                                + "' without a reified runtime type witness");
-            }
+            requireResolvedRuntimeReifiableType(target, "type pattern");
             if (!typesMayOverlap(subject, target)) {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
             }
@@ -5245,6 +5229,30 @@ public final class TypeChecker {
                     operator + " cannot test parameterized type '" + ref
                             + "' until generic runtime type arguments are reified; match constructors/structure instead");
         }
+    }
+
+    /**
+     * Source spellings are not a sufficient runtime-test guard: a non-generic
+     * alias can expand to an erased constructed type (e.g. Array<int>).
+     * Validate the fully resolved, alias-expanded target before allowing
+     * is/as/type-pattern execution. OresEvalRootNode currently observes only
+     * the raw List/Option/Result kind, not guest generic arguments.
+     */
+    private void requireResolvedRuntimeReifiableType(Type type, String operator) {
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                requireResolvedRuntimeReifiableType(option, operator);
+            }
+            return;
+        }
+        if (type instanceof Primitive primitive
+                && primitive != Primitive.VOID && primitive != Primitive.NULL) return;
+        if (type instanceof Named named && named.arguments().isEmpty()) return;
+        throw new IllegalArgumentException(
+                operator + " cannot test " + type
+                        + " without verified runtime type information; "
+                        + "parameterized types and generic parameters require reified witnesses, "
+                        + "while records and functions require explicit structural matching");
     }
 
     private Type resolveSharedGeneric(Type type, Map<String, Type> bindings) {

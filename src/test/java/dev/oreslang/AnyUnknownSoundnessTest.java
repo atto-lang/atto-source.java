@@ -101,6 +101,30 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void aliasesCannotBypassRuntimeReificationGuards() {
+        reject("""
+                type Numbers = Array<int>;
+                fnc bad(Any value): bool { return value is Numbers; }
+                """, "require reified witnesses");
+        reject("""
+                type Numbers = Array<int>;
+                fnc bad(Unknown value): Numbers { return value as Numbers; }
+                """, "require reified witnesses");
+        reject("""
+                type Safe = Any;
+                fnc bad(Unknown value): bool { return value is Safe; }
+                """, "without verified runtime type information");
+        reject("""
+                type Shape = {foo: int};
+                fnc bad(Any value): bool { return value is Shape; }
+                """, "explicit structural matching");
+        reject("""
+                type Nested = Array<Array<int>>;
+                fnc bad(Any value): bool { return value is Nested; }
+                """, "require reified witnesses");
+    }
+
+    @Test
     void noUnverifiedPayloadCanEvadeActorOrChannelChecks() {
         reject("fnc bad(Channel<Any> ch): void { return; }", "cannot conceal an Any/Unknown payload");
         reject("fnc bad(Channel<Array<Unknown>> ch): void { return; }", "cannot conceal an Any/Unknown payload");
