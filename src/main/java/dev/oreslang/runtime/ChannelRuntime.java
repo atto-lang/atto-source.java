@@ -82,6 +82,7 @@ public final class ChannelRuntime {
         // mailbox/control queues deliberately use the privileged default
         // constructor and their separate envelope/capability policy.
         private final java.util.function.Consumer<? super T> payloadValidator;
+        private final java.util.function.UnaryOperator<T> payloadSnapshotter;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
         private boolean closed;
@@ -97,12 +98,25 @@ public final class ChannelRuntime {
          * runtime/internal envelope channels, not guest Channel.new<T>.
          */
         public Channel(int capacity, java.util.function.Consumer<? super T> payloadValidator) {
+            this(capacity, payloadValidator, null);
+        }
+
+        /**
+         * Guest channels pass a validator and owned snapshot function.
+         * Each write case captures the detached payload before it can enter
+         * the rendezvous/waiting-writer or buffered admission path.
+         */
+        public Channel(
+                int capacity,
+                java.util.function.Consumer<? super T> payloadValidator,
+                java.util.function.UnaryOperator<T> payloadSnapshotter) {
             if (capacity < 0) {
                 throw new IllegalArgumentException(
                         "channel capacity cannot be negative");
             }
             this.capacity = capacity;
             this.payloadValidator = payloadValidator;
+            this.payloadSnapshotter = payloadSnapshotter;
         }
 
         public int capacity() {
@@ -164,7 +178,6 @@ public final class ChannelRuntime {
          * false.
          */
         public boolean tryWrite(T value) {
-            requireValue(value);
             return SelectSet.of(write(this, value))
                     .trySelect(SelectPolicy.PRIORITY)
                     .isPresent();
@@ -187,20 +200,21 @@ public final class ChannelRuntime {
          * Scheduler-friendly send registration.
          */
         public OresFuture<Void> writeAsync(T value) {
-            requireValue(value);
             OresFuture<SelectResult> selected =
                     SelectSet.of(write(this, value))
                             .selectAsync(SelectPolicy.PRIORITY);
             return mapSelection(selected, ignored -> null);
         }
 
-        private void requireValue(T value) {
+        private T prepareValue(T value) {
             Objects.requireNonNull(
                     value,
                     "Oreslang channels cannot carry null; use Option<T>");
-            if (payloadValidator != null) {
-                payloadValidator.accept(value);
-            }
+            if (payloadValidator != null) payloadValidator.accept(value);
+            T prepared = payloadSnapshotter == null ? value : payloadSnapshotter.apply(value);
+            Objects.requireNonNull(prepared, "channel payload snapshot cannot be null");
+            if (payloadValidator != null) payloadValidator.accept(prepared);
+            return prepared;
         }
 
         private ChannelClosedException closedFailure() {
@@ -249,7 +263,7 @@ public final class ChannelRuntime {
             Objects.requireNonNull(channel, "channel");
             // This runs at case construction, not after another arm wins:
             // malformed data must never enqueue a waiting writer.
-            channel.requireValue(value);
+            value = channel.prepareValue(value);
         }
     }
 
