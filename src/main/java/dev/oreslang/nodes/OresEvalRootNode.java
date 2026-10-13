@@ -7470,6 +7470,15 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
+            // Host, imported and first-class module calls have no statically
+            // proven enum signature. Even if only one overload is PUBLIC,
+            // selecting it by filtering runtime candidates is forbidden.
+            String qualified = module.name() + "." + name;
+            if (enumFunctionFamilies.getOrDefault(qualified, Map.of()).containsKey(args.size())) {
+                throw new IllegalArgumentException(
+                        "module callable '" + qualified + "' has same-arity nominal enum overloads; "
+                                + "an exact compiler-bound callable ID is required");
+            }
             Ast.FunctionDecl match = null;
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn
