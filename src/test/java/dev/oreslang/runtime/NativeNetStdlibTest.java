@@ -57,7 +57,15 @@ final class NativeNetStdlibTest {
             });
             // Any guest compilation failure must also terminate the stream.
             String portText = line.get(20, TimeUnit.SECONDS);
-            assertNotNull(portText, "guest must produce listening port");
+            if (portText == null) {
+                try {
+                    program.get(2, TimeUnit.SECONDS);
+                } catch (ExecutionException failure) {
+                    throw new AssertionError("Oreslang guest server failed before listening",
+                            failure.getCause());
+                }
+                fail("guest exited without producing listening port");
+            }
             int port = Integer.parseInt(portText.trim());
             assertTrue(port > 0);
             try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
