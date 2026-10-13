@@ -2394,6 +2394,16 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt select,
                 Env env,
                 SourceFlowCont continuation) {
+            // A blocking/nonblocking select arms callback or Future state.
+            // Validate before selecting: late rejection could consume a
+            // message, publish a send, or leave an armed callback behind.
+            if (select.mode() != Ast.WaitMode.IMMEDIATE
+                    && env.hasLiveMutexGuards()) {
+                continuation.accept(task, SourceFlow.throwing(
+                        new IllegalStateException(
+                                "cannot arm select while holding a live MutexGuard")));
+                return;
+            }
             ChannelRuntime.SelectSet set =
                     buildStaticSelectSet(select, env);
             ChannelRuntime.SelectPolicy policy =
@@ -3019,6 +3029,10 @@ public final class OresEvalRootNode extends RootNode {
                                                                 null),
                                                 null);
                                         return;
+                                    }
+                                    if (env.hasLiveMutexGuards()) {
+                                        throw new IllegalStateException(
+                                                "cannot arm select while holding a live MutexGuard");
                                     }
                                     OresFuture<
                                             ChannelRuntime.SelectResult> future =
@@ -3682,6 +3696,14 @@ public final class OresEvalRootNode extends RootNode {
                                 return;
                             }
 
+                            if (operation.mode() == Ast.WaitMode.BLOCKING
+                                    && env.hasLiveMutexGuards()) {
+                                continuation.accept(
+                                        t, null,
+                                        new IllegalStateException(
+                                                "cannot readch while holding a live MutexGuard"));
+                                return;
+                            }
                             OresFuture<Object> future =
                                     channel.readAsync();
                             if (operation.mode()
@@ -3788,6 +3810,14 @@ public final class OresEvalRootNode extends RootNode {
                                         return;
                                     }
 
+                                    if (operation.mode() == Ast.WaitMode.BLOCKING
+                                            && env.hasLiveMutexGuards()) {
+                                        continuation.accept(
+                                                t2, null,
+                                                new IllegalStateException(
+                                                        "cannot writech while holding a live MutexGuard"));
+                                        return;
+                                    }
                                     OresFuture<Void> future =
                                             channel.writeAsync(value);
                                     if (operation.mode()
@@ -3920,6 +3950,7 @@ public final class OresEvalRootNode extends RootNode {
                                             t,
                                             invocation,
                                             invocationDeclaresAsync(invocation),
+                                            env,
                                             continuation);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
@@ -3962,6 +3993,7 @@ public final class OresEvalRootNode extends RootNode {
                                                     t2,
                                                     invocation,
                                                     declaredFuture,
+                                                    env,
                                                     continuation);
                                         } catch (RuntimeException | Error failure3) {
                                             continuation.accept(t2, null, failure3);
@@ -4003,6 +4035,7 @@ public final class OresEvalRootNode extends RootNode {
                                             t2,
                                             invocation,
                                             false,
+                                            env,
                                             continuation);
                                 });
                     });
@@ -4012,11 +4045,16 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Invocation invocation,
                 boolean declaredFuture,
+                Env env,
                 SourceValueCont continuation) {
             try {
                 Object result = invoke(invocation);
                 if (result instanceof OresFuture<?> future
                         && !declaredFuture) {
+                    if (env.hasLiveMutexGuards() && !future.isDone()) {
+                        throw new IllegalStateException(
+                                "cannot suspend on an implicit Future while holding a live MutexGuard");
+                    }
                     task.suspend(
                             future,
                             (t, value, failure) ->
