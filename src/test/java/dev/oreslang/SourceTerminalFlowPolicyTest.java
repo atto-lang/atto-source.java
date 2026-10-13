@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import java.lang.reflect.Method;
+import dev.oreslang.runtime.ActorRuntime;
 import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.Test;
 
@@ -69,6 +70,35 @@ final class SourceTerminalFlowPolicyTest {
         assertEquals("THROW", kind(throwing(guest)));
         assertSame(cancelled, failure(throwing(cancelled)));
         assertSame(fatal, failure(throwing(fatal)));
+    }
+
+    @Test
+    void untrustedQuotaExhaustionBypassesGuestCatchAndDominatesCleanup()
+            throws Exception {
+        var constructor =
+                ActorRuntime.UntrustedActorQuotaExceededException.class
+                        .getDeclaredConstructor(
+                                ActorRuntime.UntrustedActorQuotaExceededException.Resource.class,
+                                String.class);
+        constructor.setAccessible(true);
+        for (var resource :
+                ActorRuntime.UntrustedActorQuotaExceededException.Resource.values()) {
+            var quota = constructor.newInstance(resource, "quota exhausted");
+            Object pending = throwing(quota);
+            assertEquals("TERMINAL", kind(pending),
+                    "UNTRUSTED " + resource + " exhaustion must not enter guest catch");
+            assertSame(quota, failure(pending));
+            var cleanupFailure = new IllegalStateException("cleanup failed");
+            Object completed = afterCleanup(pending, throwing(cleanupFailure));
+            assertSame(pending, completed);
+            assertEquals("TERMINAL", kind(completed));
+            assertSame(quota, failure(completed));
+            assertArrayEquals(new Throwable[] {cleanupFailure}, quota.getSuppressed());
+        }
+
+        // Ordinary guest SecurityException remains a catchable failure; only
+        // the sealed runtime quota exception is terminal control flow.
+        assertEquals("THROW", kind(throwing(new SecurityException("guest error"))));
     }
 
     @Test
