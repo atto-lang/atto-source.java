@@ -501,6 +501,14 @@ public final class Parser {
                 fields.add(parseColonField(annotations, mods.visibility));
                 continue;
             }
+            // Type-first fields accept ':' canonically and '=' for compatibility.
+            // 'final' is contextual, so final(...) remains an ordinary method.
+            if ((isContextualIdentifier("final") && checkNext(IDENT))
+                    || looksLikeTypeFirstClassField()) {
+                validateClassFieldModifiers(mods);
+                fields.add(parseTypeFirstClassField(annotations, mods.visibility));
+                continue;
+            }
 
             boolean explicitFnc = match(FNC);
             boolean explicitMethod = matchExplicitMethodMarker();
@@ -859,6 +867,36 @@ public final class Parser {
         consumeExpressionStatementTerminator(initializer, "field declaration should end with ';'");
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
+    }
+
+    private boolean looksLikeTypeFirstClassField() {
+        int mark = current;
+        try {
+            parseTypeRef();
+            if (!check(IDENT)) return false;
+            advance();
+            return check(COLON) || check(EQUAL);
+        } catch (IllegalArgumentException ex) {
+            return false;
+        } finally {
+            current = mark;
+        }
+    }
+
+    private Ast.FieldDecl parseTypeFirstClassField(
+            List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectCallableStructuralAnnotation(annotations, "fields");
+        boolean isFinal = matchContextualIdentifier("final");
+        Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
+        String name = consume(IDENT, "expected class field name after type").lexeme();
+        if (!match(COLON, EQUAL)) {
+            throw error(peek(), "class field initializer requires ':' or '='");
+        }
+        Ast.Expr initializer = parseExpression();
+        consumeExpressionClassFieldTerminator(initializer, "field declaration should end with ';'");
+        // final fixes the field slot but does not assert deep immutability.
+        Ast.BindingKind kind = isFinal ? Ast.BindingKind.VAL : Ast.BindingKind.LET;
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, isFinal);
     }
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
