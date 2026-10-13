@@ -525,7 +525,7 @@ public final class Parser {
             }
             // Legacy 'fnc name' and explicit 'method name' both describe instance
             // methods. The AST's isStatic flag, not the spelling, controls binding.
-            methods.add(parseMethod(annotations, mods));
+            methods.add(parseMethod(annotations, mods, isAbstract));
         }
         consume(
                 classTerminator,
@@ -905,6 +905,11 @@ public final class Parser {
     }
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
+        return parseMethod(annotations, mods, false);
+    }
+
+    private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods,
+                                       boolean enclosingAbstractClass) {
         CallableStructural structural = normalizeCallableStructural(annotations, mods.structural);
         annotations = structural.annotations();
         String name = parseMethodName();
@@ -954,12 +959,23 @@ public final class Parser {
         }
 
         Ast.TypeRef returnType = parseReturnType(annotations);
+        // An abstract class may declare required slots as `name(args): Type;`.
+        // Such signatures are implicitly public and abstract unless visibility
+        // was explicitly specified. Their identity is still name + arity only.
+        // Outside abstract classes, a stray semicolon is never a method body.
+        boolean implicitAbstract = check(SEMICOLON) && !mods.isAbstract && enclosingAbstractClass;
+        if (check(SEMICOLON) && !mods.isAbstract && !enclosingAbstractClass) {
+            throw error(peek(), "signature-only method '" + name
+                    + "' requires an abstract class or explicit 'abstract' modifier");
+        }
         List<Ast.Stmt> body;
-        if (mods.isAbstract) {
+        if (mods.isAbstract || implicitAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else body = parseBlock();
-        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async, mods.suspends, structural.enabled(),
+        Ast.Visibility visibility = implicitAbstract && !mods.visibilitySeen
+                ? Ast.Visibility.PUBLIC : mods.visibility;
+        return new Ast.MethodDecl(name, visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body);
     }
 
