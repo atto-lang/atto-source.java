@@ -5201,14 +5201,17 @@ public final class TypeChecker {
                 && named.name().equals("Result") && named.arguments().size() == 2) {
             List<Ast.Pattern> okPayloads = new ArrayList<>();
             List<Ast.Pattern> errPayloads = new ArrayList<>();
+            boolean unitOk = false;
             for (Ast.Pattern pattern : patterns) {
-                if (!(pattern instanceof Ast.ConstructorPattern ctor)
-                        || ctor.arguments().size() != 1) continue;
+                if (!(pattern instanceof Ast.ConstructorPattern ctor)) continue;
+                if (ctor.constructor().equals("Ok") && ctor.arguments().isEmpty()
+                        && named.arguments().get(0) == Primitive.VOID) unitOk = true;
+                if (ctor.arguments().size() != 1) continue;
                 if (ctor.constructor().equals("Ok")) okPayloads.add(ctor.arguments().getFirst());
                 if (ctor.constructor().equals("Err")) errPayloads.add(ctor.arguments().getFirst());
             }
-            return patternsProvablyExhaustive(
-                    okPayloads, named.arguments().get(0), generics, self, depth + 1)
+            return (named.arguments().get(0) == Primitive.VOID ? unitOk : patternsProvablyExhaustive(
+                    okPayloads, named.arguments().get(0), generics, self, depth + 1))
                     && patternsProvablyExhaustive(
                             errPayloads, named.arguments().get(1), generics, self, depth + 1);
         }
