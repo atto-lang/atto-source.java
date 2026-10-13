@@ -96,47 +96,71 @@ public final class FreeCallableOverloads {
         return false;
     }
 
-    public static void requireUnambiguous(List<Ast.FunctionDecl> overloads, Set<String> enumOwners,
-                                          String name) {
-        Objects.requireNonNull(overloads);
-        Objects.requireNonNull(enumOwners);
-        if (overloads.size() > 256) {
-            throw new IllegalArgumentException("nominal overload family '" + name
-                    + "' exceeds 256 declarations");
+    private static void requirePair(
+            Ast.FunctionDecl prior, Ast.FunctionDecl next,
+            Set<String> enumOwners, String name) {
+        // The evaluator's preemption gate must not inspect only one variant
+        // when declared scheduling/effect envelopes differ.
+        if (prior.async() != next.async() || prior.suspends() != next.suspends()
+                || prior.generator() != next.generator()
+                || prior.trapped() != next.trapped()
+                || prior.actorKind() != next.actorKind()
+                || prior.returnType().name().equals("Future")
+                        != next.returnType().name().equals("Future")) {
+            throw new IllegalArgumentException(
+                    "nominal overload family '" + name
+                            + "' requires identical async/suspend/generator/trap/actor scheduling envelopes");
         }
-        for (Ast.FunctionDecl declaration : overloads) {
-            if (declaration.parameters().size() > 64) {
-                throw new IllegalArgumentException("nominal overload family '" + name
-                        + "' exceeds 64 explicit parameters");
+        if (prior.parameters().size() != next.parameters().size()) {
+            throw new IllegalArgumentException("invalid mixed-arity overload bucket for " + name);
+        }
+        if (!disjoint(prior, next, enumOwners)) {
+            throw new IllegalArgumentException(
+                    "callable '" + name + "' already has arity " + next.parameters().size()
+                            + "; same-arity overloads require distinct exact primitive or nominal enum tags"
+                            + " at a common parameter position (no structural fallback)");
+        }
+    }
+
+    /**
+     * Validate one declaration before appending to an already admitted slot.
+     * Type-checker and evaluator indexes grow monotonically; comparing all
+     * earlier pairs on every append was O(N^3) cumulative work for an
+     * adversarial but bounded family of 256 variants. Now O(N^2) total.
+     */
+    public static void requireAppendOnly(
+            List<Ast.FunctionDecl> previous, Ast.FunctionDecl next,
+            Set<String> enumOwners, String name) {
+        Objects.requireNonNull(previous);
+        Objects.requireNonNull(next);
+        Objects.requireNonNull(enumOwners);
+        if (previous.size() >= 256) {
+            throw new IllegalArgumentException(
+                    "nominal overload family '" + name + "' exceeds 256 declarations");
+        }
+        if (next.parameters().size() > 64) {
+            throw new IllegalArgumentException(
+                    "nominal overload family '" + name + "' exceeds 64 explicit parameters");
+        }
+        for (Ast.FunctionDecl prior : previous) {
+            if (prior.parameters().size() > 64) {
+                throw new IllegalArgumentException(
+                        "nominal overload family '" + name + "' exceeds 64 explicit parameters");
             }
+            requirePair(prior, next, enumOwners, name);
+        }
+    }
+
+    public static void requireUnambiguous(
+            List<Ast.FunctionDecl> overloads, Set<String> enumOwners, String name) {
+        Objects.requireNonNull(overloads);
+        if (overloads.size() > 256) {
+            throw new IllegalArgumentException(
+                    "nominal overload family '" + name + "' exceeds 256 declarations");
         }
         for (int i = 0; i < overloads.size(); i++) {
-            for (int j = 0; j < i; j++) {
-                Ast.FunctionDecl a = overloads.get(i);
-                Ast.FunctionDecl b = overloads.get(j);
-                // Suspendability analysis in the present interpreter uses an
-                // arity slot before argument values exist. All alternatives
-                // must therefore agree on the scheduling and effect envelope;
-                // selecting one branch may never silently hide an await.
-                if (a.async() != b.async() || a.suspends() != b.suspends()
-                        || a.generator() != b.generator() || a.trapped() != b.trapped()
-                        || a.actorKind() != b.actorKind()
-                        || a.returnType().name().equals("Future")
-                                != b.returnType().name().equals("Future")) {
-                    throw new IllegalArgumentException(
-                            "nominal overload family '" + name
-                                    + "' requires identical async/suspend/generator/trap/actor scheduling envelopes");
-                }
-                if (a.parameters().size() != b.parameters().size()) {
-                    throw new IllegalArgumentException("invalid mixed-arity overload bucket for " + name);
-                }
-                if (!disjoint(a, b, enumOwners)) {
-                    throw new IllegalArgumentException(
-                            "callable '" + name + "' already has arity " + a.parameters().size()
-                                    + "; same-arity overloads require distinct exact primitive or nominal enum tags"
-                                    + " at a common parameter position (no structural fallback)");
-                }
-            }
+            requireAppendOnly(overloads.subList(0, i), overloads.get(i),
+                    enumOwners, name);
         }
     }
 
