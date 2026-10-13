@@ -5437,7 +5437,12 @@ public final class TypeChecker {
                 if (isFallbackArm(previous)) continue;
                 boolean exclusive = patternsProvablyDisjoint(
                         previous.pattern(), current.pattern(), subject, generics, self);
-                if (!exclusive && previous.guard() != null && current.guard() != null) {
+                if (!exclusive && previous.guard() != null && current.guard() != null
+                        && previous.pattern().equals(current.pattern())) {
+                    // The same lexical name in two DIFFERENT patterns may
+                    // refer to different tuple/record positions. Comparing
+                    // their numerical guard ranges is sound only when both
+                    // patterns bind that name to the exact same projection.
                     exclusive = guardsProvablyDisjoint(previous.guard(), current.guard());
                 }
                 if (!exclusive) {
