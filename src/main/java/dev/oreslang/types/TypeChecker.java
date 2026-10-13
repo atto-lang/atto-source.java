@@ -1883,6 +1883,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.AssignExpr assignment) {
             Type targetType;
+            List<Type> dynamicFixedSlots = List.of();
             String where;
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Env.Binding binding = env.lookup(name.name());
@@ -1898,7 +1899,22 @@ public final class TypeChecker {
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                else if (receiver instanceof Tuple tuple) {
+                    // Constant reads preserve individual slot types, so
+                    // writes must retain the same invariant.
+                    Long constant = constantTupleIndex(indexed.index());
+                    if (tuple.elements().isEmpty() || (constant != null
+                            && (constant < 0 || constant >= tuple.elements().size()))) {
+                        throw new IllegalArgumentException("fixed collection index outside arity "
+                                + tuple.elements().size());
+                    }
+                    if (constant != null) {
+                        targetType = tuple.elements().get(constant.intValue());
+                    } else {
+                        targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                        dynamicFixedSlots = tuple.elements();
+                    }
+                }
                 else throw new IllegalArgumentException(
                         "indexed assignment requires an array/list or tuple; structs have a closed static field set");
                 where = "index";
@@ -1906,6 +1922,10 @@ public final class TypeChecker {
             Type value = typeOf(assignment.value(), env, generics, self);
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
+            for (Type slot : dynamicFixedSlots) {
+                requireReadonlyCapabilityPreserved(value, slot, "dynamic fixed collection slot assignment");
+                requireAssignable(value, slot, "dynamic fixed collection slot assignment");
+            }
             if (assignment.target() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr owner) {
                 env.markInitialized(owner.name(), member.member());
@@ -2026,7 +2046,15 @@ public final class TypeChecker {
                     yield Primitive.BOOL;
                 }
                 case "+" -> isStringLike(left) && isStringLike(right) ? Primitive.STRING : numericJoin(left, right, "+");
-                case "-", "*", "/", "%" -> numericJoin(left, right, binary.operator());
+                case "-", "*", "%" -> numericJoin(left, right, binary.operator());
+                case "/" -> {
+                    // OresEvalRootNode.numeric evaluates real division as a Double,
+                    // even for int/int. The result cannot be assigned to int without
+                    // an explicit conversion. Complex/decimal joins retain their
+                    // existing representation pending dedicated numeric contracts.
+                    Type result = numericJoin(left, right, "/");
+                    yield result == Primitive.INT ? Primitive.FLOAT : result;
+                }
                 default -> Unknown.INSTANCE;
             };
         }
@@ -2081,6 +2109,10 @@ public final class TypeChecker {
                         "rt " + runtime.operation() + " expects exactly one argument");
             }
             Type operand = typeOf(runtime.arguments().getFirst(), env, generics, self);
+            if (runtime.operation().equals("fail")) {
+                requireAssignable(operand, Primitive.STRING, "rt fail message");
+                return Primitive.VOID;
+            }
             return switch (runtime.operation()) {
                 case "borrow" -> new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
