@@ -4218,11 +4218,11 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (receiver instanceof ModuleFacade module) {
-                rejectUnboundNamedCall(call);
                 return module.owner().prepareModuleInvocation(
                         module.module(),
                         member.member(),
-                        args);
+                        args,
+                        call);
             }
 
             if (receiver instanceof ImportedNamespace namespace) {
@@ -5646,9 +5646,8 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (receiver instanceof ModuleFacade module) {
-                    rejectUnboundNamedCall(call);
                     return module.owner().prepareModuleInvocation(
-                            module.module(), methodCall.member(), args);
+                            module.module(), methodCall.member(), args, call);
                 }
 
                 if (receiver instanceof OresMutex.Guard<?> guard
@@ -7290,6 +7289,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareImportedInvocation(Ast.ImportKind kind, String name, List<Object> args) {
+            return prepareImportedInvocation(kind, name, args, null);
+        }
+
+        private Invocation prepareImportedInvocation(
+                Ast.ImportKind kind, String name, List<Object> args, Ast.CallExpr call) {
             Ast.FunctionDecl fn = findFunction(name, args.size());
             if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
@@ -7305,10 +7309,14 @@ public final class OresEvalRootNode extends RootNode {
                             "import fnc requires a reifiable non-generic fnc; '" + name
                                     + "' requires direct-call specialization");
                 }
-                return functionInvocation(fn, args);
+                return functionInvocation(fn, call == null
+                        ? args : bindCallArguments(call, fn.parameters(), args,
+                                "imported function " + name));
             }
             if (kind == Ast.ImportKind.ALL) {
-                return functionInvocation(fn, args);
+                return functionInvocation(fn, call == null
+                        ? args : bindCallArguments(call, fn.parameters(), args,
+                                "imported function " + name));
             }
             throw new IllegalArgumentException("import namespace kind " + kind
                     + " does not expose direct callable '" + name + "'");
@@ -7549,6 +7557,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
+            return prepareModuleInvocation(module, name, args, null);
+        }
+
+        private Invocation prepareModuleInvocation(
+                Ast.ModuleDecl module, String name, List<Object> args, Ast.CallExpr call) {
             Ast.FunctionDecl match = null;
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn
@@ -7563,7 +7576,9 @@ public final class OresEvalRootNode extends RootNode {
                     match = fn;
                 }
             }
-            if (match != null) return functionInvocation(match, args);
+            if (match != null) return functionInvocation(match, call == null
+                    ? args : bindCallArguments(call, match.parameters(), args,
+                            "module function " + module.name() + "." + name));
             throw new IllegalArgumentException("module '" + module.name()
                     + "' does not export callable '" + name + "' at arity " + args.size());
         }
