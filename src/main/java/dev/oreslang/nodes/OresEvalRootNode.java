@@ -4379,7 +4379,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof List<?> list) return list.get(i);
             if (receiver instanceof Object[] array) return array[i];
             throw new IllegalArgumentException(
-                    "value is not indexable: " + receiver);
+                    "value is not indexable");
         }
 
         private Object unaryValue(String operator, Object value) {
