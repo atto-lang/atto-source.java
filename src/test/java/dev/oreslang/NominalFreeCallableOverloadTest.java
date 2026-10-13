@@ -180,6 +180,19 @@ final class NominalFreeCallableOverloadTest {
     }
 
     @Test
+    void enumAndModuleCannotStealEachOthersValueNamespace() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define enum Ops { Foo = 1 }
+                        define module Ops as
+                            pub fnc go(): int { return 1; }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("ambiguous enum/pattern name"),
+                error::getMessage);
+    }
+
+    @Test
     void canonicalPrimitiveAliasesCannotOverloadOneAnother() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
