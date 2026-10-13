@@ -1510,7 +1510,8 @@ public final class OresEvalRootNode extends RootNode {
                                     // method's SourceTask completion. Otherwise
                                     // a returned Future is silently discarded
                                     // by an ordinary expression statement.
-                                    if (containsSourceLoop(statement)
+                                    if ((klass.actorKind() != Ast.ActorKind.NONE
+                                                    && containsSourceLoop(statement))
                                             || statementContainsPotentialSuspension(statement, seen))
                                         return true;
                                 }
@@ -4614,15 +4615,18 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         /**
-         * An ordinary CPU-only loop is not an explicit await, but its
-         * backedge can cooperate once lowered into a heap-owned SourceTask.
-         * Do not apply this to arbitrary synchronous function calls: their
-         * existing return-value contract does not imply an async boundary.
+         * Actor instance methods can carry outstanding message lifetimes
+         * across a CPU-only loop backedge. Keep ordinary class/static method
+         * calls on their existing synchronous path unless they explicitly
+         * suspend; widening those calls could silently change their results
+         * into futures on scheduler carriers.
          */
-        private boolean methodRequiresSourceTask(Ast.MethodDecl method) {
+        private boolean actorMethodRequiresSourceTask(
+                Ast.MethodDecl method, OresObject receiver) {
             return method.async()
                     || methodContainsPotentialSuspension(method)
-                    || method.body().stream().anyMatch(this::containsSourceLoop);
+                    || (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                            && method.body().stream().anyMatch(this::containsSourceLoop));
         }
 
         private void callGeneratorBodyRaw(
@@ -4666,7 +4670,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "method " + method.name() + " arity mismatch");
             }
-            if (methodRequiresSourceTask(method)) {
+            if (actorMethodRequiresSourceTask(method, receiver)) {
                 OresFuture<Object> future =
                         startSourceMethodTask(method, receiver, args);
                 return returnSourceTaskResult(future, method.async());
@@ -7055,7 +7059,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "static function " + fn.name() + " arity mismatch");
             }
-            if (methodRequiresSourceTask(fn)) {
+            if (fn.async() || methodContainsPotentialSuspension(fn)) {
                 OresFuture<Object> future =
                         startSourceMethodTask(
                                 fn,
