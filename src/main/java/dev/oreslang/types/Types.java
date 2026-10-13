@@ -106,20 +106,29 @@ public final class Types {
      * current scope. Any is NOT a dynamically unchecked operation permission.
      * Values must be checked/narrowed before type-dependent access.
      */
-    public enum Any implements Type { INSTANCE }
+    public enum Any implements Type {
+        INSTANCE;
+        @Override public String toString() { return "Any"; }
+    }
 
     /**
      * Source-level Unknown: a value without a verified Oreslang type contract.
      * No implicit conversion into Any or a concrete type is permitted.
      */
-    public enum UnknownValue implements Type { INSTANCE }
+    public enum UnknownValue implements Type {
+        INSTANCE;
+        @Override public String toString() { return "Unknown"; }
+    }
 
     /**
      * INTERNAL only: incomplete type information in inference and legacy
      * builtins. Must never be exposed as the source-level Unknown type.
      * TODO: replace permissive legacy sentinels with explicit inference holes.
      */
-    public enum Unknown implements Type { INSTANCE }
+    public enum Unknown implements Type {
+        INSTANCE;
+        @Override public String toString() { return "<incomplete compiler inference>"; }
+    }
 
     /**
      * Until the runtime carries full type/ownership witnesses, hiding borrowed,

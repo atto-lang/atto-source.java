@@ -35,6 +35,10 @@ public final class AnyUnknownJavaSmoke {
         check(!Types.isAssignable(opaque, integer), "Unknown cannot narrow to int");
         check(!Types.isAssignable(opaque, any), "Unknown cannot narrow to Any");
         check(Types.Unknown.INSTANCE != opaque, "source Unknown distinct from inference hole");
+        check(any.toString().equals("Any"), "Any has unambiguous diagnostic label");
+        check(opaque.toString().equals("Unknown"), "Unknown has unambiguous diagnostic label");
+        check(Types.Unknown.INSTANCE.toString().contains("incomplete"),
+                "internal inference sentinel is visibly distinct in diagnostics");
 
         check(!Types.isAssignable(new Types.Generic("T"), any),
                 "unresolved generic cannot hide behind Any");

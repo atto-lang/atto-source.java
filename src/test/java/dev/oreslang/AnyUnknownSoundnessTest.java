@@ -27,6 +27,9 @@ final class AnyUnknownSoundnessTest {
     void sourceTopsAreNotTheInternalInferenceHole() {
         assertNotEquals(Types.Any.INSTANCE, Types.Unknown.INSTANCE);
         assertNotEquals(Types.UnknownValue.INSTANCE, Types.Unknown.INSTANCE);
+        assertEquals("Any", Types.Any.INSTANCE.toString());
+        assertEquals("Unknown", Types.UnknownValue.INSTANCE.toString());
+        assertEquals("<incomplete compiler inference>", Types.Unknown.INSTANCE.toString());
         assertTrue(Types.isAssignable(Types.Primitive.INT, Types.Any.INSTANCE));
         assertTrue(Types.isAssignable(Types.Primitive.INT, Types.UnknownValue.INSTANCE));
         assertTrue(Types.isAssignable(Types.Any.INSTANCE, Types.UnknownValue.INSTANCE));
