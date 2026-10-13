@@ -35,7 +35,7 @@ final class ColonClassFieldInitializerTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define class Foo as
                   final int count: 5
-                  change(): void {
+                  change(mut self)(): void {
                     self.count = 9;
                   }
                 end
@@ -44,7 +44,7 @@ final class ColonClassFieldInitializerTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Foo as
                   int count: 5
-                  change(): void {
+                  change(mut self)(): void {
                     self.count = 9;
                   }
                 end
@@ -117,7 +117,7 @@ final class ColonClassFieldInitializerTest {
                   pub final int token: 42
                 end
                 define class Child extends Parent as
-                  update(): void {
+                  update(mut self)(): void {
                     self.token = 7;
                   }
                 end
