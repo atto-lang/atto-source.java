@@ -124,6 +124,9 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        // An unproven value cannot satisfy even the first field of a shape.
+        // Guard before the legacy Unknown/Generic inference shortcuts below.
+        if (to instanceof Record && (from == Unknown.INSTANCE || from instanceof Generic)) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
@@ -168,15 +171,25 @@ public final class Types {
                 // A callable-valued data field is not an instance method.
                 if (source.methodKeys().contains(required.getKey())
                         != target.methodKeys().contains(required.getKey())) return false;
-                if (!isAssignable(actual, required.getValue())) return false;
+                boolean methodSlot = source.methodKeys().contains(required.getKey())
+                        && target.methodKeys().contains(required.getKey())
+                        && actual instanceof Function && required.getValue() instanceof Function;
+                // A field read through a readonly shape view does not run a
+                // conversion. In particular int -> float is an allowed value
+                // conversion, but it cannot change the stored field's ABI.
+                if (target.readOnly() || methodSlot) {
+                    // Method dispatch uses the existing implementation ABI,
+                    // not a synthesized adapter. It is just as unsafe to
+                    // invent an int->float conversion for a method result.
+                    if (!isRepresentationallyReadable(actual, required.getValue())) return false;
+                } else if (!isAssignable(actual, required.getValue())) {
+                    return false;
+                }
                 // Writable data slots require equal resolved types. Bidirectional
                 // assignability is not enough: Unknown/Generic can match both
                 // directions and would allow writes through an unsafe alias.
                 // Compiler-owned callable selector slots describe methods, which
                 // are immutable contracts and retain function variance.
-                boolean methodSlot = source.methodKeys().contains(required.getKey())
-                        && target.methodKeys().contains(required.getKey())
-                        && actual instanceof Function && required.getValue() instanceof Function;
                 if (!target.readOnly() && !methodSlot && !actual.equals(required.getValue())) {
                     return false;
                 }
@@ -211,6 +224,53 @@ public final class Types {
         }
 
         return numericWidening(from, to);
+    }
+
+    /**
+     * Structural field views are projections, never implicit value casts.
+     * Conservative without a named-type hierarchy: nominal widening is
+     * proven by the context-aware TypeChecker, not fabricated here.
+     * Unknown is accepted only as an opaque destination, never as a proof
+     * of a required concrete field representation.
+     */
+    private static boolean isRepresentationallyReadable(Type actual, Type required) {
+        if (actual.equals(required)) return true;
+        if (required == Unknown.INSTANCE) return true;
+        if (actual == Unknown.INSTANCE || actual instanceof Generic || required instanceof Generic) return false;
+        if (actual instanceof Union source) {
+            return source.options().stream().allMatch(option -> isRepresentationallyReadable(option, required));
+        }
+        if (required instanceof Union target) {
+            return target.options().stream().anyMatch(option -> isRepresentationallyReadable(actual, option));
+        }
+        if (actual instanceof Record source && required instanceof Record target) {
+            return isAssignable(source, target);
+        }
+        if (actual instanceof Tuple source && required instanceof Tuple target) {
+            if (source.kind() != target.kind() || source.elements().size() != target.elements().size()) return false;
+            for (int i = 0; i < source.elements().size(); i++) {
+                if (!isRepresentationallyReadable(source.elements().get(i), target.elements().get(i))) return false;
+            }
+            return true;
+        }
+        if (actual instanceof Function source && required instanceof Function target) {
+            if (source.async() != target.async()
+                    || !source.mutableParameters().equals(target.mutableParameters())
+                    || source.parameters().size() != target.parameters().size()) return false;
+            for (int i = 0; i < source.parameters().size(); i++) {
+                if (!isRepresentationallyReadable(target.parameters().get(i), source.parameters().get(i))) return false;
+            }
+            return isRepresentationallyReadable(source.result(), target.result());
+        }
+        if (actual instanceof Borrow source && required instanceof Borrow target) {
+            if (target.mutable() && !source.mutable()) return false;
+            return isRepresentationallyReadable(source.target(), target.target())
+                    && (!target.mutable() || isRepresentationallyReadable(target.target(), source.target()));
+        }
+        if (actual instanceof StringLiteral && required == Primitive.STRING) return true;
+        // No primitive widening, generic variance, or implicit conversions
+        // for a raw field projection. A mutable ListType is invariant.
+        return false;
     }
 
     private static boolean numericWidening(Type from, Type to) {
