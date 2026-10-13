@@ -92,3 +92,13 @@ other suspension operations during field initialization.
 
 Indirect calls with transitive effects, failed-initializer cleanup,
 and non-scalar transfer proofs still need end-to-end verification.
+
+## Constructor self-transfer hardening
+
+The ownership checker rejects consuming constructor self as an ordinary
+value before object publication, including a local alias that would retain
+the incomplete receiver. Ordinary self.field accesses remain legal for
+legacy constructor filling. Constructor method dispatch and indirect
+callbacks still require broader transitive escape analysis; they are not
+proven safe by this targeted check. All new code remains unverified by a
+running Maven/GraalVM job.
