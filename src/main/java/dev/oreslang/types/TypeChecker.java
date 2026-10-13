@@ -1853,10 +1853,12 @@ public final class TypeChecker {
                 Type actual = deref(typeOf(cast.value(), env, generics, self));
                 requireAssignable(actual, resolve(variant.sourcePayload(), generics, self),
                         "payload for " + variant.qualifiedName());
-                if (cast.value() instanceof Ast.LiteralExpr literal
-                        && EXACT_WIDTH_ENUM_SCALARS.contains(variant.sourcePayload().name())) {
-                    NominalEnumValueGuards.requireValue(
-                            taggedMessages, variant.sourcePayload(), literal.value());
+                if (EXACT_WIDTH_ENUM_SCALARS.contains(variant.sourcePayload().name())) {
+                    java.math.BigInteger constant = enumIntegralConstant(cast.value());
+                    if (constant != null) {
+                        NominalEnumValueGuards.requireValue(
+                                taggedMessages, variant.sourcePayload(), constant);
+                    }
                 }
                 return new Named(variant.qualifiedName(), List.of());
             }
@@ -2025,12 +2027,14 @@ public final class TypeChecker {
                         // The present numeric Type IR erases u8/i16/u32 width.
                         // Do not accept a visibly out-of-range constant and
                         // defer a guaranteed failure until the runtime.
-                        if (call.arguments().getFirst() instanceof Ast.LiteralExpr literal
-                                && Set.of("i8", "i16", "i32", "u8", "u16",
-                                        "u32", "u64", "uint").contains(
-                                        enumCase.sourcePayload().name())) {
-                            NominalEnumValueGuards.requirePayload(
-                                    taggedMessages, enumCase, literal.value());
+                        if (EXACT_WIDTH_ENUM_SCALARS.contains(
+                                enumCase.sourcePayload().name())) {
+                            java.math.BigInteger constant =
+                                    enumIntegralConstant(call.arguments().getFirst());
+                            if (constant != null) {
+                                NominalEnumValueGuards.requirePayload(
+                                        taggedMessages, enumCase, constant);
+                            }
                         }
                     }
                     return new Named(enumCase.qualifiedName(), List.of());
@@ -4630,6 +4634,37 @@ public final class TypeChecker {
         TaggedMessageContracts.Case singleton = taggedCaseOrNull(named.name());
         return singleton == null ? null
                 : new TaggedMessageContracts.Domain(named.name(), List.of(singleton));
+    }
+
+    /**
+     * Extract a purely syntactic integer constant without evaluating user
+     * expressions or invoking the interpreter. Unary sign is significant:
+     * "-1 as E.Byte" must not bypass a u8 guard merely because its AST is
+     * a UnaryExpr rather than a LiteralExpr.
+     *
+     * This is intentionally NOT general constant folding. Nonconstant
+     * expressions are still checked by the runtime enum constructor.
+     */
+    private static java.math.BigInteger enumIntegralConstant(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr literal) {
+            Object raw = literal.value();
+            if (raw instanceof java.math.BigInteger big) return big;
+            if (raw instanceof Byte || raw instanceof Short
+                    || raw instanceof Integer || raw instanceof Long) {
+                return java.math.BigInteger.valueOf(((Number) raw).longValue());
+            }
+            return null;
+        }
+        if (expr instanceof Ast.UnaryExpr unary) {
+            java.math.BigInteger inner = enumIntegralConstant(unary.operand());
+            if (inner == null) return null;
+            return switch (unary.operator()) {
+                case "+" -> inner;
+                case "-" -> inner.negate();
+                default -> null;
+            };
+        }
+        return null;
     }
 
     private static final Set<String> EXACT_WIDTH_ENUM_SCALARS = Set.of(
