@@ -5958,6 +5958,9 @@ public final class OresEvalRootNode extends RootNode {
                 };
                 if (name.name().equals("None")) return new OptionValue(false, null);
                 if (name.name().equals("Ok")) return (Invokable) args -> {
+                    // Only the zero-payload Result<void,E> constructor may
+                    // omit the argument (the typechecker enforces its target).
+                    if (args.isEmpty()) return new ResultValue(true, null);
                     requireOne(args, "Ok");
                     return new ResultValue(true, args.getFirst());
                 };
@@ -7947,7 +7950,9 @@ public final class OresEvalRootNode extends RootNode {
                     return value instanceof OptionValue option && !option.present() && constructor.arguments().isEmpty();
                 }
                 if (name.equals("Ok")) {
-                    if (!(value instanceof ResultValue result) || !result.ok() || constructor.arguments().size() != 1) return false;
+                    if (!(value instanceof ResultValue result) || !result.ok()) return false;
+                    if (constructor.arguments().isEmpty()) return result.value() == null;
+                    if (constructor.arguments().size() != 1) return false;
                     return patternMatches(constructor.arguments().getFirst(), result.value(), bindings);
                 }
                 if (name.equals("Err")) {
@@ -9151,8 +9156,13 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }
     private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {
-        @Override public Iterable<?> sharedStateChildren(){return List.of(value);}
-        @Override public String toString(){return ok ? "Ok(" + value + ")" : "Err(" + value + ")";}
+        @Override public Iterable<?> sharedStateChildren(){
+            return value == null ? List.of() : List.of(value);
+        }
+        @Override public String toString(){
+            return ok && value == null ? "Ok()" :
+                    ok ? "Ok(" + value + ")" : "Err(" + value + ")";
+        }
     }
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
