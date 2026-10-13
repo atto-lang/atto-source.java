@@ -982,15 +982,26 @@ public final class TypeChecker {
         Ast.ConstructorDecl constructor = klass.constructor();
         Env fieldInitializerEnv = new Env(null);
         if (constructor != null) {
-            List<Type> initializerParameterTypes = new ArrayList<>(constructor.parameters().size());
+            // The field-initializer ownership checker does not yet prove
+            // moves, borrows or alias lifetime across the constructor boundary.
+            // Admit only independent scalar argument values here. In
+            // particular, never expose the implicit `arguments` tuple:
+            // it can contain an unchecked reference-valued constructor arg.
             for (Ast.Param param : constructor.parameters()) {
-                Type parameterType = resolveParam(param, classGenerics, self);
-                initializerParameterTypes.add(parameterType);
-                fieldInitializerEnv.define(
-                        param.name(), parameterType,
-                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                Ast.TypeRef paramRef = param.type();
+                String paramName = paramRef.name();
+                boolean scalar = !paramRef.isBorrow()
+                        && paramRef.arguments().isEmpty()
+                        && !param.structural()
+                        && (paramName.equals("int") || paramName.equals("bool")
+                                || paramName.equals("float") || paramName.equals("string"));
+                if (scalar) {
+                    Type parameterType = resolveParam(param, classGenerics, self);
+                    fieldInitializerEnv.define(
+                            param.name(), parameterType,
+                            param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
             }
-            defineImplicitArguments(fieldInitializerEnv, initializerParameterTypes);
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
