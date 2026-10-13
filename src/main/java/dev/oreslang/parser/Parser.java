@@ -503,7 +503,7 @@ public final class Parser {
             }
             // Type-first fields accept ':' canonically and '=' for compatibility.
             // 'final' is contextual, so final(...) remains an ordinary method.
-            if ((isContextualIdentifier("final") && checkNext(IDENT))
+            if ((isContextualIdentifier("final") && (checkNext(IDENT) || checkNext(MUT)))
                     || looksLikeTypeFirstClassField()) {
                 validateClassFieldModifiers(mods);
                 fields.add(parseTypeFirstClassField(annotations, mods.visibility));
@@ -872,6 +872,7 @@ public final class Parser {
     private boolean looksLikeTypeFirstClassField() {
         int mark = current;
         try {
+            match(MUT); // Explicit mutable referent is independent of finality.
             parseTypeRef();
             if (!check(IDENT)) return false;
             advance();
@@ -887,6 +888,7 @@ public final class Parser {
             List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectCallableStructuralAnnotation(annotations, "fields");
         boolean isFinal = matchContextualIdentifier("final");
+        boolean mutableReferent = match(MUT);
         Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
         String name = consume(IDENT, "expected class field name after type").lexeme();
         if (!match(COLON, EQUAL)) {
@@ -894,9 +896,11 @@ public final class Parser {
         }
         Ast.Expr initializer = parseExpression();
         consumeExpressionClassFieldTerminator(initializer, "field declaration should end with ';'");
-        // final fixes the field slot but does not assert deep immutability.
+        // Slot reassignment and mutation through its stored referent are
+        // separate capabilities. 'final' does NOT silently grant mutable
+        // referent access; only an explicit 'mut' modifier requests it.
         Ast.BindingKind kind = isFinal ? Ast.BindingKind.VAL : Ast.BindingKind.LET;
-        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, isFinal);
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
     }
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
