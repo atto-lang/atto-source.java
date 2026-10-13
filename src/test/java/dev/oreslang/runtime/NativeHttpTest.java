@@ -16,6 +16,59 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void pooledReleaseWaitsForTheSameWorkerAdmissionCompute() throws Exception {
+        var registry = new ConcurrentHashMap<String, Set<Integer>>();
+        var evaluatingCapacity = new CountDownLatch(1);
+        var permitCapacityCheck = new CountDownLatch(1);
+        Set<Integer> observed = new java.util.AbstractSet<>() {
+            private final Set<Integer> members = ConcurrentHashMap.newKeySet();
+            @Override public int size() {
+                evaluatingCapacity.countDown();
+                try {
+                    if (!permitCapacityCheck.await(5, TimeUnit.SECONDS))
+                        throw new AssertionError("timed out during admission capacity check");
+                } catch (InterruptedException interruption) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interruption);
+                }
+                return members.size();
+            }
+            @Override public boolean add(Integer value) { return members.add(value); }
+            @Override public boolean remove(Object value) { return members.remove(value); }
+            @Override public java.util.Iterator<Integer> iterator() { return members.iterator(); }
+        };
+        observed.add(1);
+        registry.put("worker", observed);
+        var beganRelease = new CountDownLatch(1);
+        var finishedRelease = new CountDownLatch(1);
+        try (ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var reserve = workers.submit(() ->
+                    NativeHttp.registerPoolAdmission(registry, "worker", 2, 2));
+            try {
+                assertTrue(evaluatingCapacity.await(5, TimeUnit.SECONDS),
+                        "admission must reach its per-key critical section");
+                var release = workers.submit(() -> {
+                    beganRelease.countDown();
+                    NativeHttp.releasePoolAdmission(registry, "worker", 1);
+                    finishedRelease.countDown();
+                    return null;
+                });
+                assertTrue(beganRelease.await(5, TimeUnit.SECONDS));
+                assertFalse(finishedRelease.await(150, TimeUnit.MILLISECONDS),
+                        "release must not mutate the set during an admission capacity check");
+                permitCapacityCheck.countDown();
+                assertEquals(NativeHttp.PoolAdmission.REGISTERED,
+                        reserve.get(5, TimeUnit.SECONDS));
+                release.get(5, TimeUnit.SECONDS);
+                assertTrue(finishedRelease.await(5, TimeUnit.SECONDS));
+            } finally {
+                permitCapacityCheck.countDown();
+            }
+        }
+        assertTrue(observed.contains(2));
+        assertFalse(observed.contains(1));
+    }
+
     @Test void pooledAdmissionAndCompletionChurnNeverOversubscribesOrRecreatesWorker() throws Exception {
         final int capacity = 64;
         for (int round = 0; round < 5; round++) {
