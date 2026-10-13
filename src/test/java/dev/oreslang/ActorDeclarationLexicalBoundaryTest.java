@@ -304,7 +304,10 @@ final class ActorDeclarationLexicalBoundaryTest {
                         shared actor Child extends Parent {
                         }
                         """)));
-        assertTrue(mismatch.getMessage().contains("isolation kind"),
+        // Until inheritance is verified, the sealed state/lane boundary
+        // rejects both same-kind and mixed-kind superclass relationships.
+        // Do not weaken this check just to reach the later kind validator.
+        assertTrue(mismatch.getMessage().contains("inherited state/lane"),
                 mismatch.getMessage());
     }
 
