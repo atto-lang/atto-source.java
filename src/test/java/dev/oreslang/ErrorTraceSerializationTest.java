@@ -49,6 +49,10 @@ final class ErrorTraceSerializationTest {
                 GuestErrorWireCodec.json("E", 1, "x".repeat(4097), List.of(), true));
         assertThrows(IllegalArgumentException.class, () ->
                 GuestErrorWireCodec.json("E", 1, "", List.of("x".repeat(257)), true));
+        assertThrows(IllegalArgumentException.class, () ->
+                GuestErrorWireCodec.json("E", 1, String.valueOf((char) 0xd800), List.of(), true));
+        assertThrows(IllegalArgumentException.class, () ->
+                GuestErrorWireCodec.protoBuf("E", 1, "", List.of(String.valueOf((char) 0xdc00))));
     }
 
     @Test
