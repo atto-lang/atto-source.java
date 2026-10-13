@@ -1600,13 +1600,20 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 cell.markMessageProcessed(completedSequence);
             })) {
+                final boolean shouldFail;
                 synchronized (cell.lifecycleLock) {
-                    if (!cell.stopped.get() && !cell.finalized) {
+                    shouldFail = !cell.stopped.get() && !cell.finalized;
+                    if (shouldFail) {
                         cell.sourceReceiveSuspended = false;
                         cell.activeMail = null;
-                        cell.fail(new IllegalStateException(
-                                "actor source receive completion could not re-enter its continuation lane"));
                     }
+                }
+                // fail() cascades cancellation, mailbox close, and DONE
+                // completion. All of those can run external callbacks inline:
+                // never invoke it while holding the actor lifecycle monitor.
+                if (shouldFail) {
+                    cell.fail(new IllegalStateException(
+                            "actor source receive completion could not re-enter its continuation lane"));
                 }
             }
         });
