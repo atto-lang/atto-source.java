@@ -280,6 +280,10 @@ public final class CriticalRwGate implements AutoCloseable {
         synchronized (coordinator) { return waiters.size(); }
     }
 
+    public static int waitingLogicalDomains() {
+        synchronized (DOMAIN_COORDINATOR) { return DOMAINS.size(); }
+    }
+
     public int activeReaderCount() {
         synchronized (coordinator) { return readers.size(); }
     }
