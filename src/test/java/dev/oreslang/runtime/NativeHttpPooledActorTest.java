@@ -94,7 +94,11 @@ class NativeHttpPooledActorTest {
               receive(ActorMail<String> mail): void {
                 val request = http.claim(mail.value);
                 if request.target == "/stall"; then
-                  try { await request.body_text(); } catch (err) { }
+                  try { await request.body_text(); } catch (err) {
+                    // A timed-out body read must not resurrect a closed
+                    // exchange with a late successful response.
+                    try { await request.respond(200, "text/plain", "late"); } catch (late) { }
+                  }
                 else
                   await request.respond(200, "text/plain", "still-alive");
                 fi
@@ -141,7 +145,11 @@ class NativeHttpPooledActorTest {
                         "POST /stall HTTP/1.1\r\nHost: localhost\r\nContent-Length: 256\r\n" +
                         "Connection: keep-alive\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
                     stalled.getOutputStream().flush();
+                    stalled.setSoTimeout(4000);
                     Thread.sleep(950);
+                    String expiredReply = new String(stalled.getInputStream().readAllBytes(), StandardCharsets.ISO_8859_1);
+                    assertFalse(expiredReply.contains("HTTP/1.1 200"),
+                        "closed exchange unexpectedly produced a late success response: " + expiredReply);
                     var request = HttpRequest.newBuilder(
                             URI.create("http://127.0.0.1:" + port.get(10, TimeUnit.SECONDS) + "/ok"))
                             .timeout(Duration.ofSeconds(8)).GET().build();
@@ -257,7 +265,7 @@ class NativeHttpPooledActorTest {
               val isolated = http.pool_handler("Isolated", 1);
               val server = http.listen("127.0.0.1", 0, 32, 1024, 10000);
               stdio.println(server.port);
-              for (let int i = 0; i < 20; i = i + 1) {
+              for (let int i = 0; i < 200; i = i + 1) {
                 val exchange = await server.accept();
                 val completed = exchange.completion;
                 if exchange.target == "/shared"; then
@@ -299,7 +307,7 @@ class NativeHttpPooledActorTest {
              ExecutorService clients = Executors.newVirtualThreadPerTaskExecutor()) {
             Future<?> work = clients.submit(() -> {
                 try (HttpClient http = HttpClient.newHttpClient()) {
-                    for (int i = 0; i < 20; i++) {
+                    for (int i = 0; i < 200; i++) {
                         String path = i % 2 == 0 ? "/shared" : "/isolated";
                         var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" +
                                 port.get(10, TimeUnit.SECONDS) + path))
@@ -314,11 +322,11 @@ class NativeHttpPooledActorTest {
             work.get(30, TimeUnit.SECONDS);
         }
         String result = output.toString(StandardCharsets.UTF_8);
-        assertTrue(result.contains("POOL_CREATIONS\n1\n1\nPOOL_REUSES\n9\n9\n0"),
+        assertTrue(result.contains("POOL_CREATIONS\n1\n1\nPOOL_REUSES\n99\n99\n0"),
             "pool did not reuse one actor per mode: " + result);
         assertTrue(result.contains("POOL_INFLIGHT\n0\n0"),
             "completed requests retained on pooled actor termination futures: " + result);
-        assertTrue(result.contains("SERVER_POOL_COUNTERS\n2\n18"),
+        assertTrue(result.contains("SERVER_POOL_COUNTERS\n2\n198"),
             "server-owned counters did not retain completed reuse accounting: " + result);
     }
 }
