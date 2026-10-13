@@ -98,6 +98,22 @@ final class SourceTerminalFlowPolicyTest {
     }
 
     @Test
+    void hostFatalCleanupStillOverridesOrdinaryCancellation() throws Exception {
+        var cancellation = new CancellationException("stop");
+        var fatal = new LinkageError("fatal host failure");
+        Object completed = afterCleanup(throwing(cancellation), throwing(fatal));
+
+        assertEquals("TERMINAL", kind(completed));
+        assertSame(fatal, failure(completed));
+        assertArrayEquals(new Throwable[] {cancellation}, fatal.getSuppressed());
+
+        var originalFatal = new LinkageError("original fatal");
+        var cleanupFailure = new IllegalArgumentException("cleanup");
+        Object prioritized = afterCleanup(throwing(originalFatal), throwing(cleanupFailure));
+        assertSame(originalFatal, failure(prioritized));
+    }
+
+    @Test
     void ordinaryCleanupFailureOverridesOrdinaryGuestFailure() throws Exception {
         var ordinary = new IllegalArgumentException("guest failure");
         var cleanupFailure = new IllegalStateException("finally failed");
