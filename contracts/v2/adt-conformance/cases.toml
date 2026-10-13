@@ -39,6 +39,24 @@ description = "Nested local non-wire exact-width payload"
 expected_stdout = "8\n"
 
 [[case]]
+id = "enum.max.wire.tag"
+source = "enum-max-wire-tag.ores"
+kind = "run"
+java = "required"
+llvm = "pending"
+description = "Final INT32_MAX nominal tag accepts trailing semicolon and executes"
+expected_stdout = "7\n"
+
+[[case]]
+id = "reject.enum.max.wire.tag.overflow"
+source = "enum-max-wire-tag-overflow.ores"
+kind = "reject"
+java = "required"
+llvm = "pending"
+description = "No additional variant can follow an INT32_MAX nominal tag"
+diagnostic_contains = "after INT32_MAX"
+
+[[case]]
 id = "reject.missing.variant"
 source = "missing-case.ores"
 kind = "reject"
