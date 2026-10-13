@@ -89,7 +89,7 @@ final class NominalFreeCallableOverloadTest {
                 TypeChecker.check(Parser.parse("""
                         define enum A { One = 1 }
                         fnc pick(A a, int count): int { return count; }
-                        fnc pick(A a, String count): int { return 1; }
+                        fnc pick<T>(A a, T count): int { return 1; }
                         """)));
         assertTrue(error.getMessage().contains("already has arity 2"), error::getMessage);
     }
