@@ -36,6 +36,58 @@ final class DynamicPipelineGuestSourceTest {
                 execute(source()));
     }
 
+    @Test void explicitNominalResultTypeExecutesRealThreeActorGuest() throws Exception {
+        String guest = source().replace(
+                "    await first.send(Signal.Data(5));",
+                "    val reply1 = await first.send<Signal.Result>(Signal.Data(5));")
+                .replace(
+                "    await second.send(Signal.Data(5));",
+                "    val reply2 = await second.send<Signal.Result>(Signal.Data(5));");
+        assertNotEquals(source(), guest);
+        assertEquals("DYNAMIC_PIPELINE_V1_19|DYNAMIC_PIPELINE_V2_24",
+                execute(guest));
+    }
+
+    @Test void wrongExpectedResultCaseCannotCompleteTypedFuture() throws Exception {
+        String guest = source().replace(
+                "    await first.send(Signal.Data(5));",
+                "    await first.send<Signal.Data>(Signal.Data(5));");
+        assertNotEquals(source(), guest);
+        org.graalvm.polyglot.PolyglotException failure =
+                assertThrows(org.graalvm.polyglot.PolyglotException.class,
+                        () -> execute(guest));
+        assertTrue(failure.toString().contains("unexpected typed pipeline reply"),
+                failure.toString());
+    }
+
+    @Test void arbitraryResultTypeIsRejectedBeforeExecution() throws Exception {
+        String guest = source().replace(
+                "    await first.send(Signal.Data(5));",
+                "    await first.send<int>(Signal.Data(5));");
+        assertNotEquals(source(), guest);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(guest)));
+        assertTrue(failure.toString().contains("result must be a declared nominal enum case"),
+                failure.toString());
+    }
+
+    @Test void opaqueTypedReplyCannotBeForged() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                            val forged = new PipelineTypedReply();
+                            return;
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define enum PipelineTypedReply as
+                            Forged: int = 1
+                        end
+                        pub fnc main(): int { return 1; }
+                        """)));
+    }
+
     @Test void fifteenActorSourceGuestDynamicallyReplacesMiddleStage() throws Exception {
         String guest = Files.readString(
                 Path.of("examples/actor-dynamic-pipeline-15-swap.ores"));
