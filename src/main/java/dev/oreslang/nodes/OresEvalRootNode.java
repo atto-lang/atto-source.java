@@ -1901,7 +1901,7 @@ public final class OresEvalRootNode extends RootNode {
                                             }
                                         }
                                     }
-                                     } catch (RuntimeException | Error failure2) {
+                                } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, SourceFlow.throwing(failure2));
                                     return;
                                 }
