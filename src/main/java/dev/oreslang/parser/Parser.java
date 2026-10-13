@@ -1983,7 +1983,7 @@ public final class Parser {
         }
         Ast.TypeRef type = parseTypeRef();
         String name = consume(IDENT, "typed select arm requires a binding name").lexeme();
-        consume(ARROW, "typed select arm requires '->' before its body");
+        consume(ARROW, "select arm requires a braced body '{ ... }' and '->' after a typed binding");
         return new SelectReadBinding(kind, name, type, mutable);
     }
 
