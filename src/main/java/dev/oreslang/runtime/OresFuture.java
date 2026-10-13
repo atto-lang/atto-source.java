@@ -674,6 +674,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         // into suspension and continuation resumption instead of calling the
         // host/embedder Future.get() or join() blocking bridges.
         if (ActorRuntime.inActorExecution()
+                || ActorRuntime.isActorCarrierThread()
                 || OresScheduler.current() != null
                 || OresScheduler.isSchedulerCarrierThread()) {
             throw new IllegalStateException(
