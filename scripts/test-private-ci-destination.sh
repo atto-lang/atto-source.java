@@ -13,15 +13,17 @@ cat > "$work/gh" <<'MOCK'
 #!/usr/bin/env bash
 [[ "${GH_HOST:-}" == github.com ]] || exit 2
 [[ "${1:-}" == api && "${2:-}" == repos/trusted/ci ]] || exit 2
+if [[ " $* " == *" --method POST "* || "${2:-}" == *"/git/"* ]]; then
+  printf 'unexpected-write\n' >> "$MOCK_EXEC_LOG"
+  exit 98
+fi
 [[ "${3:-}" == --jq ]] || exit 2
 [[ "${MOCK_API_FAILURE:-false}" != true ]] || exit 4
 printf '%s\t%s\t%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_EXTRA_LINE:-}"
 MOCK
-cat > "$work/record" <<'MOCK'
-#!/usr/bin/env bash
-printf '%s|%s\n' "${ORESLANG_VERIFIED_CI_DESTINATION:-missing}" "$1" >> "$MOCK_EXEC_LOG"
-MOCK
-chmod +x "$work/gh" "$work/record" "$script_dir"/*.sh
+mkdir -p "$work/fixture/source"
+printf 'pub fnc main(): int { return 42; }\n' > "$work/fixture/source/main.ores"
+chmod +x "$work/gh" "$script_dir"/*.sh
 export PATH="$work:$PATH" MOCK_EXEC_LOG="$work/executed"
 expect_ok() {
   "$script_dir/check-private-ci-destination.sh" "$1" > "$work/out" 2>&1 || { cat "$work/out" >&2; exit 1; }
@@ -33,15 +35,13 @@ expect_fail() {
 }
 expect_wrapper_reject() {
   rm -f "$MOCK_EXEC_LOG"
-  if "$script_dir/run-in-private-ci-destination.sh" "$1" -- "$work/record" should-not-run > "$work/out" 2>&1; then
-    echo 'Unsafe destination executed command' >&2; exit 1;
+  if "$script_dir/run-in-private-ci-destination.sh" "$1" --source-dir "$work/fixture/source" --branch ci/oreslang-test > "$work/out" 2>&1; then
+    echo 'Unsafe destination executed publishing' >&2; exit 1;
   fi
   test ! -e "$MOCK_EXEC_LOG"
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 }
 expect_ok trusted/ci
-"$script_dir/run-in-private-ci-destination.sh" trusted/ci -- "$work/record" 'argument with spaces' > "$work/out" 2>&1
-grep -Fx 'trusted/ci|argument with spaces' "$MOCK_EXEC_LOG"
 for visibility in public internal null; do
   export MOCK_VISIBILITY="$visibility"
   expect_fail trusted/ci
