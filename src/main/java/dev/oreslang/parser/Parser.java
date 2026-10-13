@@ -1674,7 +1674,11 @@ public final class Parser {
             throw error(peek(), "typed exceptional effect '" + peek().lexeme()
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
-        if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
+        if (looksLikeStaticSelectStatement()) {
+            if (!check(DO)) throw error(peek(),
+                    "bare select statement is forbidden; use 'do select' or a result-valued 'return select'");
+            return parseStaticSelectStatement();
+        }
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
         if (check(CB) && checkNext(SELECT)) {
@@ -1796,8 +1800,15 @@ public final class Parser {
             advance();
             return parseMatch(true);
         }
-        if (match(MATCH)) return parseMatch(false);
-        if (match(SWITCH)) return parseSwitch();
+        if (check(DO) && checkNext(SWITCH)) {
+            advance();
+            advance();
+            return parseSwitch();
+        }
+        if (check(MATCH) || check(SWITCH)) {
+            throw error(peek(),
+                    "bare match/switch is forbidden; use 'do match', 'return match', 'do switch', or 'return switch'");
+        }
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
@@ -1809,6 +1820,8 @@ public final class Parser {
         }
 
         Ast.Expr expression = parseExpression();
+        if (expression instanceof Ast.DynamicSelectExpr)
+            throw error(previous(), "bare dynamic select discards its result; return or bind select from cases");
         consumeExpressionStatementTerminator(expression, "expression statement should end with ';'");
         return new Ast.ExprStmt(expression);
     }
