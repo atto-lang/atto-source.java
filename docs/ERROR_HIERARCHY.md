@@ -1,6 +1,6 @@
 # Portable Oreslang core errors — `std/error` v1
 
-Status: source taxonomy and importable nominal codes are introduced on this branch. **Typed throw/catch/raise/panic integration, message and cause payloads, LLVM source execution, and cross-backend parity are NOT claimed.** This is a first gated foundation, not a finished exception subsystem.
+Status: source taxonomy, concrete Error root, guest message/trace fields and Java wire encoders are introduced in the draft branch. **Typed throw/catch/raise/panic integration, cause/suppressed graphs, async trace ancestry, LLVM source execution and cross-backend parity are NOT claimed.** These are gated language features, not a finished exception subsystem.
 
 ## Package and representation
 
@@ -236,7 +236,7 @@ https://docs.rs/ractor/latest/ractor/errors/index.html
 ## Deliberate exclusions / follow-up gates
 
 - **No source-level `throw`, `raise`, `panic`, or `recover` yet**: both compilers' existing fail-closed tests are the current boundary. A native C++ ExceptionPolicy test is not guest source lowering.
-- **No per-instance message/cause/metadata fields yet**: this v1 file does not fabricate a usable structured constructor contract. Add immutable `message`, `cause`, optional context and sanitized metadata after inheritance constructor chaining, ownership, sendability and native layout are verified.
+- **Message and stack are now explicit per-instance fields, but cause/suppressed/context remain unsupported**. The concrete Error root inherits synthetic positional initializer defaults; see ERROR_SERIALIZATION_AND_TRACING.md. Future immutable cause graphs require ownership, sendability, bounded cycles, redaction and native layout tests; no constructor super-chaining is claimed.
 - **No implicit mapping of host exceptions** to these classes. Explicit, allowlisted, auditable backend adapters must map known guest-origin failures; unknown/host-fatal failures stay outside ordinary throws.
 - **No claim of LLVM parity** until imported source classes, inheritance dispatch, match refinement and emitted guest type tags execute in native/wasm paths.
 - **No auto-merge** before the exact-commit CI test matrix: Maven parser/typechecker; import/runtime match; source-order and unreachable arms; optimizer/Native Image; LLVM/Clang ASan/UBSan guest tests; negative syntax/effect policy tests; catalog drift/collision/security tests.

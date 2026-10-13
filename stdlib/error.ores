@@ -2,14 +2,16 @@
 // Codes are durable identifiers; never reuse or renumber an existing code.
 // These are ordinary guest data types, NOT control effects. In particular,
 // throw/raise/panic/cancellation and host-fatal failures are NOT implemented here.
-// No Java interop, privileged runtime operations, mutable state or resources.
+// No Java interop or host-resource authority. Only audited guest-trace and
+// deterministic wire-encoding rt intrinsics may be used here.
 //
 // Import examples:
 //   import class Error from "std/error";
 //   import class FileNotFoundError from "std/error";
 //
 // The manifest in contracts/v1/error-catalog.json must match this source.
-// This initial schema intentionally has no user-provided message/cause fields:
+// The taxonomy originally carried no payload; the concrete root now has message,
+// trace and serialization options. Cause/suppressed graphs remain future work:
 // transport, ownership and diagnostic redaction require a separate parity gate.
 // Abstract category classes are not constructible; interfaces express
 // cross-cutting behavior without adding concrete inheritance edges.
