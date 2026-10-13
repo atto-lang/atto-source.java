@@ -260,7 +260,7 @@ select_read_binding
    The "->" is canonical; the bare braced-body spelling is retained. *)
 select_arm_keyword = "when" | "case" ; (* "when" is canonical; "case" is accepted for compatibility. *)
 (* "when" and "case" are contextual keywords: outside these grammar positions they are ordinary IDENT names. *)
-select_default  = "default" ":" { statement } ;
+select_default  = "default" ":" [ "->" ] block ;
 
 (* In select_arm/select_default bodies, the next when/case/default or the closing
    brace is a structural arm boundary and is not consumed as a nested
