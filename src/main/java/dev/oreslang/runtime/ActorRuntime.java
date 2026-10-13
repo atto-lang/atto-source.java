@@ -1738,6 +1738,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         /** Successful completion covers messages admitted before this call.
          * Processing failures, cancellation or stop-before-processing fail it.
+         * If the caller is this actor and has unprocessed accepted messages,
+         * the returned Future fails instead of waiting for its own execution
+         * lease to complete. Use gracefulStop() for self-shutdown.
          * No carrier thread blocks awaiting the barrier. */
         public OresFuture<Void> drain() {
             return ActorRuntime.this.drain(this);
@@ -4505,7 +4508,9 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /** Non-cancellable observer over all mail accepted before this call.
-     * This is a processed-message barrier, not an actor termination barrier. */
+     * This is a processed-message barrier, not an actor termination barrier.
+     * Self-drain of unprocessed mail fails closed to prevent a scheduling
+     * cycle; the admission snapshot and self-caller guard are atomic. */
     public OresFuture<Void> drain(ActorRef<?> ref) {
         requireCallerRuntimeAffinity("drain actor messages");
         Objects.requireNonNull(ref, "ref");
