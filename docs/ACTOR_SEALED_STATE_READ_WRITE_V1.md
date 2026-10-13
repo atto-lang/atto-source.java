@@ -213,3 +213,34 @@ Platform/Jupiter suite: **15 tests passed, 0 failed, 0 skipped**.
 The same private CI run passed the native gate/continuation GCC and
 Clang sanitizer checks. This still does not cover the entire Java Maven
 suite or GraalVM runtime actor codegen.
+
+
+## Typed actor reader/writer callbacks: first compiler slice (2026-10-12)
+
+The parser now recognizes `self.handle_state(critical-read |s| -> ...)`
+and `self.handle_state(critical-write |s| -> ...)` **inside an actor**
+as `Ast.ActorStateAccessExpr(StateAccessMode, LambdaExpr)`, not a normal
+`CallExpr` or reifiable function value. The AST constructor and parser
+require one lexical inferred state binding, no explicit referent
+mutability, and no reserved `self`/`state` binding. Malformed/multiple
+callbacks, other argument forms, and unsupported critical-declaration
+spellings remain rejected.
+
+`ActorStateLoanShapeChecker` admits only a deliberately restricted
+copy-scalar shape: reads of callback-owned state fields, pure arithmetic,
+and in write blocks, assignments to the callback's own field followed by
+a final scalar return. It rejects read mutations, escaped `s`,
+`await`, nested calls, nested state access, unknown fields, captured
+outer names and non-Copy field shapes. This is a preliminary syntactic/
+effect-shape proof, not complete ownership, mutation-alias, exhaustive
+control-flow or exception/cancellation semantics.
+
+`TypeChecker` and `OwnershipChecker` **still reject all
+`ActorStateAccessExpr` execution** until compiler-generated state loans
+and scheduler-authorized cleanup are implemented. The original
+`state{}` pre-expansion gate remains in force, even for callbacks that
+pass the shape checker.
+
+Private exact-source [Java 21 JUnit CI #38330707512](https://github.com/agent-pontifex/agent-pontifex-daemon/actions/runs/38330707512)
+passed 20/20 targeted JUnit tests plus independent native gate/sanitizer
+checks. No end-to-end `Counter` binary is yet supported.
