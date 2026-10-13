@@ -230,7 +230,7 @@ public final class TypeChecker {
         for (Ast.Expr argument : arguments)
             tags.add(deref(typeOf(argument, env, generics, self)));
         Ast.FunctionDecl chosen = FreeCallableOverloads.chooseStatic(
-                candidates, tags, taggedMessages.enums().keySet(), key);
+                candidates, tags, taggedMessages.enums(), key);
         resolvedFreeCalls.put(callSite, chosen);
         return chosen;
     }
@@ -2154,6 +2154,12 @@ public final class TypeChecker {
                         namespace.name() + "." + qualifiedCall.member(),
                         arity, call.arguments(), env, generics, self, call);
                 if (target != null) {
+                    if (target.visibility() != Ast.Visibility.PUBLIC
+                            && !namespace.name().equals(currentLexicalModule)) {
+                        throw new IllegalArgumentException(
+                                "private module callable '" + namespace.name() + "."
+                                        + target.name() + "' is not visible to this module");
+                    }
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
