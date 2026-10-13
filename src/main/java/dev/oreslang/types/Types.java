@@ -135,7 +135,23 @@ public final class Types {
         if (type instanceof Tuple tuple) return tuple.elements().stream().allMatch(Types::safelyHideConcreteType);
         if (type instanceof Union union) return union.options().stream().allMatch(Types::safelyHideConcreteType);
         if (type instanceof Record record) return record.members().values().stream().allMatch(Types::safelyHideConcreteType);
-        if (type instanceof Named named) return named.arguments().stream().allMatch(Types::safelyHideConcreteType);
+        if (type instanceof Named named) {
+            // These types carry execution-domain, external-resource, mutable
+            // synchronization or actor authority. A plain type-erased object
+            // wrapper cannot currently preserve their affine/capability proof.
+            // Only introduce universal boxing for them alongside reified
+            // ownership witnesses and a transport-aware runtime.
+            if (switch (named.name()) {
+                case "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
+                     "Channel", "SelectCase", "SelectSet", "SelectResult",
+                     "Mutex", "MutexGuard", "SharedMutex", "Future",
+                     "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
+                     "TcpConnection", "HttpExchange", "HttpServer", "HttpHandler",
+                     "File", "Socket" -> true;
+                default -> false;
+            }) return false;
+            return named.arguments().stream().allMatch(Types::safelyHideConcreteType);
+        }
         return true;
     }
 

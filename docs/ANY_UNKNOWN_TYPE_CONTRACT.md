@@ -24,6 +24,10 @@ The source-level hierarchy is conceptually `T <: Any <: Unknown` for concrete,
 owned, validated Oreslang value types. Borrowed references, callables, mutable
 capabilities and unresolved generics are *not* allowed to be concealed in the
 top types until the runtime retains sufficient ownership/effect witnesses.
+Stage 1 explicitly rejects type-erasing known capability families (actor
+references, channels, mutexes, futures, iterators and native I/O handles),
+including inside records, arrays and constructed generic arguments. A future
+fully reified trusted wrapper may support these without losing authority.
 `void` and raw `null` are not value instances. Oreslang's existing
 `Option<T>` and `Result<T,E>` conventions remain explicit.
 

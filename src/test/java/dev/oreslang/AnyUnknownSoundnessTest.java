@@ -150,5 +150,14 @@ final class AnyUnknownSoundnessTest {
         assertFalse(Types.isAssignable(new Types.Borrow(Types.Primitive.INT, false), Types.Any.INSTANCE));
         assertFalse(Types.isAssignable(new Types.Function(List.of(), Types.Primitive.INT), Types.Any.INSTANCE));
         assertFalse(Types.isAssignable(new Types.Generic("T"), Types.Any.INSTANCE));
+        assertFalse(Types.isAssignable(
+                new Types.Named("ActorRef", List.of(new Types.Named("Worker", List.of()))),
+                Types.Any.INSTANCE));
+        assertFalse(Types.isAssignable(
+                new Types.Named("Channel", List.of(Types.Primitive.INT)),
+                Types.UnknownValue.INSTANCE));
+        assertFalse(Types.isAssignable(
+                new Types.Record(Map.of("handle", new Types.Named("Mutex", List.of(Types.Primitive.INT)))),
+                Types.Any.INSTANCE));
     }
 }
