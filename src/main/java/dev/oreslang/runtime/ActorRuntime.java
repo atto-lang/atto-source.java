@@ -1410,6 +1410,15 @@ public final class ActorRuntime implements AutoCloseable {
         public int size() { return stages.size(); }
         /** Immutable compiler-derived closed nominal mailbox identity. */
         public String nominalDomainIdentity() { return route.nominalIdentity(); }
+
+        /** Check result admission against this actual bound stream, not a
+         * different statically declared pattern in the compilation unit. */
+        public void requireExpectedReplyCase(String expectedCase) {
+            if (!route.codec().permitsCase(expectedCase)) {
+                throw new SecurityException(
+                        "expected pipeline reply case is outside the bound nominal mailbox domain");
+            }
+        }
         public ActorRef<?> source() { return stages.getFirst(); }
         public void send(Object value) {
             @SuppressWarnings("unchecked")
