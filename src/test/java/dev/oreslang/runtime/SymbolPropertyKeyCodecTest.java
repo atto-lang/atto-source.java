@@ -84,11 +84,21 @@ final class SymbolPropertyKeyCodecTest {
         byte[] secretWire = SymbolPropertyKeyCodec.encode(secret);
         assertThrows(SecurityException.class,
                 () -> SymbolPropertyKeyCodec.decodeForUntrusted(secretWire));
+        var tenantA = new SymbolPropertyKeyCodec.AdmissionScope(
+                "tenant-a", "actor-notification", "v1");
+        var tenantB = new SymbolPropertyKeyCodec.AdmissionScope(
+                "tenant-b", "actor-notification", "v1");
+        var tenantAV2 = new SymbolPropertyKeyCodec.AdmissionScope(
+                "tenant-a", "actor-notification", "v2");
+        var exports = java.util.Map.of(tenantA, Set.of(secret));
         assertEquals(secret,
-                SymbolPropertyKeyCodec.decodeForUntrusted(secretWire, Set.of(secret)));
+                SymbolPropertyKeyCodec.decodeForUntrusted(secretWire, tenantA, exports));
         assertThrows(SecurityException.class,
-                () -> SymbolPropertyKeyCodec.decodeForUntrusted(
-                        secretWire, Set.of(OresSymbol.process("tenant-b/private"))));
+                () -> SymbolPropertyKeyCodec.decodeForUntrusted(secretWire, tenantB, exports));
+        assertThrows(SecurityException.class,
+                () -> SymbolPropertyKeyCodec.decodeForUntrusted(secretWire, tenantAV2, exports));
+        assertThrows(IllegalArgumentException.class,
+                () -> new SymbolPropertyKeyCodec.AdmissionScope("", "actor", "v1"));
         assertEquals(OresSymbol.process("ready"),
                 SymbolPropertyKeyCodec.decodeForUntrusted(
                         SymbolPropertyKeyCodec.encode(OresSymbol.process("ready"))));
