@@ -1,0 +1,112 @@
+package dev.oreslang;
+
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class ResultMustUseProofTest {
+    private static void accepts(String source) {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+    private static void rejects(String source) {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("must-use Result"), failure.getMessage());
+    }
+
+    @Test
+    void rejectBareConstructorAndNeverHandledLocal() {
+        rejects("""
+                fnc bad(): void {
+                  Ok();
+                  return;
+                }
+                """);
+        rejects("""
+                fnc bad(): void {
+                  val Result<void, String> result = Ok();
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void checkingStatusAndLoggingAreNotHandling() {
+        rejects("""
+                fnc bad(): void {
+                  val Result<void, String> result = Ok();
+                  val bool ok = result.is_ok();
+                  stdio.println(result);
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void propagationAndExhaustiveMatchDischarge() {
+        accepts("""
+                fnc good(): Result<void, String> {
+                  val Result<void, String> result = Ok();
+                  return result;
+                }
+                """);
+        accepts("""
+                fnc good(): void {
+                  val Result<void, String> result = Ok();
+                  match result over
+                    on Ok() -> { stdio.println("ok"); }
+                    on Err(message) -> { stdio.println(message); }
+                  end
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void pathsMustHandleEvenWhenAnotherPathMatches() {
+        rejects("""
+                fnc bad(bool flag): void {
+                  val Result<void, String> result = Ok();
+                  if flag; do
+                    match result over
+                      on Ok() -> { stdio.println("ok"); }
+                      on Err(message) -> { stdio.println(message); }
+                    end
+                  else
+                    stdio.println("not handled");
+                  fi
+                  return;
+                }
+                """);
+        rejects("""
+                fnc bad(bool flag): Result<void, String> {
+                  val Result<void, String> result = Ok();
+                  if flag; do
+                    return Ok();
+                  else
+                    return result;
+                  fi
+                }
+                """);
+    }
+
+    @Test
+    void everyBranchMayPropagateOrHandle() {
+        accepts("""
+                fnc good(bool flag): Result<void, String> {
+                  val Result<void, String> result = Ok();
+                  if flag; do
+                    return result;
+                  else
+                    match result over
+                      on Ok() -> { stdio.println("ok"); }
+                      on Err(message) -> { stdio.println(message); }
+                    end
+                  fi
+                  return Ok();
+                }
+                """);
+    }
+}
