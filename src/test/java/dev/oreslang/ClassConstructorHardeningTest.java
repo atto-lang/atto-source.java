@@ -434,6 +434,36 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void fieldInitializerRejectsUnprovenRuntimeIntrinsicEffects() {
+        // Operand purity does not prove the intrinsic itself safe. A fail
+        // can unwind partially constructed fields, a take moves ownership,
+        // and borrow/share/copy need a checked construction-lifetime proof.
+        for (String operation : java.util.List.of("fail", "take", "borrow", "share", "copy")) {
+            String source = """
+                    define class Unsafe as
+                      final int answer: rt %s 42;
+                    end
+                    """.formatted(operation);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)),
+                    "unproven initializer intrinsic rt " + operation + " must fail closed");
+            assertTrue(error.getMessage().contains("without a proven transitive effect bound"),
+                    "unexpected rt " + operation + " rejection: " + error.getMessage());
+        }
+    }
+
+    @Test
+    void nestedRuntimeIntrinsicCannotHideInsideArithmeticInitializer() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse("""
+                    define class Unsafe as
+                      final int answer: 2 + (rt fail "stop");
+                    end
+                    """)));
+        assertTrue(error.getMessage().contains("without a proven transitive effect bound"));
+    }
+
+    @Test
     void nestedClassConstructionNeedsVerifiedLiteralOnlyDefaultInitialization() {
         String safe = """
                 define class Inner as
