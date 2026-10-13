@@ -2402,6 +2402,10 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                if (receiver instanceof Named map && map.name().equals("$builtin$Map")) {
+                    throw new IllegalArgumentException(
+                            "typed Map does not provide dot-property or method access; use map[key]");
+                }
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
 
@@ -3096,6 +3100,10 @@ public final class TypeChecker {
             if ((sumReceiver instanceof ListType || sumReceiver instanceof Tuple)
                     && member.member().equals("length")) {
                 return Primitive.INT;
+            }
+            if (sumReceiver instanceof Named map && map.name().equals("$builtin$Map")) {
+                throw new IllegalArgumentException(
+                        "typed Map has no string-named properties; use explicit map[key]");
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (isStringLike(sumReceiver)) {
