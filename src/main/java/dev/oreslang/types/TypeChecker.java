@@ -3278,6 +3278,10 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (NamedCallBinder.hasNamed(created.arguments())) {
+                throw new IllegalArgumentException(
+                        "named constructor arguments require a verified constructor binding plan; not enabled yet");
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
                         "DynamicStruct has been removed; use infer struct{...}, "
