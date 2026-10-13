@@ -243,7 +243,7 @@ final class PrivateVisibilityTest {
     void wildcardLinkedCodeCannotBypassPrivateRuntimeVisibility() throws Exception {
         Path child = temp.resolve("vault.ores");
         Files.writeString(child, """
-                define module exported
+                define pub module exported
                 pub define class Vault as
                   private val int secret = 11;
 
