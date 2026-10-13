@@ -73,7 +73,7 @@
       "feature": "control-flow.defer-return-snapshot",
       "source": "fixtures/native-defer-field-return.ores",
       "kind": "native_exit",
-      "expected_exit": 222,
+      "expected_exit": 42,
       "backends": {
         "llvm": "pending",
         "graal": "required"
@@ -85,7 +85,7 @@
       "feature": "control-flow.finally-return-snapshot",
       "source": "fixtures/native-try-finally-return-snapshot.ores",
       "kind": "native_exit",
-      "expected_exit": 246,
+      "expected_exit": 42,
       "backends": {
         "llvm": "pending",
         "graal": "required"
