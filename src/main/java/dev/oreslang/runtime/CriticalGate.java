@@ -82,6 +82,16 @@ public final class CriticalGate {
                     throw new IllegalStateException(
                             "recursive logical critical acquisition would deadlock");
                 }
+                // A logical task already awaiting another gate cannot begin
+                // any second acquisition, even if this gate is immediately
+                // free. Checking only the queueing branch lets it bypass the
+                // wait-for dependency graph and retain multiple live tickets.
+                CriticalGate priorWait = WAITING_ON.get(domain);
+                if (priorWait != null) {
+                    requested = false;
+                    throw new IllegalStateException(
+                            "logical caller cannot acquire another critical gate while waiting");
+                }
                 boolean canEnter = waiters.isEmpty() && owner == null
                         && (mode == Mode.READ
                                 ? readers.size() < MAX_ACTIVE_READERS : readers.isEmpty());
@@ -92,12 +102,6 @@ public final class CriticalGate {
                     if (waiters.size() >= MAX_WAITERS) {
                         requested = false;
                         throw new IllegalStateException("critical wait queue is full");
-                    }
-                    CriticalGate priorWait = WAITING_ON.get(domain);
-                    if (priorWait != null) {
-                        requested = false;
-                        throw new IllegalStateException(
-                                "logical caller cannot wait on multiple critical gates simultaneously");
                     }
                     if (wouldCreateCycle(domain)) {
                         requested = false;
