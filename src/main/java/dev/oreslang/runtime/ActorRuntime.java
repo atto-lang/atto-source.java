@@ -4119,7 +4119,7 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (RuntimeException | Error failure) {
                 // Roll back every registry when spawn admission fails. In
                 // particular, never strand an inherited group ownership ref.
-                if (cell != null) actors.remove(id, cell);
+                if (cell != null) actors.remove(cell.ref.id(), cell);
                 if (linkedToParent && cell != null) parent.children.remove(cell);
                 if (cell != null) {
                     ActorGroupId inheritedId = cell.managedByGroup.get();
@@ -4127,7 +4127,7 @@ public final class ActorRuntime implements AutoCloseable {
                             ? null : actorGroups.get(inheritedId);
                     if (inherited != null) {
                         synchronized (inherited.authorityLock) {
-                            inherited.managedWorkers.remove(id, ref);
+                            inherited.managedWorkers.remove(cell.ref.id(), cell.ref);
                         }
                     }
                 }
