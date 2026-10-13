@@ -97,6 +97,21 @@ final class MatchSelectArrowDestructureContractTest {
     }
 
     @Test
+    void selectFatArrowCannotMasqueradeAsPatternBodyDelimiter() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse("""
+                        fnc choose(Channel<{x: int, y: int}> input): void {
+                          do select {
+                            when readch input: let {x,y} => {
+                              stdio.println(x);
+                            }
+                          }
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("->"), error.getMessage());
+    }
+
+    @Test
     void matchAlwaysRequiresSlimArrowAndRejectsFatArrow() {
         IllegalArgumentException missing = assertThrows(
                 IllegalArgumentException.class, () -> Parser.parse("""
