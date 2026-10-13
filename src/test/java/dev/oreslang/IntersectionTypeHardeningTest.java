@@ -132,6 +132,41 @@ final class IntersectionTypeHardeningTest {
     }
 
     @Test
+    void writableFieldInvarianceDoesNotTrustDynamicOrUnboundGenerics() {
+        Types.Record typed = new Types.Record(Map.of("value", Types.Primitive.INT));
+        Types.Record dynamic = new Types.Record(Map.of("value", Types.Unknown.INSTANCE));
+        Types.Record generic = new Types.Record(Map.of("value", new Types.Generic("T")));
+        assertFalse(Types.isAssignable(dynamic, typed));
+        assertFalse(Types.isAssignable(typed, dynamic));
+        assertFalse(Types.isAssignable(generic, typed));
+        assertFalse(Types.isAssignable(typed, generic));
+        assertTrue(Types.isAssignable(dynamic, new Types.Record(
+                Map.of("value", Types.Unknown.INSTANCE))));
+        // Readonly covariance is separate from mutable assignment.
+        assertTrue(Types.isAssignable(typed,
+                new Types.Record(Map.of("value", Types.Unknown.INSTANCE), true)));
+    }
+
+    @Test
+    void ownershipRejectsInlineIntersectionWithoutTypeAlias() {
+        for (String source : List.of(
+                """
+                fnc consume({loan: &int} & {id: int} payload): void { return; }
+                """,
+                """
+                fnc produce(): {loan: &int} & {id: int} {
+                    return struct{loan: &int, id: int}{id: 1};
+                }
+                """)) {
+            IllegalArgumentException problem = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(problem.getMessage().contains("ownership-aware field projection")
+                    || problem.getMessage().contains("borrowed or move-only"),
+                    problem.getMessage());
+        }
+    }
+
+    @Test
     void checkerDoesNotPermitMutableRecordWidening() {
         rejected("""
                 type Narrow = {value: int};
@@ -152,7 +187,7 @@ final class IntersectionTypeHardeningTest {
                 type Event = Header & Payload;
 
                 fnc makeEvent(): Event {
-                    return Map.of("request_id", 9, "message", "ready");
+                    return struct{request_id: int, message: string}{request_id: 9, message: "ready"};
                 }
 
                 pub fnc main(): void {
