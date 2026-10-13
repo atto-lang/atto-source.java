@@ -169,6 +169,22 @@ final class FunctionArityOwnershipTest {
     }
 
     @Test
+    void primitiveTypesAreStillValidatedAfterSelectingArity() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc choose(int value): int { return value; }
+                        fnc choose(int value, String text): int { return value; }
+
+                        fnc invalid(): void {
+                          choose(7, true);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("argument 2"), error.getMessage());
+    }
+
+    @Test
     void sameArityPrimitiveSignaturesStillFailClosedUntilTypedDispatchExists() {
         IllegalArgumentException conflict = assertThrows(
                 IllegalArgumentException.class,
