@@ -9,6 +9,67 @@ import org.junit.jupiter.api.Test;
 
 final class CriticalRwGateTest {
     @Test
+    void deferredDomainCloseBlocksNextActorTurnUntilCallbacksFinish() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch firstRelease = new CountDownLatch(1);
+        CountDownLatch closeCallbackEntered = new CountDownLatch(1);
+        CountDownLatch closeCallbackRelease = new CountDownLatch(1);
+        CountDownLatch secondTurnEntered = new CountDownLatch(1);
+        AtomicReference<Throwable> guestError = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            try {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        if ("first".equals(message)) {
+                            var ticket = gate.newTicket();
+                            assertTrue(ticket.enterAsync().isDone());
+                            ticket.onClose(() -> {
+                                closeCallbackEntered.countDown();
+                                try {
+                                    if (!closeCallbackRelease.await(5, TimeUnit.SECONDS)) {
+                                        throw new AssertionError("close callback release timed out");
+                                    }
+                                } catch (InterruptedException interrupted) {
+                                    Thread.currentThread().interrupt();
+                                    throw new AssertionError(interrupted);
+                                }
+                            });
+                            firstEntered.countDown();
+                            assertTrue(firstRelease.await(5, TimeUnit.SECONDS));
+                        } else {
+                            secondTurnEntered.countDown();
+                        }
+                    } catch (Throwable problem) {
+                        guestError.compareAndSet(null, problem);
+                    } finally {
+                        if ("first".equals(message)) firstEntered.countDown();
+                    }
+                });
+                actor.send("first");
+                assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+                gate.closeAll();
+                assertTrue(gate.hasWriter(), "writer must be fenced until guest turn exit");
+                firstRelease.countDown();
+                assertTrue(closeCallbackEntered.await(5, TimeUnit.SECONDS),
+                        "domain close callback was not deferred to carrier exit");
+                actor.send("second");
+                assertFalse(secondTurnEntered.await(150, TimeUnit.MILLISECONDS),
+                        "a new turn may not run while physical-exit callbacks are active");
+                closeCallbackRelease.countDown();
+                assertTrue(secondTurnEntered.await(5, TimeUnit.SECONDS),
+                        "the queued second message must run once the cleanup fence clears");
+                assertNull(guestError.get());
+                assertFalse(gate.hasWriter());
+                runtime.stop(actor);
+            } finally {
+                firstRelease.countDown();
+                closeCallbackRelease.countDown();
+            }
+        }
+    }
+
+    @Test
     void coreDomainCloseRetainsActorWriterThroughPhysicalTurnExit() throws Exception {
         CriticalGate core = new CriticalGate();
         CriticalRwGate gate = core.rwGate();
