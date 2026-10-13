@@ -16,6 +16,40 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void synchronousRootMethodAdoptsPendingAwaitWithoutReplayingSideEffects() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        String output = run("""
+            define class Bridge as
+              pub static suspends fnc consume(Future<String> pending): String {
+                stdio.println("body-await");
+                return await pending;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              val body = Bridge.consume(request.body_text());
+              await request.respond(200, "text/plain", body);
+              await server.shutdown(1000);
+              return;
+            }
+            """, port -> {
+                try (var socket = new java.net.Socket("127.0.0.1", port)) {
+                    socket.setSoTimeout(5000);
+                    var wire = socket.getOutputStream();
+                    wire.write("POST / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 4\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+                    wire.flush();
+                    assertTrue(entered.await(5, TimeUnit.SECONDS));
+                    wire.write("ping".getBytes(StandardCharsets.US_ASCII)); wire.flush();
+                    String response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                    assertTrue(response.startsWith("HTTP/1.1 200"), response);
+                    assertTrue(response.endsWith("ping"), response);
+                }
+            }, text -> { if (text.contains("body-await")) entered.countDown(); });
+        assertEquals(1, output.split("body-await", -1).length - 1, output);
+    }
+
     @Test void rootBufferedResponseTransfersOwnershipAndRejectsRootStreaming() throws Exception {
         String output = run("""
             pub async routine main(): void {
@@ -342,11 +376,15 @@ class NativeHttpTest {
         }
     }
     private static String run(String program, Client client) throws Exception {
+        return run(program, client, ignored -> { });
+    }
+    private static String run(String program, Client client, java.util.function.Consumer<String> observer) throws Exception {
         CompletableFuture<Integer> port = new CompletableFuture<>();
         ByteArrayOutputStream output = new ByteArrayOutputStream() {
             @Override public synchronized void write(byte[] b, int off, int len) {
                 super.write(b, off, len);
                 String text = toString(StandardCharsets.UTF_8);
+                observer.accept(text);
                 int end = text.indexOf('\n');
                 if (end >= 0 && !port.isDone()) port.complete(Integer.parseInt(text.substring(0, end).trim()));
             }
