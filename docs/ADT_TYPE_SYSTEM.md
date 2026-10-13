@@ -66,6 +66,16 @@ unconditional coverage. Coverage of an unconstrained generic or
 Nonexhaustive matches must be compile-time errors, not silent runtime
 fallthrough; missing guest variants during schema decoding must fail
 closed. Match reachability and exhaustiveness are separate proofs.
+**Cumulative reachability matters**: `true`, `false`, then `_` has
+a dead third arm even though neither earlier arm alone subsumes it.
+
+A runtime nominal/type-pattern coverage check **must not** rely solely on
+assignment compatibility. In particular `int` can widen to `float` in an
+assignment, but an `int` runtime value does not satisfy `is type float`.
+For a union, every alternative must be independently covered by a
+runtime-compatible pattern. Otherwise `on float x` could falsely prove
+exhaustive matching of `int | float`.
+
 
 ## Required future general ADT conformance
 
