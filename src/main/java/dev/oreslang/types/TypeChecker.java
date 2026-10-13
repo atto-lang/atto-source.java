@@ -1989,6 +1989,11 @@ public final class TypeChecker {
                 Type schemaType = resolve(ActorStateContract.keySchema(state), generics, self);
                 Type callbackResult =
                         inferCriticalStateCallbackResult(lambda, schemaType, env, generics, self);
+                // Until native/interpreter lowering proves an owned deep snapshot,
+                // no callback result may expose a reference-bearing value.
+                // This also catches indirect aliases and nested containers:
+                // the result type, not the spelling of 's.field', is the gate.
+                requireDetachedActorStateCallbackResult(callbackResult);
                 validateLambdaAgainstExpected(lambda,
                         new Function(List.of(schemaType), callbackResult), env, generics, self, true);
                 return callbackResult;
@@ -4057,6 +4062,33 @@ public final class TypeChecker {
         if (argument instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
         }
+    }
+
+    /**
+     * Temporary fail-closed ownership boundary for sealed actor-state loans.
+     * Primitive numbers, booleans, immutable strings and void are detached
+     * values. List/record/nominal/borrow/tuple/function/unknown results cannot
+     * leave the callback until the compiler has an explicit, proven snapshot
+     * representation. A shallow readonly projection is not a deep copy.
+     *
+     * The check occurs after result-type inference, so a local alias of a
+     * state field or a nested container cannot evade it by changing syntax.
+     */
+    private static void requireDetachedActorStateCallbackResult(Type result) {
+        if (result instanceof Primitive) return;
+        if (result instanceof StringLiteral) return;
+        if (result instanceof Union union
+                && union.options().stream().allMatch(
+                        TypeChecker::isDetachedActorStateScalarResult)) return;
+        throw new IllegalArgumentException(
+                "actor state callback result requires verified detached snapshot: " + result);
+    }
+
+    private static boolean isDetachedActorStateScalarResult(Type type) {
+        return type instanceof Primitive || type instanceof StringLiteral
+                || (type instanceof Union union
+                    && union.options().stream().allMatch(
+                            TypeChecker::isDetachedActorStateScalarResult));
     }
 
     /**
