@@ -29,9 +29,11 @@ final class OresMutexCarrierSafetyTest {
                 try (var guard = shared.tryLock().orElseThrow()) {
                     assertEquals(7, guard.value());
                 }
+                var settledFuture = shared.lockAsync();
                 assertThrows(UnsupportedOperationException.class,
-                        () -> shared.lockAsync().minimalCompletionStage(),
+                        settledFuture::minimalCompletionStage,
                         "even settled mutex Futures cannot downgrade to unguarded stages");
+                settledFuture.join().release();
                 return true;
             }).join());
             assertEquals(37, scheduler.startSync(() -> 37).join(),
