@@ -34,6 +34,19 @@ are constrained to simple `.ores` filenames and duplicate case IDs fail.
 Keep all fixtures committed. Never silently skip a source fixture or mark
 a native backend `required` based only on source parsing.
 
+## Java exact-head automated release gate
+
+The dedicated `.github/workflows/adt-exact-head.yml` workflow is scoped to
+ADT compiler/runtime changes. It records the exact Git commit and source tree,
+runs all six targeted JUnit classes (including the 4096-arm suspendable-match
+trampoline regressions), uploads Surefire reports, then runs full `mvn verify`
+on GraalVM 25. Its full suite job depends on targeted success.
+
+GitHub Actions showing `failure` with **zero executed steps** is an
+infrastructure/admission failure, not a failing compiler assertion. Check
+the run's job steps and test reports before claiming a result. Rerunning a
+failed job is not itself evidence of executable verification.
+
 ## LLVM parity plan
 
 LLVM issue [#316](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/issues/316)
