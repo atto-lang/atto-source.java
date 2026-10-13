@@ -139,10 +139,12 @@ final class ActorRuntimeDynamicPipelineIntegrationTest {
                     .add("transform", "TransformV1", domain, v1)
                     .add("sink", "Sink", domain, sink)
                     .build();
-            // Runnable::run is suitable for this synchronous HOST test only;
-            // production must inject its dedicated trusted control executor.
+            // Even in tests, typed reply decoding must never execute on a
+            // DATA/physical-finalizer carrier: a direct Runnable::run would
+            // defeat the trusted CONTROL scheduling contract.
             ActorRuntimePipelineEngine engine = new ActorRuntimePipelineEngine(
-                    runtime, Runnable::run, Map.of("Source", src, "TransformV1", v1,
+                    runtime, task -> Thread.startVirtualThread(task),
+                    Map.of("Source", src, "TransformV1", v1,
                             "TransformV2", v2, "Sink", sink));
             PipelineController controller = new PipelineController(original, engine);
             PipelineRunner first = controller.start();
@@ -226,7 +228,8 @@ final class ActorRuntimeDynamicPipelineIntegrationTest {
                     .add("sink", "Sink", domain, sink)
                     .build();
             ActorRuntimePipelineEngine failingEngine = new ActorRuntimePipelineEngine(
-                    runtime, Runnable::run, Map.of("Source", src,
+                    runtime, task -> Thread.startVirtualThread(task),
+                    Map.of("Source", src,
                             "TransformPostPublishFailure", fatalStage, "Sink", sink));
             PipelineController failedController = new PipelineController(
                     failsAfterPublication, failingEngine);
