@@ -1447,7 +1447,10 @@ public final class TypeChecker {
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.ExceptionalEffectStmt effect) {
             String keyword = effect.kind().name().toLowerCase(java.util.Locale.ROOT);
-            Type operand = deref(typeOf(effect.error(), env, generics, self));
+            // Exception payloads must be owned guest Error instances. A borrowed
+            // Error reference could escape its lexical lifetime during actor
+            // escalation or while crossing an await/supervisor boundary.
+            Type operand = typeOf(effect.error(), env, generics, self);
             // Only the actual std/error Error class identity is authoritative.
             // In particular, similarly shaped interfaces, Any/Unknown, dynamic
             // values and a forged local class named Error do not qualify.
