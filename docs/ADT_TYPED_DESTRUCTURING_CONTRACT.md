@@ -12,7 +12,10 @@ Products and sums must not be conflated:
 
 - **Product values**: finite `Tuple[T1, ...]` and closed records
   `{field: Type, ...}` can be destructured directly because their shape is
-  statically known.
+  statically known. Destructuring accepts a positional *prefix*: a pattern
+  `[int id]` can extract the first position from `Tuple[int, string]`. A
+  leading `_` skips that position. Only `...rest` captures trailing slots;
+  tuple *types* and tuple *match patterns* retain exact arity.
 - **Sums**: `Option<T>`, `Result<T,E>`, and future user-defined nominal
   `enum` variants must first select/prove a constructor with `match`.
   Unconditional `const [x] = maybe;` is not a valid sum elimination.
@@ -38,6 +41,10 @@ fnc record(): {id: int, name: string} {
 // Existing inferred form remains valid.
 const [id, name] = user();
 
+// Short positional patterns and explicit discards.
+const [int onlyId] = user();
+const [_, string onlyName] = user();
+
 // Equivalent checked annotations; never implicit casts.
 const [int id, string name] = user();
 const [id: int, name: string] = user();
@@ -53,6 +60,11 @@ const {id: int, ...tail: {name: string}} = record();
 // Inline mutability declarations preserve the existing propagation rules.
 [const int id, let name: string] = user();
 name = "Grace";
+
+// Different per-element referent-mutation permissions.
+[const int id, const string mut name] = user();
+// name = "Grace"; // invalid: const binding cannot be rebound
+// name[3] = "4";  // also invalid today: string is immutable Copy
 ```
 
 Every explicit annotation is an **upper bound on the extracted value's
@@ -116,11 +128,24 @@ The present Java mainline's `ConstructorPattern` type checker recognizes
 `Event.Created` syntax. LLVM source-level enums and typed match lowering
 are a separate, outstanding implementation task.
 
+## Writable strings require separate runtime hardening
+
+The spelling `const string mut name` is parsed and grants mutable-referent
+permission on that one binding, equivalent to `const mut string name`.
+Today's `string`/`String` is an immutable Copy value, so indexed writes like
+`name[3] = "4"` remain compile errors even when the binding has `mut`.
+A real mutable text representation needs separate backing storage, a COW or
+owned-buffer aliasing rule, Unicode scalar indexing, bounds checks, and
+Java/LLVM actor-safe AOT parity. Track it in
+[Java issue #817](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/817).
+
 ## Security, correctness and runtime invariants
 
-1. **Static shape**: a tuple projection has exactly the declared arity
-   (unless a final rest capture is present); a record projection has every
-   selected field. All members of a union must satisfy these checks.
+1. **Static shape**: every selected tuple index must exist, but unselected
+   trailing tuple positions need not be mentioned. A final rest captures the
+   remaining tail. Every selected record field must exist. All members of a
+   union must admit the projection. Tuple *types* and recursive tuple match
+   patterns still require exact arity.
 2. **Failure atomicity**: evaluate the source once; validate its runtime
    shape/bounds/constructor before making any lexical binding observable.
    Failed destructuring must not leave half-initialized locals.
