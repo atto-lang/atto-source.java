@@ -10,6 +10,7 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresKeyedMap;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -4353,7 +4354,46 @@ public final class OresEvalRootNode extends RootNode {
             return invokableInvocation(invokable, args);
         }
 
+        // Runtime key-domain check mirrors TypeChecker's deliberately narrow
+        // first-stage Map<K,V> set of reifiable key types. Nonreifiable
+        // generic/alias keys fail closed until type descriptors are available.
+        private Object newGuestMap(Ast.TypeRef type) {
+            if (type.inferArguments() || type.arguments().size() != 2) {
+                throw new IllegalArgumentException("Map<K,V> requires two explicit type arguments");
+            }
+            Ast.TypeRef key = type.arguments().getFirst();
+            if (!key.isUnion()) {
+                if (key.arguments().isEmpty() && !key.inferArguments()) {
+                    if (key.name().equals("Symbol")) return OresKeyedMap.symbolKeys();
+                    if (key.name().equals("String") || key.name().equals("string")) {
+                        return OresKeyedMap.stringKeys();
+                    }
+                }
+                throw new IllegalArgumentException("unsupported runtime Map key domain");
+            }
+            if (key.arguments().size() == 2) {
+                Ast.TypeRef a = key.arguments().get(0);
+                Ast.TypeRef b = key.arguments().get(1);
+                boolean aSymbol = a.name().equals("Symbol") && a.arguments().isEmpty() && !a.inferArguments();
+                boolean bSymbol = b.name().equals("Symbol") && b.arguments().isEmpty() && !b.inferArguments();
+                boolean aString = (a.name().equals("String") || a.name().equals("string"))
+                        && a.arguments().isEmpty() && !a.inferArguments();
+                boolean bString = (b.name().equals("String") || b.name().equals("string"))
+                        && b.arguments().isEmpty() && !b.inferArguments();
+                if ((aSymbol && bString) || (bSymbol && aString)) {
+                    return OresKeyedMap.stringOrSymbolKeys();
+                }
+            }
+            throw new IllegalArgumentException("unsupported runtime Map key union");
+        }
+
         private Object indexValue(Object receiver, Object index) {
+            if (receiver instanceof OresKeyedMap<?, ?> map) {
+                if (!map.containsKey(index)) {
+                    throw new IllegalArgumentException("unknown typed Map key");
+                }
+                return map.get(index);
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(
@@ -4439,6 +4479,11 @@ public final class OresEvalRootNode extends RootNode {
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
+                if (receiver instanceof OresKeyedMap<?, ?> map) {
+                    @SuppressWarnings("unchecked")
+                    OresKeyedMap<Object, Object> typed = (OresKeyedMap<Object, Object>) map;
+                    return typed.put(key, value);
+                }
                 if (receiver instanceof List<?> raw
                         && key instanceof Number number) {
                     @SuppressWarnings("unchecked")
@@ -4457,6 +4502,11 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("Map")) {
+                if (!args.isEmpty()) throw new IllegalArgumentException(
+                        "new Map<K,V>() takes no constructor arguments");
+                return newGuestMap(created.type());
+            }
             if (created.type().name().equals("Array")
                     || created.type().name().equals("List")) {
                 if (!args.isEmpty()) {
@@ -6084,6 +6134,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
+                    if (receiver instanceof OresKeyedMap<?, ?> map) {
+                        @SuppressWarnings("unchecked")
+                        OresKeyedMap<Object, Object> typed = (OresKeyedMap<Object, Object>) map;
+                        return typed.put(index, value);
+                    }
                     if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
                     int i = Math.toIntExact(number.longValue());
                     if (receiver instanceof List<?> raw) {
@@ -6249,6 +6304,12 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("Map")) {
+                    if (!created.arguments().isEmpty()) {
+                        throw new IllegalArgumentException("new Map<K,V>() takes no constructor arguments");
+                    }
+                    return newGuestMap(created.type());
+                }
                 if (created.type().name().equals("Array")
                         || created.type().name().equals("List")) {
                     if (!created.arguments().isEmpty()) {
