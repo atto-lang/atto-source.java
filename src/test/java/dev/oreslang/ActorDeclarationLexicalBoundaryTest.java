@@ -281,11 +281,11 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
-    void actorSuperclassRemainsSealedAndAmbientSiblingTypesStayForbidden() {
-        // Superclasses can contribute hidden instance fields and inherited
-        // actor-unsafe methods. Reject until the inherited layout and lane
-        // have a trusted proof, even if this particular parent is stateless.
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+    void storageFreeSameKindActorParentIsAllowedButIsolationKindCannotChange() {
+        // A same-kind non-serial parent with no instance storage is verified
+        // by ActorStateContract. Inherited mutable state and serial-lane
+        // inheritance remain separately forbidden.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 shared actor Parent {
                   pub fnc inherited(): int { return 1; }
                 }
@@ -304,10 +304,7 @@ final class ActorDeclarationLexicalBoundaryTest {
                         shared actor Child extends Parent {
                         }
                         """)));
-        // Until inheritance is verified, the sealed state/lane boundary
-        // rejects both same-kind and mixed-kind superclass relationships.
-        // Do not weaken this check just to reach the later kind validator.
-        assertTrue(mismatch.getMessage().contains("inherited state/lane"),
+        assertTrue(mismatch.getMessage().contains("isolation kind"),
                 mismatch.getMessage());
     }
 
