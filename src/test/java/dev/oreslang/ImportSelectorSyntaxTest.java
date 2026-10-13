@@ -72,7 +72,7 @@ final class ImportSelectorSyntaxTest {
         Path main = temp.resolve("main.ores");
 
         Files.writeString(child, """
-                define module Service
+                define pub module Service
                   pub fnc value(): int { return 1; }
                 end
 
@@ -115,7 +115,7 @@ final class ImportSelectorSyntaxTest {
         Path main = temp.resolve("main.ores");
 
         Files.writeString(child, """
-                define module Models as
+                define pub module Models as
                   pub define class Box as
                     pub let int value = 7;
                   end
