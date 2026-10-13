@@ -398,6 +398,8 @@ final class PatternMatchingHardeningTest {
             }
             source.append(" end }");
             final String candidate = source.toString();
+            assertDoesNotThrow(() -> Parser.parse(candidate),
+                    "generated finite-domain fixture must parse (mask=" + mask + ")");
             assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(candidate)),
                     "incomplete Option<bool> partition compiled (mask=" + mask + ")");
@@ -422,6 +424,8 @@ final class PatternMatchingHardeningTest {
             }
             source.append(" end }");
             final String candidate = source.toString();
+            assertDoesNotThrow(() -> Parser.parse(candidate),
+                    "generated finite-domain fixture must parse (mask=" + mask + ")");
             assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(candidate)),
                     "incomplete Result<bool,bool> partition compiled (mask=" + mask + ")");
