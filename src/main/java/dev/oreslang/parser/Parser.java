@@ -1739,7 +1739,11 @@ public final class Parser {
             throw error(peek(), "typed exceptional effect '" + peek().lexeme()
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
-        if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
+        if (looksLikeStaticSelectStatement()) {
+            if (!check(DO))
+                throw error(peek(), "static select used as a statement requires 'do select'; use 'return select' for a value-returning dispatch");
+            return parseStaticSelectStatement();
+        }
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
         if (check(CB) && checkNext(SELECT)) {
@@ -1809,6 +1813,33 @@ public final class Parser {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
         if (match(RETURN)) {
+            // Block-style value dispatch is explicitly spelled "return";
+            // each arm must return an expression to the enclosing callable.
+            // Lower onto the existing proven control-flow AST instead of
+            // accidentally admitting a bare match/switch/select statement.
+            if (match(MATCH)) {
+                Ast.MatchStmt armDispatch = parseMatch();
+                for (Ast.MatchArm arm : armDispatch.arms())
+                    requireReturningDispatchArm(arm.body(), "return match");
+                return armDispatch;
+            }
+            if (match(SWITCH)) {
+                Ast.SwitchStmt armDispatch = parseSwitch();
+                if (armDispatch.defaultBody().isEmpty())
+                    throw error(previous(), "return switch requires a default arm");
+                for (Ast.SwitchCase arm : armDispatch.cases())
+                    requireReturningDispatchArm(arm.body(), "return switch");
+                requireReturningDispatchArm(armDispatch.defaultBody(), "return switch default");
+                return armDispatch;
+            }
+            if (looksLikeStaticSelectStatement()) {
+                Ast.SelectStmt armDispatch = parseStaticSelectStatement();
+                if (armDispatch.mode() == Ast.WaitMode.NONBLOCKING)
+                    throw error(previous(), "return nb select with static callback arms is unsupported; use return nb select from cases");
+                for (Ast.SelectArm arm : armDispatch.arms())
+                    requireReturningDispatchArm(arm.body(), "return select");
+                return armDispatch;
+            }
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
@@ -1853,8 +1884,14 @@ public final class Parser {
             return new Ast.ForStmt(null, condition, null, parseLoopBody());
         }
         if (match(IF)) return parseIf();
-        if (match(MATCH)) return parseMatch();
-        if (match(SWITCH)) return parseSwitch();
+        if (match(DO)) {
+            if (match(MATCH)) return parseMatch();
+            if (match(SWITCH)) return parseSwitch();
+            throw error(previous(), "'do' requires match, switch, or a braced select statement");
+        }
+        if (check(MATCH) || check(SWITCH)) {
+            throw error(peek(), "bare match/switch is not allowed; use 'do match', 'return match', 'do switch' or 'return switch'");
+        }
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
@@ -1868,6 +1905,13 @@ public final class Parser {
         Ast.Expr expression = parseExpression();
         consumeExpressionStatementTerminator(expression, "expression statement should end with ';'");
         return new Ast.ExprStmt(expression);
+    }
+
+    private void requireReturningDispatchArm(List<Ast.Stmt> body, String context) {
+        if (body.isEmpty() || !(body.getLast() instanceof Ast.ReturnStmt result)
+                || result.value() == null) {
+            throw error(previous(), context + " requires each arm to end with 'return <value>;' (including fallback)");
+        }
     }
 
     private boolean looksLikeImmediateChannelExpression() {
@@ -2691,6 +2735,8 @@ public final class Parser {
         //     on Pattern -> { ... }
         //   end
         //
+        // Explicit do/return is mandatory. Preserve legacy arm-pattern
+        // parsing only after the caller supplies one of those prefixes.
         // Preserve the pre-over grammar as a compatibility surface. Legacy
         // match remains proof-checked unless the historical contextual
         // `first` marker is present.
