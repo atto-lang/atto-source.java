@@ -38,6 +38,100 @@ final class CoreAssertTest {
             """));
     }
 
+    @Test void qualifiedDoubleColonAndCallSiteTrapAreEquivalent() throws Exception {
+        for (String qualifier : new String[]{".", "::"}) {
+            assertEquals("truetruetruetruetruetrue", run("""
+                pub routine main(): void {
+                    const success = Assert%sequal_throws(10, 10);
+                    const wrapped = trap Assert%sequal_throws(10, 10);
+                    const failure = trap Assert%sequal_throws(10, 20);
+                    stdio.stdout.write(success);
+                    stdio.stdout.write(wrapped.is_some());
+                    stdio.stdout.write(wrapped.unwrap());
+                    stdio.stdout.write(failure.is_none());
+                    stdio.stdout.write(Assert%sequal(3, 3));
+                    stdio.stdout.write(Assert%snot_equal(3, 4));
+                    return;
+                }
+                """.formatted(qualifier, qualifier, qualifier, qualifier, qualifier)
+                ));
+        }
+    }
+
+    @Test void callSiteTrapNeverCatchesPanic() {
+        for (String qualifier : new String[]{".", "::"}) {
+            Exception failure = assertThrows(Exception.class, () -> run("""
+                pub routine main(): void {
+                    const absent = trap Assert%sequal_throws(1, 2);
+                    const not_catchable = trap absent.unwrap();
+                    stdio.stdout.write(not_catchable);
+                    return;
+                }
+                """.formatted(qualifier)));
+            assertTrue(failure.getMessage().contains("Option::unwrap"), failure::toString);
+        }
+    }
+
+    @Test void callSiteTrapAfterCooperationPreservesSuccessAndAbsence() throws Exception {
+        assertEquals("truetrue", run("""
+            pub async fnc main(): void {
+                rt cooperate;
+                const success = trap Assert::equal_throws(10, 10);
+                const failure = trap Assert.equal_throws(10, 20);
+                stdio.stdout.write(success.is_some());
+                stdio.stdout.write(failure.is_none());
+                return;
+            }
+            """));
+    }
+
+    @Test void callSiteTrapAfterCooperationDoesNotMaskPanic() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+            pub async fnc main(): void {
+                rt cooperate;
+                const absent = trap Assert.equal_throws(10, 20);
+                const blocked = trap absent.unwrap();
+                stdio.stdout.write(blocked);
+                return;
+            }
+            """));
+        assertTrue(failure.getMessage().contains("Option::unwrap"), failure::toString);
+    }
+
+    @Test void trapExpressionPreservesLinkedCallReachabilityAndExplicitOptionType() throws Exception {
+        assertEquals("truetrue", run("""
+            fnc failure_by_name(): bool {
+                return Assert::equal_throws(2, 3);
+            }
+            pub routine main(): void {
+                const missing: Option<bool> = trap failure_by_name();
+                const present: Option<bool> = trap Assert.equal_throws(3, 3);
+                stdio.stdout.write(missing.is_none());
+                stdio.stdout.write(present.is_some());
+                return;
+            }
+            """));
+    }
+
+    @Test void trapExpressionIsNotAnImplicitBooleanOrBorrowEscape() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+            pub fnc illegal(): bool { return trap 1; }
+            """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+            pub fnc illegal(int x): Option<int> { return trap &x; }
+            """));
+    }
+
+    @Test void doubleColonDoesNotConfuseTypeAnnotationsOrTernary() throws Exception {
+        assertEquals("true", run("""
+            pub routine main(): void {
+                const result: bool = Assert::equal(1, 1);
+                stdio.stdout.write(result ? true : false);
+                return;
+            }
+            """));
+    }
+
     @Test void trapPreservesSuccessAndCatchesEveryAssertionFailure() throws Exception {
         assertEquals("truetruetruetruetruetruetruetruetruetruetrue", run("""
             trap fnc success(): bool {
