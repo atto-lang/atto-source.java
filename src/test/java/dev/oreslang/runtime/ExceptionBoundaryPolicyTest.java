@@ -50,6 +50,8 @@ final class ExceptionBoundaryPolicyTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new ExceptionBoundaryPolicy.Terminal(THROW, THROW, 0, true, 1));
         assertThrows(IllegalArgumentException.class,
+                () -> new ExceptionBoundaryPolicy.Terminal(RAISE, RAISE, 0, true, 1));
+        assertThrows(IllegalArgumentException.class,
                 () -> new ExceptionBoundaryPolicy.Terminal(PANIC, CANCEL, 0, true, 1));
         assertThrows(IllegalArgumentException.class,
                 () -> new ExceptionBoundaryPolicy.Terminal(RETURN, RETURN, 0, true, 0));
