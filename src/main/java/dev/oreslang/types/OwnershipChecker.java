@@ -822,6 +822,13 @@ public final class OwnershipChecker {
             if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
+            // Constructor self is a capability over an object not yet
+            // published. It may be used as a receiver for checked field
+            // accesses, but must not be moved, sent, returned or captured
+            // as an ordinary message/function argument.
+            if (consuming && initializingClass != null && name.name().equals("self")) {
+                throw error("partially initialized constructor self cannot escape");
+            }
             if (consuming && isActorConfinedBorrow(state)) {
                 throw error("actor self is a non-escapable mailbox capability; access its fields/methods inside the actor turn");
             }
