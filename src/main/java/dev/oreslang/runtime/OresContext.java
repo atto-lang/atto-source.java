@@ -46,6 +46,10 @@ public final class OresContext implements AutoCloseable {
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
+    // One startup gate per isolate. Reentrant nested lazy imports are permitted,
+    // but concurrent initialization attempts fail rather than deadlock carrier
+    // threads on opposing A -> B and B -> A monitor acquisition orders.
+    private final ReentrantLock linkedInitializationGate = new ReentrantLock();
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
     // Exactly one immutable code image per linked source unit for all actor kinds.
     // Per-actor mutable heaps/closures are never published into this store.
@@ -248,6 +252,23 @@ public final class OresContext implements AutoCloseable {
 
     public synchronized Object linkedCodeUnit(String codeUnitId) {
         return linkedCodeUnits.get(codeUnitId);
+    }
+
+    /**
+     * Enter the isolate-wide lazy module startup critical section without
+     * parking a scheduler carrier. The same thread may recursively initialize
+     * a different unit, but each evaluator rejects reentry of its own init().
+     */
+    public void enterLinkedInitialization(String codeUnitId) {
+        if (!linkedInitializationGate.tryLock()) {
+            throw new IllegalStateException(
+                    "concurrent lazy initialization of code unit '" + codeUnitId
+                            + "'; retry after the other startup turn completes");
+        }
+    }
+
+    public void leaveLinkedInitialization() {
+        linkedInitializationGate.unlock();
     }
 
     public synchronized boolean hasLinkedCodeUnit(String codeUnitId) {
