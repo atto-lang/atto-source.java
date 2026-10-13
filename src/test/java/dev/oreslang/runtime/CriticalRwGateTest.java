@@ -74,13 +74,14 @@ final class CriticalRwGateTest {
                         failure.compareAndSet(null, error);
                     }
                 });
-                // Wait until external close is queued or begins in the old
-                // implementation, then allow the first callback to finish.
-                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-                while (externalClose.getState() == Thread.State.NEW
-                        && System.nanoTime() < deadline) {
-                    Thread.onSpinWait();
-                }
+                // The off-carrier registration must be nonblocking while
+                // the existing cleanup phase is active. If it executes its
+                // callback inline, the external thread will remain stuck.
+                externalClose.join(1_000);
+                assertFalse(externalClose.isAlive(),
+                        "nested close must enqueue rather than run concurrently");
+                assertEquals(1L, nestedCloseEntered.getCount(),
+                        "nested callback must not run before the first exits");
                 releaseFirstClose.countDown();
                 assertTrue(nestedCloseEntered.await(5, TimeUnit.SECONDS));
                 actor.send("second");
