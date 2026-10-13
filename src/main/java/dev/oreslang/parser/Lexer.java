@@ -18,7 +18,7 @@ public final class Lexer {
         KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("do", DO);
         KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("new", NEW); KEYWORDS.put("spawn", SPAWN); KEYWORDS.put("stop", STOP); KEYWORDS.put("done", DONE);
         KEYWORDS.put("await", AWAIT); KEYWORDS.put("rt", RT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("suspends", SUSPENDS); KEYWORDS.put("generator", GENERATOR); KEYWORDS.put("nlex", NLEX); KEYWORDS.put("trap", TRAP); KEYWORDS.put("actor", ACTOR); KEYWORDS.put("isoactor", ISOACTOR); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
-        KEYWORDS.put("for", FOR); KEYWORDS.put("of", OF); KEYWORDS.put("loop", LOOP); KEYWORDS.put("block", BLOCK); KEYWORDS.put("break", BREAK); KEYWORDS.put("continue", CONTINUE); KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("elif", ELSEIF); KEYWORDS.put("switch", SWITCH); KEYWORDS.put("match", MATCH); KEYWORDS.put("matches", MATCHES); KEYWORDS.put("is", IS); KEYWORDS.put("default", DEFAULT);
+        KEYWORDS.put("while", WHILE); KEYWORDS.put("for", FOR); KEYWORDS.put("of", OF); KEYWORDS.put("loop", LOOP); KEYWORDS.put("block", BLOCK); KEYWORDS.put("break", BREAK); KEYWORDS.put("continue", CONTINUE); KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("elif", ELSEIF); KEYWORDS.put("switch", SWITCH); KEYWORDS.put("match", MATCH); KEYWORDS.put("matches", MATCHES); KEYWORDS.put("is", IS); KEYWORDS.put("default", DEFAULT);
         KEYWORDS.put("eq", EQ); KEYWORDS.put("neq", NEQ);
         KEYWORDS.put("nb", NB); KEYWORDS.put("select", SELECT); KEYWORDS.put("readch", READCH); KEYWORDS.put("writech", WRITECH);
         KEYWORDS.put("cb", CB); KEYWORDS.put("shared", SHARED); KEYWORDS.put("untrusted", UNTRUSTED);
@@ -30,6 +30,9 @@ public final class Lexer {
         KEYWORDS.put("panic", PANIC); KEYWORDS.put("recover", RECOVER); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
         KEYWORDS.put("let", LET); KEYWORDS.put("mut", MUT); KEYWORDS.put("self", SELF); KEYWORDS.put("true", TRUE); KEYWORDS.put("false", FALSE);
         KEYWORDS.put("null", NULL); KEYWORDS.put("obj", OBJ); KEYWORDS.put("arr", ARR);
+        // Accelerator/host execution domains are reserved even before backend lowering.
+        // They must not be interpreted as ordinary CPU-side identifiers or calls.
+        KEYWORDS.put("gpu", GPU); KEYWORDS.put("cpu", CPU); KEYWORDS.put("quantum", QUANTUM);
     }
 
     private final String source;
@@ -63,7 +66,7 @@ public final class Lexer {
                     add(ELLIPSIS);
                 } else add(DOT);
             }
-            case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(PLUS);
+            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE);
             case '-' -> add(match('>') ? ARROW : MINUS);
