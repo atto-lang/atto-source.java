@@ -17,37 +17,50 @@ Run the checked transfer from trusted, reviewed source, not an untrusted PR
 checkout. If an approval policy can be modified by the code under test, treat
 the result as untrusted.
 
-## Only supported shell transfer entry point
+## Destination-bound source snapshot publisher
 
-Once a private destination has been approved in the policy file, invoke a
-reviewed transfer command **as argv**, never by `eval`:
+The only supported transfer entry point is **not an arbitrary command
+launcher**. It accepts an approved destination, a bounded local source
+directory, and a new isolated CI branch:
 
 ```bash
-scripts/run-in-private-ci-destination.sh trusted-org/private-ci -- \
-  your-reviewed-transfer-command --destination trusted-org/private-ci
+scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
+  --source-dir ./verified-source-tree \
+  --branch ci/oreslang-verified-20261013
 ```
 
-The wrapper invokes a fresh authenticated GitHub API check using the
-`github.com` host, and requires matching `full_name`, `visibility=private`,
-and `private=true`. Public, internal, inaccessible, unexpected or unapproved
-repositories fail *before* the transfer command executes. The checked-in
-policy rejects symlinks, malformed entries, wildcards, and unexpected fields.
+The checked-in policy file must explicitly list the destination. The
+publisher checks the live GitHub identity and `visibility=private` /
+`private=true` before sending any private bytes and rechecks visibility
+immediately before each write. Every GitHub API write is constructed from
+that **same validated owner/repo**, rather than a caller-provided URL, Git
+remote, shell command or separate destination argument. It creates blobs,
+a tree, a commit, and a **new** `ci/oreslang-*` ref under the fixed
+`private-oreslang-source/` prefix. Existing branches, including `main`,
+are never updated.
 
-The wrapper protects **only shell transfer paths that invoke it**. It cannot
-intercept connector/API calls, prevent all time-of-check/time-of-use changes,
-or undo previously uploaded Git objects. The reviewed transfer itself must
-revalidate its *actual* destination, use tightly scoped credentials, and limit
-artifact/log retention. Do not move the transfer to a different repository to
-bypass exhausted Actions minutes.
+The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
+per file, rejects symbolic links and `.git` directories, and does not
+print source contents in API failure output. API failure before ref
+creation can leave unreferenced Git objects in the private destination;
+a follow-up retention policy is still needed.
 
-Test without contacting GitHub or transferring source:
+It does **not** intercept arbitrary connector/API tool writes, cannot
+completely prevent visibility changes between API checks, and cannot
+guarantee that the source directory itself is free of secrets. Run only
+from an authorized protected checkout using narrowly scoped credentials.
+There is no permission to use a public repository when CI minutes run out.
+
+Test without network access or sending any source:
 
 ```bash
 bash scripts/test-private-ci-destination.sh
+python3 scripts/test-publish-private-ci-source.py
 ```
 
-The test uses an isolated fixture policy in a temporary checkout; it never
-modifies the real deny-by-default approval file.
+The Bash test uses a temporary policy checkout; Python tests mock all GitHub
+API operations. The real policy remains empty and **no destination is
+authorized** unless separately reviewed.
 
 ## Active disclosure incident
 

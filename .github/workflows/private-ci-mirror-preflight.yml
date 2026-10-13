@@ -5,6 +5,8 @@ on:
       - 'scripts/check-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/run-in-private-ci-destination.sh'
+      - 'scripts/publish-private-ci-source.py'
+      - 'scripts/test-publish-private-ci-source.py'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/CODEOWNERS'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
@@ -13,6 +15,8 @@ on:
       - 'scripts/check-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/run-in-private-ci-destination.sh'
+      - 'scripts/publish-private-ci-source.py'
+      - 'scripts/test-publish-private-ci-source.py'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/CODEOWNERS'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
@@ -25,4 +29,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Assert private CI guard fail-closed behavior
-        run: bash scripts/test-private-ci-destination.sh
+        run: |
+          bash scripts/test-private-ci-destination.sh
+          python3 scripts/test-publish-private-ci-source.py
