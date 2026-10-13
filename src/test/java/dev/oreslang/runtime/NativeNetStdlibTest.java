@@ -23,6 +23,27 @@ final class NativeNetStdlibTest {
         assertFalse(source.contains("http.listen"));
     }
 
+    @Test void networkCapabilityDenialFailsBeforeSocketAdmission() throws Exception {
+        Path entry = Files.createTempFile("ores-net-denied-", ".ores");
+        try {
+            Files.writeString(entry, """
+                import module net_core from "std/net";
+                pub async routine main(): void {
+                  val NioTcpListener listener = net_core.listen_loopback(0, 8, 2, 4);
+                  return;
+                }
+                """);
+            RuntimeException rejection = assertThrows(RuntimeException.class,
+                    () -> LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                            ExecutionProfile.serverJit(),
+                            new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+            assertTrue(rejection.toString().contains("NETWORK"),
+                    () -> "expected NET capability denial, got " + rejection);
+        } finally {
+            Files.deleteIfExists(entry);
+        }
+    }
+
     @Test void realGuestAcceptReadWriteThroughNonblockingKernel() throws Exception {
         Path entry = Files.createTempFile("ores-net-guest-", ".ores");
         ExecutorService runner = Executors.newFixedThreadPool(2);
