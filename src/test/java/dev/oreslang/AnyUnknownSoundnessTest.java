@@ -156,6 +156,21 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void structuralParametersAreReadOnlyEvenWhenCallerOwnsMutableObject() {
+        reject("""
+                define module app
+                  define interface HasValue
+                    value: int;
+                  end
+                  fnc invalid(structural HasValue v): void {
+                    v.value = 7;
+                    return;
+                  }
+                end
+                """, "readonly structural/inferred record view");
+    }
+
+    @Test
     void directInternalInferenceHoleDoesNotImpersonateKnownValue() {
         reject("fnc bad(int value): int { return unrelated(value); }", "unknown name");
         assertFalse(Types.isAssignable(Types.UnknownValue.INSTANCE, Types.Primitive.INT));

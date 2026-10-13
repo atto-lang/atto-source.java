@@ -83,7 +83,9 @@ For example, mutable `{foo: int}` must never become mutable `{foo: Any}`,
 since assigning a string through the second view would invalidate the first.
 Readonly views preserve structural width and safe value covariance; compiler
 generated method slots continue to use function parameter contravariance and
-result covariance. Future richer per-field `pub val`/writable capability
+result covariance. Structural parameters are now explicitly typed as readonly
+record views in the callee, so `p.foo = value` cannot silently mutate an
+underlying inferred or nominal object through the read-only parameter. Future richer per-field `pub val`/writable capability
 metadata should replace the coarse record-level conservative rule.
 
 The direct unresolved compiler inference sentinel is rejected when it is the

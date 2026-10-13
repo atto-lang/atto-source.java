@@ -4454,7 +4454,7 @@ public final class TypeChecker {
                 unwrapMutexGuard(deref(rawReceiver)));
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
-                    "cannot mutate a infer struct value; inferred structs are closed and readonly");
+                    "cannot mutate a readonly structural/inferred record view");
         }
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
@@ -6331,11 +6331,11 @@ public final class TypeChecker {
         }
 
         Type concrete = resolve(param.type(), generics, self);
-        if (concrete instanceof Record) {
-            // Inline structural shapes are already the canonical read-only
-            // structural contract. They do not need a nominal class/interface
-            // lookup and may safely view readonly inferred records.
-            return concrete;
+        if (concrete instanceof Record record) {
+            // Structural parameters are observation-only borrowed views.
+            // Make that capability explicit in the type environment: merely
+            // declaring the parameter VAL does not prevent p.foo = value.
+            return new Record(record.members(), true);
         }
         Ast.InterfaceDecl iface = findInterface(param.type().name());
         if (iface != null) {
@@ -6343,9 +6343,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("structural interface must resolve to a named type");
             }
             Type shape = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
-            return substituteGenerics(
+            Record specialized = (Record) substituteGenerics(
                     shape,
                     genericBindings(iface.genericParameters(), named.arguments(), "interface " + iface.name()));
+            return new Record(specialized.members(), true);
         }
 
         Ast.ClassDecl klass = findClass(param.type().name());
@@ -6359,7 +6360,8 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("structural class must resolve to a named type");
             }
             Type shape = publicClassShape(klass, new LinkedHashSet<>());
-            return substituteGenerics(shape, classGenericBindings(klass, named));
+            Record specialized = (Record) substituteGenerics(shape, classGenericBindings(klass, named));
+            return new Record(specialized.members(), true);
         }
 
         throw new IllegalArgumentException(
