@@ -59,7 +59,7 @@ final class SourceCriticalActorStateTest {
             define actor Snapshot as
                 state { items: List[int] = [1, 2]; }
 
-                receive(ActorMail<String> mail): void {
+                receive(ActorMail<String> mail): void with state.read {
                     val detached = self.handle_state(|s| -> { return s.items; });
                     detached[0] = 99;
                     val current = self.handle_state(|s| -> { return s.items; });
