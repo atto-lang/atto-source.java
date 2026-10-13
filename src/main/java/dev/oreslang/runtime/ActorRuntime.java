@@ -1491,6 +1491,11 @@ public final class ActorRuntime implements AutoCloseable {
         Object prepared = isPrivateKind(cell.kind)
                 ? isolateCopy(value)
                 : freezeForTransport(value);
+        // Validate the copied snapshot too: caller-owned collections may mutate
+        // between the first admission walk and the transport copy.
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
+        }
         long bytes = estimateFrozenBytes(
                 prepared,
                 new IdentityHashMap<>(),
@@ -4986,6 +4991,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         Object prepared = isPrivateKind(cell.kind) ? isolateCopy(message) : freezeForTransport(message);
+        // Never enqueue a snapshot that has not itself passed the destination
+        // Symbol allowlist, even if a mutable sender graph changed mid-copy.
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
+        }
         Runnable release;
         if (isPrivateKind(cell.kind)) {
             MemoryReservation reservation;
