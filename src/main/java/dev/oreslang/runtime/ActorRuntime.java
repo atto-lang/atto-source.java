@@ -1355,7 +1355,9 @@ public final class ActorRuntime implements AutoCloseable {
     private record LinearPipeline(
             List<ActorRef<Object>> stages,
             String nominalIdentity,
-            AtomicInteger phase) {
+            TaggedMessageCodec codec,
+            AtomicInteger phase,
+            AtomicReference<byte[]> completedReplyFrame) {
         ActorRef<Object> source() { return stages.getFirst(); }
         int count() { return stages.size(); }
         int indexOf(ActorId id) {
@@ -1416,6 +1418,24 @@ public final class ActorRuntime implements AutoCloseable {
          * typed forward/reverse route. Cancellation of this observation never
          * cancels the owned actor group. */
         public OresFuture<Void> getDone() { return physicalDone; }
+
+        /**
+         * Return the source's actual compiler-validated backward message,
+         * rather than manufacturing a receipt from delivery completion.
+         * Each observer decodes a fresh value from the runtime-owned frame.
+         * Neither premature observation nor consumer cancellation can publish
+         * a result or cancel the actors.
+         */
+        public java.util.concurrent.CompletionStage<Object> completedReply() {
+            return physicalDone.asCompletionStage().thenApply(ignored -> {
+                byte[] committed = route.completedReplyFrame().get();
+                if (route.phase().get() != 2 * route.count() || committed == null) {
+                    throw new IllegalStateException(
+                            "pipeline completed without a compiler-validated typed reply");
+                }
+                return route.codec().decode(committed.clone());
+            });
+        }
     }
 
     /** The runtime-internal delivery marker never escapes this source
@@ -1545,8 +1565,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             List<ActorRef<Object>> linked = refs.stream()
                     .map(ref -> (ActorRef<Object>) ref).toList();
-            route = new LinearPipeline(linked, identity,
-                    new AtomicInteger(0));
+            TaggedMessageCodec sourceCodec =
+                    (TaggedMessageCodec) actors.get(refs.getFirst().id()).mailboxSchema;
+            route = new LinearPipeline(linked, identity, sourceCodec,
+                    new AtomicInteger(0), new AtomicReference<>());
             for (ActorRef<?> ref : refs) linearPipelines.put(ref.id(), route);
         }
         }
@@ -1629,6 +1651,21 @@ public final class ActorRuntime implements AutoCloseable {
                     || !route.stages().get(1).id().equals(cell.activeMail.sender().orElse(null))) {
                 throw new SecurityException(
                         "pipeline source may finish only on an authorized upstream result");
+            }
+            // Capture the authenticated reverse DATA on the source's own
+            // receive turn, while its compiler-owned nominal codec is alive.
+            // Never alias the guest message graph in an observable result.
+            Object received = cell.activeMail.value();
+            if (!(received instanceof TaggedMessageCodec.TaggedValue)) {
+                throw new SecurityException("pipeline result is not a nominal typed message");
+            }
+            byte[] frame = route.codec().encode(received);
+            if (frame.length == 0 || frame.length > 1024 * 1024) {
+                throw new SecurityException("pipeline result exceeds bounded reply frame");
+            }
+            if (route.phase().get() != 2 * route.count() - 1
+                    || !route.completedReplyFrame().compareAndSet(null, frame.clone())) {
+                throw new SecurityException("pipeline source result already committed or out of phase");
             }
             advancePipelinePhase(route, 2 * route.count() - 1, 2 * route.count());
         }
