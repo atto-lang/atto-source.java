@@ -1974,6 +1974,10 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public Optional<Throwable> failure() {
             requireSupervisorContext("read raw actor Throwable failure");
+            if (OresScheduler.current() != null) {
+                throw new SecurityException(
+                        "Oreslang task/root turns cannot read a raw actor Throwable");
+            }
             return Optional.ofNullable(terminationCause.get());
         }
 
