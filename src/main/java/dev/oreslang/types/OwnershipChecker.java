@@ -875,7 +875,15 @@ public final class OwnershipChecker {
         // owner type) must not erase a borrowed view's provenance. Otherwise
         // a stored Box binding could be rt take'n from a lexical &Box.
         if (isBorrowValue(value) && !storedType.isBorrow()) {
-            throw error("borrowed value cannot be bound as an owned type; preserve the borrowed type and lifetime");
+            VarState root = value.borrowSource == null ? null : ownershipRoot(value.borrowSource);
+            if (binding.declaredType() == null && root != null && root.origin == Origin.PARAM
+                    && root.debugName.equals("self")) {
+                // Exact receiver aliases retain their borrow; their nominal
+                // type is a self proof, not authority to manufacture an owner.
+                storedType = Ast.TypeRef.borrowed(storedType, value.kind == ValueKind.MUT_BORROW);
+            } else {
+                throw error("borrowed value cannot be bound as an owned type; preserve the borrowed type and lifetime");
+            }
         }
         if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");

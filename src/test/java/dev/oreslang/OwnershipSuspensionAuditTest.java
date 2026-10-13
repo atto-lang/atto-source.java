@@ -160,9 +160,8 @@ final class OwnershipSuspensionAuditTest {
 
     @Test void delegatedGeneratorCannotExportBorrowedElement() {
         reject(BOX + """
-                fnc fabricate(): Iterator<borrow Box> { return null; }
-                gen* fnc bad(): Iterator<borrow Box> {
-                  yield* fabricate();
+                gen* fnc bad(Iterator<borrow Box> source): Iterator<borrow Box> {
+                  yield* source;
                   return;
                 }
                 """, "cannot yield borrowed elements");
@@ -170,9 +169,8 @@ final class OwnershipSuspensionAuditTest {
 
     @Test void delegatedGeneratorCannotHideBorrowInNestedElement() {
         reject(BOX + """
-                fnc fabricate(): Iterator<Option<borrow Box>> { return null; }
-                gen* fnc bad(): Iterator<Option<borrow Box>> {
-                  yield* fabricate();
+                gen* fnc bad(Iterator<Option<borrow Box>> source): Iterator<Option<borrow Box>> {
+                  yield* source;
                   return;
                 }
                 """, "cannot yield borrowed elements");
@@ -180,9 +178,8 @@ final class OwnershipSuspensionAuditTest {
 
     @Test void delegatedOwnedScalarElementRemainsValid() {
         check("""
-                fnc fabricate(): Iterator<int> { return null; }
-                gen* fnc good(): Iterator<int> {
-                  yield* fabricate();
+                gen* fnc good(Iterator<int> source): Iterator<int> {
+                  yield* source;
                   return;
                 }
                 """);
