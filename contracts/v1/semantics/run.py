@@ -2,7 +2,8 @@
 """Independent compiler admission, diagnostic class and native-result contract runner.
 
 Semantics here belong to the suite, not either compiler implementation.
-Only the LLVM backend currently has a native exit-result adapter.
+Both LLVM native execution and the explicitly configured Graal guest adapter
+require real compilation and execution before a native_exit case can pass.
 """
 import argparse
 import hashlib
@@ -63,8 +64,8 @@ def validate_suite():
             raise ValueError("pending requires reason and resolved cases cannot retain one: " + case["id"])
         if all(s == "pending" for s in case["backends"].values()):
             raise ValueError("a case cannot be pending on both backends: " + case["id"])
-    # Include nested programs: a top-level-only glob lets unregistered
-    # fixtures hide underneath subdirectories while claiming suite completeness.
+    # The strict inventory includes nested .ores programs. A top-level glob
+    # would let an unregistered fixture escape the suite completeness gate.
     on_disk = {path.relative_to(ROOT).as_posix()
                for path in (ROOT / "fixtures").rglob("*.ores")}
     if files != on_disk:
