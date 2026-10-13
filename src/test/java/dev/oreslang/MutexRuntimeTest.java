@@ -1514,9 +1514,11 @@ final class MutexRuntimeTest {
                         future.whenComplete((guard, failure) -> {
                             try {
                                 assertInstanceOf(OresMutex.LockTimeoutException.class, failure);
-                                assertTrue(Thread.currentThread().getName()
-                                                .startsWith("ores-shared-mutex-notifications-"),
-                                        "host callbacks must never run on deadline workers");
+                                if (!Thread.currentThread().getName()
+                                        .startsWith("ores-shared-mutex-notifications-")) {
+                                    callbackFailure.compareAndSet(null, new AssertionError(
+                                            "host callbacks must never run on deadline workers"));
+                                }
                                 callbackEntered.countDown();
                                 assertTrue(permitCallbacksToFinish.await(5, TimeUnit.SECONDS),
                                         "test must unblock every notification worker");
