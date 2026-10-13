@@ -1,0 +1,8 @@
+# Security review for all changes that can authorize private-source exports.
+# Enforcement requires branch protection to require code-owner reviews.
+/.github/private-ci-approved-repositories.txt @ORESoftware
+/scripts/check-private-ci-destination.sh @ORESoftware
+/scripts/run-in-private-ci-destination.sh @ORESoftware
+/scripts/test-private-ci-destination.sh @ORESoftware
+/.github/workflows/private-ci-mirror-preflight.yml @ORESoftware
+/docs/security/CI_PRIVATE_SOURCE_MIRRORING.md @ORESoftware
