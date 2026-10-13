@@ -1771,7 +1771,8 @@ public final class Parser {
                     operation = Ast.ChannelOperation.READ;
                     channel = parseExpression();
                     consume(COLON, "readch select arm requires ':'");
-                    if (!check(LBRACE) && !check(ARROW) && !check(SEMICOLON)) {
+                    if ((!check(LBRACE) || looksLikeSelectRecordProjection())
+                            && !check(ARROW) && !check(SEMICOLON)) {
                         bindingKind = isBindingKind(peek().type())
                                 ? parseBindingKind() : Ast.BindingKind.CONST;
                         mutableReferent = parseReferentMutability(bindingKind);
@@ -1885,6 +1886,31 @@ public final class Parser {
      * Prefix tuple projection and per-field type checking share the ordinary
      * destructuring rules.
      */
+    /**
+     * Unadorned braces after readch are the legacy arm body. Only
+     * '{fields} ->' is a binding pattern without an explicit const/let/val
+     * introducer. This balanced-token lookahead never consumes a channel
+     * operation or invokes expression parsing speculatively.
+     */
+    private boolean looksLikeSelectRecordProjection() {
+        if (!check(LBRACE)) return false;
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type token = tokens.get(i).type();
+            if (token == LBRACE) depth++;
+            else if (token == RBRACE) {
+                depth--;
+                if (depth == 0) {
+                    return i + 1 < tokens.size()
+                            && tokens.get(i + 1).type() == ARROW;
+                }
+            } else if (token == EOF) {
+                break;
+            }
+        }
+        return false;
+    }
+
     private List<Ast.DestructureBinding> parseSelectDestructureBindings(
             Ast.DestructureKind kind, Ast.BindingKind inheritedKind,
             boolean inheritedMutableReferent) {
