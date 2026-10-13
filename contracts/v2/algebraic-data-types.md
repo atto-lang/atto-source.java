@@ -186,8 +186,16 @@ when precedence is intentional.
 
 Both parser and type checker limit match bodies to 4096 arms. Parser-side
 admission prevents oversized source programs from forcing AST allocation
-before the semantic pass. These limits and guard restrictions are language
-safety contracts, not proof that full Java/Graal or LLVM tests have passed.
+before the semantic pass. The Java suspendable matcher uses an iterative scan
+and a serial trampoline for completed guard callbacks; it must not consume one
+host stack frame per source arm, even if 4095 guards complete synchronously
+before the 4096th arm. Regression tests cover both 4096 failed pattern checks
+and 4096 immediately completed guarded branches, as well as synchronous
+versus suspendable guest output equivalence. These tests must execute before
+the stack-safety claim is verified. LLVM must implement an equivalently
+bounded dispatch rather than translating the source limit into native stack
+depth. These limits and guard restrictions are language safety contracts,
+not proof that full Java/Graal or LLVM tests have passed.
 
 ## Executable differential corpus
 
