@@ -108,6 +108,59 @@ final class CanonicalClassFieldDeclarationTest {
     }
 
     @Test
+    void constAliasMustBeInitializedExactlyLikeFinal() {
+        for (String spelling : new String[] { "const int n;", "const mut int n;" }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> parseClass(spelling));
+            assertTrue(error.getMessage().contains("requires a declaration-site initializer"));
+        }
+    }
+
+    @Test
+    void typeOnlyPathRejectsFixedFieldWriteWithoutRelyingOnOwnershipPass() {
+        String bad = """
+                define class Holder as
+                  final int answer: 42;
+                end
+                fnc invalid(): void {
+                  val Holder h = new Holder();
+                  h.answer = 7;
+                  return;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(bad)));
+        assertTrue(error.getMessage().contains("cannot reassign final class field"));
+    }
+
+    @Test
+    void constructorCannotOverwriteInitializedLegacyFixedAlias() {
+        String bad = """
+                define class Holder as
+                  val int answer = 42;
+                  constructor() {
+                    self.answer = 7;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(bad)));
+        assertTrue(error.getMessage().contains("cannot reassign final class field"));
+    }
+
+    @Test
+    void legacyConstructorFillStillAcceptedUntilBreakingMigration() {
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
+                define class Holder as
+                  val int answer;
+                  constructor(int input) {
+                    self.answer = input;
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void finalMutAllowsOwnedDeepMutationButNeverSlotRebinding() {
         String declarations = """
                 define class Counter as
