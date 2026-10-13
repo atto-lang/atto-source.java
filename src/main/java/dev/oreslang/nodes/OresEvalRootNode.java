@@ -5960,7 +5960,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (literal.value() instanceof Ast.Symbol symbol) {
                     dev.oreslang.runtime.OresSymbol value = dev.oreslang.runtime.OresSymbol.literal(symbol.name());
                     IsolatePolicy policy = ActorRuntime.currentActorPolicy();
-                    if (policy != null && policy.adversarial() && !value.publicCore()) {
+                    if ((context.isolatePolicy().adversarial()
+                            || policy != null && policy.adversarial()) && !value.publicCore()) {
                         throw new SecurityException("untrusted actor cannot construct private Symbol " + value);
                     }
                     return value;
@@ -7986,7 +7987,9 @@ public final class OresEvalRootNode extends RootNode {
                         : literal.value();
                 IsolatePolicy policy = ActorRuntime.currentActorPolicy();
                 if (expected instanceof dev.oreslang.runtime.OresSymbol symbolic
-                        && policy != null && policy.adversarial() && !symbolic.publicCore()) {
+                        && (context.isolatePolicy().adversarial()
+                                || policy != null && policy.adversarial())
+                        && !symbolic.publicCore()) {
                     throw new SecurityException("untrusted actor cannot match private Symbol " + symbolic);
                 }
                 return valueEquals(expected, value);
