@@ -213,4 +213,26 @@ final class ChannelRuntimeDataGuardTest {
         assertEquals(List.of("original"), channel.tryRead().orElseThrow());
     }
 
+    @Test
+    void readonlyStructSnapshotsFreezeNestedContainersToo() throws Exception {
+        Class<?> kind = Class.forName(
+                "dev.oreslang.nodes.OresEvalRootNode$ReadonlyRecordValue");
+        java.lang.reflect.Constructor<?> ctor = kind.getDeclaredConstructor(Map.class);
+        ctor.setAccessible(true);
+        ArrayList<Object> mutableNested = new ArrayList<>(List.of("original"));
+        Object inferredReadonly = ctor.newInstance(Map.of(
+                "children", mutableNested,
+                "metadata", Map.of("count", 1)));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> detached = (Map<String, Object>) snapshot(inferredReadonly);
+        mutableNested.add("late");
+        @SuppressWarnings("unchecked")
+        List<Object> children = (List<Object>) detached.get("children");
+        assertEquals(List.of("original"), children);
+        assertThrows(UnsupportedOperationException.class, () -> children.add("mutation"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> metadata = (Map<String, Object>) detached.get("metadata");
+        assertThrows(UnsupportedOperationException.class, () -> metadata.put("count", 2));
+    }
+
 }
