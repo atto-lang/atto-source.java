@@ -18,7 +18,12 @@ representation and overload tables implement this extension together.
    least one *corresponding parameter position* contains distinct **eligible
    nominal enum types** (different canonical enum symbol IDs). All other
    parameter positions must be the same declared type; they are not used
-   to choose an overload.
+   to choose an overload. Non-discriminator parameter positions may be
+   ordinary primitives or unambiguous nominal symbols with the **exact same
+   symbol ID**; any structural, generic, union, dynamic, inferred or borrowed
+   parameter makes the same-arity enum-overload family ineligible during
+   the initial phase. There is no record-shape equality test even to
+   establish that two non-discriminator positions "match".
 4. The compiler chooses among these declarations using **only nominal enum
    type identity in their parameter positions**, never enum **case**, payload
    values, payload shape, primitive type differences, classes, interfaces,
@@ -40,11 +45,16 @@ representation and overload tables implement this extension together.
 ## Eligible enum discriminator
 
 A parameter's enum is eligible only when its **complete declared set of
-cases** consists of nullary cases or cases carrying a primitive scalar
-payload (e.g. `bool`, `int`, `string`, subject to explicitly supported
-scalar widths). No tuple, map, array, record, class, actor reference,
-nested enum, generic, `Any`, `Unknown`, borrow, capability, recursive
-payload, or dynamic/interop payload qualifies in the initial phase.
+cases** consists of nullary cases or cases whose payload **fields are all
+primitive scalar values** (e.g. `bool`, `int`, `string`, subject to
+explicitly supported scalar widths). A fixed tuple/product of primitive
+fields may be admitted only when each leaf is directly declared primitive
+and the representation is fixed, owned and fully checked; this eligibility
+is prevalidated at the enum declaration, **not discovered by structural
+comparisons during overload lookup**. No map, arbitrary array, record,
+class, actor reference, nested enum, generic, `Any`, `Unknown`, borrow,
+capability, recursive, or dynamic/interop payload qualifies in the
+initial phase.
 
 This is an **overload eligibility restriction**, not a restriction on
 algebraic data types generally: `Success(User)`, `Option<T>`, and
