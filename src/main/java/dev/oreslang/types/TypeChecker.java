@@ -69,6 +69,10 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
+    // Only a legacy uninitialized val member may be filled through self
+    // while checking the owning class's constructor; initialized final fields
+    // are never writable, even during construction.
+    private Ast.ClassDecl currentConstructorOwner;
     // Unlike private-member access, declaration origin must survive nlex.
     private Ast.ClassDecl lexicalClassOrigin;
     // Source modules have their own lexical value namespace. File-level
@@ -1027,15 +1031,18 @@ public final class TypeChecker {
 
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
             Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
             currentActorKind = Ast.ActorKind.NONE;
             currentClassOwner = klass;
+            currentConstructorOwner = klass;
             lexicalClassOrigin = klass;
             try {
                 checkBlock(constructor.body(), constructorEnv, classGenerics, Primitive.VOID, self);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
+                currentConstructorOwner = previousConstructorOwner;
                 lexicalClassOrigin = previousLexicalClass;
             }
         }
@@ -4438,6 +4445,16 @@ public final class TypeChecker {
                 if (field != null) {
                     requireClassMemberVisible(
                             field.field().visibility(), field.owner(), "field", field.field().name());
+                    if (writing && field.field().bindingKind() != Ast.BindingKind.LET) {
+                        boolean legacyCtorFill = field.field().initializer() == null
+                                && field.owner() == currentConstructorOwner
+                                && member.receiver() instanceof Ast.NameExpr name
+                                && name.name().equals("self");
+                        if (!legacyCtorFill) {
+                            throw new IllegalArgumentException("cannot reassign final class field '"
+                                    + field.owner().name() + "." + member.member() + "'");
+                        }
+                    }
                     Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                 }
