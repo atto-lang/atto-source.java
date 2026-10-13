@@ -15,7 +15,9 @@ final class ParserAnnotationRetentionGateTest {
                 "@Audited actor Worker as end",
                 "@Audited interface Example as end",
                 "@Audited define interface Example as end",
-                "@Audited type Alias = int;"
+                "@Audited type Alias = int;",
+                "@Audited define pub type Alias = int;",
+                "define module demo as @Audited define pub type Alias = int; end"
         };
         for (String source : sources) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
