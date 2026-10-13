@@ -62,6 +62,20 @@ final class NamedArgumentsExecutionTest {
     }
 
     @Test
+    void moduleQualifiedCallsBindNamedArgumentsBeforeDispatch() throws Exception {
+        assertEquals("6", run("""
+                define module math
+                  pub fnc choose(int bar, bool enabled): int {
+                    return enabled ? bar : 0;
+                  }
+                end
+                pub routine main(): void {
+                  stdio.stdout.write(math.choose(enabled: true, bar: 6));
+                }
+                """));
+    }
+
+    @Test
     void methodAndStaticFunctionKeepArityOnlyDispatch() throws Exception {
         assertEquals("89", run("""
                 define class Box as
