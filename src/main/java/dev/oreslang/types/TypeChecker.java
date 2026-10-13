@@ -5451,15 +5451,7 @@ public final class TypeChecker {
     }
 
     /**
-     * Legacy `match subject` (without `over`) chooses exactly one
-     * non-fallback branch. The interpreter rejects multiple matching arms,
-     * so the compiler must never accept overlapping explicit alternatives
-     * based on *ordered* first-match semantics.
-     *
-     * Guards only establish disjointness when the existing numerical guard
-     * range proof can establish it; side-effecting/unknown guards never do.
-     */
-    /**
+     * Legacy exclusive matching requires pairwise disjoint explicit arms.
      * Numeric guard partitions are stable only when they compare the immutable
      * value captured from the match subject. A same-named outer variable may
      * change between guard evaluations (especially under suspension), so it
