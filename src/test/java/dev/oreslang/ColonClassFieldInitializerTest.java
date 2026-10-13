@@ -82,14 +82,14 @@ final class ColonClassFieldInitializerTest {
     }
 
     @Test
-    void finalConstRejectsNonliteralAndMutableReferentWithoutDroppingConst() {
+    void finalConstRejectsRuntimeExpressionsAndMutableReferentWithoutDroppingConst() {
         IllegalArgumentException computed = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("""
+                () -> TypeChecker.check(Parser.parse("""
                         define class Foo as
                           final const int value: calculate()
                         end
-                        """));
-        assertTrue(computed.getMessage().contains("literal initializer"), computed.getMessage());
+                        """)));
+        assertTrue(computed.getMessage().contains("compile-time constant"), computed.getMessage());
         IllegalArgumentException mutable = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("""
                         define class Foo as
