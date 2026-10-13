@@ -975,6 +975,16 @@ public final class TypeChecker {
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
         for (Ast.FieldDecl field : klass.fields()) {
+            // Parser checking is insufficient: generated/expanded ASTs must
+            // not bypass the final/const member initialization contract.
+            // Actor state has a distinct isolated initialization contract.
+            if (klass.actorKind() == Ast.ActorKind.NONE
+                    && field.bindingKind() == Ast.BindingKind.CONST
+                    && field.initializer() == null) {
+                throw new IllegalArgumentException("final/const class field '"
+                        + klass.name() + "." + field.name()
+                        + "' requires a declaration-site initializer");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
