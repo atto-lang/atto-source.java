@@ -49,6 +49,50 @@ final class ActorSupervisorControlIntegrationTest {
     }
 
     @Test
+    void abortedSupervisorHandoffPreservesInFlightFirstAndQueuedFifo() {
+        var lane = new ActorSupervisorControlLane(3);
+        var first = ActorRuntime.ActorId.create();
+        var second = ActorRuntime.ActorId.create();
+        var third = ActorRuntime.ActorId.create();
+        lane.reserve(first);
+        lane.reserve(second);
+        lane.reserve(third);
+        lane.publish(notice(first, 1));
+        lane.publish(notice(second, 2));
+        lane.publish(notice(third, 3));
+        assertEquals(1, lane.poll().orElseThrow().terminal().originCode());
+        var transferred = lane.drainPublished();
+        assertEquals(List.of(1L, 2L, 3L),
+                transferred.stream().map(n -> n.terminal().originCode()).toList());
+        assertEquals(0, lane.pendingCount());
+        assertEquals(0, lane.reservedCount());
+        assertTrue(lane.poll().isEmpty());
+        assertThrows(IllegalStateException.class, () -> lane.retry(first));
+    }
+
+    @Test
+    void rootControlBackpressureRejectsNewActorWithoutPartialAdmission() {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), 1)) {
+            var first = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        throw ActorRuntime.GuestEffectSignal.throwing(741);
+                    });
+            first.send("fail");
+            assertThrows(java.util.concurrent.CompletionException.class,
+                    () -> first.done().join());
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> runtime.spawnShared(() -> (String m, ActorRuntime.ActorContext<String> c) -> { }),
+                    "an unacknowledged root CONTROL generation must retain its reserved slot");
+            assertEquals(0, runtime.actorCount(),
+                    "rejected spawn must not leak the actor count");
+            assertEquals(741, runtime.pollRootSupervisionControl()
+                    .orElseThrow().terminal().originCode());
+            var second = runtime.<String>spawnShared(() -> (message, context) -> { });
+            second.stop();
+        }
+    }
+
+    @Test
     void topLevelActorPanicReachesRootControlExactlyOnce() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var child = runtime.<String>spawnShared(
