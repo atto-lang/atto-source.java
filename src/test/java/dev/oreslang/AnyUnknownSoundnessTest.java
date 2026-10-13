@@ -49,6 +49,31 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void speculativeEqualityMustNotSolveAnEmptyArrayType() {
+        accept("""
+                fnc ok(): void {
+                    val raw = [];
+                    val comparison = raw == [42];
+                    val Array<string> names = raw;
+                    return;
+                }
+                """);
+    }
+
+    @Test
+    void committedInferenceStillRejectsContradictoryAliases() {
+        reject("""
+                fnc bad(): void {
+                    val raw = [];
+                    val Array<int> ints = raw;
+                    val comparison = raw == ["text"];
+                    val Array<string> words = raw;
+                    return;
+                }
+                """, "initializer for");
+    }
+
+    @Test
     void emptyArrayAliasCannotResolveToConflictingElementTypes() {
         reject("""
                 fnc bad(): void {

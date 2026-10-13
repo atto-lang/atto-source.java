@@ -230,3 +230,16 @@ This is a conservative proof system: rejecting an unproven negative
 constraint does not imply the value definitely overlaps the excluded
 domain. More precise runtime-negative-type checks require reified type
 descriptors and explicit validation.
+
+## Transactional inference constraints
+
+Only an **obligatory expected-type check** commits inference-hole solutions.
+Speculative comparisons used by equality, method compatibility,
+match reachability and equivalent-type joins run with a snapshot of the
+inference state, restoring it afterward regardless of success. A failed
+nested structural/union/function compatibility proof restores the
+pre-check snapshot as well; a failed proof cannot poison later inference.
+
+The remaining generic inference engine still needs a full constraint
+graph, occurs checks and separation of read/write capabilities, and must
+not be treated as a general Hindley-Milner solver.
