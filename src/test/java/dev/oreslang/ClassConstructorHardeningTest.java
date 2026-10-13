@@ -205,6 +205,32 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void exactNativeScalarConstructorGuestMatchesJavaResult() throws Exception {
+        // Byte-for-byte source contract with LLVM fixture:
+        // tests/fixtures/class-scalar-constructor-arithmetic-native.ores
+        String sourceText = """
+                define class Pair as
+                  final int a: start + 1;
+                  final mut int b: start * 2;
+                  constructor(int start) { return; }
+                end
+                pub fnc main(): int {
+                  let Pair p = new Pair(13);
+                  return p.a + p.b;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(sourceText)));
+        Source source = Source.newBuilder(OresLanguage.ID, sourceText, "scalar-constructor-parity.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .build()) {
+            assertEquals(40, context.eval(source).asInt());
+        }
+    }
+
+    @Test
     void finalDeclarationRejectsMissingConstructorParameter() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
