@@ -307,6 +307,46 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorId { Objects.requireNonNull(value); }
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
     }
+    /**
+     * An authenticated actor termination is a runtime event, NOT a guest
+     * Error instance and never a generic Java Throwable serialization.
+     */
+    public enum ActorFailureCategory {
+        HOST_FAILURE,
+        STRUCTURED_CANCELLATION
+    }
+
+    /**
+     * Immutable, runtime-constructed, single-generation diagnostic receipt.
+     * This is NOT an ordinary actor message or a public CONTROL constructor.
+     * Typed guest errors may later attach a compiler-authenticated data-only
+     * snapshot; host Throwables never masquerade as std/error.Error.
+     */
+    public static final class ActorFailureNotice {
+        private final ActorId actorId;
+        private final long generation;
+        private final ActorKind actorKind;
+        private final ActorFailureCategory category;
+        private final Optional<GuestErrorWireCodec.ErrorSnapshot> guestError;
+
+        private ActorFailureNotice(ActorId actorId, long generation,
+                                   ActorKind actorKind, ActorFailureCategory category,
+                                   Optional<GuestErrorWireCodec.ErrorSnapshot> guestError) {
+            this.actorId = Objects.requireNonNull(actorId);
+            if (generation <= 0) throw new IllegalArgumentException("invalid actor generation");
+            this.generation = generation;
+            this.actorKind = Objects.requireNonNull(actorKind);
+            this.category = Objects.requireNonNull(category);
+            this.guestError = Objects.requireNonNull(guestError);
+        }
+
+        public ActorId actorId() { return actorId; }
+        public long generation() { return generation; }
+        public ActorKind actorKind() { return actorKind; }
+        public ActorFailureCategory category() { return category; }
+        public Optional<GuestErrorWireCodec.ErrorSnapshot> guestError() { return guestError; }
+    }
+
 
     public record ActorGroupId(UUID value) {
         public ActorGroupId { Objects.requireNonNull(value); }
@@ -376,6 +416,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, Set<ActorGroupId>> createdGroupsByActor =
             new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
+    /** Unique, monotonically increasing generation for actor incarnations in this runtime. */
+    private final AtomicLong actorGenerationSequence = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -1787,7 +1829,9 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorRef<M> {
         private final ActorId id;
         private final ActorKind kind;
+        private final long generation;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
+        private final AtomicReference<ActorFailureNotice> terminationNotice = new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
         private final OresFuture<Void> readyFuture =
@@ -1803,6 +1847,8 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
             this.kind = kind;
+            this.generation = actorGenerationSequence.incrementAndGet();
+            if (generation <= 0) throw new IllegalStateException("actor generation exhausted");
             readyFuture.whenCompleteRuntime((ignored, failure) -> {
                 if (failure != null) {
                     readyRefFuture.failFromRuntime(OresFuture.unwrap(failure));
@@ -1817,6 +1863,16 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
+
+        /**
+         * Host/supervisor-only immutable terminal data. No Throwable,
+         * live guest Error, method, closure or source actor heap is included.
+         * Stable after first terminal-cause publication for this generation.
+         */
+        public Optional<ActorFailureNotice> failureNotice() {
+            requireSupervisorContext("inspect actor supervisor failure notice");
+            return Optional.ofNullable(terminationNotice.get());
+        }
 
         /**
          * Actor initialization barrier. Accessing ready starts an unstarted
@@ -7279,8 +7335,18 @@ public final class ActorRuntime implements AutoCloseable {
             List<OresFuture<?>> pending;
             synchronized (lifecycleLock) {
                 if (finalized) return;
-                if (recordCause && cause != null) {
-                    ref.terminationCause.compareAndSet(null, cause);
+                if (recordCause && cause != null
+                        && ref.terminationCause.compareAndSet(null, cause)) {
+                    ActorFailureCategory category =
+                            cause instanceof ActorCancelledException
+                                    ? ActorFailureCategory.STRUCTURED_CANCELLATION
+                                    : ActorFailureCategory.HOST_FAILURE;
+                    // Never inspect Throwable.getMessage(), getCause(),
+                    // getStackTrace(), toString(), or any guest object.
+                    // No actor CONTROL authority is created from error text.
+                    ref.terminationNotice.compareAndSet(null,
+                            new ActorFailureNotice(ref.id(), ref.generation,
+                                    kind, category, Optional.empty()));
                 }
                 stopped.set(true);
                 if (cause == null) mailbox.close();
