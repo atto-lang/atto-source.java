@@ -143,4 +143,58 @@ final class NominalEnumOverloadsTest {
         assertTrue(failure.getMessage().contains("arity"),
                 failure.getMessage());
     }
+
+    @Test
+    void sameArityEnumMethodsAreNotPrematurelyEnabledWithoutVtableBinding() {
+        String declarations = """
+                define enum Color as
+                    Red
+                end
+                define enum Mode as
+                    Ready: int
+                end
+                """;
+        for (String methods : List.of(
+                """
+                pub pick(Color value): int { return 1; }
+                pub pick(Mode value): int { return 2; }
+                """,
+                """
+                pub static fnc pick(Color value): int { return 1; }
+                pub static fnc pick(Mode value): int { return 2; }
+                """)) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(declarations
+                            + "define class Dispatcher as\\n" + methods + "end\\n")));
+            assertTrue(error.getMessage().contains("already has arity 1"),
+                    error.getMessage());
+            assertTrue(error.getMessage().contains("not enabled"),
+                    error.getMessage());
+            assertTrue(error.getMessage().contains("no structural or runtime overload lookup"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void nominalEnumCasesAreNotOverloadTypesAndNonprimitivePayloadsCannotQualify() {
+        var symbolTable = symbols();
+        assertThrows(IllegalArgumentException.class,
+                () -> signature("use", "Color.Red"));
+        assertThrows(IllegalArgumentException.class,
+                () -> signature("use", "Color.Blue"));
+        assertEquals(PairStatus.SAME_SIGNATURE,
+                NominalEnumOverloads.compare(signature("use", "Color"),
+                        signature("use", "Color")));
+        for (String payload : List.of("Any", "Unknown", "List<int>", "Map<int,int>",
+                "Option<int>", "Color", "Fnc<int, int>")) {
+            Ast.TypeRef unsafe = payload.equals("Color")
+                    ? Ast.TypeRef.simple("Color")
+                    : Ast.TypeRef.simple(payload);
+            Ast.EnumDecl declaration = new Ast.EnumDecl("E",
+                    List.of(new Ast.EnumCase("Case", unsafe, 1)));
+            assertFalse(NominalEnumOverloads.eligibleDiscriminator(declaration),
+                    payload);
+        }
+        assertNotNull(symbolTable.get("Color"));
+    }
 }
