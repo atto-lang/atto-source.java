@@ -206,6 +206,24 @@ final class ImportInertConstantSyntaxTest {
     }
 
     @Test
+    void constantNumbersUseExactWideningProofAndSymbolsNeverCoerceToStrings() {
+        Ast.Program program = Parser.parse("""
+                define pub const bool equalIntFloat = 1 == 1.0;
+                define pub const bool distinctWideInt = 9007199254740993 != 9007199254740992.0;
+                define pub const bool differentSymbolString = #ready != "ready";
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+        Ast.ModuleDecl root = program.modules().stream()
+                .filter(m -> m.name().equals(Parser.ROOT_MODULE)).findFirst().orElseThrow();
+        assertEquals(Boolean.TRUE, ((Ast.LiteralExpr) ((Ast.FieldDecl) root.declarations().get(0))
+                .initializer()).value());
+        assertEquals(Boolean.TRUE, ((Ast.LiteralExpr) ((Ast.FieldDecl) root.declarations().get(1))
+                .initializer()).value());
+        assertEquals(Boolean.TRUE, ((Ast.LiteralExpr) ((Ast.FieldDecl) root.declarations().get(2))
+                .initializer()).value());
+    }
+
+    @Test
     void foldQualifiedModuleConstantsAndRejectPrivateCrossModuleAccess() {
         Ast.Program good = Parser.parse("""
                 define pub module A as
