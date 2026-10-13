@@ -65,19 +65,21 @@ public final class CriticalGate {
                 }
                 requested = true;
                 logicalOwner = domain;
-                if (owner == null && waiters.isEmpty()) {
-                    owner = this;
-                    granted = true;
+                if (heldByDomain(domain)) {
+                    requested = false;
+                    throw new IllegalStateException(
+                            "recursive logical critical acquisition would deadlock");
+                }
+                boolean canEnter = waiters.isEmpty() && owner == null
+                        && (mode == Mode.READ
+                                ? readers.size() < MAX_ACTIVE_READERS : readers.isEmpty());
+                if (canEnter) {
+                    grantLocked(this);
                     completeNow = true;
                 } else {
                     if (waiters.size() >= MAX_WAITERS) {
                         requested = false;
                         throw new IllegalStateException("critical wait queue is full");
-                    }
-                    if (owner != null && owner.logicalOwner == domain) {
-                        requested = false;
-                        throw new IllegalStateException(
-                                "recursive logical critical acquisition would deadlock");
                     }
                     CriticalGate priorWait = WAITING_ON.get(domain);
                     if (priorWait != null) {
