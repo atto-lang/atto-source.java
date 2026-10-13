@@ -347,6 +347,31 @@ The compiler canonicalizes both to nested rank-2 collection semantics. This is
 distinct from an exact fixed multidimensional layout, whose extents belong in
 finite sequence shapes.
 
+## Compile-time file/module constants (first-stage implementation)
+
+At file root and inside a named module, `define pub const T name = literal;`
+and `pub const T name = literal;` are permitted; `define` is optional.
+`pub define const` is accepted as compatibility input but should format to
+`define pub const`. These declarations are immutable data rather than
+executable module startup requests. `String` is the canonical String type;
+assigning a String literal to an `int` constant is a type error.
+
+`Symbol.for("literal")` is a special compiler-folded spelling for a global
+Symbol constant. Dynamic `Symbol.for(name)` and arbitrary call expressions
+are refused as file/module constant initializers. Current Java implementation
+does not yet resolve all constant-to-constant references, fold arbitrary
+finite constant aggregates, or implement the complete compile-time evaluation
+and ABI fingerprint contract. Those omissions must not be mistaken for
+full implementation.
+
+**Status / incompatibility:** this parser/typechecker admission work is only
+the first phase. The current Java linked-program loader still eagerly executes
+dependency `init()` and runtime binding initializers; its separate lazy-import
+work is tracked in draft PR #857 and issue #860. Reading a cross-file constant
+without any user execution is a **target guarantee**, not currently proven.
+Full native LLVM parity is also pending. The normative target design is in
+common-source PR #24 and issue #23.
+
 ## Bindings
 
 Every local binding is declared as exactly one of:
