@@ -119,6 +119,58 @@ final class EnumScalarPayloadRangeHardeningTest {
     }
 
     @Test
+    void outOfRangeConstantConstructorFailsAtCompileTime() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define enum Status as
+                    Active: u8
+                end
+                fnc tooLarge(): Status {
+                    return Status.Active(256);
+                }
+                """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define enum Status as
+                    Active: u8
+                end
+                fnc valid(): Status {
+                    return Status.Active(255);
+                }
+                """)));
+    }
+
+    @Test
+    void enumAndPatternNamesCannotShadowExistingTypeNamespaces() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define enum Option as
+                    A
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define enum Status as
+                    A
+                end
+                define class Status as
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define match pattern List as
+                    ...Status
+                end
+                define enum Status as
+                    A
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define enum Status as
+                    A
+                end
+                fnc erroneous(Status<int> value): void {
+                    return;
+                }
+                """)));
+    }
+
+    @Test
     void unsupportedLocalPayloadsAndUncompiledWireNeverBecomeAccepted() {
         for (String payloadType : List.of("Channel<int>", "ActorRef<Worker>",
                 "UnknownType", "Option<u8>", "Result<bool, string>", "f32")) {
