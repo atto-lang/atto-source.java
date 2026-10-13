@@ -115,6 +115,12 @@ public final class Parser {
                     rootDeclarations.add(parseContract(modifiers.visibility));
                     continue;
                 }
+                if (matchContextualKeyword("enum")) {
+                    validateNoModifiers(modifiers, "enums");
+                    rejectCallableStructuralAnnotation(annotations, "enum declarations");
+                    rootDeclarations.add(parseEnum());
+                    continue;
+                }
                 if (match(CLASS)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
@@ -281,6 +287,11 @@ public final class Parser {
                 validateOnlyVisibilityModifiers(modifiers, "contracts");
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
                 return parseContract(modifiers.visibility);
+            }
+            if (matchContextualKeyword("enum")) {
+                validateNoModifiers(modifiers, "enums");
+                rejectCallableStructuralAnnotation(annotations, "enum declarations");
+                return parseEnum();
             }
             if (match(CLASS)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -989,6 +1000,87 @@ public final class Parser {
             return namespace + "." + symbol;
         }
         return consumeCallableName("expected method name (methods omit 'fnc')");
+    }
+
+    /**
+     * Initial front-end contract for tagged sums:
+     *
+     *   define enum Expr<T> as
+     *     Literal(T)
+     *     Add(Box<Expr<T>>, Box<Expr<T>>)
+     *     Named(value: T)
+     *     Record: { value: T }
+     *   end
+     *
+     * Case boundaries are tokens (identifier after ')' / '}') or ';' / ','.
+     * A bare constructor is a nullary variant. Constructors must be unique,
+     * and a payload cannot mix positional and named fields.
+     */
+    private Ast.EnumDecl parseEnum() {
+        String enumName = consume(IDENT, "expected enum name").lexeme();
+        List<String> generics = parseGenericParameters();
+        if (new java.util.HashSet<>(generics).size() != generics.size()) {
+            throw error(previous(), "duplicate generic parameter in enum " + enumName);
+        }
+        consume(AS, "expected 'as' after enum header");
+        boolean braceStyle = match(LBRACE);
+        Token.Type closing = braceStyle ? RBRACE : END;
+        List<Ast.EnumVariant> variants = new ArrayList<>();
+        java.util.Set<String> caseNames = new java.util.HashSet<>();
+        while (!check(closing) && !check(EOF)) {
+            Token name = consume(IDENT, "expected enum variant name");
+            if (name.lexeme().equals("_") || !caseNames.add(name.lexeme())) {
+                throw error(name, "duplicate or reserved enum variant '" + name.lexeme() + "'");
+            }
+            List<Ast.EnumField> fields = new ArrayList<>();
+            boolean namedFields = false;
+            if (match(LPAREN)) {
+                Boolean mode = null;
+                if (!check(RPAREN)) {
+                    do {
+                        boolean named = check(IDENT) && checkNext(COLON);
+                        if (mode != null && mode != named) {
+                            throw error(peek(), "enum payload cannot mix named and positional fields");
+                        }
+                        mode = named;
+                        if (named) {
+                            String field = advance().lexeme();
+                            consume(COLON, "expected ':' after named enum field");
+                            fields.add(new Ast.EnumField(field, parseTypeRef()));
+                        } else {
+                            fields.add(new Ast.EnumField(null, parseTypeRef()));
+                        }
+                    } while (match(COMMA) && !check(RPAREN));
+                }
+                consume(RPAREN, "expected ')' after enum variant payload");
+                namedFields = Boolean.TRUE.equals(mode);
+            } else if (match(COLON)) {
+                consume(LBRACE, "record-style enum variant requires '{' after ':'");
+                if (!check(RBRACE)) {
+                    do {
+                        String field = consume(IDENT, "expected enum field name").lexeme();
+                        consume(COLON, "expected ':' after enum field name");
+                        fields.add(new Ast.EnumField(field, parseTypeRef()));
+                    } while (match(COMMA) && !check(RBRACE));
+                }
+                consume(RBRACE, "expected '}' after enum record variant");
+                namedFields = true;
+            }
+            java.util.Set<String> fieldNames = new java.util.HashSet<>();
+            for (Ast.EnumField field : fields) {
+                if (field.name() != null && !fieldNames.add(field.name())) {
+                    throw error(name, "duplicate field '" + field.name()
+                            + "' in enum variant " + name.lexeme());
+                }
+            }
+            variants.add(new Ast.EnumVariant(name.lexeme(), fields, namedFields));
+            // Optional separators; end of a payload or a nullary case is also
+            // a complete delimiter, making the proposed multiline form legal.
+            match(SEMICOLON, COMMA);
+        }
+        consume(closing, braceStyle ? "expected '}' to close enum" : "expected 'end' to close enum");
+        if (variants.isEmpty()) throw error(previous(), "enum '" + enumName + "' has no variants");
+        return new Ast.EnumDecl(enumName, generics, variants);
     }
 
     private Ast.TypeAliasDecl parseTypeAlias() {
