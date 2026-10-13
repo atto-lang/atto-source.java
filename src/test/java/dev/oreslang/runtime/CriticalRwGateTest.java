@@ -508,6 +508,77 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void actorStopRetractsQueuedReaderBeforeRunningTurnExits() throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        var independentWriter = gate.newCriticalTicket();
+        assertTrue(independentWriter.enterAsync().isDone());
+        CountDownLatch queued = new CountDownLatch(1);
+        CountDownLatch releaseTurn = new CountDownLatch(1);
+        AtomicReference<OresFuture<Void>> pending = new AtomicReference<>();
+        AtomicReference<Throwable> actorFailure = new AtomicReference<>();
+        AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+        try {
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                Thread stopper = null;
+                try {
+                    var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                        try {
+                            var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+                            pending.set(reader.enterAsync());
+                            assertFalse(pending.get().isDone());
+                            queued.countDown();
+                            assertTrue(releaseTurn.await(5, TimeUnit.SECONDS));
+                        } catch (Throwable failure) {
+                            actorFailure.compareAndSet(null, failure);
+                        } finally {
+                            queued.countDown();
+                        }
+                    });
+                    actor.send("queue");
+                    assertTrue(queued.await(5, TimeUnit.SECONDS));
+                    assertNull(actorFailure.get());
+                    assertEquals(1, gate.queuedCount());
+                    stopper = Thread.ofVirtual().start(() -> {
+                        try {
+                            runtime.stop(actor);
+                        } catch (Throwable failure) {
+                            stopFailure.compareAndSet(null, failure);
+                        }
+                    });
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (runtime.isAlive(actor) && System.nanoTime() < deadline) {
+                        Thread.onSpinWait();
+                    }
+                    assertFalse(runtime.isAlive(actor), "host STOP was never admitted");
+                    // Revocation callbacks run off-lock, so observe their
+                    // completion rather than inferring it from stopped=true.
+                    while (gate.queuedCount() != 0 && System.nanoTime() < deadline) {
+                        Thread.onSpinWait();
+                    }
+                    assertEquals(0, gate.queuedCount(),
+                            "STOP must retract a pending ticket without parking on guest turn exit");
+                    assertTrue(pending.get().isDone());
+                    assertTrue(independentWriter.isHeld(),
+                            "STOP cannot release another actor or host owner's writer");
+                    assertEquals(0, runtime.trackedActorResourceCount(actor));
+                } finally {
+                    releaseTurn.countDown();
+                    if (stopper != null) stopper.join(5_000);
+                }
+            }
+            assertNull(actorFailure.get());
+            assertNull(stopFailure.get());
+            assertEquals(1, gate.trackedTicketCount(),
+                    "only the unrelated host writer must remain");
+        } finally {
+            releaseTurn.countDown();
+            independentWriter.close();
+            gate.close();
+        }
+        assertEquals(0, gate.trackedTicketCount());
+    }
+
+    @Test
     void actorStopRevokesAlreadyGrantedRWWriterAndFacadeOwnership() throws Exception {
         CriticalRwGate gate = new CriticalRwGate();
         java.util.concurrent.CountDownLatch admitted = new java.util.concurrent.CountDownLatch(1);
