@@ -124,6 +124,9 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        // An unproven value cannot satisfy even the first field of a shape.
+        // Guard before the legacy Unknown/Generic inference shortcuts below.
+        if (to instanceof Record && (from == Unknown.INSTANCE || from instanceof Generic)) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;

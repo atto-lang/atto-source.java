@@ -44,6 +44,16 @@ final class StructuralReadViewCoercionHardeningTest {
     }
 
     @Test
+    void unknownOrGenericEntireValuesDoNotProveAnyRecordShape() {
+        Types.Record required = new Types.Record(Map.of("foo", Types.Primitive.INT), true);
+        assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, required));
+        assertFalse(Types.isAssignable(new Types.Generic("Unbound"), required));
+        assertFalse(Types.isAssignable(
+                Types.unionOf(Types.Primitive.INT, Types.Unknown.INSTANCE), required));
+        assertTrue(Types.isAssignable(Types.Primitive.INT, Types.Unknown.INSTANCE));
+    }
+
+    @Test
     void readonlyCovarianceStillAllowsSafeWidthAndUnionViews() {
         Types.Record actual = new Types.Record(
                 Map.of("foo", Types.Primitive.INT, "bar", Types.Primitive.STRING), true);

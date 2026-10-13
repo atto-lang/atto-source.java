@@ -40,3 +40,11 @@ cannot change the underlying method ABI. Parameter contravariance/result
 covariance therefore require *representational* compatibility, with proven
 nominal object subtyping and union admission still supported. Once explicit
 adapter code is available, this restriction could be reconsidered.
+
+### Whole-value proof, not just member compatibility
+
+The general type checker previously admitted `Unknown -> Record` through a
+shortcut ahead of member comparison. An unknown/unbound generic **entire
+value** does not prove any record fields. `Types.isAssignable` now rejects
+this case before its other inference shortcuts; this guard also rejects union
+sources containing an unproven alternative when a record shape is required.
