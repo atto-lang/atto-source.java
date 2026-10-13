@@ -2111,6 +2111,25 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr ns
+                    && ns.name().equals("Symbol")
+                    && env.lookup("Symbol") == null) {
+                if (!Set.of("process", "stable").contains(member.member())) {
+                    throw new IllegalArgumentException("unknown Symbol factory " + member.member());
+                }
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Symbol." + member.member() + " requires one String argument and no type arguments");
+                }
+                requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self),
+                        Primitive.STRING, "Symbol." + member.member() + " name");
+                if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                    throw new IllegalArgumentException(
+                            "untrusted actors may only use allowlisted #core literals, not dynamic Symbol factories");
+                }
+                return new Named("Symbol", List.of());
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
