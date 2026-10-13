@@ -210,8 +210,23 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void indexImports() {
+            // Also enforce this at direct Context.eval/link boundaries, which
+            // may not have passed through IncrementalCompiler.ImportGraph.
+            // Check *before* host class lookup to avoid side effects while
+            // discovering a duplicate Java/Ores alias.
+            Map<String, String> localImportNames = new HashMap<>();
             for (Ast.ImportDecl imported : program.imports()) {
                 ImportRules.validate(imported);
+                for (String local : ImportRules.exposedBindings(imported)) {
+                    String previous = localImportNames.putIfAbsent(local, imported.path());
+                    if (previous != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate import binding '" + local + "' in '" + codeUnitId
+                                        + "' from '" + previous + "' and '" + imported.path() + "'");
+                    }
+                }
+            }
+            for (Ast.ImportDecl imported : program.imports()) {
                 if (ImportRules.isJavaPath(imported.path())) {
                     indexHostImport(imported);
                     continue;
