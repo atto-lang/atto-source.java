@@ -251,8 +251,9 @@ select_read_binding
                   | sequence_pattern
                   | object_pattern ) ;
 (* Canonical select syntax: do select { when readch ch: let {x,y} -> { ... } }.
-   '->' delimits the arm body after all pattern/binding text. Legacy
-   brace-only arm bodies remain accepted for compatibility.
+   '->' delimits the arm body after all pattern/binding text. It is
+   mandatory for new typed names and [tuple]/{record} destructuring.
+   Legacy simple-name or no-binding brace-only arms are still accepted.
    'default: -> { ... }' is canonical, 'default: { ... }' remains accepted. *)
 (* Static select arms cannot use nb/try modifiers on readch/writech; the enclosing select supplies wait mode.
    Typed select-read bindings default to const; prefix tuple and record
