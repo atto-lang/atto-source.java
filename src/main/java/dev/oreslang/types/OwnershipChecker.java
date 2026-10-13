@@ -1225,7 +1225,7 @@ public final class OwnershipChecker {
                 }
                 if (!object.explicitStruct()) members.put(field.name(), info.type);
             }
-            Ast.TypeRef type = object.inferredStruct()
+            Ast.TypeRef type = (object.inferredStruct() || object.recordLiteral())
                     ? Ast.TypeRef.readonlyRecordType(members)
                     : Ast.TypeRef.recordType(members);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
