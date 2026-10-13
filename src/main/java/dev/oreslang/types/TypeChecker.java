@@ -508,7 +508,7 @@ public final class TypeChecker {
         // source contract when callers use labeled arguments. Validate the
         // complete inherited method family, including conflicting diamonds.
         validateInheritedInterfaceParameterLabels(
-                iface, new LinkedHashMap<>(), new LinkedHashSet<>());
+                iface, new LinkedHashMap<>(), new LinkedHashSet<>(), new LinkedHashSet<>());
 
         Set<String> memberKeys = new HashSet<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
@@ -541,7 +541,12 @@ public final class TypeChecker {
     private void validateInheritedInterfaceParameterLabels(
             Ast.InterfaceDecl iface,
             Map<String, List<String>> inheritedLabels,
-            Set<Ast.InterfaceDecl> visiting) {
+            Set<Ast.InterfaceDecl> visiting,
+            Set<Ast.InterfaceDecl> completed) {
+        // The same parent may be reachable through exponentially many diamond
+        // paths. Label declarations are invariant across type substitution,
+        // so a completed interface needs no second traversal.
+        if (completed.contains(iface)) return;
         if (!visiting.add(iface)) {
             throw new IllegalArgumentException(
                     "interface inheritance cycle involving '" + iface.name() + "'");
@@ -555,7 +560,7 @@ public final class TypeChecker {
                                     + "' for " + iface.name());
                 }
                 validateInheritedInterfaceParameterLabels(
-                        parent, inheritedLabels, visiting);
+                        parent, inheritedLabels, visiting, completed);
             }
             for (Ast.InterfaceMember member : iface.members()) {
                 if (!(member instanceof Ast.InterfaceFunctionDecl fn)) continue;
@@ -573,6 +578,7 @@ public final class TypeChecker {
                                     + "; labeled calls require stable parameter names");
                 }
             }
+            completed.add(iface);
         } finally {
             visiting.remove(iface);
         }
