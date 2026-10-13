@@ -335,12 +335,46 @@ public final class OresEvalRootNode extends RootNode {
                     .putIfAbsent(fn.parameters().size(), fn);
         }
 
-        private Ast.FunctionDecl selectFunctionForValues(String name, int arity, List<?> args) {
+        private List<Ast.FunctionDecl> nominalCandidates(String name, int arity) {
             Map<Integer, List<Ast.FunctionDecl>> byArity = nominalFunctionFamilies.get(name);
-            List<Ast.FunctionDecl> candidates = byArity == null ? null : byArity.get(arity);
+            return byArity == null ? null : byArity.get(arity);
+        }
+
+        /** Host calls and cross-file imports lack a verified static symbol manifest. */
+        private Ast.FunctionDecl selectFunctionForValues(String name, int arity, List<?> args) {
+            List<Ast.FunctionDecl> candidates = nominalCandidates(name, arity);
             if (candidates == null || candidates.isEmpty()) return null;
-            return dev.oreslang.types.FreeCallableOverloads.chooseRuntime(
-                    candidates, args, messageTypes.enums().keySet(), name);
+            if (candidates.size() != 1) {
+                throw new IllegalArgumentException(
+                        "nominal overload '" + name + "' requires a statically bound local call;"
+                                + " dynamic/exported/imported dispatch is not enabled");
+            }
+            return candidates.getFirst();
+        }
+
+        /** Preserve the frontend's selected identity, never choose anew at runtime. */
+        private Ast.FunctionDecl selectFunctionForCall(
+                Ast.CallExpr site, String name, int arity, List<?> values) {
+            List<Ast.FunctionDecl> candidates = nominalCandidates(name, arity);
+            if (candidates == null || candidates.isEmpty()) return null;
+            if (candidates.size() == 1) return candidates.getFirst();
+            Ast.FunctionDecl pinned = resolvedFreeCalls.get(site);
+            boolean member = false;
+            for (Ast.FunctionDecl candidate : candidates) {
+                if (candidate == pinned) { member = true; break; }
+            }
+            if (!member) {
+                throw new IllegalArgumentException(
+                        "nominal overload '" + name + "' has no trusted static call-site binding");
+            }
+            Ast.FunctionDecl runtimeMatch =
+                    dev.oreslang.types.FreeCallableOverloads.chooseRuntime(
+                            candidates, values, messageTypes.enums().keySet(), name);
+            if (runtimeMatch != pinned) {
+                throw new IllegalArgumentException(
+                        "runtime nominal tag disagrees with statically selected overload '" + name + "'");
+            }
+            return pinned;
         }
 
         private static <T> void index(Map<String, T> map, Set<String> ambiguous, String module, String name, T value) {
@@ -3944,7 +3978,8 @@ public final class OresEvalRootNode extends RootNode {
                                 try {
                                     Invocation invocation =
                                             functionInvocation(
-                                                    selectFunctionForValues(name.name(), values.size(), values),
+                                                    selectFunctionForCall(
+                                                            call, name.name(), values.size(), values),
                                                     values);
                                     completeSourceInvocation(
                                             t,
@@ -4202,7 +4237,8 @@ public final class OresEvalRootNode extends RootNode {
                 return module.owner().prepareModuleInvocation(
                         module.module(),
                         member.member(),
-                        args);
+                        args,
+                        call);
             }
 
             if (receiver instanceof ImportedNamespace namespace) {
@@ -5413,7 +5449,7 @@ public final class OresEvalRootNode extends RootNode {
                     requireExplicitClassCallableImport(env, directName.name());
                     List<Object> args = evaluateArguments(call.arguments(), env);
                     return functionInvocation(
-                            selectFunctionForValues(directName.name(), args.size(), args), args);
+                            selectFunctionForCall(call, directName.name(), args.size(), args), args);
                 }
             }
 
@@ -5523,7 +5559,7 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof ModuleFacade module) {
                     return module.owner().prepareModuleInvocation(
-                            module.module(), methodCall.member(), args);
+                            module.module(), methodCall.member(), args, call);
                 }
 
                 if (receiver instanceof OresMutex.Guard<?> guard
@@ -7447,8 +7483,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
-            Ast.FunctionDecl match = selectFunctionForValues(
-                    module.name() + "." + name, args.size(), args);
+            // Method values have no statically bound call AST; reject nominal
+            // overload families until an explicit specialization mechanism exists.
+            return prepareModuleInvocation(module, name, args, null);
+        }
+
+        private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name,
+                List<Object> args, Ast.CallExpr callSite) {
+            String qualified = module.name() + "." + name;
+            Ast.FunctionDecl match = callSite == null
+                    ? selectFunctionForValues(qualified, args.size(), args)
+                    : selectFunctionForCall(callSite, qualified, args.size(), args);
             if (match != null && match.visibility() == Ast.Visibility.PUBLIC) {
                 return functionInvocation(match, args);
             }
