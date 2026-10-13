@@ -45,7 +45,7 @@ final class PatternMatchingHardeningTest {
                     }
                   }
 
-                  switch value
+                  do switch value
                     case 1 -> {
                       return;
                     }
@@ -56,7 +56,7 @@ final class PatternMatchingHardeningTest {
                 }
 
                 fnc guarded(int value): int {
-                  match value over
+                  do match value over
                     on int n when n > 0 -> {
                       return n;
                     }
@@ -69,7 +69,7 @@ final class PatternMatchingHardeningTest {
 
         IllegalArgumentException fatMatch = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(Option<int> value): void {
-                  match value over
+                  do match value over
                     on Some(v) => { return; }
                     on None -> { return; }
                   end
@@ -79,7 +79,7 @@ final class PatternMatchingHardeningTest {
 
         IllegalArgumentException fatSwitch = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(int value): void {
-                  switch value
+                  do switch value
                     case 1 => { return; }
                     default -> { return; }
                   end
@@ -134,7 +134,7 @@ final class PatternMatchingHardeningTest {
     void orderedMatchUsesFirstMatchAndRejectsProvablyDeadLaterArms() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc valueOrZero(Option<int> value): int {
-                  match value over
+                  do match value over
                     on Some(inner) -> { return inner; }
                     on None -> { return 0; }
                   end
@@ -149,7 +149,7 @@ final class PatternMatchingHardeningTest {
                 end
 
                 fnc classify(Animal animal): int {
-                  match animal over
+                  do match animal over
                     on Dog dog -> { return 1; }
                     on Animal any -> { return 2; }
                   end
@@ -164,7 +164,7 @@ final class PatternMatchingHardeningTest {
                 end
 
                 fnc classify(Animal animal): int {
-                  match animal over
+                  do match animal over
                     on Animal any -> { return 2; }
                     on Dog dog -> { return 1; }
                   end
@@ -177,7 +177,7 @@ final class PatternMatchingHardeningTest {
     void orderedGuardsMayOverlapAndWildcardIsTheFallback() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int n): int {
-                  match n over
+                  do match n over
                     on int x when x >= 0 -> { return 1; }
                     on int x when x <= 10 -> { return 2; }
                     on _ -> { return 3; }
@@ -187,7 +187,7 @@ final class PatternMatchingHardeningTest {
 
         IllegalArgumentException dead = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(int n): int {
-                  match n over
+                  do match n over
                     on _ -> { return 1; }
                     on int x -> { return x; }
                   end
@@ -203,7 +203,7 @@ final class PatternMatchingHardeningTest {
         // gained explicit "over" / "on" boundaries.
         assertDoesNotThrow(() -> Parser.parse("""
                 fnc legacy(Option<int> value): int {
-                  match value
+                  do match value
                     Some(inner) -> { return inner; }
                   end
                 }
@@ -211,7 +211,7 @@ final class PatternMatchingHardeningTest {
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(Option<int> value): int {
-                  match value over
+                  do match value over
                     Some(inner) -> { return inner; }
                   end
                 }
@@ -219,7 +219,7 @@ final class PatternMatchingHardeningTest {
 
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc incomplete(Option<int> value): int {
-                  match value over
+                  do match value over
                     on Some(inner) -> { return inner; }
                   end
                 }
@@ -232,7 +232,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         fnc incomplete(Option<int> value): int {
-                          match value over
+                          do match value over
                             on Some(0) -> { return 1; }
                             on None -> { return 0; }
                           end
@@ -243,7 +243,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException guarded = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         fnc incomplete(Option<bool> value): int {
-                          match value over
+                          do match value over
                             on Some(flag) when flag -> { return 1; }
                             on None -> { return 0; }
                           end
@@ -253,7 +253,7 @@ final class PatternMatchingHardeningTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc exhaustive(Option<bool> value): int {
-                  match value over
+                  do match value over
                     on Some(true) -> { return 1; }
                     on Some(false) -> { return 2; }
                     on None -> { return 0; }
@@ -267,7 +267,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         fnc incomplete(Result<int, String> value): int {
-                          match value over
+                          do match value over
                             on Ok(0) -> { return 1; }
                             on Err(message) -> { return 0; }
                           end
@@ -277,7 +277,7 @@ final class PatternMatchingHardeningTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc exhaustive(Result<bool, bool> value): int {
-                  match value over
+                  do match value over
                     on Ok(true) -> { return 1; }
                     on Ok(false) -> { return 2; }
                     on Err(true) -> { return 3; }
@@ -291,7 +291,7 @@ final class PatternMatchingHardeningTest {
     void nestedSumExhaustivenessProvesPayloadsRecursively() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc exhaustive(Option<Result<int, String>> value): int {
-                  match value over
+                  do match value over
                     on Some(Ok(n)) -> { return n; }
                     on Some(Err(message)) -> { return 0; }
                     on None -> { return -1; }
@@ -302,7 +302,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         fnc incomplete(Option<Result<int, String>> value): int {
-                          match value over
+                          do match value over
                             on Some(Ok(0)) -> { return 1; }
                             on Some(Err(message)) -> { return 0; }
                             on None -> { return -1; }
@@ -319,7 +319,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         fnc classify(int | float value): int {
-                          match value over
+                          do match value over
                             on float n -> { return 1; }
                           end
                         }
@@ -328,7 +328,7 @@ final class PatternMatchingHardeningTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int | float value): int {
-                  match value over
+                  do match value over
                     on int n -> { return 1; }
                     on float n -> { return 2; }
                   end
@@ -341,7 +341,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException deadBool = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         fnc bad(bool value): int {
-                          match value over
+                          do match value over
                             on true -> { return 1; }
                             on false -> { return 0; }
                             on _ -> { return -1; }
@@ -353,7 +353,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException deadOption = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         fnc bad(Option<bool> value): int {
-                          match value over
+                          do match value over
                             on Some(true) -> { return 1; }
                             on Some(false) -> { return 2; }
                             on None -> { return 0; }
@@ -366,7 +366,7 @@ final class PatternMatchingHardeningTest {
         // A guarded arm does not make an otherwise needed fallback dead.
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc good(bool value): int {
-                  match value over
+                  do match value over
                     on true when false -> { return 1; }
                     on false -> { return 0; }
                     on _ -> { return -1; }
@@ -389,7 +389,7 @@ final class PatternMatchingHardeningTest {
             if (coversSome && coversNone) continue;
 
             StringBuilder source = new StringBuilder(
-                    "fnc test(Option<bool> value): int { match value over\n");
+                    "fnc test(Option<bool> value): int { do match value over\n");
             for (int i = 0; i < optionPatterns.length; i++) {
                 if ((mask & (1 << i)) != 0) {
                     source.append(" on ").append(optionPatterns[i])
@@ -415,7 +415,7 @@ final class PatternMatchingHardeningTest {
             if (coversOk && coversErr) continue;
 
             StringBuilder source = new StringBuilder(
-                    "fnc test(Result<bool, bool> value): int { match value over\n");
+                    "fnc test(Result<bool, bool> value): int { do match value over\n");
             for (int i = 0; i < resultPatterns.length; i++) {
                 if ((mask & (1 << i)) != 0) {
                     source.append(" on ").append(resultPatterns[i])
@@ -437,7 +437,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         fnc bad({ amount: int } value): int {
-                          match value over
+                          do match value over
                             on structural { amount: float } record -> { return 1; }
                           end
                         }
@@ -447,7 +447,7 @@ final class PatternMatchingHardeningTest {
         IllegalArgumentException nested = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         fnc bad({ inner: { amount: int } } value): int {
-                          match value over
+                          do match value over
                             on structural { inner: { amount: float } } record -> { return 1; }
                           end
                         }
@@ -456,7 +456,7 @@ final class PatternMatchingHardeningTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc good({ amount: int } value): int {
-                  match value over
+                  do match value over
                     on structural { amount: int } record -> { return 1; }
                   end
                 }
@@ -467,7 +467,7 @@ final class PatternMatchingHardeningTest {
     void numericWideningDoesNotMakeLaterTypeArmDead() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int | float value): int {
-                  match value over
+                  do match value over
                     on float n -> { return 1; }
                     on int n -> { return 2; }
                   end
@@ -476,7 +476,7 @@ final class PatternMatchingHardeningTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int | float value): int {
-                  match value over
+                  do match value over
                     on float n -> { return 1; }
                     on 7 -> { return 2; }
                     on int n -> { return 3; }
@@ -489,7 +489,7 @@ final class PatternMatchingHardeningTest {
     void structuralPatternWideningCannotShadowNarrowerRecord() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify({ value: int } | { value: float } arg): int {
-                  match arg over
+                  do match arg over
                     on structural { value: float } x -> { return 1; }
                     on structural { value: int } x -> { return 2; }
                   end
@@ -501,7 +501,7 @@ final class PatternMatchingHardeningTest {
     void switchIsConstantDispatchAndRejectsDuplicateCases() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int value): int {
-                  switch value
+                  do switch value
                     case 1 -> { return 10; }
                     case 2, 3 -> { return 20; }
                     default -> { return 0; }
@@ -511,7 +511,7 @@ final class PatternMatchingHardeningTest {
 
         IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc classify(int value): int {
-                  switch value
+                  do switch value
                     case 1 -> { return 10; }
                     case 1 -> { return 20; }
                     default -> { return 0; }
@@ -567,14 +567,14 @@ final class PatternMatchingHardeningTest {
                 }
 
                 fnc fromOption(Option<int> value): int {
-                  match value over
+                  do match value over
                     on Some(inner) -> { return inner; }
                     on None -> { return 0; }
                   end
                 }
 
                 fnc fromSwitch(int value): int {
-                  switch value
+                  do switch value
                     case 1 -> { return 11; }
                     case 2 -> { return 22; }
                     default -> { return 0; }
@@ -614,14 +614,14 @@ final class PatternMatchingHardeningTest {
         // interpreter, not only the static coverage proof.
         String program = """
                 fnc classify(int | float value): int {
-                  match value over
+                  do match value over
                     on float f -> { return 20; }
                     on int n -> { return 10; }
                   end
                 }
 
                 fnc optionCase(Option<bool> value): int {
-                  match value over
+                  do match value over
                     on Some(true) -> { return 31; }
                     on Some(false) -> { return 32; }
                     on None -> { return 33; }
