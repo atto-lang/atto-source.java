@@ -17,7 +17,7 @@ final class NativeOresHttpStdlibTest {
                 CoreLibrarySources.unitId("std/http"), "http.ores", source);
         assertTrue(compiled.hasOresSource());
         assertFalse(compiled.hasJavaSource());
-        assertFalse(source.contains("HttpServer"));
+        assertFalse(source.contains("http.listen("));
     }
 
     @Test void incrementalHttpFramingAndSmugglingRegressionsExecuteAsOreslang() throws Exception {
