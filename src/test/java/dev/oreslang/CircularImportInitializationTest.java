@@ -398,7 +398,7 @@ final class CircularImportInitializationTest {
     }
 
     @Test
-    void importedLiteralConstantDoesNotInitializeDependency() throws Exception {
+    void importedFoldedConstantDoesNotInitializeDependency() throws Exception {
         Path entry = tempDir.resolve("constant-entry.ores");
         Path dependency = tempDir.resolve("constant-dep.ores");
         Files.writeString(entry, """
@@ -412,7 +412,7 @@ final class CircularImportInitializationTest {
                 }
                 """);
         Files.writeString(dependency, """
-                pub const String tag = "static|";
+                pub const String tag = "sta" + "tic|";
                 fnc init(): void {
                   stdio.stdout.write("init|");
                   return;
@@ -443,7 +443,11 @@ final class CircularImportInitializationTest {
                 }
                 """);
         Files.writeString(dependency, """
-                pub const int tag = 1 + 2;
+                pub const int tag = arbitraryRuntimeCall();
+                fnc arbitraryRuntimeCall(): int {
+                  stdio.stdout.write("runtime-should-not-run");
+                  return 1;
+                }
                 fnc init(): void {
                   stdio.stdout.write("init-should-not-run");
                   return;
@@ -454,10 +458,11 @@ final class CircularImportInitializationTest {
                 () -> LinkedProgramRunner.run(entry,
                         IsolatePolicy.developer(), ExecutionProfile.serverJit(),
                         output, new ByteArrayOutputStream()));
-        assertTrue(String.valueOf(failure).contains("statically lowered")
-                        || String.valueOf(failure.getCause()).contains("statically lowered"),
-                () -> "expected explicit static-data diagnostic: " + failure);
-        assertEquals("before|", output.toString(StandardCharsets.UTF_8));
+        assertTrue(String.valueOf(failure).contains("file/module const requires")
+                        || String.valueOf(failure.getCause()).contains("file/module const requires"),
+                () -> "expected compile-time non-execution diagnostic: " + failure);
+        assertEquals("", output.toString(StandardCharsets.UTF_8),
+                "non-static consts must be rejected before any guest entrypoint runs");
     }
 
     @Test
