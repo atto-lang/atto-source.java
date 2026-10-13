@@ -102,6 +102,52 @@ final class SourceCooperationQuantumTest {
     }
 
     @Test
+    void overdueNoYieldRegionPollsEverySubsequentLegalBackedge() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int i = 1; i <= 511; i++) {
+            boolean due = q.completedBackedgeNeedsCheck();
+            assertEquals(i % 64 == 0, due);
+        }
+        assertTrue(q.completedBackedgeNeedsCheck(), "hard reduction-cap boundary");
+        assertTrue(q.shouldCooperateAtCheck(), "cap cannot depend on elapsed time");
+        // Simulate a live MutexGuard preventing that initial handoff. Once the
+        // guard releases, the very next backedge is a legal boundary; it must
+        // not be forced to wait for another full 64-backedge batch.
+        for (int i = 513; i <= 530; i++) {
+            assertTrue(q.completedBackedgeNeedsCheck(),
+                    "overdue dispatch skipped a resumable boundary at " + i);
+            assertTrue(q.shouldCooperateAtCheck());
+        }
+        assertEquals(530L, q.completedBackedgesThisDispatch());
+        assertEquals(2, clock.reads.get(),
+                "over-budget decisions must remain clock-free");
+    }
+
+    @Test
+    void signed64BitReductionCounterCannotWrapPastBudget()
+            throws ReflectiveOperationException {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        var counter = SourceCooperationQuantum.class.getDeclaredField(
+                "backedgesThisDispatch");
+        counter.setAccessible(true);
+        counter.setLong(q, Long.MAX_VALUE - 1);
+        assertTrue(q.completedBackedgeNeedsCheck());
+        assertEquals(Long.MAX_VALUE, q.completedBackedgesThisDispatch());
+        assertTrue(q.shouldCooperateAtCheck());
+        for (int i = 0; i < 128; ++i) {
+            assertTrue(q.completedBackedgeNeedsCheck(),
+                    "counter wrap must not erase the fairness cap");
+            assertTrue(q.shouldCooperateAtCheck());
+            assertEquals(Long.MAX_VALUE, q.completedBackedgesThisDispatch());
+        }
+        assertEquals(2, clock.reads.get());
+    }
+
+    @Test
     void backedgeAccountingDoesNotRollOverAtTheUnsigned32BitBoundary() throws ReflectiveOperationException {
         Clock clock = new Clock();
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
