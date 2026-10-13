@@ -856,7 +856,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private enum SourceFlowKind {
-            NORMAL, RETURN, BREAK, CONTINUE, THROW
+            NORMAL, RETURN, BREAK, CONTINUE, THROW, TERMINAL
         }
 
         private record SourceFlow(
@@ -880,10 +880,40 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private static SourceFlow throwing(Throwable failure) {
-                return new SourceFlow(
-                        SourceFlowKind.THROW,
-                        null,
+                Throwable cause = OresFuture.unwrap(
                         Objects.requireNonNull(failure, "failure"));
+                if (cause instanceof Error
+                        || cause instanceof java.util.concurrent.CancellationException) {
+                    return new SourceFlow(SourceFlowKind.TERMINAL, null, cause);
+                }
+                return new SourceFlow(SourceFlowKind.THROW, null, cause);
+            }
+
+            /**
+             * A terminal failure wins over ordinary catch/return/throw from
+             * cleanup. It remains non-catchable to guest source code, but
+             * lexical finally and defer callbacks still run.
+             */
+            private static SourceFlow afterCleanup(
+                    SourceFlow pending, SourceFlow cleanup) {
+                if (pending.kind() == SourceFlowKind.TERMINAL) {
+                    if (cleanup.failure() != null && cleanup.failure() != pending.failure()) {
+                        pending.failure().addSuppressed(cleanup.failure());
+                    }
+                    return pending;
+                }
+                if (cleanup.kind() == SourceFlowKind.TERMINAL) {
+                    if (pending.failure() != null && pending.failure() != cleanup.failure()) {
+                        cleanup.failure().addSuppressed(pending.failure());
+                    }
+                    return cleanup;
+                }
+                if (cleanup.kind() == SourceFlowKind.NORMAL) return pending;
+                if (pending.failure() != null && cleanup.failure() != null
+                        && pending.failure() != cleanup.failure()) {
+                    cleanup.failure().addSuppressed(pending.failure());
+                }
+                return cleanup;
             }
         }
 
@@ -1129,7 +1159,7 @@ public final class OresEvalRootNode extends RootNode {
                             }
                             done(null);
                         }
-                        case THROW -> throw sourceFailure(flow.failure());
+                        case THROW, TERMINAL -> throw sourceFailure(flow.failure());
                         case BREAK, CONTINUE ->
                                 throw new IllegalStateException(
                                         "loop control crossed a source continuation boundary");
@@ -1140,7 +1170,7 @@ public final class OresEvalRootNode extends RootNode {
                 switch (flow.kind()) {
                     case NORMAL -> done(shapeSourceReturn(null, null));
                     case RETURN -> done(shapeSourceReturn(flow.value(), null));
-                    case THROW -> throw sourceFailure(flow.failure());
+                    case THROW, TERMINAL -> throw sourceFailure(flow.failure());
                     case BREAK, CONTINUE ->
                             throw new IllegalStateException(
                                     "loop control crossed a source function boundary");
