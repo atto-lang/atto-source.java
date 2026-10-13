@@ -118,6 +118,30 @@ final class CriticalRwGateTest {
     }
 
     @Test
+    void unrequestedTicketConstructionIsBoundedAndCapacityRecoversOnRelease() {
+        CriticalRwGate gate = new CriticalRwGate();
+        java.util.List<CriticalRwGate.Ticket> reserved = new java.util.ArrayList<>();
+        for (int n = 0; n < CriticalRwGate.MAX_TRACKED_TICKETS; n++) {
+            reserved.add(gate.newTicket(CriticalRwGate.Mode.READ));
+        }
+        assertEquals(CriticalRwGate.MAX_TRACKED_TICKETS, gate.trackedTicketCount());
+        assertEquals(0, gate.queuedCount(),
+                "tickets never requested must not consume queue slots");
+        var denial = assertThrows(IllegalStateException.class,
+                () -> gate.newTicket(CriticalRwGate.Mode.WRITE));
+        assertTrue(denial.getMessage().contains("limit"));
+        assertEquals(CriticalRwGate.MAX_TRACKED_TICKETS, gate.trackedTicketCount());
+        reserved.removeLast().close();
+        assertEquals(CriticalRwGate.MAX_TRACKED_TICKETS - 1,
+                gate.trackedTicketCount());
+        var replacement = gate.newCriticalTicket();
+        assertTrue(replacement.enterAsync().isDone());
+        replacement.close();
+        gate.close();
+        assertEquals(0, gate.trackedTicketCount());
+    }
+
+    @Test
     void cancelledAdmissionReclaimsFacadeWrapperWithoutRevokingActiveWriter() {
         CriticalRwGate gate = new CriticalRwGate();
         var writer = gate.newCriticalTicket();
