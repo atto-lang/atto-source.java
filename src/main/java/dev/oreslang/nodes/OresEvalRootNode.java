@@ -128,6 +128,7 @@ public final class OresEvalRootNode extends RootNode {
 
     private static final class Evaluator
             implements ActorRuntime.ActorCodeExecutor {
+        private static final Object GUEST_CHANNEL_SEAL = new Object();
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
@@ -5434,7 +5435,9 @@ public final class OresEvalRootNode extends RootNode {
             return new ChannelRuntime.Channel<>(
                     capacity,
                     value -> requireChannelTypedDataValue(declaredPayloadType, value),
-                    Evaluator::snapshotChannelDataValue);
+                    Evaluator::snapshotChannelDataValue,
+                    GUEST_CHANNEL_SEAL,
+                    context);
         }
 
         /**
@@ -5830,9 +5833,9 @@ public final class OresEvalRootNode extends RootNode {
             return (ChannelRuntime.Channel<Object>) channel;
         }
 
-        private static void requireGuestDataChannel(
+        private void requireGuestDataChannel(
                 ChannelRuntime.Channel<?> channel, String where) {
-            if (!channel.hasGuestDataPolicy()) {
+            if (!channel.isAuthorizedGuestChannel(GUEST_CHANNEL_SEAL, context)) {
                 throw new SecurityException(where
                         + " cannot read or select an unsealed host/runtime channel; "
                         + "guest Channel<T> must carry typed data and snapshot policies");
@@ -6303,7 +6306,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
-                if (name.name().equals("SelectCase")) return new SelectCaseFactory();
+                if (name.name().equals("SelectCase")) return new SelectCaseFactory(this);
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
@@ -9422,14 +9425,14 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
-    private static final class SelectCaseFactory {
+    private record SelectCaseFactory(Evaluator owner) {
         @SuppressWarnings({"rawtypes", "unchecked"})
         private Object read(List<Object> args) {
             requireOne(args, "SelectCase.read");
             if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException("SelectCase.read expects Channel<T>");
             }
-            Evaluator.requireGuestDataChannel(channel, "SelectCase.read");
+            owner.requireGuestDataChannel(channel, "SelectCase.read");
             return ChannelRuntime.read((ChannelRuntime.Channel) channel);
         }
 
@@ -9439,7 +9442,7 @@ public final class OresEvalRootNode extends RootNode {
             if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException("SelectCase.write expects Channel<T> as first argument");
             }
-            Evaluator.requireGuestDataChannel(channel, "SelectCase.write");
+            owner.requireGuestDataChannel(channel, "SelectCase.write");
             Evaluator.requireChannelDataValue(args.get(1));
             return ChannelRuntime.write(
                     (ChannelRuntime.Channel) channel,
