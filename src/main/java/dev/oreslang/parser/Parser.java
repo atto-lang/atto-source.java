@@ -2326,11 +2326,15 @@ public final class Parser {
                 mutableReferent = true;
             }
         } else {
+            Ast.TypeRef candidate = null;
             try {
-                Ast.TypeRef candidate = parseTypeRef();
-                // Allow either 'const mut Type name' (existing) or the
-                // type-adjacent spelling 'const Type mut name'. A local
-                // type-adjacent mut changes this binding only.
+                candidate = parseTypeRef();
+            } catch (IllegalArgumentException ignored) {
+                // Could be the existing untyped identifier spelling.
+            }
+            if (candidate != null) {
+                // 'const mut Type name' and 'const Type mut name' are
+                // equivalent. Type-adjacent mut is local to this item.
                 boolean typeAdjacentMut = match(MUT);
                 if (check(IDENT)) {
                     declaredType = candidate;
@@ -2342,9 +2346,6 @@ public final class Parser {
                         mutableReferent = true;
                     }
                 }
-            } catch (IllegalArgumentException ignored) {
-                // Could be the existing untyped identifier spelling.
-                // Roll back and parse it without type speculation.
             }
             if (name == null) {
                 current = mark;
