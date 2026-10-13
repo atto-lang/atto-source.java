@@ -184,6 +184,27 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void immutableStringConstructorParameterCanInitializeSeveralFixedFields() throws Exception {
+        String source = """
+                define class Greeting as
+                  final string first: supplied;
+                  final string second: supplied;
+                  constructor(string supplied) { return; }
+                  pub get(): string {
+                    return self.first + self.second;
+                  }
+                end
+                pub routine main(): void {
+                  val greeting = new Greeting("Hi");
+                  stdio.stdout.write(greeting.get());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("HiHi", run(source));
+    }
+
+    @Test
     void finalDeclarationRejectsMissingConstructorParameter() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
