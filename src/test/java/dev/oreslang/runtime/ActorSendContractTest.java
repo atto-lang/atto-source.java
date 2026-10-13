@@ -9,12 +9,38 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Mailbox admission, processed barriers, and graceful close are distinct milestones. */
 @Timeout(20)
 final class ActorSendContractTest {
+    @Test
+    void actorCannotAwaitItsOwnActiveDrainButCanGracefullyStopAfterTurn() throws Exception {
+        AtomicReference<OresFuture<Void>> forbiddenSelfDrain = new AtomicReference<>();
+        CountDownLatch observed = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                forbiddenSelfDrain.set(context.self().drain());
+                // A self shutdown is different: it must seal now but only
+                // terminate once the active receive completes.
+                context.self().gracefulStop();
+                observed.countDown();
+            });
+            ref.send(1);
+            assertTrue(observed.await(5, TimeUnit.SECONDS));
+            OresFuture<Void> rejected = forbiddenSelfDrain.get();
+            assertNotNull(rejected);
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> rejected.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("own active mailbox"));
+            ref.getDone().get(5, TimeUnit.SECONDS);
+            assertFalse(ref.isAlive());
+        }
+    }
+
     @Test
     void actorRefIsOpaqueGenerationBoundAndSendAfterStopIsTyped() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
