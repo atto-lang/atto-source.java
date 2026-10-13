@@ -41,6 +41,9 @@ public final class TypeChecker {
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    /** Only compile-time-admitted, pairwise-disjoint same-arity enum fnc families. */
+    private final Map<String, Map<Integer, List<Ast.FunctionDecl>>> enumFunctionFamilies =
+            new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
@@ -198,6 +201,7 @@ public final class TypeChecker {
         } else {
             ambiguousFunctions.add(fn.name());
             functions.remove(fn.name());
+            enumFunctionFamilies.remove(fn.name());
         }
     }
 
@@ -205,11 +209,48 @@ public final class TypeChecker {
         LinkedHashMap<Integer, Ast.FunctionDecl> family =
                 functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
         Ast.FunctionDecl previous = family.putIfAbsent(fn.parameters().size(), fn);
-        if (previous != null) {
+        if (previous == null) return;
+        if (!enumOverloadCompatible(previous, fn)) {
             throw new IllegalArgumentException(
                     "callable '" + key + "' already has arity " + fn.parameters().size()
                             + "; " + sameArityOverloadDiagnostic(fn.name(),
                                     previous.parameters(), fn.parameters()));
+        }
+        Map<Integer, List<Ast.FunctionDecl>> overloads =
+                enumFunctionFamilies.computeIfAbsent(key, ignored -> new HashMap<>());
+        List<Ast.FunctionDecl> signatures = overloads.computeIfAbsent(
+                fn.parameters().size(), ignored -> new ArrayList<>(List.of(previous)));
+        var newSignature = NominalEnumOverloads.signature(
+                fn.name(), fn.parameters(), eligibleEnumOverloadSymbols);
+        for (Ast.FunctionDecl alternative : signatures) {
+            var oldSignature = NominalEnumOverloads.signature(
+                    alternative.name(), alternative.parameters(), eligibleEnumOverloadSymbols);
+            if (NominalEnumOverloads.compare(oldSignature, newSignature)
+                    != NominalEnumOverloads.PairStatus.DISTINCT_ENUMS) {
+                throw new IllegalArgumentException(
+                        "same-arity enum overload family must be pairwise "
+                                + "distinguishable by nominal enum identity");
+            }
+        }
+        signatures.add(fn);
+    }
+
+    private boolean enumOverloadCompatible(Ast.FunctionDecl first, Ast.FunctionDecl second) {
+        // The initial executable slice excludes generic/actor/supervisor
+        // callables and mixed fnc/routine kinds; no runtime type dispatch.
+        if (!first.genericParameters().isEmpty() || !second.genericParameters().isEmpty()
+                || first.actorKind() != Ast.ActorKind.NONE
+                || second.actorKind() != Ast.ActorKind.NONE
+                || first.kind() != second.kind()) return false;
+        try {
+            return NominalEnumOverloads.compare(
+                    NominalEnumOverloads.signature(
+                            first.name(), first.parameters(), eligibleEnumOverloadSymbols),
+                    NominalEnumOverloads.signature(
+                            second.name(), second.parameters(), eligibleEnumOverloadSymbols))
+                    == NominalEnumOverloads.PairStatus.DISTINCT_ENUMS;
+        } catch (IllegalArgumentException notEligible) {
+            return false;
         }
     }
 
