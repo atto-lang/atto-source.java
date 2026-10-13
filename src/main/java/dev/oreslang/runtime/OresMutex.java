@@ -334,6 +334,12 @@ public final class OresMutex {
         private static final int MAX_ASYNC_WAITERS = 8_192;
         private static final int MAX_GLOBAL_ASYNC_WAITERS = 32_768;
         private static final AtomicInteger GLOBAL_ASYNC_WAITERS = new AtomicInteger();
+        // Every asynchronous waiter retains bounded delivery admission until
+        // Future completion callbacks have drained, including successful and
+        // poisoned physical handoffs. Otherwise a releasing actor or a
+        // notification carrier could execute arbitrary host callback work.
+        private static final int MAX_ASYNC_NOTIFICATIONS = 32_768;
+        private static final AtomicInteger ASYNC_NOTIFICATIONS = new AtomicInteger();
         // A timed waiter reserves a *separate* notification slot for its whole
         // lifetime. Its ordinary waiter quota can settle before public
         // completion, so it cannot bound the notification backlog by itself.
@@ -357,17 +363,17 @@ public final class OresMutex {
             // keep cancelled ScheduledFuture tasks retained until expiration.
             ASYNC_TIMEOUTS.setRemoveOnCancelPolicy(true);
         }
-        // Each scheduled timed waiter has already reserved one notification
-        // slot, so the bounded queue has room for every claimed expiry even
-        // when all four delivery workers are blocked. Abort rather than
-        // CallerRuns: callbacks may never execute on a deadline carrier.
+        // Every async waiter reserves admission BEFORE enqueueing, so the
+        // bounded queue has room for all claimed handoffs and expiries even
+        // with every delivery worker blocked. Abort rather than CallerRuns:
+        // callbacks must never execute on deadline or actor owner carriers.
         private static final ThreadPoolExecutor TIMEOUT_DELIVERY =
                 new ThreadPoolExecutor(
                         4,
                         4,
                         0L,
                         TimeUnit.MILLISECONDS,
-                        new ArrayBlockingQueue<>(MAX_TIMED_NOTIFICATIONS),
+                        new ArrayBlockingQueue<>(MAX_ASYNC_NOTIFICATIONS),
                         Thread.ofPlatform()
                                 .daemon(true)
                                 .name("ores-shared-mutex-notifications-", 0L)
@@ -678,7 +684,9 @@ public final class OresMutex {
                     endWait(waiter.ownerDomain);
                     releaseDomain(waiter.ownerDomain);
                     settleWaiterAdmission(waiter);
-                    waiter.future.failFromRuntime(new PoisonedMutexException());
+                    AsyncWaiter claimed = waiter;
+                    TIMEOUT_DELIVERY.execute(() ->
+                            claimed.future.failFromRuntime(new PoisonedMutexException()));
                     continue;
                 }
 
@@ -688,11 +696,16 @@ public final class OresMutex {
                         waiter.ownerDomain,
                         waiter.enforceOwnerDomain);
                 settleWaiterAdmission(waiter);
-                if (waiter.future.completeFromRuntime(guard)) return;
-
-                // Cancellation won after dequeue but before completion.
-                clearOwner(waiter.ownerDomain);
-                releaseDomain(waiter.ownerDomain);
+                AsyncWaiter claimed = waiter;
+                TIMEOUT_DELIVERY.execute(() -> {
+                    if (!claimed.future.completeFromRuntime(guard)) {
+                        // Defensive ownership recovery: even if an unexpected
+                        // terminal path claimed the Future after dequeue,
+                        // never strand its already-transferred physical permit.
+                        guard.releaseFromRuntime();
+                    }
+                });
+                return;
             }
         }
 
@@ -795,6 +808,15 @@ public final class OresMutex {
                         "SharedMutex process-wide async waiter limit exceeded: " + MAX_GLOBAL_ASYNC_WAITERS));
             }
 
+            if (!reserveWaiter(ASYNC_NOTIFICATIONS, MAX_ASYNC_NOTIFICATIONS)) {
+                releaseGlobalAsyncWaiter();
+                releaseAsyncWaiter();
+                releaseDomain(ownerDomain);
+                return failedGuardFuture(new RejectedExecutionException(
+                        "SharedMutex async-notification capacity exceeded: "
+                                + MAX_ASYNC_NOTIFICATIONS));
+            }
+
             boolean enforceOwnerDomain = ActorRuntime.inActorExecution();
             GuardFuture<T> future = new GuardFuture<>();
             AsyncWaiter waiter = new AsyncWaiter(
@@ -807,6 +829,7 @@ public final class OresMutex {
                 // Defensive one-shot fallback for unexpected completion paths.
                 // Normal publication always settles admission first.
                 settleWaiterAdmission(waiter);
+                releaseWaiter(ASYNC_NOTIFICATIONS, "async-notification");
             });
 
             boolean acquired = false;
