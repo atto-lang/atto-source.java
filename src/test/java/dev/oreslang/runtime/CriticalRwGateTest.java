@@ -241,7 +241,13 @@ final class CriticalRwGateTest {
             var ticket = queued.get();
             ticket.releaseOnCompletion(task);
             assertEquals(1, gate.queuedCount());
-            assertTrue(task.cancel(false));
+            // The task may still be completing its initial carrier turn.
+            // cancel(false) is then deferred until the carrier unwinds.
+            task.cancel(false);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!task.isDone() && System.nanoTime() < deadline) Thread.yield();
+            assertTrue(task.isCancelled(),
+                    "scheduler cancellation must eventually publish after carrier unwind");
             assertEquals(0, gate.queuedCount(),
                     "cancelling the scheduler owner must retract pending admission");
             assertFalse(ticket.isHeld());
