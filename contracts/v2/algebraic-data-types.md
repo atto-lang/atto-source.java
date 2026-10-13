@@ -171,7 +171,14 @@ and disjoint tuple/product projections can establish this proof.
 Numeric literals must compare with runtime equality semantics:
 `1` and `1.0` can match the same value, including nested literal
 constructor patterns. Guard-range disjointness is permitted only for
-identical patterns binding the same projection. Because the proof uses
+identical patterns binding the same immutable projection from the match
+subject (such as `Status.Count(x)` or `(x, _)`). A same-named outer variable
+is not a stable projection: it may change between guard evaluations and
+cannot establish exclusive-case uniqueness, especially with suspension.
+Synchronous and suspendable execution must both check all explicit legacy
+arms before running the uniquely selected body. In contrast, ordered
+`match ... over` must stop at the first successful guard.
+Because the guard proof uses
 floating-point bounds, wide integer guard literals above exact binary64
 range (absolute value greater than 2^53) cannot prove disjointness.
 Opaque, imprecise, or overlapping cases fail closed; use `match ... over`
