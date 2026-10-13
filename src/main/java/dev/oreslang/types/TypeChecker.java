@@ -112,7 +112,7 @@ public final class TypeChecker {
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorStream", "ActorUtils", "ActorId", "ActorKind",
-                "PipelinePlanner", "PipelinePlan", "PipelineController", "PipelineRunner",
+                "PipelinePlanner", "PipelinePlan", "PipelineController", "PipelineRunner", "PipelineDeliveryReceipt",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
                 "self", "null"));
@@ -1741,7 +1741,8 @@ public final class TypeChecker {
     private static boolean isReservedPipelineBuiltin(String name) {
         return name.equals("ActorUtils") || name.equals("ActorStream")
                 || name.equals("PipelinePlanner") || name.equals("PipelinePlan")
-                || name.equals("PipelineController") || name.equals("PipelineRunner");
+                || name.equals("PipelineController") || name.equals("PipelineRunner")
+                || name.equals("PipelineDeliveryReceipt");
     }
 
     /** Only zero-capture, statically named actor spawn providers are
@@ -2182,7 +2183,12 @@ public final class TypeChecker {
                                         "PipelineRunner.send requires one checked nominal enum variant");
                             }
                             requireSerializableActorMessageType(payload, "PipelineRunner.send");
-                            yield new Named("Future", List.of(Unknown.INSTANCE));
+                            // The first-class guest result is an opaque,
+                            // authenticated DELIVERY RECEIPT, not a typed
+                            // source-actor response. Never infer an arbitrary
+                            // payload from Future<Unknown>.
+                            yield new Named("Future", List.of(
+                                    new Named("PipelineDeliveryReceipt", List.of())));
                         }
                         default -> throw new IllegalArgumentException(
                                 "unknown dynamic pipeline operation " + member.member());
@@ -3444,6 +3450,10 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("PipelineDeliveryReceipt")) {
+                throw new IllegalArgumentException(
+                        "PipelineDeliveryReceipt can only be issued by the pipeline runtime");
+            }
             if (created.type().name().equals("PipelinePlanner")
                     || created.type().name().equals("PipelineController")) {
                 if (currentActorKind != Ast.ActorKind.NONE ||

@@ -65,6 +65,34 @@ final class DynamicPipelineGuestSourceTest {
                         + "val c = new PipelineController(7); return; }")));
     }
 
+    @Test void deliveryReceiptCannotMasqueradeAsTypedActorResult() throws Exception {
+        String guest = source();
+        String misleading = guest.replace(
+                "    await first.send(Signal.Data(5));",
+                "    let int forged = await first.send(Signal.Data(5));");
+        assertNotEquals(guest, misleading);
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(misleading)));
+        assertTrue(rejected.toString().contains("assign")
+                        || rejected.toString().contains("type"),
+                rejected.toString());
+    }
+
+    @Test void receiptIsRuntimeOnlyAndCannotBeSourceConstructed() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                            val receipt = new PipelineDeliveryReceipt();
+                            return;
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class PipelineDeliveryReceipt as end
+                        pub fnc main(): int { return 1; }
+                        """)));
+    }
+
     @Test void rejectTooFewProviderArguments() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(
                 Parser.parse("pub fnc main(): void { "

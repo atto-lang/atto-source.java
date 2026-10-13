@@ -292,3 +292,29 @@ check fixed it before green certification.
 - This tests **Java/GraalVM hosted guest execution**. GraalVM native-image
   AOT, LLVM source compiler/runtime, cross-backend identity and FD3
   causal trace parity have not yet been verified.
+
+## Audit hardening: typed delivery receipts (2026-10-12)
+
+The earlier guest type checker advertised `runner.send(message)` as
+`Future<Unknown>`. This incorrectly allowed compiler inference to treat
+a successful physical delivery/roundtrip receipt as an arbitrary typed
+source-actor reply value. The v0 API now types it as
+`Future<PipelineDeliveryReceipt>`. The receipt is sealed to runtime
+issuance: guest classes/aliases/modules cannot hijack its name and guest
+code cannot construct it with `new`. It remains an opaque completion
+token, **not** `Future<int>` or a typed `Signal.Result` payload.
+Negative source tests reject converting an awaited receipt to `int`
+and forging the receipt type.
+
+The separate exact-source GraalVM Native Image gate
+[run #38328150168](https://github.com/zed-pkg-test/java-app/actions/runs/38328150168)
+passed in **both AOT and hybrid modes**, executing the dynamic 3-actor
+swap fixture and existing static 15-actor guest inside each compiled binary.
+That run verified the earlier 446-file guest source tree; this newer
+receipt-type compiler hardening requires its own subsequent exact-tree
+regression gate.
+
+Future typed pipeline results need an authenticated per-ingress reply
+correlation contract (request id, expected nominal result type, cancellation
+and late-reply fencing). Until that is implemented, reading a completion
+receipt as an application payload is a compile-time error.
