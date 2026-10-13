@@ -6918,8 +6918,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean hasQueuedWorkLocked() {
-            return childControl.pendingCount() != 0
-                    || !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
+            // A suspended source receive owns its state loan; CONTROL must
+            // defer until its continuation releases/reestablishes ownership.
+            // Never busy-reschedule exclusively for blocked CONTROL events.
+            return !continuationMailbox.isEmpty()
+                    || (!sourceReceiveSuspended
+                            && (childControl.pendingCount() != 0 || !mailbox.isEmpty()));
         }
 
         private OresScheduler sourceScheduler() {
