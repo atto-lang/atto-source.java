@@ -438,7 +438,7 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
-                validateReturnedBorrow(ret.value(), returned);
+                validateReturnedBorrow(ret.value(), returned, returnType);
             }
             return;
         }
@@ -2175,8 +2175,16 @@ public final class OwnershipChecker {
         return new ValueInfo(value.type, value.kind, source, true);
     }
 
-    private void validateReturnedBorrow(Ast.Expr expression, ValueInfo returned) {
+    private void validateReturnedBorrow(
+            Ast.Expr expression, ValueInfo returned, Ast.TypeRef declaredReturn) {
         if (!isBorrowValue(returned)) return;
+        // An incoming borrow may be returned ONLY through an explicitly
+        // borrowed return contract. A readonly record return annotation is
+        // an owned value and must not silently smuggle a loan to its caller.
+        if (declaredReturn == null || !declaredReturn.isBorrow()) {
+            throw error("borrowed structural view cannot be returned as owned data;"
+                    + " declare an explicit borrowed return or construct an owned copy");
+        }
 
         VarState source = returned.borrowSource == null
                 ? null
