@@ -5,6 +5,39 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class CriticalGateTest {
+    @Test
+    void duplicateActorAdmissionCannotDeregisterOriginalStopRevocation() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        java.util.concurrent.CountDownLatch first = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<CriticalGate.Ticket> captured =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> error =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    CriticalGate.Ticket ticket = gate.newTicket();
+                    captured.set(ticket);
+                    assertTrue(ticket.enterAsync().isDone());
+                    assertThrows(IllegalStateException.class, ticket::enterAsync);
+                    assertTrue(ticket.isHeld(), "duplicate denial must not revoke original");
+                } catch (Throwable failure) {
+                    error.set(failure);
+                } finally {
+                    first.countDown();
+                }
+            });
+            actor.send("hold");
+            assertTrue(first.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertNull(error.get());
+            assertTrue(gate.held());
+            runtime.stop(actor);
+            assertFalse(gate.held(), "STOP must still revoke the first admission");
+            assertFalse(captured.get().isHeld());
+            assertEquals(0, CriticalGate.waitingLogicalDomains());
+        }
+    }
+
     @Test void fifoAdmissionTracksLogicalTicketsRatherThanThreads() throws Exception {
         CriticalGate gate = new CriticalGate();
         CriticalGate.Ticket first = gate.newTicket();
