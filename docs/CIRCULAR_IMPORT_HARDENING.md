@@ -1,37 +1,75 @@
-# Circular imports and initialization (Java backend audit)
+# Circular imports, lazy execution and initialization (Java backend)
 
-## Normative, implemented behavior
+## Language contract implemented on this draft branch
 
-- A source import adds a dependency edge and exposes only the selected exported declarations. An import statement is **not** a function invocation.
-- Every reachable source unit is parsed and compiled before the linked program executes.
-- Cycles are legal. The compiler condenses cycles into strongly connected components (SCCs), computes a dependency-first order and links **all** code units before the loader runs any `init()` hook.
-- Imported functions execute only when called; importing, resolving, or linking a declaration does not execute its body.
-- Distinct overloads of a public function in the same module are one imported symbol family, not ambiguous duplicate imports. Cross-module name collisions remain ambiguous.
-- An explicitly declared `init()` hook is a **startup lifecycle action**, not a top-level import expression. **Important:** the current multi-file loader invokes the `init()` hook of **every** loaded file, including imported files, before entry `main()`. This is eager application startup, *not* lazy per-import initialization.
-- Module and root `init()` hooks must satisfy the existing closed synchronous lifecycle signature. A failed initializer transitions its evaluator to FAILED, and entry `main()` must not run.
-- The host/public Java bridge cannot call into a merely linked, initializing, or failed unit. It requires the READY phase.
+- An `import` declaration records a dependency and exposes **only** the
+  permitted public symbols. No imported function, constructor, actor hook or
+  file-level `init()` is run by importing, parsing or linking.
+- Every reachable unit is parsed and type-checked before any guest code runs.
+  Cyclic dependencies are legal; strongly connected components (SCCs) are
+  fully linked before the entry unit begins initialization.
+- **Only the entry Ores file** initializes before its `main()`.
+  Other units initialize on the first cross-unit execution, not merely because
+  they appear in the import graph. A Java entrypoint triggers Ores init only
+  through an explicit mixed-language public invocation.
+- Importing a callable or class *value* does not by itself initialize it.
+  Calling the function, invoking a static function or constructing an imported
+  class does. Accessing an imported module's **eager field initializer**
+  requires the imported unit's initialization first; these fields are a
+  separate member-access case, not inert callable declarations.
+- The phase state machine is `CREATED → LINKED → INITIALIZING → READY` or
+  `FAILED`. Each `init()` runs at most once per linked code unit and may
+  not be called by guest code. An unsuccessful `init()` permanently poisons
+  that evaluator for that context.
+- Reentrant lazy init into a unit already INITIALIZING is an error, even if
+  the call happens through a legal import cycle. No partially initialized
+  exports are exposed. Imported functions may call back into previously
+  READY units.
+- All lazy initializers in an isolate share a **nonblocking**, reentrant
+  startup gate. A simultaneous attempt from another Java thread fails fast
+  with a concurrent-startup diagnostic rather than acquiring opposite
+  per-unit locks and potentially deadlocking an actor carrier. Callers must
+  arrange a later retry if startup contention occurs. This is deliberately
+  **not** a transparent asynchronous waiter yet.
+- Overloaded public functions in a single module are imported as a single
+  callable family, keyed by arity. Name collisions between separate modules
+  remain ambiguous.
+- `main()` and direct public host invocations require an already READY unit,
+  so embedding callers cannot bypass the startup barrier. The mixed Java
+  bridge explicitly executes the target unit's init command before
+  invoking its exported function.
 
-## Behaviors to reject
+## Regression coverage added
 
-- Missing, ambiguous, or non-public named imports; direct self-imports (including filesystem aliases).
-- Executing `main()` before successful initialization.
-- Host-side calls bypassing initialization through a public-function invocation.
-- Re-entering an already INITIALIZING unit, or retrying a failed `init()`, rather than observing partially initialized state.
+- Bidirectional A↔B and A→B→C→A compilation/link/call tests.
+- Importing B without calling it leaves B.init unexecuted.
+- A→B first call runs B.init exactly once, then B may call back into READY A.
+- Recursive initialization fails instead of observing partially initialized A.
+- A failing B.init prevents B's imported function body from running.
+- Link-only, init-once, failed unit and direct public-host gate tests.
+- Overloaded exports are one importable family; private function is not
+  importable across a cycle.
 
-## Test matrix
+## Important remaining gaps
 
-- Two-way A ↔ B and three-way A → B → C → A cycles.
-- A call can cross a cycle only after all units are linked.
-- Two public overloads of the same function name in one module must be importable by their arity.
-- A private function cannot become importable merely by participating in a cycle.
-- LINK_ONLY does not execute `init()`, and explicit INIT_ONLY runs it once.
-- A failed INIT_ONLY makes public host invocation fail closed.
+1. **Concurrency rendezvous:** The nonblocking startup gate is a conservative
+   fail-closed policy, not async waiter/wakeup or automatic retries. Prove
+   concurrent startup, cancellation and shutdown behavior under load before
+   claiming contention-free initialization.
+2. **SCC startup atomicity:** Units initialize individually on first use, not
+   atomically as a group. A multi-unit cycle may have several READY members
+   when a later member's init fails. The entry process aborts if its call
+   fails, but group-wide rollback is not implemented.
+3. **Export visibility:** Actor and type-alias selectors still need a complete
+   `pub` migration. TypeAliasDecl currently has no visibility field.
+   Track in Java issue #859.
+4. **Native parity:** LLVM's frontend does not yet support multi-file import
+   linking, and this PR does not claim native backend parity. Track in
+   LLVM issue #341.
+5. **Stress and resolution:** Harden deep graphs, symlink alias identity,
+   module field evaluation, mixed Java bridges and graph-changing incremental
+   compilation with dedicated tests.
 
-## Additional hardening (not implemented by this document)
-
-1. **Strict lazy dependency initialization:** If the language contract means *even imported `init()` hooks must not run until first call*, replace eager startup semantics with a specified lazy state machine, SCC-level cycle/reentrancy policy, and cross-thread deadlock/failure tests. That is a behavior change relative to the current regression example. Do not silently conflate it with the existing link barrier.
-2. **Export visibility audit:** Actor and type-alias selectors require a comprehensive visibility contract. The present AST does not carry a visibility bit for `TypeAliasDecl`; fix across parser, compiler, runtime and both backends rather than only in graph validation.
-3. **Stress/property tests:** Shuffle source and import iteration order, exercise diamond graphs, aliases, repeated imports, very deep graphs, concurrent initialization attempts, and incremental rebuilds of nodes inside cycles.
-4. **Native parity:** The LLVM frontend currently has a token for `import` but does not implement a multi-file import/linker, so cycle parity is not yet established.
-
-Do not describe these outstanding items as verified by the current PR.
+All implementation claims above refer to source changes on a **draft PR**.
+GitHub Actions has not executed the branch's test suite successfully; no
+runtime verification is claimed before CI passes.
