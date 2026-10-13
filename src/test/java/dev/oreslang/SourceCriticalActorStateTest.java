@@ -89,7 +89,7 @@ final class SourceCriticalActorStateTest {
                     .mimeType(OresLanguage.MIME_TYPE).build();
             assertDoesNotThrow(() -> context.eval(compiled));
         }
-        assertEquals("991\\n", output.toString(StandardCharsets.UTF_8));
+        assertEquals("991\n", output.toString(StandardCharsets.UTF_8));
     }
 
 }
