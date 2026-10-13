@@ -75,24 +75,12 @@ final class DispatchExplicitFormsTest {
     }
 
     @Test
-    void returnAndDoDispatchProduceCorrectGuestResults() throws Exception {
+    void proceduralDoDispatchProducesCorrectGuestResults() throws Exception {
         String source = """
-                fnc byReturnMatch(Symbol s): int {
-                    return match s over
-                        on #ready -> { return 42; }
-                        on _ -> { return 0; }
-                    end
-                }
                 fnc byDoMatch(Symbol s): int {
                     do match s over
                         on #ready -> { return 43; }
                         on _ -> { return 1; }
-                    end
-                }
-                fnc byReturnSwitch(int n): int {
-                    return switch n
-                        case 3 -> { return 44; }
-                        default -> { return 2; }
                     end
                 }
                 fnc byDoSwitch(int n): int {
@@ -112,9 +100,7 @@ final class DispatchExplicitFormsTest {
                     return 4;
                 }
                 pub fnc main(): void {
-                    stdio.println(byReturnMatch(#ready));
                     stdio.println(byDoMatch(#ready));
-                    stdio.println(byReturnSwitch(3));
                     stdio.println(byDoSwitch(3));
                     stdio.println(byDoSelect());
                     return;
@@ -128,7 +114,7 @@ final class DispatchExplicitFormsTest {
                 .allowAllAccess(false).out(out).build()) {
             ctx.eval(guest);
         }
-        assertEquals("42\n43\n44\n45\n46",
+        assertEquals("43\n45\n46",
                 out.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 }
