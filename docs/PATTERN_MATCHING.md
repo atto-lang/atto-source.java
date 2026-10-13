@@ -43,18 +43,19 @@ function types and interface callable signatures.
   successful control-flow edge.
 - `x as T` is a checked cast. A failed runtime cast raises `CastError`.
 - `x as? T` is a non-panicking cast with type `Option<T>`.
-- `match x` is proof-checked pattern partitioning.
-- `match first x` is the explicit ordered/priority escape hatch.
+- Legacy `match x` **without** `over` is proof-checked disjoint pattern partitioning.
+- Canonical `match x over` is **source-ordered**, exhaustiveness-checked dispatch. A provably shadowed later arm is rejected.
+- Historical `match first x` remains a source-ordered compatibility form.
 - `switch x` is constant/equality dispatch and never performs destructuring.
 
 A refinement binding is not a copy. If `dog` is introduced by
 `animal is type Dog dog`, both names identify the same ownership place. Moving
 through either name consumes the same move-only value.
 
-## Exclusive match proof obligation
+## Legacy exclusive match proof obligation
 
 For a scrutinee domain `D`, each explicit arm is normalized to a predicate
-`P_i(x)`. A normal match is admitted only when the checker establishes:
+`P_i(x)`. A legacy match without `over` is admitted only when the checker establishes:
 
 ```text
 for every i != j:  D(x) && P_i(x) && P_j(x) is UNSAT
@@ -75,11 +76,12 @@ for:
 - simple numeric guard intervals using `< <= == >= >`;
 - wildcard/catch-all coverage.
 
-If disjointness cannot be proved, ordinary `match` is rejected rather than
-silently using source order. Code that deliberately needs priority semantics
-must say `match first`.
+If disjointness cannot be proved, the **legacy exclusive form** is rejected
+rather than silently using source order. The canonical `match x over` form
+already uses priority semantics, with explicit `on` arms and a completeness
+proof. Historical `match first x` also permits priority dispatch.
 
-This is the important semantic distinction:
+This is the important semantic distinction **for the legacy (no-`over`) form**:
 
 ```ores
 match value
@@ -101,6 +103,34 @@ end
 Arbitrary calls inside guards are opaque to the proof engine unless a future
 verified predicate/contract system gives the compiler a sound logical summary.
 The checker must never infer exclusivity from undocumented function behavior.
+
+## Canonical ordered error/subtype matching
+
+The current compiler's canonical `over` grammar is intentionally
+source-ordered. This is necessary for nominal hierarchies, where a
+`FileNotFoundError` also satisfies `FileSystemError`, `IOError` and `Error`:
+
+```ores
+match failure over
+  on FileNotFoundError missing -> { handle_missing(missing); }
+  on FileSystemError file -> { handle_file(file); }
+  on IOError io -> { handle_io(io); }
+  on Error other -> { handle_other(other); }
+end
+```
+
+The compiler must reject placing `on Error` ahead of a more specific
+unguarded subtype arm, since the latter would be unreachable. A guard
+may make an earlier arm conditional; the checker must not treat a
+guarded parent pattern as covering all descendants. Open nominal types
+cannot be exhaustively enumerated without an unguarded ancestor or
+wildcard arm; error classes are currently **not sealed**.
+
+The old contract for disjoint/commutative matching is still meaningful,
+but belongs to the non-`over` legacy grammar until a versioned
+language-level distinction is finalized. Do not silently switch the
+semantics of existing `match ... over` programs while building typed
+exception catches.
 
 ## Lowering contract
 
