@@ -278,7 +278,7 @@ function-value assignments unless an explicit safe adapter is defined.
 A trap boundary is dynamic to one execution domain. It never implicitly crosses
 an actor, isolate, process, or detached-task boundary.
 
-An unrecovered `raise` or `panic` inside an actor follows actor supervision.
+An unrecovered `raise` inside an actor reaches its `on_raise` admission boundary and then supervisor CONTROL if unhandled. An actor's `panic` skips actor-local hooks and guest recover entirely, and is always delivered to the supervisor CONTROL lane while its hosting runtime remains alive. See `contracts/EXCEPTION_CONTROL_V1.md`.
 Untrusted actor resource cancellation/termination cannot be swallowed by
 `trap`.
 
@@ -334,7 +334,7 @@ Compile/runtime coverage must include:
 ```text
 throw  -> nearest catch, otherwise nearest trap -> None
 raise  -> bypass catch/trap/select -> nearest recover/supervision
-panic  -> bypass catch/trap/select -> nearest recover/supervision
+panic  -> bypass catch/trap/select/recover -> actor supervisor CONTROL or non-actor root failure boundary
 cancel -> runtime cancellation channel, never None
 ```
 
