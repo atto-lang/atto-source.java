@@ -116,6 +116,33 @@ final class NamedArgumentsExecutionTest {
     }
 
     @Test
+    void interfaceImplementationsMustPreserveParameterLabels() {
+        String valid = """
+                define interface Api
+                  fnc pick(int amount): int;
+                end
+                define class Worker implements Api as
+                  pub pick(int amount): int { return amount; }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+
+        String renamed = """
+                define interface Api
+                  fnc pick(int amount): int;
+                end
+                define class Worker implements Api as
+                  pub pick(int value): int { return value; }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(renamed)));
+        assertTrue(error.getMessage().contains("incompatible parameter label"));
+        assertTrue(error.getMessage().contains("amount"));
+        assertTrue(error.getMessage().contains("value"));
+    }
+
+    @Test
     void multipleParentLabelsCannotCreateAmbiguousDispatchContracts() {
         String source = """
                 define class Left as
