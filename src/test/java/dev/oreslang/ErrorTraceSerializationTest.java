@@ -115,6 +115,67 @@ final class ErrorTraceSerializationTest {
                   """)));
     }
 
+
+    @Test
+    void supervisorTransportNeverInvokesOrTransfersGuestFunctions() {
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        Runnable forbiddenMethod = () -> {
+            calls.incrementAndGet();
+            throw new AssertionError("a guest method must never execute during transport");
+        };
+        java.util.Map<String, Object> fields = new java.util.LinkedHashMap<>();
+        fields.put("message", "password=private");
+        fields.put("stack", List.of("secret/actor.ores", "worker"));
+        fields.put("full_trace", true);
+        fields.put("json_full", true);
+        fields.put("binary_full", true);
+        fields.put("code", forbiddenMethod);
+        fields.put("method", forbiddenMethod);
+        fields.put("callback", forbiddenMethod);
+        fields.put("actor_ref", new Object());
+        fields.put("self", fields); // Arbitrary cycle must not be followed.
+
+        GuestErrorWireCodec.ErrorSnapshot transfer =
+                GuestErrorWireCodec.supervisorCompactSnapshot("ActorAskTimeoutError", 9007, fields);
+        assertEquals("{\\\"schema\\\":1,\\\"code\\\":9007,\\\"name\\\":\\\"ActorAskTimeoutError\\\"}",
+                transfer.toJson());
+        assertEquals(0x83L, transfer.toMessagePack().getFirst());
+        assertEquals(List.of(8L, 1L, 16L, 175L, 70L),
+                transfer.toProtoBuf().subList(0, 5));
+        assertEquals(0, calls.get());
+        assertEquals("", transfer.message());
+        assertTrue(transfer.frames().isEmpty());
+        assertFalse(transfer.toJson().contains("password"));
+        assertFalse(transfer.toJson().contains("secret/actor.ores"));
+    }
+
+    @Test
+    void trustedSnapshotCopiesOnlyAllowedScalarFieldsAndRejectsCallableFrames() {
+        java.util.ArrayList<String> frames = new java.util.ArrayList<>(List.of("main", "process"));
+        java.util.Map<String, Object> fields = new java.util.HashMap<>();
+        fields.put("message", "test");
+        fields.put("stack", frames);
+        fields.put("method", (Runnable) () -> {
+            throw new AssertionError("guest methods must not run during encoding");
+        });
+        GuestErrorWireCodec.ErrorSnapshot trusted =
+                GuestErrorWireCodec.trustedLocalSnapshot("Error", 0, fields);
+        frames.clear(); // Sending an Error must not share the actor's heap.
+        fields.put("message", "changed");
+        assertEquals(List.of("main", "process"), trusted.frames());
+        assertEquals("test", trusted.message());
+        assertEquals("{\\\"schema\\\":1,\\\"code\\\":0,\\\"name\\\":\\\"Error\\\","
+                + "\\\"message\\\":\\\"test\\\",\\\"stack\\\":[\\\"main\\\",\\\"process\\\"]}",
+                trusted.toJson());
+
+        fields.put("stack", List.of((Runnable) () -> {
+            throw new AssertionError("should never invoke callable");
+        }));
+        IllegalArgumentException invalid = assertThrows(IllegalArgumentException.class,
+                () -> GuestErrorWireCodec.trustedLocalSnapshot("Error", 0, fields));
+        assertTrue(invalid.getMessage().contains("non-string"), invalid::getMessage);
+    }
+
     @Test
     void sourceCapturesTraceWithoutConstructingAnException() throws Exception {
         Path entry = temp.resolve("trace.ores");

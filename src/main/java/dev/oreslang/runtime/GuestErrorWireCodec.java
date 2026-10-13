@@ -17,6 +17,87 @@ public final class GuestErrorWireCodec {
 
     private GuestErrorWireCodec() { }
 
+    /**
+     * Strict value-only diagnostic snapshot. This is not an actor CONTROL
+     * envelope and conveys no supervision authority or runtime identity.
+     * No arbitrary guest object, method, closure or mutable map is retained.
+     */
+    public record ErrorSnapshot(String name, int code, String message,
+                                List<String> frames, boolean full) {
+        public ErrorSnapshot {
+            // Validation is shared by all local/wire codecs. No guest code.
+            validate(name, code, message, frames);
+            frames = List.copyOf(frames);
+            if (!full && (!message.isEmpty() || !frames.isEmpty())) {
+                throw new IllegalArgumentException(
+                        "compact actor diagnostic cannot retain message or trace");
+            }
+        }
+
+        public String toJson() {
+            return GuestErrorWireCodec.json(name, code, message, frames, full);
+        }
+
+        public List<Long> toMessagePack() {
+            return GuestErrorWireCodec.messagePack(name, code, message, frames, full);
+        }
+
+        public List<Long> toProtoBuf() {
+            return GuestErrorWireCodec.protoBuf(name, code, message, frames, full);
+        }
+    }
+
+    /**
+     * Default actor -> supervisor wire diagnostic. Runtime must provide a
+     * trusted nominal class name and catalog code; the fields argument is
+     * intentionally NEVER read, enumerated or rendered. It may contain
+     * methods/closures, foreign handles, actor refs or cyclic structures.
+     * Those have no presence in the resulting snapshot. Caller-defined
+     * full_trace/json_full/binary_full flags have zero effect here.
+     *
+     * The result is DIAGNOSTIC DATA ONLY. Only the ActorRuntime's protected
+     * CONTROL scheduler can create authoritative supervisor notices.
+     */
+    public static ErrorSnapshot supervisorCompactSnapshot(
+            String trustedNominalName, int trustedCatalogCode,
+            java.util.Map<String, ?> ignoredGuestFields) {
+        java.util.Objects.requireNonNull(ignoredGuestFields, "guest fields");
+        return new ErrorSnapshot(trustedNominalName, trustedCatalogCode,
+                "", List.of(), false);
+    }
+
+    /**
+     * Host-authorized local diagnostics only; never the default supervisor
+     * transfer path. Read exactly two allowlisted scalar/array fields without
+     * ever invoking code(), getters, toString(), reflection or other guest
+     * callables, even if unknown subclass fields contain closures.
+     * The trusted caller must already have validated nominal Error identity.
+     */
+    public static ErrorSnapshot trustedLocalSnapshot(
+            String trustedNominalName, int trustedCatalogCode,
+            java.util.Map<String, ?> guestFields) {
+        java.util.Objects.requireNonNull(guestFields, "guest fields");
+        Object message = guestFields.get("message");
+        Object trace = guestFields.get("stack");
+        if (!(message instanceof String safeMessage) || !(trace instanceof List<?> rawFrames)) {
+            throw new IllegalArgumentException("trusted error snapshot requires String message and frame array");
+        }
+        if (rawFrames.size() > MAX_FRAMES) {
+            throw new IllegalArgumentException("too many guest error frames");
+        }
+        List<String> safeFrames = new ArrayList<>(rawFrames.size());
+        for (Object raw : rawFrames) {
+            if (!(raw instanceof String frame)) {
+                // Do NOT coerce unknown values via Object.toString().
+                throw new IllegalArgumentException(
+                        "guest error stack contains non-string or executable value");
+            }
+            safeFrames.add(frame);
+        }
+        return new ErrorSnapshot(trustedNominalName, trustedCatalogCode,
+                safeMessage, safeFrames, true);
+    }
+
     private static void validate(String name, int code, String message, List<String> frames) {
         if (name == null || !name.matches("[A-Za-z][A-Za-z0-9_]*")
                 || code < 0 || message == null || message.length() > MAX_MESSAGE
