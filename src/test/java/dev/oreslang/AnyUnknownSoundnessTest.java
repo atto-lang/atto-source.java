@@ -95,6 +95,12 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void genericTypeParametersCannotMasqueradeAsReifiedRuntimeTypes() {
+        reject("fnc bad<T>(T value): bool { return value is T; }", "reified runtime type witness");
+        reject("fnc bad<T>(T value): T { return value as T; }", "reified runtime type witness");
+    }
+
+    @Test
     void noUnverifiedPayloadCanEvadeActorOrChannelChecks() {
         reject("fnc bad(Channel<Any> ch): void { return; }", "cannot conceal an Any/Unknown payload");
         reject("fnc bad(Channel<Array<Unknown>> ch): void { return; }", "cannot conceal an Any/Unknown payload");

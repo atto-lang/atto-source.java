@@ -83,6 +83,9 @@ Do not weaken the existing hardening for actor isolation or `SharedMutex`.
   paths: imported ABI fallback, empty literals, `None`, `Result`, callable
   fallback and unresolved members. Replace it with distinct inference holes,
   compile-time errors and obligations; never silently treat it as a top type.
+- Runtime: reject `is T`, `as T` and typed `on T` when `T` is a
+  generic parameter without a runtime witness. Do not let Java erasure cause
+  a silently false pattern or an unchecked cast.
 - Runtime: intern guest `TypeDescriptor`s, reify generic arguments on
   instances and function calls as necessary, prove immutable/owned/actor-safe
   transitions and reject forged/foreign descriptors.

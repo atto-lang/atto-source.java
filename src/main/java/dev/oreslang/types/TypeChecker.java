@@ -1931,6 +1931,11 @@ public final class TypeChecker {
             requireRuntimeReifiableType(test.targetType(), "is");
             Type source = deref(typeOf(test.value(), env, generics, self));
             Type target = deref(resolve(test.targetType(), generics, self));
+            if (target instanceof Generic) {
+                throw new IllegalArgumentException(
+                        "is cannot test generic type parameter '" + test.targetType()
+                                + "' without a reified runtime type witness");
+            }
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible type test: " + source + " cannot be " + target);
             }
@@ -1945,6 +1950,11 @@ public final class TypeChecker {
             requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
+            if (target instanceof Generic) {
+                throw new IllegalArgumentException(
+                        "as cannot cast to generic type parameter '" + cast.targetType()
+                                + "' without a reified runtime type witness");
+            }
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible cast: " + source + " cannot be cast to " + target);
             }
@@ -4697,6 +4707,11 @@ public final class TypeChecker {
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
             Type source = deref(typeOf(test.value(), sourceEnv, generics, self));
             Type target = deref(resolve(test.targetType(), generics, self));
+            if (target instanceof Generic) {
+                throw new IllegalArgumentException(
+                        "is cannot test generic type parameter '" + test.targetType()
+                                + "' without a reified runtime type witness");
+            }
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible type refinement: " + source + " cannot be " + target);
             }
@@ -4773,6 +4788,11 @@ public final class TypeChecker {
         if (pattern instanceof Ast.TypePattern typed) {
             requireRuntimeReifiableType(typed.type(), "type pattern");
             Type target = deref(resolve(typed.type(), generics, self));
+            if (target instanceof Generic) {
+                throw new IllegalArgumentException(
+                        "type pattern cannot test generic type parameter '" + typed.type()
+                                + "' without a reified runtime type witness");
+            }
             if (!typesMayOverlap(subject, target)) {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
             }
