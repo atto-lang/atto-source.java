@@ -1597,13 +1597,20 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 cell.markMessageProcessed(completedSequence);
             })) {
+                boolean failActor = false;
                 synchronized (cell.lifecycleLock) {
                     if (!cell.stopped.get() && !cell.finalized) {
                         cell.sourceReceiveSuspended = false;
                         cell.activeMail = null;
-                        cell.fail(new IllegalStateException(
-                                "actor source receive completion could not re-enter its continuation lane"));
+                        failActor = true;
                     }
+                }
+                // A failed Future invokes registered callbacks inline. Never
+                // initiate termination while an outer lifecycle monitor is
+                // still held: drain observers may re-enter the runtime.
+                if (failActor) {
+                    cell.fail(new IllegalStateException(
+                            "actor source receive completion could not re-enter its continuation lane"));
                 }
             }
         });
@@ -4508,6 +4515,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null) return OresFuture.failed(terminated(ref));
+        // The current mailbox envelope cannot finish until this actor turn
+        // unwinds. Waiting for its own processed barrier would self-deadlock.
+        // An actor may request gracefulStop() instead: that seals admission
+        // and asynchronously stops it after its current message completes.
+        if (currentActor.get() == cell && cell.activeMail != null) {
+            return OresFuture.failed(new IllegalStateException(
+                    "an actor cannot drain its own active mailbox turn"));
+        }
         return cell.drainAcceptedMessages();
     }
 
