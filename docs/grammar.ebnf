@@ -22,7 +22,8 @@ top_level_item  = annotated_module_decl
                 | class_decl
                 | interface_decl
                 | type_decl
-                | binding_decl ;
+                | binding_decl
+                | defined_const_decl ;
 
 annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type_ref { "," type_ref } ]
                         [ "as" ] { module_member } "end" ;
@@ -34,7 +35,8 @@ module_member   = contract_decl
                 | class_decl
                 | interface_decl
                 | type_decl
-                | binding_decl ;
+                | binding_decl
+                | defined_const_decl ;
 
 visibility      = [ "pub" | "private" ] ;
 callable_modifier = "abstract" | "async" | "suspend" | "suspends" | "nlex" | "structural" ;
@@ -135,6 +137,10 @@ param           = type_ref [ "mut" ] IDENT
                 | "structural" type_ref IDENT
                 | "@Structural" type_ref IDENT
                 | IDENT "structural" type_ref ;
+
+(* Canonical declaration-form constant for file and named-module scope.
+   Compatibility parser also accepts 'pub define const ...'. *)
+defined_const_decl = "define" visibility "const" [ type_ref ] IDENT "=" expression stmt_terminator ;
 
 binding_decl    = named_inferred_binding
                 | { annotation } binding_kind
