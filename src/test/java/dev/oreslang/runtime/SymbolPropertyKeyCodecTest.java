@@ -90,7 +90,14 @@ final class SymbolPropertyKeyCodecTest {
                 "tenant-b", "actor-notification", "v1");
         var tenantAV2 = new SymbolPropertyKeyCodec.AdmissionScope(
                 "tenant-a", "actor-notification", "v2");
-        var exports = java.util.Map.of(tenantA, Set.of(secret));
+        var sourceExports = new java.util.HashSet<>(Set.of(secret));
+        var sourceManifest = new java.util.HashMap<SymbolPropertyKeyCodec.AdmissionScope, Set<OresSymbol>>();
+        sourceManifest.put(tenantA, sourceExports);
+        var exports = new SymbolPropertyKeyCodec.ExportManifest(sourceManifest);
+        // Changes to trusted inputs after sealing cannot expand or revoke the
+        // permissions of an admitted manifest snapshot.
+        sourceExports.clear();
+        sourceManifest.clear();
         assertEquals(secret,
                 SymbolPropertyKeyCodec.decodeForUntrusted(secretWire, tenantA, exports));
         assertThrows(SecurityException.class,
