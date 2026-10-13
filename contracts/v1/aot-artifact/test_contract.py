@@ -53,11 +53,23 @@ def reject_noncanonical_value(root):
 
 
 def decode(text):
-    if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_MANIFEST_BYTES:
-        raise ValueError("AOT manifest must be UTF-8 text of at most 64 KiB")
-    return reject_noncanonical_value(json.loads(
-        text, object_pairs_hook=unique_keys,
-        parse_constant=reject_non_json_constant))
+    if not isinstance(text, str):
+        raise ValueError("AOT manifest must be UTF-8 text")
+    try:
+        encoded_bytes = text.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as error:
+        raise ValueError("AOT manifest contains invalid Unicode") from error
+    if len(encoded_bytes) > MAX_MANIFEST_BYTES:
+        raise ValueError("AOT manifest must be at most 64 KiB")
+    try:
+        document = json.loads(
+            text, object_pairs_hook=unique_keys,
+            parse_constant=reject_non_json_constant)
+    except RecursionError as error:
+        # Python's JSON parser has a lower recursion limit than the
+        # decoder's iterative validation path on extreme nesting.
+        raise ValueError("AOT manifest nesting depth exceeded") from error
+    return reject_noncanonical_value(document)
 
 def check():
     schema = decode((ROOT / "manifest.schema.json").read_text())
