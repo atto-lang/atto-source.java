@@ -57,6 +57,27 @@ class SymbolTypingTest {
                 Parser.parse("fnc identity<Symbol>(Symbol value) -> Symbol { return value; }")));
     }
 
+    @Test void switchAcceptsSymbolCasesAndRejectsLogicalDuplicates() {
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(
+                "pub fnc read(Symbol tag) : int { "
+                + "switch tag case #ready -> { return 1; } "
+                + "case #error -> { return 2; } "
+                + "default -> { return 0; } end }")));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse(
+                "pub fnc bad(Symbol tag) : int { "
+                + "switch tag case #ready -> { return 1; } "
+                + "case #\"ready\" -> { return 2; } "
+                + "default -> { return 0; } end }")));
+    }
+
+    @Test void switchDistinguishesLiteralStringFromSymbolWithSameRendering() {
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(
+                "pub fnc read(Symbol | String tag) : int { "
+                + "switch tag case \"#foo\" -> { return 1; } "
+                + "case #foo -> { return 2; } "
+                + "default -> { return 0; } end }")));
+    }
+
     @Test void historicalSymbolConstructorIsRejectedAtCompileTime() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse(
                 "pub fnc bad() : Symbol { return new Symbol(\"ready\"); }")));
