@@ -98,6 +98,16 @@ at literal construction. Legitimate *contextual* holes for an **empty**
 array or an `Option`/`Result` constructor remain supported and must be
 replaced with explicit inference constraints in #847.
 
+## Readonly-origin provenance and qualified capabilities
+
+Writes through nested member or index chains rooted in a readonly structural
+parameter are rejected even when intermediate field types are mutable.
+Qualified nominal capability spellings (e.g. `std.Channel`) are matched by
+their final name segment for conservative `Any`/source `Unknown` boxing
+rejection. Alias extraction and nested reference capability provenance still
+need a complete borrow-aware type representation; do not claim deep transitive
+immutability or actor-sendable boxing from these checks alone.
+
 ## Writable structural fields and inference boundaries
 
 A record whose members are writable may not widen member types covariantly.

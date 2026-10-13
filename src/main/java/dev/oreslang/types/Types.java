@@ -142,7 +142,10 @@ public final class Types {
             // wrapper cannot currently preserve their affine/capability proof.
             // Only introduce universal boxing for them alongside reified
             // ownership witnesses and a transport-aware runtime.
-            if (switch (named.name()) {
+            String leafName = named.name();
+            int qualifier = leafName.lastIndexOf('.');
+            if (qualifier >= 0) leafName = leafName.substring(qualifier + 1);
+            if (switch (leafName) {
                 case "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
                      "Channel", "SelectCase", "SelectSet", "SelectResult",
                      "Mutex", "MutexGuard", "SharedMutex", "Future",

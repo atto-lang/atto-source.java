@@ -49,6 +49,8 @@ public final class AnyUnknownJavaSmoke {
                 any), "actor capability cannot hide behind Any");
         check(!Types.isAssignable(new Types.Named("Channel", List.of(integer)), opaque),
                 "channel capability cannot hide behind Unknown");
+        check(!Types.isAssignable(new Types.Named("std.Channel", List.of(integer)), any),
+                "qualified channel capability cannot hide behind Any");
         check(!Types.isAssignable(
                 new Types.Record(Map.of("mutex", new Types.Named("Mutex", List.of(integer)))),
                 any), "nested mutable capability cannot hide behind Any");

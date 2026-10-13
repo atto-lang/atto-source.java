@@ -171,6 +171,21 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void nestedFieldsCannotMutateThroughReadonlyStructuralParameter() {
+        reject("""
+                define module app
+                  define interface Outer
+                    inner: {foo: int};
+                  end
+                  fnc invalid(structural Outer parent): void {
+                    parent.inner.foo = 9;
+                    return;
+                  }
+                end
+                """, "cannot mutate a nested field through a readonly structural view");
+    }
+
+    @Test
     void directInternalInferenceHoleDoesNotImpersonateKnownValue() {
         // Unknown stdlib attributes currently produce a legacy inference
         // sentinel; they cannot be silently returned as a proven int.
@@ -255,6 +270,9 @@ final class AnyUnknownSoundnessTest {
         assertFalse(Types.isAssignable(
                 new Types.Named("Channel", List.of(Types.Primitive.INT)),
                 Types.UnknownValue.INSTANCE));
+        assertFalse(Types.isAssignable(
+                new Types.Named("std.Channel", List.of(Types.Primitive.INT)),
+                Types.Any.INSTANCE));
         assertFalse(Types.isAssignable(
                 new Types.Record(Map.of("handle", new Types.Named("Mutex", List.of(Types.Primitive.INT)))),
                 Types.Any.INSTANCE));

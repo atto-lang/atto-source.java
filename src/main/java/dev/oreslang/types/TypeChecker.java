@@ -1904,9 +1904,17 @@ public final class TypeChecker {
                 targetType = binding.type();
                 where = name.name();
             } else if (assignment.target() instanceof Ast.MemberExpr member) {
+                if (startsAtReadonlyStructuralView(member.receiver(), env)) {
+                    throw new IllegalArgumentException(
+                            "cannot mutate a nested field through a readonly structural view");
+                }
                 targetType = memberType(member, env, generics, self, true);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
+                if (startsAtReadonlyStructuralView(indexed.receiver(), env)) {
+                    throw new IllegalArgumentException(
+                            "cannot mutate an indexed element through a readonly structural view");
+                }
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
@@ -4477,6 +4485,30 @@ public final class TypeChecker {
             };
             default -> null;
         };
+    }
+
+    /**
+     * Keep the non-owning structural parameter's root readonly capability
+     * attached to nested member/index lvalues. Otherwise p.inner.foo = ...
+     * could bypass the outer Record.readOnly() check by resolving p.inner as a
+     * fresh writable receiver. This guards rooted lvalues; explicit aliasing
+     * and nested nominal/collection capabilities still need reified borrow
+     * provenance (issue #853).
+     */
+    private boolean startsAtReadonlyStructuralView(Ast.Expr expr, Env env) {
+        if (expr instanceof Ast.NameExpr name) {
+            Env.Binding binding = env.lookup(name.name());
+            return binding != null
+                    && deref(binding.type()) instanceof Record record
+                    && record.readOnly();
+        }
+        if (expr instanceof Ast.MemberExpr member) {
+            return startsAtReadonlyStructuralView(member.receiver(), env);
+        }
+        if (expr instanceof Ast.IndexExpr indexed) {
+            return startsAtReadonlyStructuralView(indexed.receiver(), env);
+        }
+        return false;
     }
 
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
