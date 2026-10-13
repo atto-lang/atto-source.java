@@ -128,7 +128,7 @@ public final class CriticalRwGate implements AutoCloseable {
                                     "read-to-write critical upgrade is forbidden");
                         }
                         throw new IllegalStateException(
-                                "nested critical RW acquisition requires verified reentrancy/lock ordering");
+                                "recursive logical nested critical RW acquisition requires verified reentrancy/lock ordering");
                     }
                     DOMAINS.put(caller, this);
                 }
