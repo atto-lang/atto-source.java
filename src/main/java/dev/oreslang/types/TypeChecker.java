@@ -1407,6 +1407,11 @@ public final class TypeChecker {
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
+        if (containsMustUseVoidResult(actual)) {
+            throw new IllegalArgumentException(
+                    "must-use Result<void,E> cannot be stored as module binding '" + field.name()
+                            + "' before global obligation tracking is implemented");
+        }
         requireMutableReferentCompatible(
                 actual,
                 field.mutableReferent(),
@@ -1452,7 +1457,9 @@ public final class TypeChecker {
     }
 
     private static void rejectUntrackedNestedResult(Type type, String where) {
-        if (!isMustUseVoidResult(type) && containsMustUseVoidResult(type)) {
+        boolean nestedInRoot = type instanceof Named named && isMustUseVoidResult(named)
+                && named.arguments().stream().anyMatch(TypeChecker::containsMustUseVoidResult);
+        if (nestedInRoot || !isMustUseVoidResult(type) && containsMustUseVoidResult(type)) {
             throw new IllegalArgumentException(
                     "must-use nested Result<void,E> at " + where
                             + " requires recursive ownership and handling proof");
