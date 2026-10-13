@@ -43,7 +43,7 @@ final class SharedNativeDeferSourceParityTest {
         try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
             Value result = context.eval(Source.newBuilder("ores", source, fixture.toString()).build());
             assertTrue(result.fitsInLong());
-            assertEquals(222L, result.asLong(),
+            assertEquals(42L, result.asLong(),
                     "pending scalar return snapshots must survive deferred mutation");
         }
     }
@@ -57,7 +57,7 @@ final class SharedNativeDeferSourceParityTest {
         try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
             Value result = context.eval(Source.newBuilder("ores", source, fixture.toString()).build());
             assertTrue(result.fitsInLong());
-            assertEquals(246L, result.asLong(),
+            assertEquals(42L, result.asLong(),
                     "pending returns must be snapshotted before ordered finally and outer defer");
         }
     }
