@@ -4278,6 +4278,10 @@ public final class ActorRuntime implements AutoCloseable {
                         throw fatal;
                     } catch (Throwable failure) {
                         completion.completeExceptionally(failure);
+                        // The caller's failed result is not a substitute for
+                        // actor supervision. Do not swallow an unhandled
+                        // exceptional Ores effect at this one-shot adapter.
+                        if (failure instanceof GuestEffectSignal effect) throw effect;
                     } finally {
                         turnContext.self().stop();
                     }
@@ -4404,14 +4408,23 @@ public final class ActorRuntime implements AutoCloseable {
                                     (value, failure) -> {
                                         try {
                                             if (failure != null) {
-                                                staged.failFromRuntime(
-                                                        OresFuture.unwrap(failure));
+                                                Throwable cause = OresFuture.unwrap(failure);
+                                                staged.failFromRuntime(cause);
+                                                // An exceptional effect after await must
+                                                // terminate the owning actor, not only
+                                                // settle the outward Future exceptionally.
+                                                if (cause instanceof GuestEffectSignal effect) {
+                                                    throw effect;
+                                                }
                                             } else {
                                                 R frozen = (R) freeze(value);
                                                 staged.completeFromRuntime(frozen);
                                             }
                                         } catch (Throwable callbackFailure) {
                                             staged.failFromRuntime(callbackFailure);
+                                            if (callbackFailure instanceof GuestEffectSignal effect) {
+                                                throw effect;
+                                            }
                                         } finally {
                                             turnContext.self().stop();
                                         }
@@ -4434,6 +4447,7 @@ public final class ActorRuntime implements AutoCloseable {
                     } catch (Throwable failure) {
                         staged.failFromRuntime(failure);
                         turnContext.self().stop();
+                        if (failure instanceof GuestEffectSignal effect) throw effect;
                     }
                 },
                 true);
