@@ -130,17 +130,17 @@ public final class ActorStateContract {
         }
         // Null here intentionally means no state map, different from a
         // declared map with zero keys. Both cases are still inspected.
-        Set<String> keys = null;
+        Map<String, Ast.TypeRef> keys = null;
         if (state != null) {
             Ast.TypeRef schema = keySchema(state);
             if (!schema.isRecordType()) {
                 throw new IllegalArgumentException("actor state schema must declare typed keys");
             }
-            keys = schema.recordMembers().keySet();
+            keys = schema.recordMembers();
             // No continuation-bound alias may be smuggled into actor-state defaults.
             if (state.initializer() instanceof Ast.ObjectExpr defaults) {
                 for (Ast.ObjectField def : defaults.fields()) {
-                    if (!keys.contains(def.name())) {
+                    if (!keys.containsKey(def.name())) {
                         throw new IllegalArgumentException("unknown actor state default key '" + def.name() + "'");
                     }
                 }
@@ -155,7 +155,7 @@ public final class ActorStateContract {
         }
     }
 
-    private static void visit(Object node, String actor, Set<String> keys,
+    private static void visit(Object node, String actor, Map<String, Ast.TypeRef> keys,
                               String activeAccess, boolean nestedClosure, boolean instanceMethod,
                               Ast.CriticalMode accessMode) {
         if (node == null) return;
@@ -215,6 +215,26 @@ public final class ActorStateContract {
             throw new IllegalArgumentException(
                     "actor state loan cannot cross await, select, or suspension");
         }
+        // A local binding or assignment of a reference-bearing state
+        // projection can launder a live actor-owned alias even when the
+        // enclosing handle_state callback returns only an int. Until typed
+        // detachment is proven, reject that materialization at the source
+        // boundary. Direct immutable scalar snapshots remain legal.
+        if (activeAccess != null && keys != null) {
+            if (node instanceof Ast.BindingStmt binding
+                    && containsReferenceBearingStateProjection(
+                            binding.initializer(), activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state-backed reference alias requires verified snapshot lowering");
+            }
+            if (node instanceof Ast.AssignExpr assignment
+                    && !referencesAccess(assignment.target(), activeAccess)
+                    && containsReferenceBearingStateProjection(
+                            assignment.value(), activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state-backed reference alias requires verified snapshot lowering");
+            }
+        }
         // The state mode is a capability; using never upgrades read.
         if (activeAccess != null && accessMode == Ast.CriticalMode.READ
                 && node instanceof Ast.AssignExpr assign
@@ -239,7 +259,7 @@ public final class ActorStateContract {
                 throw new IllegalArgumentException(
                         "actor state access capability cannot be captured by nested closures");
             }
-            if (!keys.contains(member.member())) {
+            if (!keys.containsKey(member.member())) {
                 throw new IllegalArgumentException("undeclared actor state key '" + member.member() + "'");
             }
             return; // scoped direct field operation, subject to normal type checking
@@ -309,6 +329,55 @@ public final class ActorStateContract {
                 }
             }
         }
+    }
+
+    /**
+     * Conservative source provenance check: any reference-bearing state
+     * projection copied into an ordinary binding could escape or mutate the
+     * actor-owned heap under a read grant. Complex containers count, including
+     * fields nested in tuple/list/record literals. This does not substitute
+     * for future typed SSA ownership/alias analysis.
+     */
+    private static boolean containsReferenceBearingStateProjection(
+            Object node, String access, Map<String, Ast.TypeRef> keys) {
+        if (node == null) return false;
+        if (node instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr receiver
+                && receiver.name().equals(access)) {
+            Ast.TypeRef fieldType = keys.get(member.member());
+            return fieldType == null || !detachedScalarStateType(fieldType);
+        }
+        if (node instanceof Ast.LambdaExpr lambda
+                && lambda.parameters().stream().anyMatch(p -> p.name().equals(access))) {
+            return false;
+        }
+        if (node instanceof Iterable<?> items) {
+            for (Object item : items) {
+                if (containsReferenceBearingStateProjection(item, access, keys)) return true;
+            }
+            return false;
+        }
+        if (node instanceof java.lang.Record record
+                && node.getClass().getName().startsWith("dev.oreslang.ast.")) {
+            for (RecordComponent component : record.getClass().getRecordComponents()) {
+                try {
+                    if (containsReferenceBearingStateProjection(
+                            component.getAccessor().invoke(record), access, keys)) return true;
+                } catch (ReflectiveOperationException failure) {
+                    throw new IllegalStateException("failed to verify actor state alias origin", failure);
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean detachedScalarStateType(Ast.TypeRef type) {
+        if (!type.arguments().isEmpty() || type.isBorrow()) return false;
+        return switch (type.name()) {
+            case "int", "uint", "float", "decimal", "complex",
+                 "bool", "boolean", "string", "String" -> true;
+            default -> false;
+        };
     }
 
     private static boolean referencesAccess(Object node, String access) {
