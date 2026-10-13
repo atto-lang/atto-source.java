@@ -14,6 +14,8 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Set;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
@@ -49,6 +51,10 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     private final Object admissionGate = new Object();
     private final CountDownLatch stopped = new CountDownLatch(1);
     private final AtomicInteger pending = new AtomicInteger();
+    // Every accepted operation is registered before command publication.
+    // Identity avoids surprising equals/hashCode callbacks on reactor threads.
+    private final Set<OresFuture<?>> unsettled =
+            Collections.newSetFromMap(new IdentityHashMap<>());
     private final AtomicLong worstCommandQueueNanos = new AtomicLong();
     private final AtomicInteger peakPending = new AtomicInteger();
     // The fields below must be accessed on the dedicated reactor thread only.
@@ -100,12 +106,28 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     int peakOutstandingFutures() { return peakPending.get(); }
     long maxCommandQueueNanos() { return worstCommandQueueNanos.get(); }
 
-    private boolean submit(Runnable runnable) {
+    private boolean submit(OresFuture<?> future, Runnable runnable) {
         synchronized (admissionGate) {
-            if (shuttingDown.get() || pending.get() >= maxPending) return false;
-            int count = pending.incrementAndGet();
-            peakPending.accumulateAndGet(count, Math::max);
-            postOwned(runnable);
+            if (shuttingDown.get() || unsettled.size() >= maxPending) return false;
+            unsettled.add(future);
+            pending.incrementAndGet();
+            peakPending.accumulateAndGet(pending.get(), Math::max);
+            try {
+                postOwned(runnable);
+                return true;
+            } catch (RuntimeException | Error failure) {
+                // No command was successfully admitted. Restore counters.
+                unsettled.remove(future);
+                pending.decrementAndGet();
+                throw failure;
+            }
+        }
+    }
+
+    private boolean release(OresFuture<?> future) {
+        synchronized (admissionGate) {
+            if (!unsettled.remove(future)) return false;
+            pending.decrementAndGet();
             return true;
         }
     }
@@ -124,7 +146,7 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     public OresFuture<Connection> acceptAsync() {
         // Cancellation is declined pending the operation's kernel arbitration.
         OresFuture<Connection> future = new OresFuture<>(() -> false, () -> { });
-        if (!submit(() -> {
+        if (!submit(future, () -> {
             if (shuttingDown.get()) {
                 fail(future, new IOException("TCP reactor closing"));
                 return;
@@ -146,6 +168,11 @@ public final class NativeNioFutureReactor implements AutoCloseable {
 
         private Connection(SocketChannel channel) { this.channel = channel; }
 
+        /** Runtime ownership identity; not exposed as a guest member. */
+        public NativeNioFutureReactor ownerReactor() {
+            return NativeNioFutureReactor.this;
+        }
+
         /**
          * ABI representation for Oreslang Array<int>: owned immutable numeric data.
          * Conversion occurs on the completing runtime thread; never a guest
@@ -159,9 +186,14 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                 if (failure != null) {
                     exported.failFromRuntime(failure);
                 } else {
-                    java.util.ArrayList<Long> values = new java.util.ArrayList<>(bytes.length);
-                    for (byte b : bytes) values.add((long) (b & 0xff));
-                    exported.completeFromRuntime(java.util.List.copyOf(values));
+                    try {
+                        java.util.ArrayList<Long> values = new java.util.ArrayList<>(bytes.length);
+                        for (byte b : bytes) values.add((long) (b & 0xff));
+                        exported.completeFromRuntime(java.util.List.copyOf(values));
+                    } catch (Throwable conversionFailure) {
+                        // A mapping failure must never strand a guest await.
+                        exported.failFromRuntime(conversionFailure);
+                    }
                 }
             });
             return exported;
@@ -187,7 +219,7 @@ public final class NativeNioFutureReactor implements AutoCloseable {
             if (maximum < 1 || maximum > MAX_IO_BYTES)
                 return OresFuture.failed(new IllegalArgumentException("invalid read size"));
             OresFuture<byte[]> future = new OresFuture<>(() -> false, () -> { });
-            if (!submit(() -> {
+            if (!submit(future, () -> {
                 if (terminated || shuttingDown.get() || closeRequested.get()) {
                     fail(future, new IOException("connection closed"));
                 } else if (read != null) {
@@ -208,7 +240,7 @@ public final class NativeNioFutureReactor implements AutoCloseable {
             // survives asynchronous dispatch. Connection ownership remains local.
             byte[] copied = Arrays.copyOf(bytes, bytes.length);
             OresFuture<Integer> future = new OresFuture<>(() -> false, () -> { });
-            if (!submit(() -> {
+            if (!submit(future, () -> {
                 if (terminated || shuttingDown.get() || closeRequested.get()) {
                     fail(future, new IOException("connection closed"));
                 } else if (write != null) {
@@ -252,15 +284,11 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     private record WriteOp(OresFuture<Integer> future, ByteBuffer bytes) { }
 
     private <T> void succeed(OresFuture<T> future, T value) {
-        // Release admission *before* publishing completion. Awaiting guest
-        // continuations can immediately submit their next operation; they must
-        // not race an already-completed predecessor's stale quota count.
-        pending.decrementAndGet();
-        future.completeFromRuntime(value);
+        // Admission is returned before exposing completion to continuations.
+        if (release(future)) future.completeFromRuntime(value);
     }
     private <T> void fail(OresFuture<T> future, Throwable failure) {
-        pending.decrementAndGet();
-        future.failFromRuntime(failure);
+        if (release(future)) future.failFromRuntime(failure);
     }
 
     private void updateAcceptInterest() {
@@ -366,15 +394,38 @@ public final class NativeNioFutureReactor implements AutoCloseable {
             synchronized (admissionGate) {
                 shuttingDown.set(true);
             }
-            try { drainCommands(); } catch (Throwable ignored) { }
-            IOException failure = new IOException("TCP reactor terminated", terminalFailure);
-            while (!accepts.isEmpty()) fail(accepts.removeFirst(), failure);
-            for (Connection connection : Set.copyOf(connections))
-                closeConnection(connection, failure);
-            try { listener.close(); } catch (IOException ignored) { }
-            try { selector.close(); } catch (IOException ignored) { }
-            terminated.completeFromRuntime(null);
-            stopped.countDown();
+            try {
+                // A bad queued command must not prevent all OTHER admitted
+                // operations from being failed. Their identity registry is
+                // independent of the command queue and selection keys.
+                try { drainCommands(); } catch (Throwable drainedFailure) {
+                    if (terminalFailure == null) terminalFailure = drainedFailure;
+                }
+                IOException failure = new IOException("TCP reactor terminated", terminalFailure);
+                while (!accepts.isEmpty()) fail(accepts.removeFirst(), failure);
+                for (Connection connection : Set.copyOf(connections)) {
+                    try { closeConnection(connection, failure); }
+                    catch (RuntimeException cleanupFailure) {
+                        if (terminalFailure != null) terminalFailure.addSuppressed(cleanupFailure);
+                    }
+                }
+                // The queues may contain operations whose command itself threw
+                // before registering as an active read/write/accept.
+                Set<OresFuture<?>> forgotten;
+                synchronized (admissionGate) {
+                    forgotten = Set.copyOf(unsettled);
+                    unsettled.clear();
+                    pending.set(0);
+                    commands.clear();
+                }
+                for (OresFuture<?> future : forgotten)
+                    future.failFromRuntime(failure);
+            } finally {
+                try { listener.close(); } catch (IOException ignored) { }
+                try { selector.close(); } catch (IOException ignored) { }
+                terminated.completeFromRuntime(null);
+                stopped.countDown();
+            }
         }
     }
 

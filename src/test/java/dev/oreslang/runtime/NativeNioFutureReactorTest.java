@@ -82,6 +82,28 @@ final class NativeNioFutureReactorTest {
         }
     }
 
+    @Test void abruptKernelSelectorLossSettlesEveryAdmittedFuture() throws Exception {
+        var reactor = NativeNioFutureReactor.loopback(0, 4, 2, 32);
+        try {
+            var waiting = new java.util.ArrayList<OresFuture<NativeNioFutureReactor.Connection>>();
+            for (int i = 0; i < 16; i++) waiting.add(reactor.acceptAsync());
+            // Adversarial host failure: closing the selector without normal
+            // reactor shutdown must still settle every admitted operation.
+            var field = NativeNioFutureReactor.class.getDeclaredField("selector");
+            field.setAccessible(true);
+            ((java.nio.channels.Selector) field.get(reactor)).close();
+            assertTrue(reactor.awaitTerminated(2000), "selector loss must terminate reactor");
+            for (var future : waiting) {
+                assertTrue(future.isDone(), "selector loss stranded a guest Future");
+                assertThrows(ExecutionException.class, () -> future.get(2, TimeUnit.SECONDS));
+            }
+            assertEquals(0, reactor.outstandingFutures());
+            assertTrue(reactor.closeAsync().isDone());
+        } finally {
+            reactor.close();
+        }
+    }
+
     @Test void concurrentShutdownCannotStrandAdmittedFutures() throws Exception {
         for (int round = 0; round < 40; round++) {
             var reactor = NativeNioFutureReactor.loopback(0, 4, 2, 16);

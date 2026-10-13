@@ -6321,18 +6321,21 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (receiver instanceof NativeNioFutureReactor listener) {
+                if (ActorRuntime.inActorExecution())
+                    throw new SecurityException("TCP listener authority is supervisor-only");
+                context.requireNioOwner(listener, "net.listener." + name);
                 return switch (name) {
                     case "port" -> (long) listener.localPort();
                     case "accept_async" -> (Invokable) args -> {
                         requireZero(args, "NioTcpListener.accept_async");
                         if (ActorRuntime.inActorExecution())
                             throw new SecurityException("TCP listener acceptance belongs to the supervisor");
-                        context.requireCapability(IsolatePolicy.Capability.NETWORK, "net.accept");
+                        context.requireNioOwner(listener, "net.accept");
                         return listener.acceptAsync();
                     };
                     case "close_async" -> (Invokable) args -> {
                         requireZero(args, "NioTcpListener.close_async");
-                        context.requireCapability(IsolatePolicy.Capability.NETWORK, "net.close");
+                        context.requireNioOwner(listener, "net.close");
                         return listener.closeAsync();
                     };
                     default -> throw new IllegalArgumentException("unknown nonblocking TCP listener member " + name);
@@ -6341,24 +6344,25 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof NativeNioFutureReactor.Connection connection) {
                 if (ActorRuntime.inActorExecution())
                     throw new SecurityException("TCP connection ownership transfer to actor is not implemented");
+                context.requireNioOwner(connection, "net.connection." + name);
                 return switch (name) {
                     case "read_bytes_async" -> (Invokable) args -> {
                         requireOne(args, "NioTcpConnection.read_bytes_async");
                         if (!(args.getFirst() instanceof Number maximum))
                             throw new IllegalArgumentException("read size must be an integer");
-                        context.requireCapability(IsolatePolicy.Capability.NETWORK, "net.read");
+                        context.requireNioOwner(connection, "net.read");
                         return connection.readBytesAsync(maximum.intValue());
                     };
                     case "write_bytes_async" -> (Invokable) args -> {
                         requireOne(args, "NioTcpConnection.write_bytes_async");
                         if (!(args.getFirst() instanceof java.util.List<?> bytes))
                             throw new IllegalArgumentException("write bytes must be Array<int>");
-                        context.requireCapability(IsolatePolicy.Capability.NETWORK, "net.write");
+                        context.requireNioOwner(connection, "net.write");
                         return connection.writeBytesAsync(bytes);
                     };
                     case "close_async" -> (Invokable) args -> {
                         requireZero(args, "NioTcpConnection.close_async");
-                        context.requireCapability(IsolatePolicy.Capability.NETWORK, "net.close");
+                        context.requireNioOwner(connection, "net.close");
                         return connection.closeAsync();
                     };
                     default -> throw new IllegalArgumentException("unknown nonblocking TCP connection member " + name);
