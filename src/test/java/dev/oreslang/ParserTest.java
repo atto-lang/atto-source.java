@@ -976,9 +976,10 @@ final class ParserTest {
 
 
     @Test
-    void actorInheritanceFailsClosedUntilInheritedStateIsVerified() {
-        // Matching SHARED kinds alone do not prove inherited state safety.
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+    void storageFreeSameKindActorInheritancePreservesIsolation() {
+        // Same-kind non-serial inheritance is safe only when ancestors have
+        // no fields; the separate actor-state gate denies inherited storage.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 shared actor Parent {
                 }
 
