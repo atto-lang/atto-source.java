@@ -59,6 +59,7 @@ final class NestedEnumLocalValueTest {
                         on Outer.Wrapped as Inner.Byte(v) -> { return v; }
                         on Outer.Wrapped as Inner.None -> { return 0; }
                         on Outer.Empty -> { return -1; }
+                        on _ -> { return -2; }
                     end
                 }
                 """)));
