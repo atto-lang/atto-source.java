@@ -3307,10 +3307,32 @@ public final class Parser {
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
+        java.util.Set<String> labels = new java.util.HashSet<>();
+        boolean sawNamed = false;
+        boolean sawSpread = false;
         do {
-            boolean spread = match(ELLIPSIS);
-            Ast.Expr argument = parseExpression();
-            args.add(spread ? new Ast.SpreadExpr(argument) : argument);
+            // ':' denotes a VALUE argument only at the top level of a call item.
+            // Type metadata continues to use '=' inside <...>.
+            if (check(IDENT) && checkNext(COLON)) {
+                if (sawSpread) {
+                    throw error(peek(), "named arguments cannot be mixed with argument spreads");
+                }
+                String name = advance().lexeme();
+                consume(COLON, "expected ':' after named value argument");
+                if (!labels.add(name)) {
+                    throw error(previous(), "duplicate named argument '" + name + "'");
+                }
+                sawNamed = true;
+                args.add(new Ast.NamedArgumentExpr(name, parseExpression()));
+            } else {
+                if (sawNamed) {
+                    throw error(peek(), "positional arguments cannot follow named arguments");
+                }
+                boolean spread = match(ELLIPSIS);
+                sawSpread |= spread;
+                Ast.Expr argument = parseExpression();
+                args.add(spread ? new Ast.SpreadExpr(argument) : argument);
+            }
         } while (match(COMMA));
         return args;
     }
