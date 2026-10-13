@@ -369,7 +369,9 @@ final class TypedAdtDestructureTest {
                 }
                 """);
         accepts("""
-                fnc rows(): Array<[int, string]> { return arr[(1, "one"), (2, "two")]; }
+                fnc row1(): [int, string] { return (1, "one"); }
+                fnc row2(): [int, string] { return (2, "two"); }
+                fnc rows(): Array<[int, string]> { return arr[row1(), row2()]; }
                 fnc ok(): void {
                   for const [int first] of rows() do
                     stdio.println(first);
