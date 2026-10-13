@@ -669,6 +669,7 @@ final class ActorSendContractTest {
                 }
                 return (message, context) -> { };
             });
+            ref.send(1); // Host factories initialize on their first scheduled turn.
             try {
                 assertTrue(initializerEntered.await(5, TimeUnit.SECONDS));
                 var actorsField = ActorRuntime.class.getDeclaredField("actors");
@@ -725,6 +726,7 @@ final class ActorSendContractTest {
                 }
                 throw new IllegalStateException("deliberate initializer failure");
             });
+            actor.send(1); // Admit the first turn before awaiting initializer entry.
             assertTrue(initializerEntered.await(5, TimeUnit.SECONDS));
             actor.getReady().whenCompleteRuntime((value, failure) -> {
                 readinessCallbackEntered.countDown();
