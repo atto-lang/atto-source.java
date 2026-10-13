@@ -134,6 +134,72 @@ final class ActorMutexFutureAuthorityTest {
     }
 
     @Test
+    void actorCancellationDoesNotExecuteHostFutureCallbacksInsideActorTurn() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var held = mutex.lock();
+        var callbackEntered = new CountDownLatch(1);
+        var unblockCallback = new CountDownLatch(1);
+        var actorFinished = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        var cancelled = new AtomicBoolean();
+        var pending = new AtomicReference<CompletableFuture<OresMutex.Guard<int[]>>>();
+
+        try {
+            try (ActorRuntime runtime = new ActorRuntime(
+                    IsolatePolicy.developer(),
+                    new ActorRuntime.DispatcherConfig(2, 4, 32))) {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        var queued = mutex.lockAsync();
+                        pending.set(queued);
+                        queued.whenComplete((guard, problem) -> {
+                            try {
+                                assertNull(ActorRuntime.currentActorRuntime(),
+                                        "raw Java completion inherited cancelling actor's authority");
+                                assertTrue(Thread.currentThread().getName()
+                                                .startsWith("ores-shared-mutex-notifications-"),
+                                        "cancellation ran host dependent on actor carrier");
+                                callbackEntered.countDown();
+                                assertTrue(unblockCallback.await(4, TimeUnit.SECONDS));
+                            } catch (Throwable callbackFailure) {
+                                failure.compareAndSet(null, callbackFailure);
+                                callbackEntered.countDown();
+                            }
+                        });
+                        cancelled.set(queued.cancel(false));
+                    } catch (Throwable problem) {
+                        failure.compareAndSet(null, problem);
+                    } finally {
+                        actorFinished.countDown();
+                    }
+                });
+                actor.send("cancel");
+                assertTrue(callbackEntered.await(3, TimeUnit.SECONDS),
+                        "cancelled Future never invoked its host completion callback");
+                assertTrue(actorFinished.await(1, TimeUnit.SECONDS),
+                        "actor's cancel() synchronously blocked inside a host callback");
+                assertTrue(cancelled.get(), "queued cancellation was not accepted");
+                assertNull(failure.get(), String.valueOf(failure.get()));
+            } finally {
+                unblockCallback.countDown();
+            }
+            assertNotNull(pending.get());
+            long terminalDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!pending.get().isCancelled() && System.nanoTime() < terminalDeadline) {
+                Thread.sleep(2);
+            }
+            assertTrue(pending.get().isCancelled(),
+                    "accepted actor cancellation did not publish public Future terminal state");
+            assertNull(failure.get(), String.valueOf(failure.get()));
+        } finally {
+            unblockCallback.countDown();
+            held.release();
+        }
+        var next = mutex.lockFor(Duration.ofSeconds(1)).orElseThrow();
+        next.release();
+    }
+
+    @Test
     void cancelledAwaitRestoresActorLockDomainBeforeNextMailboxTurn() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
         var held = mutex.lock();
