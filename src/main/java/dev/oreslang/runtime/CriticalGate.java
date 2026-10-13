@@ -27,6 +27,13 @@ public final class CriticalGate {
     // or leave another actor's STOP/domain-close cleanup unfinished.
     private static Throwable recordCleanupFailure(Throwable prior, Throwable next) {
         if (prior == null) return next;
+        // Preserve JVM Error severity even if an ordinary callback threw
+        // first; ActorRuntime must not mistake a suppressed Error for a
+        // harmless RuntimeException during STOP cleanup.
+        if (next instanceof Error && !(prior instanceof Error)) {
+            if (next != prior) next.addSuppressed(prior);
+            return next;
+        }
         if (prior != next) prior.addSuppressed(next);
         return prior;
     }
