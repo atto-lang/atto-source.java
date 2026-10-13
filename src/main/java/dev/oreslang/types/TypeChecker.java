@@ -4704,6 +4704,20 @@ public final class TypeChecker {
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchArm arm = arms.get(i);
 
+            // Multiple earlier arms may collectively cover the domain even
+            // when no single arm subsumes this one (e.g. true, false, then _).
+            // Guards do not count toward unconditional reachability.
+            if (i > 0 && patternsProvablyExhaustive(
+                    arms.subList(0, i).stream()
+                            .filter(previous -> previous.guard() == null)
+                            .map(Ast.MatchArm::pattern)
+                            .toList(),
+                    subject, generics, self, 0)) {
+                throw new IllegalArgumentException(
+                        "unreachable match arm " + (i + 1)
+                                + ": earlier arms already exhaust " + subject);
+            }
+
             Env armEnv = new Env(env);
             checkPattern(arm.pattern(), subject, armEnv, generics, self);
             if (arm.guard() != null) {
@@ -5133,9 +5147,16 @@ public final class TypeChecker {
         // nominal or structural type pattern. Assignment compatibility with
         // Unknown is deliberately permissive, but coverage must not be.
         if (subject == Unknown.INSTANCE || subject instanceof Generic) return false;
+        // A union is completely covered only if each runtime alternative is
+        // covered. Assignability alone is unsafe here: int can widen to float,
+        // but an int runtime value does not satisfy an 'is float' pattern.
+        if (subject instanceof Union union) {
+            return union.options().stream().allMatch(option ->
+                    patternCoversType(pattern, option, generics, self));
+        }
         if (pattern instanceof Ast.TypePattern typed) {
             Type target = deref(resolve(typed.type(), generics, self));
-            return assignable(subject, target);
+            return typesMayOverlap(subject, target) && assignable(subject, target);
         }
         if (pattern instanceof Ast.StructuralPattern structural) {
             Type resolved = deref(resolve(structural.target(), generics, self));
