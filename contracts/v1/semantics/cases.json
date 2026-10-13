@@ -57,6 +57,18 @@
       }
     },
     {
+      "id": "native.defer-lifo-cfg",
+      "feature": "control-flow.defer-lifo",
+      "source": "fixtures/native-defer-lifo-cfg.ores",
+      "kind": "native_exit",
+      "expected_exit": 111,
+      "backends": {
+        "llvm": "pending",
+        "graal": "required"
+      },
+      "pending_reason": "LLVM native execution and mutable-defer lowering have not yet been independently validated."
+    },
+    {
       "id": "diagnostic.unknown",
       "feature": "type.unknown-name",
       "source": "fixtures/unknown.ores",
