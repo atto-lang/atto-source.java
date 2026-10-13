@@ -2256,118 +2256,110 @@ public final class OresEvalRootNode extends RootNode {
                 int index,
                 Ast.MatchArm fallback,
                 SourceFlowCont continuation) {
+            runMatchArms(task, matched, subject, env, index, fallback,
+                    null, Map.of(), continuation);
+        }
+
+        /**
+         * Suspendable matching must preserve the same semantics as the
+         * synchronous interpreter. An ordered match executes the first
+         * matching arm; an exclusive match checks all explicit arms and
+         * executes only after uniqueness is established.
+         *
+         * Carry the selected arm across suspensions rather than executing
+         * the first match. Otherwise actor/coroutine code silently turns
+         * legacy exclusive matches into ordered matches.
+         */
+        private void runMatchArms(
+                SourceTask task,
+                Ast.MatchStmt matched,
+                Object subject,
+                Env env,
+                int index,
+                Ast.MatchArm fallback,
+                Ast.MatchArm selected,
+                Map<String, Object> selectedBindings,
+                SourceFlowCont continuation) {
             if (index >= matched.arms().size()) {
-                if (fallback == null) {
-                    continuation.accept(
-                            task,
-                            SourceFlow.throwing(
-                                    new IllegalStateException(
-                                            "exhaustive match invariant violated")));
+                Ast.MatchArm winner = selected != null ? selected : fallback;
+                if (winner == null) {
+                    continuation.accept(task, SourceFlow.throwing(
+                            new IllegalStateException(
+                                    "exhaustive match invariant violated")));
                     return;
                 }
-                LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
-                if (!patternMatches(
-                        fallback.pattern(),
-                        subject,
-                        bindings)) {
-                    continuation.accept(
-                            task,
-                            SourceFlow.throwing(
-                                    new IllegalStateException(
-                                            "match fallback did not accept subject")));
-                    return;
+                Map<String, Object> bindings = selectedBindings;
+                if (selected == null) {
+                    LinkedHashMap<String, Object> fallbackBindings = new LinkedHashMap<>();
+                    if (!patternMatches(winner.pattern(), subject, fallbackBindings)) {
+                        continuation.accept(task, SourceFlow.throwing(
+                                new IllegalStateException(
+                                        "match fallback did not accept subject")));
+                        return;
+                    }
+                    bindings = fallbackBindings;
                 }
                 Env selectedEnv = new Env(env);
-                bindings.forEach(
-                        (name, value) ->
-                                selectedEnv.define(
-                                        name,
-                                        value,
-                                        Ast.BindingKind.VAL));
-                runBlock(
-                        task,
-                        fallback.body(),
-                        selectedEnv,
-                        continuation);
+                bindings.forEach((name, value) ->
+                        selectedEnv.define(name, value, Ast.BindingKind.VAL));
+                runBlock(task, winner.body(), selectedEnv, continuation);
                 return;
             }
 
             Ast.MatchArm arm = matched.arms().get(index);
-            boolean catchAll =
-                    arm.guard() == null
-                            && (arm.pattern() instanceof Ast.WildcardPattern
-                                    || arm.pattern() instanceof Ast.BindingPattern);
+            boolean catchAll = arm.guard() == null
+                    && (arm.pattern() instanceof Ast.WildcardPattern
+                            || arm.pattern() instanceof Ast.BindingPattern);
             if (!matched.ordered() && catchAll) {
-                runMatchArms(
-                        task,
-                        matched,
-                        subject,
-                        env,
-                        index + 1,
-                        arm,
-                        continuation);
+                runMatchArms(task, matched, subject, env, index + 1, arm,
+                        selected, selectedBindings, continuation);
                 return;
             }
 
             LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
-            if (!patternMatches(
-                    arm.pattern(),
-                    subject,
-                    bindings)) {
-                runMatchArms(
-                        task,
-                        matched,
-                        subject,
-                        env,
-                        index + 1,
-                        fallback,
-                        continuation);
+            if (!patternMatches(arm.pattern(), subject, bindings)) {
+                runMatchArms(task, matched, subject, env, index + 1, fallback,
+                        selected, selectedBindings, continuation);
                 return;
             }
 
             Env armEnv = new Env(env);
-            bindings.forEach(
-                    (name, value) ->
-                            armEnv.define(
-                                    name,
-                                    value,
-                                    Ast.BindingKind.VAL));
+            bindings.forEach((name, value) ->
+                    armEnv.define(name, value, Ast.BindingKind.VAL));
 
             if (arm.guard() == null) {
-                runBlock(
-                        task,
-                        arm.body(),
-                        armEnv,
-                        continuation);
+                if (matched.ordered()) {
+                    runBlock(task, arm.body(), armEnv, continuation);
+                } else if (selected != null) {
+                    continuation.accept(task, SourceFlow.throwing(
+                            new IllegalStateException(
+                                    "exclusive match invariant violated at runtime: "
+                                            + "more than one explicit arm matched")));
+                } else {
+                    runMatchArms(task, matched, subject, env, index + 1, fallback,
+                            arm, new LinkedHashMap<>(bindings), continuation);
+                }
                 return;
             }
 
-            evalSuspendableExpr(
-                    task,
-                    arm.guard(),
-                    armEnv,
-                    (t, guard, failure) -> {
-                        if (failure != null) {
-                            continuation.accept(
-                                    t,
-                                    SourceFlow.throwing(failure));
-                        } else if (truth(guard)) {
-                            runBlock(
-                                    t,
-                                    arm.body(),
-                                    armEnv,
-                                    continuation);
-                        } else {
-                            runMatchArms(
-                                    t,
-                                    matched,
-                                    subject,
-                                    env,
-                                    index + 1,
-                                    fallback,
-                                    continuation);
-                        }
-                    });
+            evalSuspendableExpr(task, arm.guard(), armEnv, (t, guard, failure) -> {
+                if (failure != null) {
+                    continuation.accept(t, SourceFlow.throwing(failure));
+                } else if (!truth(guard)) {
+                    runMatchArms(t, matched, subject, env, index + 1, fallback,
+                            selected, selectedBindings, continuation);
+                } else if (matched.ordered()) {
+                    runBlock(t, arm.body(), armEnv, continuation);
+                } else if (selected != null) {
+                    continuation.accept(t, SourceFlow.throwing(
+                            new IllegalStateException(
+                                    "exclusive match invariant violated at runtime: "
+                                            + "more than one explicit arm matched")));
+                } else {
+                    runMatchArms(t, matched, subject, env, index + 1, fallback,
+                            arm, new LinkedHashMap<>(bindings), continuation);
+                }
+            });
         }
 
         /**
