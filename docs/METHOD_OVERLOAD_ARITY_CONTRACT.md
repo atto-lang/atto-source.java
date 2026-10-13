@@ -68,11 +68,15 @@ encode a deterministic per-class slot (for example,
 selection for virtual overrides. Generic type substitution validates the
 chosen signature; it does not change the selector.
 
-`CallableSelector` and the Java type checker already implement
-the selector semantics. The Java evaluator currently performs recursive
-inherited-method lookup using that selector. Therefore, **O(1) dispatch
-latency and native AOT parity are separate optimization/verification
-milestones**; they do not follow automatically from the arity rule.
+`CallableSelector` and the Java type checker implement the selector
+semantics. The Java evaluator now precomputes an immutable per-class
+`CallableSelector -> MethodDecl` table before publishing the evaluator.
+Dispatch uses two expected-constant-time lookups (class identity, then
+selector) instead of scanning inherited method declarations. Table
+construction rejects same-slot conflicts before execution and deduplicates
+true diamonds by declaration identity. This is **not** proof of a specific
+latency improvement, zero-allocation call site, or GraalVM Native Image
+performance; benchmarks and exact-tree CI verification remain required.
 
 The LLVM frontend's current native class subset has field declarations
 but does not yet implement general class methods/abstract method vtables.
