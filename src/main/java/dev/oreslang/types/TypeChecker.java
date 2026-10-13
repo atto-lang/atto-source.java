@@ -1560,8 +1560,8 @@ public final class TypeChecker {
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
-                        ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
-                        : "W-SELECT-RETURN: return value in do select exits only the selected arm; the value is discarded");
+                        ? "W-SELECT-RETURN: return; exits only detached do-nb-select arm; prefer normal fallthrough"
+                        : "W-SELECT-RETURN: return value in detached do nb select exits only its arm; the value is discarded");
             }
             if (currentGenerator) {
                 if (ret.value() != null) {
@@ -1741,15 +1741,21 @@ public final class TypeChecker {
                         armEnv.define(arm.bindingName(), bound, arm.bindingKind());
                     }
                 }
-                if (selected.explicitDo()) {
-                    // Every do-select return is arm-local, including blocking do select.
-                    // A returned value is evaluated, discarded, and warned about.
-                    checkIsolatedArmBlock(arm.body(), armEnv, generics,
-                            Unknown.INSTANCE, self, true);
-                } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
-                    // Compatibility: detached legacy nb select arms cannot return a value.
-                    checkCallableBlock(arm.body(), armEnv, generics, Primitive.VOID, self);
+                if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    // A detached arm runs after the containing callable has
+                    // continued. It cannot perform a non-local return.
+                    // Preserve do-nb legacy arm-local return/discard behavior.
+                    if (selected.explicitDo()) {
+                        checkIsolatedArmBlock(arm.body(), armEnv, generics,
+                                Unknown.INSTANCE, self, true);
+                    } else {
+                        checkCallableBlock(arm.body(), armEnv, generics,
+                                Primitive.VOID, self);
+                    }
                 } else {
+                    // Blocking/immediate do-select is procedural, just like
+                    // do-match/do-switch: return belongs to the enclosing
+                    // callable, not to the selected arm.
                     checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
                     exits.add(env.initializationSnapshot());
                 }
