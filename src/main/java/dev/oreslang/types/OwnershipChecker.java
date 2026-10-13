@@ -439,6 +439,13 @@ public final class OwnershipChecker {
             Ast.TypeRef exposed = yielded.delegated()
                     ? iterableElementType(value.type, currentAsyncGenerator)
                     : value.type;
+            // yield* must validate the *element*, not only the owned
+            // iterator handle: Iterator<borrow T> is not an owned result.
+            // Nested borrowed elements also need a lifetime proof, which
+            // generator result protocols do not presently carry.
+            if (containsBorrowedType(exposed)) {
+                throw error("cannot yield borrowed elements; generator results must own/copy/share their data");
+            }
             if (containsMutexGuardType(exposed)) {
                 throw error(yielded.delegated()
                         ? "MutexGuard values cannot cross a yield* delegation boundary"
@@ -579,6 +586,14 @@ public final class OwnershipChecker {
                     continue;
                 }
                 ValueInfo channel = checkExpr(arm.channel(), scope, false);
+                if (isBorrowValue(channel) || containsBorrowedType(channel.type)) {
+                    throw error("select cannot retain a borrowed channel operand");
+                }
+                if (selected.mode() == Ast.WaitMode.BLOCKING
+                        && selected.arms().stream().noneMatch(a ->
+                                a.operation() == Ast.ChannelOperation.DEFAULT)) {
+                    checkSuspensionBorrows(scope, "select");
+                }
                 Ast.TypeRef element = channelElementType(channel.type);
                 elementTypes.add(element);
                 if (arm.operation() == Ast.ChannelOperation.WRITE) {
@@ -856,6 +871,12 @@ public final class OwnershipChecker {
         if (readonlyRecord && storedType.isRecordType() && !storedType.isReadonlyRecordType()) {
             storedType = Ast.TypeRef.readonlyRecordType(storedType.recordMembers());
         }
+        // An explicit owner annotation (or a cast resulting in an apparent
+        // owner type) must not erase a borrowed view's provenance. Otherwise
+        // a stored Box binding could be rt take'n from a lexical &Box.
+        if (isBorrowValue(value) && !storedType.isBorrow()) {
+            throw error("borrowed value cannot be bound as an owned type; preserve the borrowed type and lifetime");
+        }
         if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");
         }
@@ -1020,6 +1041,11 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.CastExpr cast) {
             ValueInfo source = checkExpr(cast.value(), scope, consuming);
+            // An as? cast builds an Option<T>. It must never turn a lexical
+            // borrow into an owned Option<T> with the same mutable referent.
+            if (cast.mode() == Ast.CastMode.OPTIONAL && isBorrowValue(source)) {
+                throw error("optional cast of borrowed value cannot acquire ownership or escape its lifetime");
+            }
             Ast.TypeRef result = cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Ast.TypeRef("Option", List.of(cast.targetType()), false)
                     : cast.targetType();
@@ -1051,6 +1077,13 @@ public final class OwnershipChecker {
             Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
 
             mergeBranchState(base, List.of(leftExit, rightExit));
+            // ValueInfo does not yet have path-dependent borrow provenance:
+            // joining an owned branch with a borrowed branch would lose the
+            // loan and manufacture an apparent move-only owner. Fail closed
+            // until branch-joined lifetime analysis tracks both alternatives.
+            if (isBorrowValue(left) || isBorrowValue(right)) {
+                throw error("conditional cannot merge borrowed values without path-dependent loan provenance");
+            }
             Ast.TypeRef joinedType = joinConditionalType(left.type, right.type);
             return new ValueInfo(
                     joinedType,
@@ -1154,6 +1187,15 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
             ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
+            // The operand is evaluated before the await actually suspends.
+            // A fresh temporary rt borrow in that operand was not present in
+            // the pre-evaluation live-local scan and must not escape into the
+            // pending continuation.
+            if (isBorrowValue(awaitedValue) || containsBorrowedType(awaitedValue.type)) {
+                throw error("cannot await a borrowed operand or Future containing borrowed data; "
+                        + "suspended continuations require owned values");
+            }
+            checkSuspensionBorrows(scope, "await");
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
@@ -1168,6 +1210,16 @@ public final class OwnershipChecker {
                 throw error("cannot register a channel waiter while holding a MutexGuard");
             }
             ValueInfo channel = checkExpr(channelOp.channel(), scope, false);
+            // Both blocking use and deferred registration must retain a
+            // channel capability, not a temporary borrow whose owner can
+            // become invalid while a waiter remains registered.
+            if (isBorrowValue(channel) || containsBorrowedType(channel.type)) {
+                throw error("readch/writech cannot use a borrowed channel operand; "
+                        + "pass an owned channel capability");
+            }
+            if (channelOp.mode() == Ast.WaitMode.BLOCKING) {
+                checkSuspensionBorrows(scope, "readch/writech");
+            }
             Ast.TypeRef element = channelElementType(channel.type);
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
@@ -1224,7 +1276,13 @@ public final class OwnershipChecker {
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
                 throw error("cannot register dynamic select while holding a MutexGuard");
             }
-            checkExpr(selected.cases(), scope, false);
+            ValueInfo cases = checkExpr(selected.cases(), scope, false);
+            if (isBorrowValue(cases) || containsBorrowedType(cases.type)) {
+                throw error("select from cases cannot retain a borrowed case-set operand");
+            }
+            if (selected.mode() == Ast.WaitMode.BLOCKING) {
+                checkSuspensionBorrows(scope, "select from cases");
+            }
             Ast.TypeRef selectedResult = Ast.TypeRef.simple("SelectResult");
             Ast.TypeRef result = switch (selected.mode()) {
                 case BLOCKING -> selectedResult;
@@ -2171,6 +2229,16 @@ public final class OwnershipChecker {
         VarState root = ownershipRoot(owner);
         if (mutable) root.mutableBorrowed = true;
         else root.immutableBorrows++;
+    }
+
+    /** Reject borrowed components nested in yielded aggregate element types. */
+    private boolean containsBorrowedType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsBorrowedType(argument)) return true;
+        }
+        return false;
     }
 
     private boolean isBorrowValue(ValueInfo value) {

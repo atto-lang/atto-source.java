@@ -101,6 +101,93 @@ final class OwnershipSuspensionAuditTest {
             reject(BOX + "fnc bad(): void { val Box box = new Box(); val view = rt borrow box; val result = rt " + operation + " view; return; }", "rt " + operation);
         }
     }
+    @Test void castsCannotLaunderBorrowedViewIntoOwnedBinding() {
+        reject(BOX + """
+                fnc bad(): void {
+                  let Box target = new Box();
+                  val Box apparentOwner = (rt borrow target) as Box;
+                  val Box moved = rt take apparentOwner;
+                  return;
+                }
+                """, "borrowed value cannot be bound as an owned type");
+        reject(BOX + """
+                fnc bad(): void {
+                  let Box target = new Box();
+                  val apparentOwner = (rt borrow target) as Box;
+                  val Box moved = rt take apparentOwner;
+                  return;
+                }
+                """, "borrowed value cannot be bound as an owned type");
+        reject(BOX + """
+                fnc bad(): void {
+                  let Box target = new Box();
+                  val apparentOwner = (rt borrow target) as? Box;
+                  return;
+                }
+                """, "optional cast of borrowed value");
+    }
+
+    @Test void conditionalCannotJoinOwnedAndBorrowedBranches() {
+        reject(BOX + """
+                fnc bad(): void {
+                  let Box target = new Box();
+                  val apparentOwner = true ? (rt borrow target) : target;
+                  return;
+                }
+                """, "conditional cannot merge borrowed values");
+        reject(BOX + """
+                fnc bad(): void {
+                  let Box target = new Box();
+                  val apparentOwner = true ? target : (rt borrow target);
+                  return;
+                }
+                """, "conditional cannot merge borrowed values");
+    }
+
+    @Test void genuineOwnedAndCopyableCastsStillWork() {
+        check(BOX + """
+                fnc good(): void {
+                  val Box owner = new Box();
+                  val Box retainedOwner = owner as Box;
+                  val int number = 9;
+                  val copied = rt copy number;
+                  val shared = rt share number;
+                  val optional = number as? int;
+                  return;
+                }
+                """);
+    }
+
+    @Test void delegatedGeneratorCannotExportBorrowedElement() {
+        reject(BOX + """
+                fnc fabricate(): Iterator<borrow Box> { return null; }
+                gen* fnc bad(): Iterator<borrow Box> {
+                  yield* fabricate();
+                  return;
+                }
+                """, "cannot yield borrowed elements");
+    }
+
+    @Test void delegatedGeneratorCannotHideBorrowInNestedElement() {
+        reject(BOX + """
+                fnc fabricate(): Iterator<Option<borrow Box>> { return null; }
+                gen* fnc bad(): Iterator<Option<borrow Box>> {
+                  yield* fabricate();
+                  return;
+                }
+                """, "cannot yield borrowed elements");
+    }
+
+    @Test void delegatedOwnedScalarElementRemainsValid() {
+        check("""
+                fnc fabricate(): Iterator<int> { return null; }
+                gen* fnc good(): Iterator<int> {
+                  yield* fabricate();
+                  return;
+                }
+                """);
+    }
+
     @Test void endedLoansPermitSuspensionAndOwnerTransfer() {
         check(BOX + """
                 fnc read(borrow Box box): int { return box.value; }
