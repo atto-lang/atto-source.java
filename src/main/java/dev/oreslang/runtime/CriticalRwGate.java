@@ -26,6 +26,16 @@ public final class CriticalRwGate implements AutoCloseable {
 
     public enum Mode { READ, WRITE }
 
+    /**
+     * Runtime-owned logical execution whose terminal notification is fenced to
+     * the complete guest-turn unwind. A foreign close may request cancellation,
+     * but it must not free a granted permit while that guest code is live.
+     * Detached host tickets deliberately do not implement this protocol.
+     */
+    interface FencedLogicalOwner {
+        void cancelAndReleaseAfterUnwind(Runnable release);
+    }
+
     private enum State { NEW, QUEUED, GRANTED, CLOSED }
 
     // Domain registration is brief and cross-gate. Queue state is protected
@@ -53,6 +63,7 @@ public final class CriticalRwGate implements AutoCloseable {
         private final OresFuture<Void> admitted = new OresFuture<>(this::close);
         private State state = State.NEW; // guarded by COORDINATOR
         private boolean completionAttached; // guarded by COORDINATOR
+        private boolean externalCloseRequested; // guarded by COORDINATOR
         private Object domain;
 
         private Ticket(Mode mode) {
@@ -188,6 +199,29 @@ public final class CriticalRwGate implements AutoCloseable {
 
         @Override
         public void close() {
+            FencedLogicalOwner owner = null;
+            synchronized (coordinator) {
+                if (state == State.CLOSED || externalCloseRequested) return;
+                // A compiler-owned logical task or actor may hold this permit
+                // while guest instructions are executing on another carrier.
+                // In that case, close is a cancellation *request*, not release.
+                // The owning runtime must publish its completion only after
+                // the guest turn and its context boundary have unwound.
+                if (domain instanceof FencedLogicalOwner fenced
+                        && domain != OresScheduler.currentTaskDomain()
+                        && domain != ActorRuntime.currentActorExecutionDomain()) {
+                    externalCloseRequested = true;
+                    owner = fenced;
+                }
+            }
+            if (owner != null) {
+                owner.cancelAndReleaseAfterUnwind(this::finishClose);
+                return;
+            }
+            finishClose();
+        }
+
+        private void finishClose() {
             List<Ticket> wake = List.of();
             synchronized (coordinator) {
                 if (state == State.CLOSED) return;
