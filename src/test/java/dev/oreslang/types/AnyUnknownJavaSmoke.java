@@ -80,6 +80,19 @@ public final class AnyUnknownJavaSmoke {
                 new Types.Record(Map.of("foo", integer, "bar", floating)),
                 new Types.Record(Map.of("foo", integer), true)),
                 "readonly structural width subtyping works");
+        String forgedMethodKey = "instance$run$arity1$generics0";
+        var wideFn = new Types.Function(List.of(any), integer);
+        var narrowFn = new Types.Function(List.of(integer), integer);
+        check(Types.isAssignable(wideFn, narrowFn),
+                "function parameter contravariance is sound");
+        check(!Types.isAssignable(
+                new Types.Record(Map.of(forgedMethodKey, wideFn)),
+                new Types.Record(Map.of(forgedMethodKey, narrowFn))),
+                "writable field cannot forge compiler method-slot variance");
+        check(Types.isAssignable(
+                new Types.Record(Map.of(forgedMethodKey, wideFn)),
+                new Types.Record(Map.of(forgedMethodKey, narrowFn), true)),
+                "readonly method-shaped field keeps safe read variance");
 
         check(Types.unionOf(any, integer) == any, "safe Any union collapse");
         check(Types.unionOf(opaque, any) == opaque, "safe Unknown union collapse");

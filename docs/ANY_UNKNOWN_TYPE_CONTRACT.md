@@ -114,8 +114,10 @@ A record whose members are writable may not widen member types covariantly.
 For example, mutable `{foo: int}` must never become mutable `{foo: Any}`,
 since assigning a string through the second view would invalidate the first.
 Readonly views preserve structural width and safe value covariance; compiler
-generated method slots continue to use function parameter contravariance and
-result covariance. Structural parameters are now explicitly typed as readonly
+generated method signatures continue to use function parameter contravariance
+and result covariance **only in read-only views**. There is no string-pattern
+exception for writable fields named like `instance$run$arity1$generics0`;
+untrusted/user-authored field keys must never impersonate method metadata. Structural parameters are now explicitly typed as readonly
 record views in the callee, so `p.foo = value` cannot silently mutate an
 underlying inferred or nominal object through the read-only parameter. Future richer per-field `pub val`/writable capability
 metadata should replace the coarse record-level conservative rule.

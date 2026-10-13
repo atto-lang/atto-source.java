@@ -156,6 +156,23 @@ final class AnyUnknownSoundnessTest {
     }
 
     @Test
+    void forgedMethodSlotNamesDoNotDisableWritableFieldInvariance() {
+        String key = "instance$run$arity1$generics0";
+        Types.Function wide = new Types.Function(
+                List.of(Types.Any.INSTANCE), Types.Primitive.INT);
+        Types.Function narrow = new Types.Function(
+                List.of(Types.Primitive.INT), Types.Primitive.INT);
+        assertTrue(Types.isAssignable(wide, narrow));
+        assertFalse(Types.isAssignable(narrow, wide));
+        assertFalse(Types.isAssignable(
+                new Types.Record(Map.of(key, wide)),
+                new Types.Record(Map.of(key, narrow))));
+        assertTrue(Types.isAssignable(
+                new Types.Record(Map.of(key, wide)),
+                new Types.Record(Map.of(key, narrow), true)));
+    }
+
+    @Test
     void structuralParametersAreReadOnlyEvenWhenCallerOwnsMutableObject() {
         reject("""
                 define module app

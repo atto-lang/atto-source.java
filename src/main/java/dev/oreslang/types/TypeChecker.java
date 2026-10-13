@@ -7600,21 +7600,16 @@ public final class TypeChecker {
     private boolean structuralRecordAssignable(Record actual, Record expected) {
         // Readonly destinations are observation-only, and may use structural
         // width/covariance. Mutable destinations require write-safe field
-        // types. Generated instance-method slots are call-only and preserve
-        // their established parameter/return variance.
+        // types, regardless of field name. Instance method signature variance
+        // is already enforced recursively in assignable(Function, Function).
         if (actual.readOnly() && !expected.readOnly()) return false;
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
             Type candidate = actual.members().get(required.getKey());
             if (candidate == null || !assignable(candidate, required.getValue())) return false;
             if (!expected.readOnly()
-                    && !isInstanceMethodShapeSlot(required.getKey())
                     && !assignable(required.getValue(), candidate)) return false;
         }
         return true;
-    }
-
-    private static boolean isInstanceMethodShapeSlot(String key) {
-        return key.matches("instance\\$[^\\s]+\\$arity[0-9]+\\$generics[0-9]+");
     }
 
     private Named concreteClassReference(Ast.TypeRef ref, Ast.ClassDecl owner, Named ownerType) {
