@@ -3684,9 +3684,24 @@ public final class OresEvalRootNode extends RootNode {
                 // Preserve the reference result; await only actor initialization.
                 future = actorRef.readyRef();
             } else if (value instanceof Awaitable<?> awaitable) {
-                future = awaitable.getAwaited();
+                // The host projection itself may have side effects: preflight
+                // must happen before getAwaited(), not just before Task.await.
+                try {
+                    future = HostAwaitProjection.project(
+                            awaitable, env::hasLiveMutexGuards);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
             } else if (value instanceof CompletionStage<?> stage) {
-                future = OresFuture.from(stage);
+                // from(stage) registers an arbitrary host completion callback.
+                try {
+                    future = HostAwaitProjection.adapt(
+                            stage, env::hasLiveMutexGuards);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
             } else {
                 continuation.accept(
                         task,

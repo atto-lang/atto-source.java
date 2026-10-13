@@ -2841,7 +2841,22 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnary() {
-        if (match(BANG, TILDE, MINUS, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
+        // Signed i64's negative endpoint requires magnitude 2^63, which
+        // cannot be parsed as a positive Java long. Treat exactly that
+        // token sequence as a single negative literal, without broadening
+        // positive literal admission or accepting malformed separators.
+        if (match(MINUS)) {
+            if (check(INT)) {
+                String literal = peek().lexeme();
+                if (!literal.endsWith("_") && !literal.contains("__")
+                        && literal.replace("_", "").equals("9223372036854775808")) {
+                    advance();
+                    return new Ast.LiteralExpr(Long.MIN_VALUE);
+                }
+            }
+            return new Ast.UnaryExpr("-", parseUnary());
+        }
+        if (match(BANG, TILDE, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
             boolean mutable = match(MUT);
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());

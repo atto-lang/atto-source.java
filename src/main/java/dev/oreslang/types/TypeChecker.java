@@ -2026,7 +2026,15 @@ public final class TypeChecker {
                     yield Primitive.BOOL;
                 }
                 case "+" -> isStringLike(left) && isStringLike(right) ? Primitive.STRING : numericJoin(left, right, "+");
-                case "-", "*", "/", "%" -> numericJoin(left, right, binary.operator());
+                case "-", "*", "%" -> numericJoin(left, right, binary.operator());
+                case "/" -> {
+                    // OresEvalRootNode.numeric evaluates real division as a Double,
+                    // even for int/int. The result cannot be assigned to int without
+                    // an explicit conversion. Complex/decimal joins retain their
+                    // existing representation pending dedicated numeric contracts.
+                    Type result = numericJoin(left, right, "/");
+                    yield result == Primitive.INT ? Primitive.FLOAT : result;
+                }
                 default -> Unknown.INSTANCE;
             };
         }
