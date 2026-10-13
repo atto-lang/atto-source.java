@@ -852,6 +852,19 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
+                    // Destructively moving a fixed member would empty its
+                    // storage without reassignment. This is prohibited even
+                    // when the member contains a trivially copyable primitive.
+                    if (argument instanceof Ast.MemberExpr member) {
+                        Ast.ClassDecl owner = classOfReceiver(member.receiver(), scope);
+                        if (owner != null) {
+                            Ast.FieldDecl field = findField(owner, member.member(), new LinkedHashSet<>());
+                            if (field != null && field.bindingKind() != Ast.BindingKind.LET) {
+                                throw error("cannot rt take final class field '"
+                                        + owner.name() + "." + member.member() + "'");
+                            }
+                        }
+                    }
                     ValueInfo taken = checkExpr(argument, scope, true);
                     if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
                             || (taken.type != null && taken.type.isBorrow())) {
