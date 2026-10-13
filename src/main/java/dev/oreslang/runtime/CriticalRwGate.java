@@ -158,6 +158,9 @@ public final class CriticalRwGate implements AutoCloseable {
     /** An existing unqualified source critical always requests WRITE. */
     public Ticket newCriticalTicket() { return newTicket(Mode.WRITE); }
 
+    /** Package-private diagnostic for denied-ticket lifecycle regressions. */
+    int trackedTicketCount() { return tickets.size(); }
+
     public int queuedCount() { return engine.queuedCount(); }
     public int activeReaderCount() { return engine.activeReaderCount(); }
     public boolean hasWriter() { return engine.hasWriter(); }
