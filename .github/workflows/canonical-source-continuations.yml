@@ -1,0 +1,59 @@
+name: canonical-source-continuations
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - integrate/canonical-with-using-20261012
+    paths:
+      - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
+      - "src/test/java/dev/oreslang/SourceContinuationSingleDeliveryTest.java"
+      - "src/test/java/dev/oreslang/SourceInlineCriticalStateHandoffTest.java"
+      - ".github/workflows/canonical-source-continuations.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-source-continuations-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  focused-and-full-jdk25:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact private source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git ls-files -z | xargs -0 -r sha256sum > /tmp/canonical-continuation-source.sha256
+          sha256sum /tmp/canonical-continuation-source.sha256
+          echo "Verified head SHA: $EXPECTED_SHA"
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute guest-source continuation and state-handoff regressions
+        run: |
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=SourceContinuationSingleDeliveryTest,SourceInlineCriticalStateHandoffTest,SourceCriticalActorStateTest,SourceLoopSoftPreemptionTest,AsyncAwaitLanguageTest,AsyncChannelBoundaryTest \
+            test
+      - name: Execute full Maven regression suite
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify
+      - name: Archive JUnit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canonical-source-continuations-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn
