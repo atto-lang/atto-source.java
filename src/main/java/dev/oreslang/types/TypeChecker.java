@@ -4599,6 +4599,40 @@ public final class TypeChecker {
         return null;
     }
 
+    /**
+     * Closed finite case domain for enum and named match-pattern scrutinees.
+     * A value already narrowed to Enum.Case has a singleton domain.
+     */
+    private TaggedMessageContracts.Domain matchCaseDomain(Type subject) {
+        if (!(subject instanceof Named named) || !named.arguments().isEmpty()
+                || taggedMessages == null) return null;
+        if (taggedMessages.enums().containsKey(named.name())
+                || taggedMessages.patterns().containsKey(named.name())) {
+            return taggedMessages.requireDomain(named.name());
+        }
+        TaggedMessageContracts.Case singleton = taggedCaseOrNull(named.name());
+        return singleton == null ? null
+                : new TaggedMessageContracts.Domain(named.name(), List.of(singleton));
+    }
+
+    private boolean constructorCoversPayload(
+            Ast.ConstructorPattern pattern, Type payload,
+            Set<String> generics, Type self) {
+        if (payload == null) return pattern.arguments().isEmpty();
+        return pattern.arguments().size() == 1
+                && patternCoversType(pattern.arguments().getFirst(),
+                        payload, generics, self);
+    }
+
+    private boolean hasCompleteConstructorArm(
+            List<Ast.MatchArm> arms, String constructor,
+            Type payload, Set<String> generics, Type self) {
+        return arms.stream().anyMatch(arm -> arm.guard() == null
+                && arm.pattern() instanceof Ast.ConstructorPattern candidate
+                && candidate.constructor().equals(constructor)
+                && constructorCoversPayload(candidate, payload, generics, self));
+    }
+
     private boolean isTaggedVariantAssignable(Type actual, Type expected) {
         if (!(actual instanceof Named variant) || !(expected instanceof Named domain)
                 || !variant.arguments().isEmpty() || !domain.arguments().isEmpty()
@@ -4900,6 +4934,31 @@ public final class TypeChecker {
             return;
         }
         if (pattern instanceof Ast.ConstructorPattern constructor) {
+            TaggedMessageContracts.Case variant = taggedCaseOrNull(constructor.constructor());
+            if (variant != null) {
+                TaggedMessageContracts.Domain domain = matchCaseDomain(subject);
+                if (domain == null || domain.cases().stream().noneMatch(
+                        candidate -> candidate.qualifiedName().equals(variant.qualifiedName()))) {
+                    throw new IllegalArgumentException("enum case " + variant.qualifiedName()
+                            + " is not in match subject domain " + subject);
+                }
+                int arity = variant.sourcePayload() == null ? 0 : 1;
+                if (constructor.arguments().size() != arity) {
+                    throw new IllegalArgumentException("enum case pattern "
+                            + variant.qualifiedName() + " expects " + arity
+                            + " payload pattern(s), got " + constructor.arguments().size());
+                }
+                if (arity == 1) {
+                    checkPattern(constructor.arguments().getFirst(),
+                            deref(resolve(variant.sourcePayload(), generics, self)),
+                            bindings, generics, self);
+                }
+                return;
+            }
+            if (constructor.constructor().contains(".")) {
+                throw new IllegalArgumentException(
+                        "unknown enum case in match pattern " + constructor.constructor());
+            }
             if (!(subject instanceof Named named)) {
                 throw new IllegalArgumentException("constructor pattern " + constructor.constructor() + " requires a sum/constructor type, got " + subject);
             }
@@ -5147,6 +5206,17 @@ public final class TypeChecker {
             }
         }
 
+        // A nominal enum or closed match-pattern domain is a disjoint
+        // union of CASES, not a union of their raw payload shapes.
+        TaggedMessageContracts.Domain enumDomain = matchCaseDomain(subject);
+        if (enumDomain != null) {
+            return enumDomain.cases().stream().allMatch(variant ->
+                    hasCompleteConstructorArm(arms, variant.qualifiedName(),
+                            variant.sourcePayload() == null ? null
+                                    : deref(resolve(variant.sourcePayload(), generics, self)),
+                            generics, self));
+        }
+
         // Finite unions are exhaustively covered when every alternative is
         // completely covered by at least one unguarded arm.
         if (subject instanceof Union union) {
@@ -5165,21 +5235,16 @@ public final class TypeChecker {
             }
             return yes && no;
         }
-        if (subject instanceof Named named && named.name().equals("Option")) {
-            boolean some = false, none = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                some |= c.constructor().equals("Some");
-                none |= c.constructor().equals("None");
-            }
-            return some && none;
+        if (subject instanceof Named named && named.name().equals("Option")
+                && named.arguments().size() == 1) {
+            // Some(42) only covers one payload, NOT every Some(int).
+            return hasCompleteConstructorArm(arms, "Some", named.arguments().getFirst(), generics, self)
+                    && hasCompleteConstructorArm(arms, "None", null, generics, self);
         }
-        if (subject instanceof Named named && named.name().equals("Result")) {
-            boolean ok = false, err = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                ok |= c.constructor().equals("Ok");
-                err |= c.constructor().equals("Err");
-            }
-            return ok && err;
+        if (subject instanceof Named named && named.name().equals("Result")
+                && named.arguments().size() == 2) {
+            return hasCompleteConstructorArm(arms, "Ok", named.arguments().get(0), generics, self)
+                    && hasCompleteConstructorArm(arms, "Err", named.arguments().get(1), generics, self);
         }
         return false;
     }
