@@ -84,6 +84,7 @@ final class CriticalRwGateTest {
         CountDownLatch releaseObserver = new CountDownLatch(1);
         AtomicReference<Throwable> failure = new AtomicReference<>();
         Thread closeThread = null;
+        Thread stopThread = null;
         try (ActorRuntime runtime = new ActorRuntime()) {
             try {
                 var actor = runtime.<String>spawnShared(() -> (message, context) -> {
@@ -117,18 +118,32 @@ final class CriticalRwGateTest {
                     catch (Throwable error) { failure.compareAndSet(null, error); }
                 });
                 assertTrue(observerEntered.await(5, TimeUnit.SECONDS));
-                runtime.stop(actor);
+                stopThread = Thread.ofVirtual().start(() -> {
+                    try { runtime.stop(actor); }
+                    catch (Throwable error) { failure.compareAndSet(null, error); }
+                });
+                // STOP is a synchronous host barrier, so issue it on a
+                // separate thread and wait for admission while the callback
+                // remains blocked instead of deadlocking the test itself.
+                long stopDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (runtime.isAlive(actor) && System.nanoTime() < stopDeadline) {
+                    Thread.onSpinWait();
+                }
+                assertFalse(runtime.isAlive(actor));
                 assertFalse(actor.done().isDone(),
                         "DONE may not publish while off-carrier resource callbacks run");
                 releaseObserver.countDown();
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
                 assertTrue(actor.done().isDone());
                 closeThread.join(5_000);
+                stopThread.join(5_000);
                 assertFalse(closeThread.isAlive());
+                assertFalse(stopThread.isAlive());
                 assertNull(failure.get());
             } finally {
                 releaseObserver.countDown();
                 if (closeThread != null) closeThread.join(5_000);
+                if (stopThread != null) stopThread.join(5_000);
             }
         }
         assertNull(failure.get());
