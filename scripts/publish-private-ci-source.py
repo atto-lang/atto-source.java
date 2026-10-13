@@ -283,11 +283,22 @@ def publish(repository, source, branch, trusted_root):
                                 + bytes([0]) + data).hexdigest()
         if blob_sha != expected:
             raise Denied("uploaded blob digest does not match local source bytes")
-        elements.append({"path": PREFIX + "/" + rel, "mode": mode,
+        elements.append({"path": rel, "mode": mode,
                          "type": "blob", "sha": blob_sha})
+    # Construct the source subtree from scratch, without base_tree. Overlaying
+    # PREFIX/file onto the destination base tree retains old private files
+    # that are no longer present in this snapshot.
+    authorize_write()
+    isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
+                      payload={"tree": elements})
+    isolated_sha = valid_sha(isolated.get("sha"))
+    # Replace the entire PREFIX subtree atomically in the new root tree.
+    # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
     new_tree = gh_api(f"repos/{repository}/git/trees", method="POST",
-                      payload={"base_tree": base_tree, "tree": elements})
+                      payload={"base_tree": base_tree, "tree": [
+                          {"path": PREFIX, "mode": "040000", "type": "tree",
+                           "sha": isolated_sha}]})
     new_tree_sha = valid_sha(new_tree.get("sha"))
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
