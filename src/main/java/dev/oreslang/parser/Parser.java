@@ -438,8 +438,8 @@ public final class Parser {
         if (modifiers.suspends && modifiers.generator)
             throw error(previous(), "suspends generators need suspension-aware generator frames");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
-        if (modifiers.trapped && modifiers.async) {
-            throw error(previous(), "async trap fnc/routine is not enabled until trap spans every await suspension");
+        if (modifiers.trapped && (modifiers.async || modifiers.suspends)) {
+            throw error(previous(), "suspending trap fnc/routine is not enabled until trap spans every await suspension");
         }
         if (modifiers.trapped && modifiers.generator) {
             throw error(previous(), "trap generator fnc/routine is not enabled until trap spans generator suspension");
@@ -572,8 +572,8 @@ public final class Parser {
             Ast.Visibility classVisibility,
             boolean filePrivateScope) {
         Token keyword = advance(); // contextual 'constructor'
-        if (mods.async || mods.suspends || mods.generator || mods.structural || mods.nonLexical || mods.isStatic
-                || mods.isAbstract || mods.shared || mods.untrusted) {
+        if (mods.async || mods.suspends || mods.generator || mods.structural || mods.nonLexical || mods.trapped
+                || mods.isStatic || mods.isAbstract || mods.shared || mods.untrusted) {
             throw error(keyword,
                     "constructors accept only private/pub visibility; callable/actor modifiers are not permitted");
         }
