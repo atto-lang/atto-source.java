@@ -87,6 +87,30 @@ final class ChannelDataOnlyPayloadTest {
     }
 
     @Test
+    void canonicalBracketArrayTypeSurvivesSealedRuntimeAdmission() throws Exception {
+        String sourceText = """
+                pub routine main(): void {
+                  val Channel<Array[int]> numbers = Channel.new<Array[int]>(2);
+                  writech numbers, [2, 3];
+                  val Array[int] received = readch numbers;
+                  stdio.stdout.write(received[0]);
+                  return;
+                }
+                """;
+        permits(sourceText);
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        org.graalvm.polyglot.Source source = org.graalvm.polyglot.Source
+                .newBuilder(OresLanguage.ID, sourceText, "typed-array-channel.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (org.graalvm.polyglot.Context context =
+                org.graalvm.polyglot.Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("2", output.toString(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    @Test
     void rejectsClassesEvenIfMethodFreeAndRejectsNominalInterfaces() {
         IllegalArgumentException klass = forbids("""
                 define class Plain as
