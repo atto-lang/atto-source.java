@@ -30,3 +30,13 @@ Required release checks: actual Maven/JVM tests, matching runtime tests,
 Graal AOT/hybrid, LLVM fail-closed/parity fixtures, and regression coverage
 for nested readonly views and ownership/borrow aliases. No passing runtime
 tests have been demonstrated for this patch.
+
+### Method ABI is also zero-adapter
+
+An existing implementation method returning `int` cannot silently satisfy
+an expected `float` return, even if ordinary scalar return conversion is
+allowed in source. Structural dispatch does not synthesize a wrapper and
+cannot change the underlying method ABI. Parameter contravariance/result
+covariance therefore require *representational* compatibility, with proven
+nominal object subtyping and union admission still supported. Once explicit
+adapter code is available, this restriction could be reconsidered.

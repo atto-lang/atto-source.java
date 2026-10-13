@@ -7466,7 +7466,10 @@ public final class TypeChecker {
             // A readonly view is a direct projection; ordinary numeric
             // promotion only applies to evaluated scalar values, not a
             // field accessed through a different declared representation.
-            if (expected.readOnly() && !methodSlot) {
+            if (expected.readOnly() || methodSlot) {
+                // Compiler-known method slots are still zero-adapter calls:
+                // callable variance is sound only for representational
+                // subtyping, never an implicit numeric promotion.
                 if (!representationallyReadableField(candidate, required.getValue())) return false;
             } else if (!assignable(candidate, required.getValue())) {
                 return false;

@@ -174,7 +174,10 @@ public final class Types {
                 // A field read through a readonly shape view does not run a
                 // conversion. In particular int -> float is an allowed value
                 // conversion, but it cannot change the stored field's ABI.
-                if (target.readOnly() && !methodSlot) {
+                if (target.readOnly() || methodSlot) {
+                    // Method dispatch uses the existing implementation ABI,
+                    // not a synthesized adapter. It is just as unsafe to
+                    // invent an int->float conversion for a method result.
                     if (!isRepresentationallyReadable(actual, required.getValue())) return false;
                 } else if (!isAssignable(actual, required.getValue())) {
                     return false;

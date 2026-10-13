@@ -77,6 +77,38 @@ final class StructuralReadViewCoercionHardeningTest {
     }
 
     @Test
+    void methodSlotVarianceCannotInventNumericCallAdapters() {
+        String key = "instance$read$arity0$generics0";
+        Types.Function actual = new Types.Function(
+                java.util.List.of(), Types.Primitive.INT);
+        Types.Function expectsFloat = new Types.Function(
+                java.util.List.of(), Types.Primitive.FLOAT);
+        Types.Record implementation = new Types.Record(
+                Map.of(key, actual), false, java.util.Set.of(key));
+        Types.Record contract = new Types.Record(
+                Map.of(key, expectsFloat), true, java.util.Set.of(key));
+        assertFalse(Types.isAssignable(implementation, contract));
+        assertFalse(Types.isAssignable(
+                new Types.Record(Map.of(key, actual), true), contract));
+    }
+
+    @Test
+    void sourceStructuralMethodReturnCannotBeNumericallyPromoted() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define interface Wants
+                    fnc read() => float;
+                end
+                define class Candidate as
+                    pub read(): int { return 3; }
+                end
+                fnc use(structural Wants candidate): float {
+                    return candidate.read();
+                }
+                fnc bad(): float { return use(new Candidate()); }
+                """)));
+    }
+
+    @Test
     void sourcePreservesSafeReadonlyWidthViews() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc read(record{foo: int | string} v): void { return; }
