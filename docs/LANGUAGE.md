@@ -537,6 +537,35 @@ end
 
 Anonymous structs and array literals are values, not classes, and cannot be inherited from.
 
+## Channel payloads are data-only
+
+A public `Channel<T>` is a typed **data transport**, not a way to send
+executable objects or actor capabilities. `T` must be a primitive value,
+closed record/inline struct, tuple, typed array/list, or a recursively valid
+`Option`/`Result` data sum. Class instances are rejected *even if they
+declare no methods*, as are traits, interfaces, actors, first-class
+functions/closures, `ActorRef`, channel/future/iterator/mutex/select
+capabilities, borrows, unresolved generics, and nested aggregates that
+contain any forbidden member.
+
+```ores
+val Channel<{name: string, count: int}> data =
+    Channel.new<{name: string, count: int}>(8);
+writech data, struct{name: string, count: int}{name: "ok", count: 1};
+
+// Rejected: classes, actors and function values are not Channel<T> data.
+// val Channel<Fnc<int, int>> callbacks = Channel.new<Fnc<int, int>>(1);
+// val Channel<ActorRef<Worker>> actors = Channel.new<ActorRef<Worker>>(1);
+```
+
+If data must originate from an object, explicitly snapshot the necessary
+fields into a closed struct/record before writing to the channel. Internal
+actor mailboxes and their reserved supervisor/CONTROL envelopes are
+privileged runtime transports, not ordinary user `Channel<T>` payload
+types. See
+[channels-select-and-actor-cancellation.md](channels-select-and-actor-cancellation.md)
+for exact restrictions and caveats about untrusted host/runtime callers.
+
 ## Channel select/when typed projections
 
 The canonical static selection form uses `when` and `-> { ... }`:
