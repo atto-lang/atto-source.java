@@ -69,6 +69,33 @@ final class NativeNetStdlibTest {
         }
     }
 
+    @Test void closedListenersAreReapedForRepeatedGuestRestarts() throws Exception {
+        Path entry = Files.createTempFile("ores-net-listener-restart-", ".ores");
+        try {
+            StringBuilder source = new StringBuilder("""
+                    import module net_core from "std/net";
+                    pub async routine main(): void {
+                    """);
+            for (int i = 0; i < 20; i++) {
+                source.append("  val NioTcpListener l").append(i)
+                        .append(" = net_core.listen_loopback(0, 8, 1, 4);\\n");
+                source.append("  val Future<void> stop").append(i)
+                        .append(" = net_core.close_listener(l").append(i).append(");\\n");
+                source.append("  await stop").append(i).append(";\\n");
+            }
+            source.append("  stdio.println(777);\\n  return;\\n}\\n");
+            Files.writeString(entry, source.toString());
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            LinkedProgramRunner.run(entry,
+                    IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK),
+                    ExecutionProfile.serverJit(), out, new ByteArrayOutputStream());
+            assertTrue(out.toString().contains("777"),
+                    "completed guest restarts must eventually release the context listener quota");
+        } finally {
+            Files.deleteIfExists(entry);
+        }
+    }
+
     @Test void realGuestAcceptReadWriteThroughNonblockingKernel() throws Exception {
         Path entry = Files.createTempFile("ores-net-guest-", ".ores");
         ExecutorService runner = Executors.newFixedThreadPool(2);
