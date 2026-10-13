@@ -997,6 +997,12 @@ public final class TypeChecker {
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
             Type fieldType = classFieldType(klass, field);
+            if (containsMustUseVoidResult(fieldType)) {
+                throw new IllegalArgumentException(
+                        "must-use Result<void,E> cannot be stored in class/actor field '"
+                                + klass.name() + "." + field.name()
+                                + "' before field lifetime handling is proven");
+            }
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
                 Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
