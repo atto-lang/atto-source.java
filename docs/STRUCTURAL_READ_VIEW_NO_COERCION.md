@@ -50,3 +50,29 @@ this case before its other inference shortcuts; this guard also rejects union
 sources containing an unproven alternative when a record shape is required.
 
 Ownership note: these readonly field contracts are **owned values** unless the parameter carries explicit `structural`-view or `&T`/`&mut T` borrow provenance. Coercion-free projection does not imply borrowing.
+
+### Container, borrow and first-class callable representation proof
+
+An invariant container cannot safely use bidirectional *assignability* as a
+test of type identity: `Unknown` and an unresolved `Generic` may satisfy
+both directions without establishing a concrete element representation.
+`List<T>`, nominal generic instantiations, and borrow target types require
+equal resolved type arguments, with a mutable borrow permitted to weaken into
+a shared borrow of the **same** target type.
+
+An immutable tuple permits only representationally readable slot widening
+(e.g., `int` to `int | string`), never implicit numeric conversion of
+stored values (`int` to `float`). Fixed array/list tuple kinds retain
+invariant writable elements.
+
+First-class `Function` values follow the same zero-adapter rule previously
+enforced for compiler-witnessed structural methods. Contravariant parameters
+and covariant returns must preserve the runtime ABI. Declared scalar numeric
+promotion does **not** imply that the compiler builds wrappers for function
+values. Nominal inheritance may still be proved by the context-aware checker
+where the reference representation is unchanged.
+
+Regression coverage is in
+`StructuralReadViewCoercionHardeningTest.java`. These are source changes
+and test fixtures only; they must pass the exact-head JVM, Graal AOT/hybrid,
+and LLVM fail-closed verification gates before merging.
