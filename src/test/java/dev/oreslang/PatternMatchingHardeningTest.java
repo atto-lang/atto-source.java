@@ -389,11 +389,11 @@ final class PatternMatchingHardeningTest {
             if (coversSome && coversNone) continue;
 
             StringBuilder source = new StringBuilder(
-                    "fnc test(Option<bool> value): int { match value over\\n");
+                    "fnc test(Option<bool> value): int { match value over\n");
             for (int i = 0; i < optionPatterns.length; i++) {
                 if ((mask & (1 << i)) != 0) {
                     source.append(" on ").append(optionPatterns[i])
-                            .append(" -> { return 1; }\\n");
+                            .append(" -> { return 1; }\n");
                 }
             }
             source.append(" end }");
@@ -413,11 +413,11 @@ final class PatternMatchingHardeningTest {
             if (coversOk && coversErr) continue;
 
             StringBuilder source = new StringBuilder(
-                    "fnc test(Result<bool, bool> value): int { match value over\\n");
+                    "fnc test(Result<bool, bool> value): int { match value over\n");
             for (int i = 0; i < resultPatterns.length; i++) {
                 if ((mask & (1 << i)) != 0) {
                     source.append(" on ").append(resultPatterns[i])
-                            .append(" -> { return 1; }\\n");
+                            .append(" -> { return 1; }\n");
                 }
             }
             source.append(" end }");
