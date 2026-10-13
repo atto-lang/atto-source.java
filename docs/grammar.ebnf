@@ -152,13 +152,18 @@ object_pattern  = "{" ( object_rest_item
                                   | object_destructure_item
                                     { "," object_destructure_item }
                                     [ "," object_rest_item ] ) "}" ;
+(* Individual destructured names may carry expected types without changing
+   the inherited const/val/let or mut permission. Type-first and name-first
+   annotations are equivalent after resolution. *)
+destructure_binding
+                = IDENT [ ":" type_ref ] | type_ref IDENT ;
 sequence_destructure_item
-                = [ binding_kind ] IDENT | "_" ;
+                = [ binding_kind ] ( destructure_binding | "_" ) ;
 sequence_rest_item
-                = [ binding_kind ] "..." IDENT ;
+                = [ binding_kind ] "..." destructure_binding ;
 object_destructure_item
-                = [ binding_kind ] IDENT ;
-object_rest_item= [ binding_kind ] "..." IDENT ;
+                = [ binding_kind ] destructure_binding ;
+object_rest_item= [ binding_kind ] "..." destructure_binding ;
 
 block           = "{" { statement } "}" ;
 statement       = binding_decl
