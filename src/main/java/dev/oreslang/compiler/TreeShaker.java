@@ -1,6 +1,7 @@
 package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.VisibilityPolicy;
 import dev.oreslang.parser.Parser;
 
 import java.util.ArrayDeque;
@@ -74,6 +75,7 @@ public final class TreeShaker {
         private final Map<String, String> uniqueSymbols = new LinkedHashMap<>();
         private final Set<String> ambiguousSymbols = new LinkedHashSet<>();
         private final Set<String> moduleNames = new LinkedHashSet<>();
+        private final Map<String, Ast.ModuleDecl> indexedModules = new LinkedHashMap<>();
 
         private final LinkedHashSet<String> retained = new LinkedHashSet<>();
         private final LinkedHashSet<String> externalBindings = new LinkedHashSet<>();
@@ -970,6 +972,7 @@ public final class TreeShaker {
 
         private void indexSymbols(Ast.Program program) {
             for (Ast.ModuleDecl module : program.modules()) {
+                indexedModules.put(module.name(), module);
                 moduleNames.add(module.name());
                 for (Ast.Decl declaration : module.declarations()) {
                     String name = declarationName(declaration);
@@ -989,7 +992,7 @@ public final class TreeShaker {
         private void seedRoots() {
             if (options.preservePublicApi()) {
                 for (Symbol symbol : symbols.values()) {
-                    if (isPublicApi(symbol.declaration())) mark(symbol.id());
+                    if (isPublicApi(symbol)) mark(symbol.id());
                 }
             }
 
@@ -1003,20 +1006,13 @@ public final class TreeShaker {
             }
         }
 
-        private boolean isPublicApi(Ast.Decl declaration) {
-            if (declaration instanceof Ast.FunctionDecl fn) {
-                return fn.visibility() == Ast.Visibility.PUBLIC;
-            }
-            if (declaration instanceof Ast.FieldDecl field) {
-                return field.visibility() == Ast.Visibility.PUBLIC;
-            }
-            if (declaration instanceof Ast.InterfaceDecl iface) {
-                return iface.visibility() == Ast.Visibility.PUBLIC;
-            }
-            if (declaration instanceof Ast.ClassDecl klass) {
-                return klass.visibility() == Ast.Visibility.PUBLIC;
-            }
-            return declaration instanceof Ast.TypeAliasDecl;
+        private boolean isPublicApi(Symbol symbol) {
+            Ast.ModuleDecl owner = indexedModules.get(symbol.module());
+            // Preserving public APIs must follow the same two-level export
+            // rule as the linker and runtime. In particular, a public-looking
+            // function in a private named module is not a library entry point,
+            // and private type aliases are not exported.
+            return owner != null && VisibilityPolicy.exports(owner, symbol.declaration());
         }
 
         private void mark(String id) {
