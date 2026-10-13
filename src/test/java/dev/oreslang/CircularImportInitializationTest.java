@@ -437,7 +437,7 @@ final class CircularImportInitializationTest {
         Files.writeString(entry, """
                 import module Z from "./symbol-constant-dep.ores";
                 pub routine main(): void {
-                  match Z.sym2 over
+                  do match Z.sym2 over
                     on #abc -> { stdio.stdout.write("matched|"); }
                     on _ -> { stdio.stdout.write("unexpected|"); }
                   end
