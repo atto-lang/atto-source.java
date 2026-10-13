@@ -149,6 +149,10 @@ public final class OwnershipChecker {
         }
         Ast.TypeAliasDecl alias = ambiguousIntersectionAliases.contains(ref.name())
                 ? null : intersectionAliases.get(ref.name());
+        if (insideIntersection && alias != null && !alias.genericParameters().isEmpty()) {
+            throw error("generic alias '" + ref.name()
+                    + "' inside an intersection requires ownership-aware generic field projection");
+        }
         if (alias != null && alias.genericParameters().isEmpty() && ref.arguments().isEmpty()) {
             if (!visitedAliases.add(ref.name())) return; // cyclic aliases fail earlier during type analysis
             try {
