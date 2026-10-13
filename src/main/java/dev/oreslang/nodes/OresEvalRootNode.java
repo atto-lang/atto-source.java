@@ -8105,6 +8105,13 @@ public final class OresEvalRootNode extends RootNode {
          * (directly or through the narrow JNI bridge), never JVM Class.isInstance/instanceof.
          */
         private boolean oresTypeMatches(Object value, Ast.TypeRef target) {
+            if (target.isIntersection()) {
+                // Type-level conjunction must remain a conjunction at runtime.
+                for (Ast.TypeRef constraint : target.arguments()) {
+                    if (!oresTypeMatches(value, constraint)) return false;
+                }
+                return true;
+            }
             if (target.isUnion()) {
                 for (Ast.TypeRef option : target.arguments()) {
                     if (oresTypeMatches(value, option)) return true;
@@ -8484,6 +8491,18 @@ public final class OresEvalRootNode extends RootNode {
                 } finally {
                     resolving.remove(alias);
                 }
+            }
+
+            if (declared.isIntersection()) {
+                // A match against one side alone would unsoundly admit values
+                // violating the other required fields. Never use union fallback.
+                for (Ast.TypeRef constraint : declared.arguments()) {
+                    if (!oresTypeMatches(value, constraint)) {
+                        throw new IllegalArgumentException(
+                                callable + " return value fails intersection constraint " + constraint);
+                    }
+                }
+                return value;
             }
 
             if (declared.isUnion()) {
