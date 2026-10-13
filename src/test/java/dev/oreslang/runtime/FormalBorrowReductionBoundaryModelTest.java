@@ -62,7 +62,6 @@ final class FormalBorrowReductionBoundaryModelTest {
                             s.resumes, s.externalEffects + 1, true) : null;
             case REQUEST_PREEMPTION -> s.phase == Phase.RUNNING
                     && s.workSinceYield == 2
-                    && s.resumes == 0
                     && (unsafeIgnoreLoans || s.loan == Loan.NONE)
                     ? new State(Phase.HANDOFF, s.loan, s.workSinceYield,
                             s.totalFuel, s.resumes, s.externalEffects, true) : null;
@@ -70,6 +69,7 @@ final class FormalBorrowReductionBoundaryModelTest {
                     ? new State(Phase.READY, s.loan, s.workSinceYield,
                             s.totalFuel, s.resumes, s.externalEffects, false) : null;
             case RESUME -> s.phase == Phase.READY && !s.carrierOwned
+                    && s.resumes < 4
                     ? new State(Phase.RUNNING, s.loan, 0, s.totalFuel,
                             s.resumes + 1, s.externalEffects, true) : null;
             // Cancellation seals admission but does not revoke the physical
@@ -134,9 +134,9 @@ final class FormalBorrowReductionBoundaryModelTest {
                 || state.phase == Phase.STOP_PENDING) && !state.carrierOwned) return false;
         if ((state.phase == Phase.READY || state.phase == Phase.CANCELLED)
                 && state.carrierOwned) return false;
-        if (state.resumes > 0 && state.totalFuel < 2) return false;
+        if (state.totalFuel < state.resumes * 2) return false;
         if (state.totalFuel < state.workSinceYield) return false;
-        if (state.externalEffects > 1 || state.resumes > 1) return false;
+        if (state.externalEffects > 1 || state.resumes > 4) return false;
         return true;
     }
 
@@ -148,6 +148,8 @@ final class FormalBorrowReductionBoundaryModelTest {
         assertTrue(states.stream().anyMatch(s -> s.loan == Loan.NATIVE));
         assertTrue(states.stream().anyMatch(s -> s.phase == Phase.READY && s.totalFuel >= 2));
         assertTrue(states.stream().anyMatch(s -> s.resumes == 1 && s.externalEffects == 1));
+        assertTrue(states.stream().anyMatch(s -> s.resumes == 2 && s.totalFuel == 4),
+                "model must reach two distinct physical carrier handoffs");
         states.forEach(s -> assertTrue(safety(s), () -> "unsafe state: " + s));
 
         // Budget exhaustion is not authority to suspend while a loan remains.
@@ -157,6 +159,43 @@ final class FormalBorrowReductionBoundaryModelTest {
             State released = step(blocked, Action.RELEASE, false);
             assertNotNull(step(released, Action.REQUEST_PREEMPTION, false));
         }
+    }
+
+
+    @Test
+    void secondHandoffRechecksLoansAndCancellationBarriers() {
+        State state = State.initial();
+        for (int i = 0; i < 2; i++) {
+            state = step(state, Action.CHARGE_REDUCTION, false);
+            state = step(state, Action.CHARGE_REDUCTION, false);
+            assertNotNull(state);
+            assertEquals((i + 1) * 2, state.totalFuel);
+            State borrowed = step(state, Action.BORROW_NATIVE, false);
+            assertNotNull(borrowed);
+            assertNull(step(borrowed, Action.REQUEST_PREEMPTION, false),
+                    "each handoff must reject native loans, including after a prior resume");
+            state = step(borrowed, Action.RELEASE, false);
+            state = step(state, Action.REQUEST_PREEMPTION, false);
+            assertNotNull(state);
+            state = step(state, Action.EXIT_CARRIER, false);
+            assertEquals(Phase.READY, state.phase);
+            assertFalse(state.carrierOwned);
+            state = step(state, Action.RESUME, false);
+            assertNotNull(state);
+            assertEquals(i + 1, state.resumes);
+            assertTrue(safety(state));
+        }
+        assertEquals(2, state.resumes);
+        assertEquals(4, state.totalFuel);
+        State borrow = step(state, Action.BORROW_STATE, false);
+        State stopping = step(borrow, Action.REQUEST_CANCEL, false);
+        assertEquals(Phase.STOP_PENDING, stopping.phase);
+        assertNull(step(stopping, Action.EXIT_STOP_CARRIER, false));
+        State retired = step(stopping, Action.RETIRE_STOP_LOAN, false);
+        State terminal = step(retired, Action.EXIT_STOP_CARRIER, false);
+        assertNotNull(terminal);
+        assertEquals(Phase.CANCELLED, terminal.phase);
+        assertTrue(safety(terminal));
     }
 
     @Test

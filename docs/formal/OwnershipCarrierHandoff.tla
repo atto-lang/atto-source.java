@@ -52,13 +52,13 @@ Effect ==
     /\ UNCHANGED <<phase, loan, carrier, fuel, sinceYield, resumes>>
 
 (* The scheduler MUST NOT interpret budget exhaustion as permission to
-   publish a continuation with any outstanding live loan. *)
+   publish a continuation with any outstanding live loan. This rule applies
+   at EVERY handoff, not only the first; resumes is a bounded count. *)
 Yield ==
     /\ phase = "Running"
     /\ carrier
     /\ loan = "None"
     /\ sinceYield = Budget
-    /\ resumes = 0
     /\ phase' = "Handoff"
     /\ UNCHANGED <<loan, carrier, fuel, sinceYield, resumes, effects>>
 
@@ -72,10 +72,10 @@ ExitCarrier ==
 Resume ==
     /\ phase = "Ready"
     /\ ~carrier
-    /\ resumes = 0
+    /\ resumes < FuelLimit
     /\ phase' = "Running"
     /\ carrier' = TRUE
-    /\ resumes' = 1
+    /\ resumes' = resumes + 1
     /\ sinceYield' = 0
     /\ UNCHANGED <<loan, fuel, effects>>
 
@@ -128,7 +128,7 @@ TypeOK ==
     /\ carrier \in BOOLEAN
     /\ fuel \in 0..FuelLimit
     /\ sinceYield \in 0..Budget
-    /\ resumes \in 0..1
+    /\ resumes \in 0..FuelLimit
     /\ effects \in 0..1
 
 LoanSafeAtHandoff ==
@@ -137,13 +137,15 @@ LoanSafeAtHandoff ==
 CarrierOwnership ==
     carrier <=> (phase \in {"Running", "Handoff", "StopPending"})
 
+(* Each completed resume follows an independently budgeted handoff. *)
 FuelContinuity ==
-    (resumes = 1) => (fuel >= Budget)
+    fuel >= Budget * resumes
 
 NoSideEffectReplay == effects <= 1
 
 (* Mutation deliberately removes the loan-free yield admission. TLC must
-   find a counterexample to LoanSafeAtHandoff with UnsafeSpec. *)
+   find a counterexample to LoanSafeAtHandoff with UnsafeSpec, including
+   after an earlier valid carrier handoff. *)
 UnsafeYield ==
     /\ phase = "Running"
     /\ carrier

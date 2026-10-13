@@ -25,7 +25,7 @@ run_safe() {
     echo 'Safe TLC model did not pass' >&2
     exit 1
   fi
-  if ! grep -Fq 'Model checking completed. No error has been found.' "$log"; then
+  if ! grep -Eq 'Model checking completed\.[[:space:]]+No error has been found\.' "$log"; then
     cat "$log" >&2
     echo 'Safe TLC process returned without a success verdict' >&2
     exit 1
@@ -44,6 +44,11 @@ expect_mutation() {
   if ! grep -Fq "Invariant $invariant is violated" "$log"; then
     cat "$log" >&2
     echo "Mutation $cfg failed for the wrong reason (expected $invariant)" >&2
+    exit 1
+  fi
+  if ! grep -Eq 'State 2:([[:space:]]|$)' "$log"; then
+    cat "$log" >&2
+    echo "Mutation $cfg did not produce a concrete multi-state counterexample" >&2
     exit 1
   fi
   echo "Expected counterexample: $cfg -> $invariant"
