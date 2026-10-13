@@ -30,7 +30,11 @@ public final class ExceptionBoundaryPolicy {
             if (originCode < 0 || originCode > MAX_ORIGIN_CODE) {
                 throw new IllegalArgumentException("originCode must be an unsigned 32-bit value");
             }
-            if (failed != (delivered != Effect.RETURN)
+            // Terminal actor/task/root classifications never expose a raw
+            // Throw or Raise. Those effects exist only in ordinary unwind
+            // frames and must already have been promoted to Panic here.
+            if (delivered == Effect.THROW || delivered == Effect.RAISE
+                    || failed != (delivered != Effect.RETURN)
                     || defaultExitStatus != (failed ? 1 : 0)
                     || (origin != delivered && !(delivered == Effect.PANIC
                     && (origin == Effect.THROW || origin == Effect.RAISE)))) {
