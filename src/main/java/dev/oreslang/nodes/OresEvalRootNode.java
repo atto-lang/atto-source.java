@@ -5508,6 +5508,18 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             String name = type.name();
+            if (name.equals("Tuple") && !type.arguments().isEmpty()) {
+                List<?> items = asSequence(value);
+                if (items.size() != type.arguments().size()) {
+                    throw new IllegalArgumentException(where + " tuple length "
+                            + items.size() + " differs from declared " + type.arguments().size());
+                }
+                for (int i = 0; i < items.size(); i++) {
+                    checkChannelTypeShape(type.arguments().get(i), items.get(i),
+                            activeAliases, where + "[" + i + "]");
+                }
+                return;
+            }
             if (name.equals("Option") && type.arguments().size() == 1) {
                 if (!(value instanceof OptionValue option)) {
                     throw new IllegalArgumentException(where + " requires Option<T>");
