@@ -115,6 +115,33 @@ final class MatchSelectArrowProjectionTest {
     }
 
     @Test
+    void implicitRecordProjectionRequiresArrowAndLegacyBracesStayBodies() {
+        Ast.Program parsed = checked("""
+                fnc test(Channel<{x: int}> data): void {
+                  select {
+                    when readch data: {x} -> {
+                      stdio.println(x);
+                    }
+                  }
+                  select {
+                    when readch data: {
+                      stdio.println("legacy body");
+                    }
+                  }
+                  return;
+                }
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        Ast.SelectStmt selected = (Ast.SelectStmt) fn.body().getFirst();
+        assertEquals(Ast.DestructureKind.OBJECT,
+                selected.arms().getFirst().destructureKind());
+        Ast.SelectStmt legacy = (Ast.SelectStmt) fn.body().get(1);
+        assertNull(legacy.arms().getFirst().destructureKind());
+        assertNull(legacy.arms().getFirst().bindingName());
+    }
+
+    @Test
     void requiresMatchSlimArrowAndRejectsUnsupportedConstructorWithRecordProjection() {
         IllegalArgumentException arrow = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("""
