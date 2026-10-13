@@ -164,9 +164,13 @@ public final class CriticalRwGate implements AutoCloseable {
         @Override
         public void close() {
             synchronized (this) {
-                if (closed || closeRequested) return;
+                if (closed) return;
                 closeRequested = true;
             }
+            // Repeated foreign requests are idempotent at the core gate.
+            // However, a *later owning guest close* must still be forwarded:
+            // the original actor is allowed to end its lexical critical
+            // scope even when a foreign completion queued a future release.
             // The core schedules deferred physical revocation if a foreign
             // completion/STOP races an active actor's granted critical scope.
             // Keep global logical-owner and facade tracking until the core
