@@ -312,4 +312,64 @@ final class OresFuturesTest {
         }
     }
 
+
+    @Test
+    void runtimeCompletionCallbackCannotBlockFutureSettledByLaterCallback() throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        OresFuture<Integer> next = new OresFuture<>();
+        java.util.concurrent.atomic.AtomicInteger delivered = new java.util.concurrent.atomic.AtomicInteger();
+        source.whenCompleteRuntime((value, failure) -> {
+            assertEquals(1, value);
+            assertNull(failure);
+            assertThrows(IllegalStateException.class, next::join,
+                    "a callback must not park the completing producer");
+            assertThrows(IllegalStateException.class, next::get,
+                    "untimed host Future.get must also fail closed");
+            assertThrows(IllegalStateException.class,
+                    () -> next.get(10, java.util.concurrent.TimeUnit.SECONDS),
+                    "timed host Future.get must not park a completion callback");
+            // Polling without blocking is still allowed.
+            assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> next.get(0, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(0, next.pendingRuntimeWaiterCount());
+            delivered.incrementAndGet();
+        });
+        source.whenCompleteRuntime((value, failure) -> {
+            next.completeFromRuntime(42);
+            delivered.incrementAndGet();
+        });
+
+        assertTrue(source.completeFromRuntime(1));
+        assertEquals(2, delivered.get());
+        assertEquals(42, next.get(1, java.util.concurrent.TimeUnit.SECONDS));
+    }
+
+    @Test
+    void completionCallbackScopeWorksForAlreadySettledAndNestedWaiters() throws Exception {
+        OresFuture<Integer> settled = OresFuture.completed(7);
+        OresFuture<Integer> nested = new OresFuture<>();
+        OresFuture<Integer> waiting = new OresFuture<>();
+        java.util.concurrent.atomic.AtomicInteger rejected = new java.util.concurrent.atomic.AtomicInteger();
+
+        settled.whenCompleteRuntime((value, failure) -> {
+            assertEquals(7, value);
+            assertEquals(7, settled.join(), "settled reads must remain legal");
+            nested.whenCompleteRuntime((v, e) -> {
+                assertEquals(9, v);
+                assertThrows(IllegalStateException.class, waiting::join);
+                rejected.incrementAndGet();
+            });
+            nested.completeFromRuntime(9);
+            assertThrows(IllegalStateException.class, waiting::join,
+                    "the outer callback scope remains active after nested completion");
+            rejected.incrementAndGet();
+        });
+        assertEquals(2, rejected.get());
+        // No callback scope may leak into the calling host thread.
+        Thread completer = Thread.ofVirtual().start(() -> waiting.completeFromRuntime(11));
+        assertEquals(11, waiting.get(2, java.util.concurrent.TimeUnit.SECONDS));
+        completer.join(5_000);
+        assertFalse(completer.isAlive());
+    }
+
 }
