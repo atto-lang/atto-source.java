@@ -433,6 +433,37 @@ final class PatternMatchingHardeningTest {
     }
 
     @Test
+    void structuralRecordCoverageCannotUseNumericWidening() {
+        IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc bad({ amount: int } value): int {
+                          match value over
+                            on structural { amount: float } record -> { return 1; }
+                          end
+                        }
+                        """)));
+        assertTrue(mismatch.getMessage().contains("non-exhaustive match"));
+
+        IllegalArgumentException nested = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc bad({ inner: { amount: int } } value): int {
+                          match value over
+                            on structural { inner: { amount: float } } record -> { return 1; }
+                          end
+                        }
+                        """)));
+        assertTrue(nested.getMessage().contains("non-exhaustive match"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc good({ amount: int } value): int {
+                  match value over
+                    on structural { amount: int } record -> { return 1; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
     void switchIsConstantDispatchAndRejectsDuplicateCases() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc classify(int value): int {
