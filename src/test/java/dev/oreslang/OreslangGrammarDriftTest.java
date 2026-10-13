@@ -19,14 +19,15 @@ final class OreslangGrammarDriftTest {
             source namespace_decl import_decl import_spec import_kind import_names
             top_level_item annotated_module_decl module_member visibility callable_modifier method_modifier
             callable_decl callable_kind actor_callable_decl actor_decl actor_body actor_member
-            actor_method_decl class_decl class_member constructor_decl field_decl method_decl
+            final_actor_field_decl actor_method_decl class_decl class_member constructor_decl field_decl
+            type_first_class_field_decl method_decl
             method_name callable_name method_head explicit_receiver static_function_decl contract_decl
             interface_decl interface_body interface_member type_decl annotation annotation_args
             annotation_arg return_spec type_return_spec generic_params param_list param
             binding_decl binding_kind named_inferred_binding named_inferred_literal destructure_stmt sequence_pattern
             object_pattern sequence_destructure_item sequence_rest_item object_destructure_item object_rest_item block
             statement return_stmt defer_stmt block_stmt break_stmt continue_stmt
-            loop_stmt if_stmt conditional_branch deprecated_if_do condition condition_and
+            loop_stmt while_stmt if_stmt conditional_branch deprecated_if_do condition condition_and
             match_stmt match_arm pattern switch_stmt switch_case switch_default
             try_stmt select_stmt select_wait_mode select_policy select_arm select_arm_keyword
             select_default for_stmt c_for_head for_init for_update for_of_head
