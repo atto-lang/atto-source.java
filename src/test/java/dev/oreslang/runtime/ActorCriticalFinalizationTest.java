@@ -135,6 +135,85 @@ final class ActorCriticalFinalizationTest {
     }
 
     @Test
+    void foreignTicketCloseWaitsForActorFinalizationBeforeReleasingWriter()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch exitGuest = new CountDownLatch(1);
+        AtomicReference<VerifierState> stateRef = new AtomicReference<>();
+        AtomicReference<CriticalRwGate.Ticket> writerRef = new AtomicReference<>();
+        AtomicInteger revocations = new AtomicInteger();
+        Ast.Program program = Parser.parse("pub fnc main(): void { return; }");
+        try (SharedCodeImageStore images = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime()) {
+            SharedCodeImageStore.CodeImage image =
+                    images.publish("foreign-critical-close-audit", program);
+            ActorRuntime.ActorCodeExecutor source = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() { return image; }
+
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String type, ActorRuntime.ActorContext<Object> context) {
+                    var state = new VerifierState(context.self().id(), revocations);
+                    stateRef.set(state);
+                    return state;
+                }
+
+                @Override public void receiveActor(
+                        String type,
+                        ActorRuntime.ActorOwnedGuestState raw,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) throws Exception {
+                    var state = (VerifierState) raw;
+                    var writer = state.gate.newCriticalTicket();
+                    writerRef.set(writer);
+                    writer.enterAsync();
+                    entered.countDown();
+                    try {
+                        if (!exitGuest.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("actor writer guest not released");
+                        }
+                        assertTrue(writer.isHeld(),
+                                "foreign close prematurely revoked the actor's WRITE permit");
+                    } finally {
+                        writer.close();
+                    }
+                }
+            };
+            ActorRuntime.ActorRef<Object> actor =
+                    runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED,
+                            source, "ForeignCloseVerifier");
+            try {
+                actor.send("test");
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var state = stateRef.get();
+                assertNotNull(state);
+                var writer = writerRef.get();
+                var reader = state.gate.newTicket(CriticalRwGate.Mode.READ);
+                reader.enterAsync();
+                assertFalse(reader.isHeld());
+
+                // The caller has no actor execution domain. Direct close must
+                // initiate actor shutdown and defer actual release.
+                writer.close();
+                writer.close();
+                assertTrue(writer.isHeld());
+                assertFalse(reader.isHeld());
+                assertEquals(0, revocations.get());
+
+                exitGuest.countDown();
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+                assertEquals(1, revocations.get());
+                assertFalse(reader.isHeld(),
+                        "a stale reader must not be admitted after actor retirement");
+                assertFalse(writer.isHeld());
+                assertThrows(IllegalStateException.class, state.gate::newCriticalTicket);
+                reader.close();
+            } finally {
+                exitGuest.countDown();
+            }
+        }
+    }
+
+    @Test
     void sourceActorStateRevokesOnlyInstanceGate() throws Exception {
         Class<?> objectClass = null;
         Class<?> sourceStateClass = null;
