@@ -6459,6 +6459,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** Domain-close callbacks held until physical guest/TurnExecutor exit. */
         private final java.util.ArrayDeque<Runnable> physicalExitCallbacks =
                 new java.util.ArrayDeque<>();
+        /** Blocks next-turn admission and DONE while carrier-exit callbacks drain. */
+        private boolean physicalExitCleanupActive;
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
@@ -6759,6 +6761,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
+                    || physicalExitCleanupActive
                     || resourceRevocationActive
                     || !children.isEmpty()) return;
             finalized = true;
@@ -6943,7 +6946,8 @@ public final class ActorRuntime implements AutoCloseable {
         private void schedule() {
             final Object dispatchTicket;
             synchronized (lifecycleLock) {
-                if (stopped.get() || forceKillFenced || closed.get() || scheduled.get()) return;
+                if (stopped.get() || forceKillFenced || closed.get()
+                        || physicalExitCleanupActive || scheduled.get()) return;
                 // Atomically claim the actor lane and publish a fresh identity.
                 dispatchTicket = new Object();
                 scheduledDispatchToken = dispatchTicket;
@@ -7082,6 +7086,16 @@ public final class ActorRuntime implements AutoCloseable {
                             carrierOwnerThread = null;
                             carrierActive = false;
                         }
+                        // Keep the actor lane fenced while externally requested
+                        // domain-close callbacks release their final grants.
+                        // Another sender may try to schedule immediately after
+                        // scheduled=false below; it must not begin a new turn
+                        // until every prior-turn cleanup callback completes.
+                        if (!carrierActive && !physicalExitCallbacks.isEmpty()) {
+                            afterCarrierClose = List.copyOf(physicalExitCallbacks);
+                            physicalExitCallbacks.clear();
+                            physicalExitCleanupActive = true;
+                        }
                         // A stale replay cannot release a later scheduling
                         // identity, even when no carrier is currently active.
                         if (scheduledDispatchToken == dispatchTicket
@@ -7094,13 +7108,6 @@ public final class ActorRuntime implements AutoCloseable {
                                     && !closed.get()
                                     && !finalized
                                     && hasQueuedWorkLocked();
-                        }
-                        // An external domain-close request may have arrived
-                        // while guest code held its critical grant. Retire it
-                        // only after the physical TurnExecutor boundary.
-                        if (!carrierActive && !physicalExitCallbacks.isEmpty()) {
-                            afterCarrierClose = List.copyOf(physicalExitCallbacks);
-                            physicalExitCallbacks.clear();
                         }
                         // Snapshot only once the execution lease is physically
                         // gone; callbacks below may wake another actor or host.
@@ -7119,16 +7126,29 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 Error fatalClose = null;
-                for (Runnable close : afterCarrierClose) {
-                    try {
-                        close.run();
-                    } catch (Throwable failure) {
-                        // A misbehaving close observer cannot skip other
-                        // quiescence callbacks or silently preserve grants.
-                        fail(failure);
-                        if (failure instanceof Error error) {
-                            if (fatalClose == null) fatalClose = error;
-                            else if (fatalClose != error) fatalClose.addSuppressed(error);
+                try {
+                    for (Runnable close : afterCarrierClose) {
+                        try {
+                            close.run();
+                        } catch (Throwable failure) {
+                            // A misbehaving close observer cannot skip other
+                            // quiescence callbacks or silently preserve grants.
+                            fail(failure);
+                            if (failure instanceof Error error) {
+                                if (fatalClose == null) fatalClose = error;
+                                else if (fatalClose != error) fatalClose.addSuppressed(error);
+                            }
+                        }
+                    }
+                } finally {
+                    if (!afterCarrierClose.isEmpty()) {
+                        synchronized (lifecycleLock) {
+                            physicalExitCleanupActive = false;
+                            if (stopped.get()) finalizeStopLocked();
+                            reschedule = reschedule || (!stopped.get()
+                                    && !forceKillFenced && !closed.get()
+                                    && !finalized && hasQueuedWorkLocked());
+                            lifecycleLock.notifyAll();
                         }
                     }
                 }
