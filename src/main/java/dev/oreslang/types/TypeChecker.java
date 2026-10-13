@@ -4685,6 +4685,11 @@ public final class TypeChecker {
      * An unknown/infinite/oversized domain returns null and uses the
      * conservative proof below. No proof may rely on a truncated domain.
      */
+    private static boolean allTrue(boolean[] values) {
+        for (boolean value : values) if (!value) return false;
+        return true;
+    }
+
     private static final int MAX_ADT_MATCH_ARMS = 4096;
     private static final int MAX_ADT_MATCH_WITNESSES = 4096;
     private record FiniteAdtCase(String name, List<Object> fields) {
@@ -5075,7 +5080,10 @@ public final class TypeChecker {
             }
         }
 
-        if (!matchProvablyExhaustive(arms, subject, generics, self)) {
+        boolean exhaustive = coveredByUnguarded != null
+                ? allTrue(coveredByUnguarded)
+                : matchProvablyExhaustive(arms, subject, generics, self);
+        if (!exhaustive) {
             throw new IllegalArgumentException(
                     "non-exhaustive match for " + subject
                             + "; add an unguarded 'on _ -> { ... }' arm or cover every provable case");
