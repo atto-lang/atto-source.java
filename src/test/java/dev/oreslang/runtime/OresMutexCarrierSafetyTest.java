@@ -63,6 +63,15 @@ final class OresMutexCarrierSafetyTest {
                             () -> pending.get(1, TimeUnit.SECONDS));
                     assertThrows(java.util.concurrent.TimeoutException.class,
                             () -> pending.get(0, TimeUnit.SECONDS));
+                    var derived = pending.thenApply(mutexGuard -> 21);
+                    assertTrue(derived instanceof OresMutex.CarrierSafeFuture<?>,
+                            "dependent stages must retain the nonblocking policy");
+                    assertThrows(OresMutex.WrongMutexDomainException.class, derived::join);
+                    assertThrows(OresMutex.WrongMutexDomainException.class, derived::get);
+                    assertThrows(OresMutex.WrongMutexDomainException.class,
+                            () -> derived.get(1, TimeUnit.SECONDS));
+                    assertThrows(java.util.concurrent.TimeoutException.class,
+                            () -> derived.get(0, TimeUnit.SECONDS));
                     assertTrue(pending.cancel(false));
                     return true;
                 }).join());
