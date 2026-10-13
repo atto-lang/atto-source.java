@@ -1405,6 +1405,32 @@ public final class ActorRuntime implements AutoCloseable {
         return cell == null ? null : cell::afterPhysicalCarrierExit;
     }
 
+    /**
+     * Ticket-specific release authority is pinned to the creating actor cell
+     * (incarnation) and logical task. Only its executing guest turn can
+     * relinquish a grant inline. A foreign Future completion, another logical
+     * message on the same actor, or a stale actor handle must wait for the
+     * owning physical carrier to leave the TurnExecutor.
+     */
+    java.util.function.Consumer<Runnable> captureCurrentActorTicketRelease(Object ownerDomain) {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) return null;
+        return close -> {
+            boolean ownTurn;
+            synchronized (cell.lifecycleLock) {
+                Object currentDomain = OresScheduler.currentTaskDomain();
+                if (currentDomain == null) currentDomain = currentActorExecutionDomain();
+                ownTurn = currentActor.get() == cell
+                        && cell.carrierActive
+                        && cell.carrierOwnerThread == Thread.currentThread()
+                        && !cell.physicalExitCleanupActive
+                        && currentDomain == ownerDomain;
+            }
+            if (ownTurn) close.run();
+            else cell.afterPhysicalCarrierExit(close);
+        };
+    }
+
     /** Package-private physical-turn diagnostic for deterministic shutdown races. */
     boolean isActorPhysicalLaneQuiescent(ActorRef<?> ref) {
         Objects.requireNonNull(ref, "ref");
