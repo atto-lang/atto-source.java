@@ -60,7 +60,7 @@ class NativeHttpTest {
                 assertEquals(200, response.statusCode());
                 assertEquals("drained", response.body());
             });
-        assertTrue(output.contains("200\\nDRAINED\\n0\\n1\\n1"),
+        assertTrue(output.contains("200\nDRAINED\n0\n1\n1"),
                 "repeated shutdown should settle without retaining admissions: " + output);
     }
 
