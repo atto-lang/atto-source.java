@@ -35,6 +35,36 @@ final class GeneratorLanguageTest {
     }
 
     @Test
+    void generatorPullFailureDuringResumedForOfClosesProducerExactlyOnce() throws Exception {
+        assertEquals("12:closed:caught|done", run("""
+                generator fnc values(): int {
+                  try {
+                    yield 1;
+                    yield 2;
+                    val Option<int> missing = None;
+                    stdio.stdout.write(missing.unwrap());
+                  } catch (err) {
+                    throw err;
+                  } finally {
+                    stdio.stdout.write(":closed");
+                  }
+                  return;
+                }
+                pub async routine main(): void {
+                  try {
+                    for const item of values() do
+                      stdio.stdout.write(item);
+                    done
+                  } catch (err) {
+                    stdio.stdout.write(":caught");
+                  }
+                  stdio.stdout.write("|done");
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void suspendableAsyncIterationClosesProducerOnBreak() throws Exception {
         assertEquals("1:closed", run("""
                 async generator fnc values(): int {
