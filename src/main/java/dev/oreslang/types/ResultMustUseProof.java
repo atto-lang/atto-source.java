@@ -46,6 +46,11 @@ final class ResultMustUseProof {
             throw new IllegalArgumentException(
                     "must-use Result '" + variable + "' is shadowed before handling");
         }
+        if (state == PENDING && hasUnprovenSuspension(statement)) {
+            throw new IllegalArgumentException(
+                    "must-use Result '" + variable
+                            + "' crosses await, channel suspension or deferred execution without a cleanup proof");
+        }
         if (statement instanceof Ast.ReturnStmt ret) {
             if (state == PENDING && !isVariable(ret.value(), variable)) {
                 throw new IllegalArgumentException(
@@ -150,10 +155,90 @@ final class ResultMustUseProof {
         return false;
     }
 
+    private static boolean hasUnprovenSuspension(Ast.Stmt statement) {
+        if (statement instanceof Ast.DeferStmt) return true;
+        if (statement instanceof Ast.ExprStmt expr) {
+            return expressionMaySuspend(expr.expression());
+        }
+        if (statement instanceof Ast.BindingStmt binding) {
+            return expressionMaySuspend(binding.initializer());
+        }
+        if (statement instanceof Ast.DestructureStmt destructure) {
+            return expressionMaySuspend(destructure.initializer());
+        }
+        if (statement instanceof Ast.ReturnStmt ret) {
+            return expressionMaySuspend(ret.value());
+        }
+        if (statement instanceof Ast.IfStmt conditional) {
+            return conditional.branches().stream()
+                    .anyMatch(branch -> expressionMaySuspend(branch.condition()));
+        }
+        if (statement instanceof Ast.MatchStmt matched) {
+            return expressionMaySuspend(matched.subject())
+                    || matched.arms().stream()
+                            .anyMatch(arm -> expressionMaySuspend(arm.guard()));
+        }
+        return false;
+    }
+
+    private static boolean expressionMaySuspend(Ast.Expr expression) {
+        if (expression == null) return false;
+        if (expression instanceof Ast.AwaitExpr
+                || expression instanceof Ast.ChannelOpExpr
+                || expression instanceof Ast.DynamicSelectExpr
+                || expression instanceof Ast.LambdaExpr) {
+            return true;
+        }
+        if (expression instanceof Ast.CallExpr call) {
+            return expressionMaySuspend(call.callee())
+                    || call.arguments().stream().anyMatch(ResultMustUseProof::expressionMaySuspend);
+        }
+        if (expression instanceof Ast.RuntimeCallExpr call) {
+            return call.arguments().stream().anyMatch(ResultMustUseProof::expressionMaySuspend);
+        }
+        if (expression instanceof Ast.MemberExpr member) {
+            return expressionMaySuspend(member.receiver());
+        }
+        if (expression instanceof Ast.IndexExpr indexed) {
+            return expressionMaySuspend(indexed.receiver()) || expressionMaySuspend(indexed.index());
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            return expressionMaySuspend(binary.left()) || expressionMaySuspend(binary.right());
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return expressionMaySuspend(unary.operand());
+        }
+        if (expression instanceof Ast.AssignExpr assign) {
+            return expressionMaySuspend(assign.target()) || expressionMaySuspend(assign.value());
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return expressionMaySuspend(conditional.condition())
+                    || expressionMaySuspend(conditional.whenTrue())
+                    || expressionMaySuspend(conditional.whenFalse());
+        }
+        if (expression instanceof Ast.TypeTestExpr test) return expressionMaySuspend(test.value());
+        if (expression instanceof Ast.PatternTestExpr test) return expressionMaySuspend(test.value());
+        if (expression instanceof Ast.CastExpr cast) return expressionMaySuspend(cast.value());
+        if (expression instanceof Ast.SpreadExpr spread) return expressionMaySuspend(spread.expression());
+        if (expression instanceof Ast.TrapExpr trap) return expressionMaySuspend(trap.expression());
+        if (expression instanceof Ast.NewExpr created) {
+            return created.arguments().stream().anyMatch(ResultMustUseProof::expressionMaySuspend);
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            return list.elements().stream().anyMatch(ResultMustUseProof::expressionMaySuspend);
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            return tuple.elements().stream().anyMatch(ResultMustUseProof::expressionMaySuspend);
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            return object.fields().stream().anyMatch(field -> expressionMaySuspend(field.value()));
+        }
+        return false;
+    }
+
     private static boolean simpleFallthrough(Ast.Stmt statement) {
         return statement instanceof Ast.BindingStmt
-                || statement instanceof Ast.DestructureStmt
-                || statement instanceof Ast.DeferStmt;
+                || statement instanceof Ast.DestructureStmt;
     }
 
     private static boolean isVariable(Ast.Expr expression, String name) {
