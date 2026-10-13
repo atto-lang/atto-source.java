@@ -32,6 +32,32 @@ final class ChannelRuntimeDataGuardTest {
         }
     }
 
+    private static final Method SNAPSHOT_DATA = snapshotMethod();
+
+    private static Method snapshotMethod() {
+        try {
+            Class<?> evaluator = Class.forName(
+                    "dev.oreslang.nodes.OresEvalRootNode$Evaluator");
+            Method method = evaluator.getDeclaredMethod(
+                    "snapshotChannelDataValue", Object.class);
+            method.setAccessible(true);
+            return method;
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError("missing channel snapshot implementation", failure);
+        }
+    }
+
+    private static Object snapshot(Object value) {
+        try {
+            return SNAPSHOT_DATA.invoke(null, value);
+        } catch (InvocationTargetException thrown) {
+            if (thrown.getCause() instanceof IllegalArgumentException bad) throw bad;
+            throw new AssertionError("snapshot failed", thrown.getCause());
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError("snapshot invocation failed", failure);
+        }
+    }
+
     private static void accepts(Object value) {
         assertDoesNotThrow(() -> check(value));
     }
@@ -109,6 +135,35 @@ final class ChannelRuntimeDataGuardTest {
         assertThrows(IllegalArgumentException.class, () -> ChannelRuntime.write(channel, callable));
         assertEquals(0, channel.size());
         assertTrue(channel.tryRead().isEmpty());
+    }
+
+    @Test
+    void sealedChannelDetachesNestedDataBeforeBuffering() {
+        ChannelRuntime.Channel<Object> channel = new ChannelRuntime.Channel<>(
+                1, ChannelRuntimeDataGuardTest::check, ChannelRuntimeDataGuardTest::snapshot);
+        ArrayList<Object> names = new ArrayList<>(List.of("before"));
+        LinkedHashMap<String, Object> record = new LinkedHashMap<>();
+        record.put("names", names);
+        assertTrue(channel.tryWrite(record));
+        names.add((Runnable) () -> { });
+        record.put("late", new Object());
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> received = (Map<String, Object>) channel.tryRead().orElseThrow();
+        assertEquals(List.of("before"), received.get("names"));
+        assertFalse(received.containsKey("late"));
+    }
+
+    @Test
+    void dynamicSelectWriteCapturesDetachedValueAtCaseCreation() {
+        ChannelRuntime.Channel<Object> channel = new ChannelRuntime.Channel<>(
+                1, ChannelRuntimeDataGuardTest::check, ChannelRuntimeDataGuardTest::snapshot);
+        ArrayList<Object> source = new ArrayList<>(List.of("first"));
+        ChannelRuntime.WriteCase<Object> write = ChannelRuntime.write(channel, source);
+        source.set(0, "after");
+        assertEquals(List.of("first"), write.value());
+        assertTrue(ChannelRuntime.SelectSet.of(write).trySelect().isPresent());
+        assertEquals(List.of("first"), channel.tryRead().orElseThrow());
     }
 
 }
