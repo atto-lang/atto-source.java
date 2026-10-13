@@ -9,6 +9,72 @@ import org.junit.jupiter.api.Test;
 
 final class CriticalRwGateTest {
     @Test
+    void ownerMayReleaseRWTicketAfterForeignCompletionAlreadyQueued() throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        OresFuture<Void> taskCompletion = new OresFuture<>();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch foreignFinished = new CountDownLatch(1);
+        CountDownLatch ownerReleased = new CountDownLatch(1);
+        CountDownLatch exitTurn = new CountDownLatch(1);
+        AtomicReference<CriticalRwGate.Ticket> owned = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            try {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        var writer = gate.newCriticalTicket();
+                        owned.set(writer);
+                        assertTrue(writer.enterAsync().isDone());
+                        writer.releaseOnCompletion(taskCompletion);
+                        entered.countDown();
+                        assertTrue(foreignFinished.await(5, TimeUnit.SECONDS));
+                        assertTrue(writer.isHeld(),
+                                "foreign completion cannot revoke active guest grant");
+                        writer.close(); // owning lexical scope ends NOW
+                        assertFalse(writer.isHeld(),
+                                "owner's explicit close must override queued foreign release");
+                        ownerReleased.countDown();
+                        assertTrue(exitTurn.await(5, TimeUnit.SECONDS));
+                    } catch (Throwable error) {
+                        failure.compareAndSet(null, error);
+                    } finally {
+                        entered.countDown();
+                        ownerReleased.countDown();
+                    }
+                });
+                actor.send("hold");
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+                var admission = reader.enterAsync();
+                assertFalse(admission.isDone());
+                Thread foreign = Thread.ofVirtual().start(
+                        () -> taskCompletion.completeFromRuntime(null));
+                foreign.join(5_000);
+                assertFalse(foreign.isAlive());
+                assertTrue(owned.get().isHeld());
+                assertEquals(2, gate.trackedTicketCount());
+                foreignFinished.countDown();
+                assertTrue(ownerReleased.await(5, TimeUnit.SECONDS));
+                assertNull(failure.get());
+                assertTrue(admission.isDone(),
+                        "reader must be admitted before guest carrier leaves");
+                assertTrue(reader.isHeld());
+                assertEquals(1, gate.trackedTicketCount(),
+                        "physically closed writer wrapper must retire exactly once");
+                reader.close();
+                exitTurn.countDown();
+                runtime.stop(actor);
+            } finally {
+                foreignFinished.countDown();
+                exitTurn.countDown();
+            }
+        }
+        assertNull(failure.get());
+        assertFalse(gate.hasWriter());
+        assertEquals(0, gate.trackedTicketCount());
+    }
+
+    @Test
     void foreignFutureCompletionKeepsRWWrapperAndWriterUntilCarrierExit() throws Exception {
         CriticalRwGate gate = new CriticalRwGate();
         OresFuture<Void> completedElsewhere = new OresFuture<>();
