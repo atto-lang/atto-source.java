@@ -9166,6 +9166,7 @@ public final class OresEvalRootNode extends RootNode {
             if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException("SelectCase.write expects Channel<T> as first argument");
             }
+            Evaluator.requireChannelDataValue(args.get(1));
             return ChannelRuntime.write(
                     (ChannelRuntime.Channel) channel,
                     args.get(1));
