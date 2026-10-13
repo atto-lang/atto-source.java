@@ -85,7 +85,7 @@ field_decl      = { annotation } visibility
                   | IDENT ":" type_ref [ "=" expression ] )
                   stmt_terminator ;
 type_first_class_field_decl
-                = { annotation } visibility [ "final" ] type_ref IDENT
+                = { annotation } visibility [ "final" ] [ "mut" ] type_ref IDENT
                   ( ":" | "=" ) expression stmt_terminator ;
 (* In class bodies, type-first field declarations canonically use ':' for
    initializers; '=' is accepted for source compatibility. 'final' is contextual
