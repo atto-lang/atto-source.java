@@ -159,6 +159,13 @@ public final class TaggedMessageContracts {
         // Until package-qualified nominal identities are supported, a root
         // enum/pattern may not be shadowed by any declaration whose simple
         // name could be resolved instead by the evaluator or type checker.
+        Set<String> builtinTypeNames = Set.of(
+                "bool", "Bool", "boolean", "int", "uint", "bigint",
+                "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                "float", "f32", "f64", "decimal", "complex", "string", "String",
+                "void", "Option", "Result", "Tuple", "FixedArray", "FixedList",
+                "Array", "List", "Vector", "Slice", "Box", "ActorMail",
+                "ActorRef", "Channel", "Future");
         Set<String> ordinaryNames = new HashSet<>();
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl other : module.declarations()) {
@@ -183,7 +190,8 @@ public final class TaggedMessageContracts {
                 }
                 String name = declaration instanceof Ast.EnumDecl e ? e.name()
                         : ((Ast.PatternDecl) declaration).name();
-                if (!taken.add(name) || ordinaryNames.contains(name)) {
+                if (!taken.add(name) || ordinaryNames.contains(name)
+                        || builtinTypeNames.contains(name)) {
                     throw new IllegalArgumentException(
                             "ambiguous enum/pattern name conflicts with another declaration: " + name);
                 }
