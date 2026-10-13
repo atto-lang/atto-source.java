@@ -815,4 +815,67 @@ final class ActorSendContractTest {
         }
     }
 
+    @Test
+    void mailboxClosureCallbackCanReentrantlyStopWithoutWaitingForOwnDone() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> { });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((java.util.Map<?, ?>) actorsField.get(runtime)).get(actor.id());
+            assertNotNull(cell);
+            var continuationField = cell.getClass().getDeclaredField("continuationMailbox");
+            continuationField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ChannelRuntime.Channel<Object> continuationMailbox =
+                    (ChannelRuntime.Channel<Object>) continuationField.get(cell);
+            OresFuture<Object> pendingRead = continuationMailbox.readAsync();
+            assertFalse(pendingRead.isDone());
+
+            java.util.concurrent.atomic.AtomicReference<Throwable> callbackFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<Throwable> stopFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            CountDownLatch callbackReturned = new CountDownLatch(1);
+            AtomicInteger callbacks = new AtomicInteger();
+            pendingRead.whenCompleteRuntime((value, failure) -> {
+                callbacks.incrementAndGet();
+                try {
+                    // Channel.close settles pending read waiters inline in
+                    // terminateTree(), before DONE can possibly be published.
+                    // Reentrant host stop must only request retirement, not wait.
+                    actor.stop();
+                    assertThrows(IllegalStateException.class,
+                            () -> actor.awaitTermination(1, TimeUnit.MILLISECONDS),
+                            "direct host wait on a retirement callback must fail fast");
+                    assertThrows(IllegalStateException.class, runtime::close,
+                            "runtime close from an actor retirement callback must fail fast");
+                } catch (Throwable unexpected) {
+                    callbackFailure.set(unexpected);
+                } finally {
+                    callbackReturned.countDown();
+                }
+            });
+
+            Thread stopper = new Thread(() -> {
+                try {
+                    actor.stop();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            }, "actor-stop-reentrant-mailbox-close");
+            stopper.start();
+            stopper.join(5_000);
+            assertFalse(stopper.isAlive(),
+                    "reentrant channel-close callback cannot wait for its own DONE");
+            assertTrue(callbackReturned.await(1, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get());
+            assertNull(stopFailure.get());
+            assertEquals(1, callbacks.get());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            actor.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
 }
