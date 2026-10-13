@@ -182,7 +182,7 @@ final class AnyUnknownSoundnessTest {
     void dynamicTupleWritesCannotTargetIncompatibleSlots() {
         reject("""
                 fnc bad(int index): void {
-                  let tuple = (10, "hello");
+                  let mut tuple = (10, "hello");
                   tuple[index] = 77;
                   return;
                 }
@@ -199,10 +199,31 @@ final class AnyUnknownSoundnessTest {
                 """, "return");
         reject("""
                 fnc bad(string field): int {
-                  val obj = struct{foo: 1, bar: "hello"};
+                  val obj = infer struct{foo: 1, bar: "hello"};
                   return obj[field];
                 }
                 """, "return");
+    }
+
+    @Test
+    void unresolvedForeignValuesCannotSmuggleThroughLiteralAggregates() {
+        reject("""
+                fnc bad(): Array<int> {
+                  return [std.not_a_declared_field];
+                }
+                """, "array/list element has an unresolved compiler-internal type");
+        reject("""
+                fnc bad(): void {
+                  val rec = infer struct{foo: std.not_a_declared_field};
+                  return;
+                }
+                """, "struct field 'foo' has an unresolved compiler-internal type");
+        reject("""
+                fnc bad(): void {
+                  val pair = (42, std.not_a_declared_field);
+                  return;
+                }
+                """, "tuple element has an unresolved compiler-internal type");
     }
 
     @Test

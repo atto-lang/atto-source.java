@@ -3436,14 +3436,19 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
-            Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
+            Type element = widenCollectionElement(requireKnownLiteralValue(
+                    typeOf(list.elements().getFirst(), env, generics, self), "array/list element"));
             for (int i = 1; i < list.elements().size(); i++) {
-                element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
+                element = collectionElementJoin(element, widenCollectionElement(requireKnownLiteralValue(
+                        typeOf(list.elements().get(i), env, generics, self), "array/list element")));
             }
             return new ListType(element);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            return new Tuple(tuple.elements().stream()
+                    .map(item -> requireKnownLiteralValue(
+                            typeOf(item, env, generics, self), "tuple element"))
+                    .toList());
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.explicitStruct()) {
@@ -3496,7 +3501,9 @@ public final class TypeChecker {
 
             Map<String, Type> members = new LinkedHashMap<>();
             for (Ast.ObjectField field : object.fields()) {
-                Type exactValueType = typeOf(field.value(), env, generics, self);
+                Type exactValueType = requireKnownLiteralValue(
+                        typeOf(field.value(), env, generics, self),
+                        "struct field '" + field.name() + "'");
                 if (members.putIfAbsent(
                         field.name(),
                         object.inferredStruct()
@@ -5592,6 +5599,22 @@ public final class TypeChecker {
             return -index;
         }
         return null;
+    }
+
+    /**
+     * A source expression with the legacy compiler inference sentinel has no
+     * established value type. Empty list/None/Ok/Err have recognized contextual
+     * inference paths; an *actual element or field* cannot hide this sentinel
+     * inside a record, tuple or nonempty array and subsequently impersonate a
+     * concrete generic argument through permissive nested assignability.
+     */
+    private Type requireKnownLiteralValue(Type type, String where) {
+        if (type == Unknown.INSTANCE) {
+            throw new IllegalArgumentException(
+                    where + " has an unresolved compiler-internal type; "
+                            + "declare a type or use an explicit validated conversion");
+        }
+        return type;
     }
 
     private Type widenCollectionElement(Type type) {

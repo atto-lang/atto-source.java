@@ -87,6 +87,17 @@ capability; otherwise they fail at compile time. A constant tuple index checks
 bounds and uses the exact slot type. Dynamic indexing into an empty closed
 tuple/record is rejected.
 
+## Source-level aggregate inference hygiene
+
+A nonempty array, tuple or inferred record cannot embed a bare compiler
+`Unknown.INSTANCE` value as a field/element. Previously, an opaque foreign or
+unresolved member could become `Array<UnknownHole>` or
+`Record{foo:UnknownHole}` and then exploit nested legacy assignability to
+impersonate a concrete type. The new check rejects the raw unknown element
+at literal construction. Legitimate *contextual* holes for an **empty**
+array or an `Option`/`Result` constructor remain supported and must be
+replaced with explicit inference constraints in #847.
+
 ## Writable structural fields and inference boundaries
 
 A record whose members are writable may not widen member types covariantly.
