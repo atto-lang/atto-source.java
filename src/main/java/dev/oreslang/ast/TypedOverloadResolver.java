@@ -118,6 +118,46 @@ public final class TypedOverloadResolver {
             }
         }
 
+        /**
+         * Extract a future ABI signature from a concrete, non-generic source
+         * function. Fnc and routine intentionally share Domain.MODULE.
+         */
+        public static Signature ofFunction(
+                String module, Ast.FunctionDecl function,
+                Map<String, String> resolvedEnums) {
+            Objects.requireNonNull(module, "module");
+            Objects.requireNonNull(function, "function");
+            if (module.isBlank() || !function.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "unresolved generic/module function is not an overload discriminator");
+            }
+            return new Signature(Domain.MODULE, module + "." + function.name(),
+                    function.parameters().stream()
+                            .map(p -> TypeKey.fromSource(p.type(), resolvedEnums))
+                            .toList());
+        }
+
+        /**
+         * The static/instance domain is part of method slot identity, but
+         * explicit self is not a source call argument and is not in params.
+         * Class generic parameters require substitution before using this.
+         */
+        public static Signature ofMethod(
+                String qualifiedOwner, Ast.MethodDecl method,
+                Map<String, String> resolvedEnums) {
+            Objects.requireNonNull(qualifiedOwner, "qualifiedOwner");
+            Objects.requireNonNull(method, "method");
+            if (qualifiedOwner.isBlank() || !method.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "unresolved generic method is not an overload discriminator");
+            }
+            return new Signature(method.isStatic() ? Domain.STATIC : Domain.INSTANCE,
+                    qualifiedOwner + "." + method.name(),
+                    method.parameters().stream()
+                            .map(p -> TypeKey.fromSource(p.type(), resolvedEnums))
+                            .toList());
+        }
+
         public int arity() {
             return parameters.size();
         }
