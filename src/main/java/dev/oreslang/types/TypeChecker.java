@@ -2130,7 +2130,12 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
-            if (call.callee() instanceof Ast.MemberExpr member) {
+            // Do not eagerly type-check arbitrary member receivers: enum
+            // constructors (Signal.Data), namespaces and import aliases have
+            // their own dispatch and are not first-class NameExpr values.
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr pipelineHandle
+                    && env.lookup(pipelineHandle.name()) != null) {
                 Type receiverType = deref(typeOf(member.receiver(), env, generics, self));
                 if (receiverType instanceof Named target
                         && Set.of("PipelinePlanner", "PipelineController",
