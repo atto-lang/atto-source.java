@@ -180,11 +180,11 @@ public final class CriticalGate {
             if (!admitted.isDone()) {
                 admitted.failFromRuntime(new CancellationException("critical ticket released"));
             }
-            if (wake != null) {
-                wake.admitted.completeFromRuntime(null);
+            for (Ticket candidate : wake) {
+                if (candidate.isHeld()) candidate.admitted.completeFromRuntime(null);
                 java.util.concurrent.CountDownLatch signal;
                 synchronized (COORDINATOR) {
-                    signal = wake.synchronousWaiter;
+                    signal = candidate.synchronousWaiter;
                 }
                 if (signal != null) signal.countDown();
             }
