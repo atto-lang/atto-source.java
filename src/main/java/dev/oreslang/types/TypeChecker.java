@@ -7872,8 +7872,20 @@ public final class TypeChecker {
         if (actual instanceof SelfType receiver) {
             return requiresNominalProjection(receiver.bound(), expected);
         }
+        // Every possible source variant must independently have a safe
+        // admission route. A nominal object cannot be hidden in a union
+        // containing a structurally compatible but owned-record-only arm.
         if (actual instanceof Union union) {
             return union.options().stream().anyMatch(option -> requiresNominalProjection(option, expected));
+        }
+        if (expected instanceof Union target) {
+            // A union with an explicit, compatible *nominal* arm is safe:
+            // do not reject Candidate -> Candidate | record{foo: int}.
+            boolean nonProjectingArm = target.options().stream()
+                    .anyMatch(option -> !requiresNominalProjection(actual, option)
+                            && assignable(actual, option));
+            return !nonProjectingArm && target.options().stream()
+                    .anyMatch(option -> requiresNominalProjection(actual, option));
         }
         return expected instanceof Record && actual instanceof Named;
     }
