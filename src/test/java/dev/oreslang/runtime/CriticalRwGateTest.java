@@ -9,6 +9,190 @@ import org.junit.jupiter.api.Test;
 
 final class CriticalRwGateTest {
     @Test
+    void coreDomainCloseRetainsActorWriterThroughPhysicalTurnExit() throws Exception {
+        CriticalGate core = new CriticalGate();
+        CriticalRwGate gate = core.rwGate();
+        CountDownLatch admitted = new CountDownLatch(1);
+        CountDownLatch releaseTurn = new CountDownLatch(1);
+        AtomicReference<Throwable> actorFailure = new AtomicReference<>();
+        AtomicReference<CriticalRwGate.Ticket> grant = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            try {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        var writer = gate.newCriticalTicket();
+                        grant.set(writer);
+                        assertTrue(writer.enterAsync().isDone());
+                        admitted.countDown();
+                        assertTrue(releaseTurn.await(5, TimeUnit.SECONDS));
+                        assertTrue(writer.isHeld(),
+                                "domain close must not revoke a running writer");
+                    } catch (Throwable failure) {
+                        actorFailure.compareAndSet(null, failure);
+                    } finally {
+                        admitted.countDown();
+                    }
+                });
+                actor.send("hold");
+                assertTrue(admitted.await(5, TimeUnit.SECONDS));
+                assertNull(actorFailure.get());
+                assertTrue(gate.hasWriter());
+
+                var queued = gate.newTicket(CriticalRwGate.Mode.READ);
+                OresFuture<Void> waiting = queued.enterAsync();
+                assertFalse(waiting.isDone());
+                core.closeAll();
+                assertTrue(gate.hasWriter(),
+                        "core close cannot revoke active actor grant");
+                assertTrue(grant.get().isHeld());
+                assertTrue(waiting.isDone(),
+                        "queued admission must be cancelled immediately");
+                assertFalse(queued.isHeld());
+                assertEquals(0, gate.queuedCount());
+                assertEquals(1, gate.trackedTicketCount(),
+                        "only deferred actor grant may remain tracked");
+                assertEquals(1, runtime.trackedActorResourceCount(actor));
+                assertThrows(IllegalStateException.class, core::newTicket);
+                assertThrows(IllegalStateException.class, gate::newCriticalTicket);
+
+                releaseTurn.countDown();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (grant.get().isHeld() && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+                assertFalse(grant.get().isHeld(),
+                        "deferred critical grant must close after carrier exit");
+                assertFalse(gate.hasWriter());
+                assertEquals(0, gate.trackedTicketCount());
+                assertEquals(0, runtime.trackedActorResourceCount(actor));
+                runtime.stop(actor);
+                assertNull(actorFailure.get());
+            } finally {
+                releaseTurn.countDown();
+            }
+        }
+    }
+
+    @Test
+    void facadeDomainCloseCannotBypassActorReaderQuiescence() throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        CountDownLatch admitted = new CountDownLatch(1);
+        CountDownLatch releaseTurn = new CountDownLatch(1);
+        AtomicReference<Throwable> actorFailure = new AtomicReference<>();
+        AtomicReference<CriticalRwGate.Ticket> grant = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            try {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    try {
+                        var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+                        grant.set(reader);
+                        assertTrue(reader.enterAsync().isDone());
+                        admitted.countDown();
+                        assertTrue(releaseTurn.await(5, TimeUnit.SECONDS));
+                        assertTrue(reader.isHeld(),
+                                "facade close may not force early grant release");
+                    } catch (Throwable failure) {
+                        actorFailure.compareAndSet(null, failure);
+                    } finally {
+                        admitted.countDown();
+                    }
+                });
+                actor.send("hold");
+                assertTrue(admitted.await(5, TimeUnit.SECONDS));
+                var writer = gate.newCriticalTicket();
+                OresFuture<Void> pending = writer.enterAsync();
+                assertFalse(pending.isDone());
+                gate.close();
+                assertEquals(1, gate.activeReaderCount());
+                assertTrue(grant.get().isHeld());
+                assertTrue(pending.isDone());
+                assertFalse(writer.isHeld());
+                assertEquals(0, gate.queuedCount());
+                assertEquals(1, gate.trackedTicketCount());
+
+                releaseTurn.countDown();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (grant.get().isHeld() && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+                assertFalse(grant.get().isHeld());
+                assertEquals(0, gate.activeReaderCount());
+                assertEquals(0, gate.trackedTicketCount());
+                runtime.stop(actor);
+                assertNull(actorFailure.get());
+            } finally {
+                releaseTurn.countDown();
+            }
+        }
+    }
+
+    @Test
+    void concurrentCoreCloseStopAndQueuedCancellationPreserveQuiescence()
+            throws Exception {
+        for (int run = 0; run < 20; run++) {
+            CriticalGate gate = new CriticalGate();
+            CountDownLatch admitted = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicReference<CriticalGate.Ticket> grant = new AtomicReference<>();
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                Thread stop = null;
+                Thread close = null;
+                try {
+                    var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                        try {
+                            var writer = gate.newTicket();
+                            grant.set(writer);
+                            assertTrue(writer.enterAsync().isDone());
+                            admitted.countDown();
+                            assertTrue(release.await(5, TimeUnit.SECONDS));
+                            assertTrue(writer.isHeld(),
+                                    "STOP/domain-close cannot release active guest grant");
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            admitted.countDown();
+                        }
+                    });
+                    actor.send("hold");
+                    assertTrue(admitted.await(5, TimeUnit.SECONDS));
+                    var waiting = gate.newTicket(CriticalGate.Mode.READ);
+                    OresFuture<Void> future = waiting.enterAsync();
+                    assertFalse(future.isDone());
+                    CountDownLatch start = new CountDownLatch(1);
+                    stop = Thread.ofVirtual().start(() -> {
+                        try { start.await(); runtime.stop(actor); }
+                        catch (Throwable problem) { failure.compareAndSet(null, problem); }
+                    });
+                    close = Thread.ofVirtual().start(() -> {
+                        try { start.await(); gate.closeAll(); }
+                        catch (Throwable problem) { failure.compareAndSet(null, problem); }
+                    });
+                    start.countDown();
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while ((!future.isDone() || runtime.isAlive(actor))
+                            && System.nanoTime() < deadline) {
+                        Thread.onSpinWait();
+                    }
+                    assertTrue(future.isDone(), "queued admission was not retracted");
+                    assertFalse(runtime.isAlive(actor), "STOP admission was delayed");
+                    assertTrue(grant.get().isHeld(),
+                            "parallel STOP/close may not release active writer");
+                    assertEquals(0, gate.queuedCount());
+                } finally {
+                    release.countDown();
+                    if (stop != null) stop.join(5_000);
+                    if (close != null) close.join(5_000);
+                }
+                assertNull(failure.get());
+                assertFalse(gate.hasWriter());
+                assertEquals(0, gate.queuedCount());
+                assertEquals(0, CriticalGate.waitingLogicalDomains());
+            }
+        }
+    }
+
+    @Test
     void deniedNestedAdmissionsDoNotAccumulateTicketsOrRevokeLiveGrant() {
         CriticalRwGate gate = new CriticalRwGate();
         try (OresScheduler scheduler = new OresScheduler(1)) {
