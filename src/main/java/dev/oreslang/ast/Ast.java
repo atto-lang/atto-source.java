@@ -25,11 +25,15 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
+    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations, Visibility visibility) {
         public ModuleDecl {
             annotations = List.copyOf(annotations);
             contracts = List.copyOf(contracts);
             declarations = List.copyOf(declarations);
+            if (visibility == null) throw new IllegalArgumentException("module visibility cannot be null");
+        }
+        public ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
+            this(name, annotations, contracts, declarations, Visibility.PRIVATE);
         }
         public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), List.of(), declarations); }
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
