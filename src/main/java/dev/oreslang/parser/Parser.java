@@ -1376,6 +1376,16 @@ public final class Parser {
             return Ast.TypeRef.tupleType(elements);
         }
 
+        // Type-position struct{...} and contextual record{...} are equivalent
+        // read-only structural *views*, not constructors or nominal values.
+        // The legacy bare {...} type keeps its existing writable capability.
+        // Only recognize "record" here when followed by '{', so ordinary
+        // functions/members named record remain valid identifiers.
+        boolean readonlyShape = false;
+        if ((check(STRUCT) || isContextualIdentifier("record")) && checkNext(LBRACE)) {
+            advance();
+            readonlyShape = true;
+        }
         if (match(LBRACE)) {
             java.util.LinkedHashMap<String, Ast.TypeRef> members = new java.util.LinkedHashMap<>();
             if (!check(RBRACE)) {
@@ -1389,7 +1399,9 @@ public final class Parser {
                 } while (match(COMMA));
             }
             consume(RBRACE, "expected '}' after record type");
-            return Ast.TypeRef.recordType(members);
+            return readonlyShape
+                    ? Ast.TypeRef.readonlyRecordType(members)
+                    : Ast.TypeRef.recordType(members);
         }
 
         if (match(TYPEOF)) {
