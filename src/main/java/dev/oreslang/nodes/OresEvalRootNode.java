@@ -4421,6 +4421,10 @@ public final class OresEvalRootNode extends RootNode {
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
+                if (receiver instanceof dev.oreslang.runtime.OresGuestMap map) {
+                    map.put(key, value);
+                    return value;
+                }
                 if (receiver instanceof List<?> raw
                         && key instanceof Number number) {
                     @SuppressWarnings("unchecked")
@@ -4435,10 +4439,36 @@ public final class OresEvalRootNode extends RootNode {
                     "unsupported assignment target");
         }
 
+        private dev.oreslang.runtime.OresGuestMap.KeyDomain guestMapKeyDomain(Ast.TypeRef keyType) {
+            if (keyType.isUnion()) {
+                java.util.Set<String> keys = new java.util.HashSet<>();
+                for (Ast.TypeRef t : keyType.arguments()) keys.add(t.name());
+                if (keys.size() == 2 && keys.contains("Symbol")
+                        && (keys.contains("String") || keys.contains("string"))) {
+                    return dev.oreslang.runtime.OresGuestMap.KeyDomain.STRING_OR_SYMBOL;
+                }
+            }
+            if (keyType.name().equals("Symbol")) {
+                return dev.oreslang.runtime.OresGuestMap.KeyDomain.SYMBOL;
+            }
+            if (keyType.name().equals("String") || keyType.name().equals("string")) {
+                return dev.oreslang.runtime.OresGuestMap.KeyDomain.STRING;
+            }
+            throw new IllegalArgumentException(
+                    "Map<K,V> currently supports String, Symbol, or String | Symbol keys");
+        }
+
         private Object instantiateEvaluated(
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("Map") && findClass("Map") == null) {
+                if (!args.isEmpty() || created.type().arguments().size() != 2) {
+                    throw new IllegalArgumentException("Map<K,V> requires two types and zero constructor arguments");
+                }
+                return new dev.oreslang.runtime.OresGuestMap(
+                        guestMapKeyDomain(created.type().arguments().get(0)));
+            }
             if (created.type().name().equals("Array")
                     || created.type().name().equals("List")) {
                 if (!args.isEmpty()) {
@@ -6071,6 +6101,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
+                    if (receiver instanceof dev.oreslang.runtime.OresGuestMap map) {
+                        map.put(index, value);
+                        return value;
+                    }
                     if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
                     int i = Math.toIntExact(number.longValue());
                     if (receiver instanceof List<?> raw) {
@@ -6250,6 +6284,13 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("Map") && findClass("Map") == null) {
+                    if (!created.arguments().isEmpty() || created.type().arguments().size() != 2) {
+                        throw new IllegalArgumentException("Map<K,V> requires two types and zero constructor arguments");
+                    }
+                    return new dev.oreslang.runtime.OresGuestMap(
+                            guestMapKeyDomain(created.type().arguments().get(0)));
+                }
                 if (created.type().name().equals("Array")
                         || created.type().name().equals("List")) {
                     if (!created.arguments().isEmpty()) {
