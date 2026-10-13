@@ -44,7 +44,25 @@ public final class OresCompiler {
      * compilation that hides invalid source.
      */
     public static TreeShaker.Result compileForBuild(String source, BuildOptions options) {
-        return TreeShaker.shake(parseAndTypeCheck(source), options);
+        Ast.Program checked = parseAndTypeCheck(source);
+        // TreeShaker currently clones/reconstructs expressions. That invalidates
+        // identity-keyed compile-time call bindings. Until it emits a rebased
+        // checked binding plan, do NOT publish an optimized image with enum
+        // same-arity overloads whose targets could no longer be proven.
+        for (Ast.ModuleDecl module : checked.modules()) {
+            java.util.Set<String> slots = new java.util.HashSet<>();
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    String slot = fn.name() + "#" + fn.parameters().size();
+                    if (!slots.add(slot)) {
+                        throw new IllegalArgumentException(
+                                "tree-shaken builds with same-arity nominal enum overloads "
+                                        + "require rebinding callable IDs after AST rewriting");
+                    }
+                }
+            }
+        }
+        return TreeShaker.shake(checked, options);
     }
 
     /**
