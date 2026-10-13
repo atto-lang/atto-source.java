@@ -649,8 +649,8 @@ final class PatternMatchingHardeningTest {
             context.eval(source);
         }
 
-        assertEquals("10\\n20\\n31\\n32\\n33",
-                output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+        assertEquals("10\n20\n31\n32\n33",
+                output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 
     @Test
