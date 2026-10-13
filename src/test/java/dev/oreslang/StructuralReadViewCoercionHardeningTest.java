@@ -73,17 +73,23 @@ final class StructuralReadViewCoercionHardeningTest {
                         return;
                     }
                     """.replace("SHAPE", shape);
+            var parsed = assertDoesNotThrow(() -> Parser.parse(source),
+                    "negative regression must reach type checking, not merely fail to parse: " + shape);
             assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(source)), shape);
+                    () -> TypeChecker.check(parsed), shape);
         }
 
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+        String nested = """
                 fnc read(record{inner: record{foo: float}} v): void { return; }
                 fnc bad(): void {
                     read(infer struct{inner: infer struct{foo: 3, extra: true}});
                     return;
                 }
-                """)));
+                """;
+        var parsedNested = assertDoesNotThrow(() -> Parser.parse(nested),
+                "nested constructor syntax must parse to test the actual coercion rule");
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsedNested));
     }
 
     @Test
@@ -104,7 +110,7 @@ final class StructuralReadViewCoercionHardeningTest {
 
     @Test
     void sourceStructuralMethodReturnCannotBeNumericallyPromoted() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+        String source = """
                 define interface Wants
                     fnc read() => float;
                 end
@@ -115,7 +121,11 @@ final class StructuralReadViewCoercionHardeningTest {
                     return candidate.read();
                 }
                 fnc bad(): float { return use(new Candidate()); }
-                """)));
+                """;
+        var parsed = assertDoesNotThrow(() -> Parser.parse(source),
+                "method ABI regression must be syntactically valid");
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
     }
 
     @Test
