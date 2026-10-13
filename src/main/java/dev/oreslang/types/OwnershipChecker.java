@@ -185,6 +185,12 @@ public final class OwnershipChecker {
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
+        // The alias-only pass cannot guard inline parameter/return syntax.
+        // Check every callable boundary before ownership-place analysis.
+        for (Ast.Param param : fn.parameters()) {
+            validateIntersectionFields(param.type(), false, new HashSet<>());
+        }
+        validateIntersectionFields(fn.returnType(), false, new HashSet<>());
         Scope scope = new Scope(null, fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
@@ -205,6 +211,9 @@ public final class OwnershipChecker {
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.FieldDecl field : klass.fields()) {
             Ast.TypeRef fieldType = ownershipFieldType(field);
+            if (fieldType != null) {
+                validateIntersectionFields(fieldType, false, new HashSet<>());
+            }
             if (fieldType != null && fieldType.isBorrow()) {
                 throw error("field '" + klass.name() + "." + field.name()
                         + "' cannot store a borrowed reference; class/actor fields must own, copy, share, or proxy their state");
@@ -213,6 +222,9 @@ public final class OwnershipChecker {
 
         if (klass.constructor() != null) {
             Ast.ConstructorDecl constructor = klass.constructor();
+            for (Ast.Param param : constructor.parameters()) {
+                validateIntersectionFields(param.type(), false, new HashSet<>());
+            }
             Scope scope = new Scope(null);
             scope.define("self", new VarState(
                     Ast.TypeRef.borrowed(Ast.TypeRef.simple(klass.name()), true),
@@ -233,6 +245,13 @@ public final class OwnershipChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            validateIntersectionFields(method.returnType(), false, new HashSet<>());
+            if (method.explicitReceiverType() != null) {
+                validateIntersectionFields(method.explicitReceiverType(), false, new HashSet<>());
+            }
+            for (Ast.Param param : method.parameters()) {
+                validateIntersectionFields(param.type(), false, new HashSet<>());
+            }
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
                 if (klass.actorKind() != Ast.ActorKind.NONE) {
@@ -749,6 +768,9 @@ public final class OwnershipChecker {
     }
 
     private void checkBinding(Ast.BindingStmt binding, Scope scope) {
+        if (binding.declaredType() != null) {
+            validateIntersectionFields(binding.declaredType(), false, new HashSet<>());
+        }
         boolean recursiveLambda = binding.initializer() instanceof Ast.LambdaExpr;
         VarState placeholder = null;
         if (recursiveLambda) {
