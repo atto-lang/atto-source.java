@@ -7474,18 +7474,19 @@ public final class TypeChecker {
             return target.options().stream().anyMatch(option -> assignable(actual, option));
         }
 
-        // Function compatibility is contravariant in parameters and covariant
-        // in results. Leaf comparisons come back through this checker so
-        // nominal inheritance/interface relations remain valid inside
-        // structural method signatures.
+        // First-class callable variance is representational and zero-adapter:
+        // nominal inheritance may reuse the same reference representation,
+        // but an int->float scalar conversion cannot be invented by changing
+        // a function-value signature. No structural overload dispatch here.
         if (actual instanceof Function source && expected instanceof Function target) {
             if (source.parameters().size() != target.parameters().size()) return false;
             if (source.async() != target.async()) return false;
             if (!source.mutableParameters().equals(target.mutableParameters())) return false;
             for (int i = 0; i < source.parameters().size(); i++) {
-                if (!assignable(target.parameters().get(i), source.parameters().get(i))) return false;
+                if (!representationallyReadableField(
+                        target.parameters().get(i), source.parameters().get(i))) return false;
             }
-            return assignable(source.result(), target.result());
+            return representationallyReadableField(source.result(), target.result());
         }
 
         if (actual instanceof Record sourceShape && expected instanceof Record targetShape) {
