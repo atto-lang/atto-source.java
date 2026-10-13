@@ -262,6 +262,49 @@ final class AlgebraicDataTypeMatchTest {
     }
 
     @Test
+    void guestRuntimeDispatchAgreesWithFiniteExhaustivenessProof() throws Exception {
+        String sourceText = """
+                define enum Tiny as
+                    Waiting
+                    State: bool
+                end
+                fnc enumCase(Tiny value): int {
+                  match value over
+                    on Tiny.Waiting -> { return 0; }
+                    on Tiny.State(true) -> { return 1; }
+                    on Tiny.State(false) -> { return 2; }
+                  end
+                }
+                fnc optionCase(Option<bool> value): int {
+                  match value over
+                    on Some(true) -> { return 3; }
+                    on Some(false) -> { return 4; }
+                    on None -> { return 5; }
+                  end
+                }
+                pub fnc main(): void {
+                  stdio.println(enumCase(Tiny.Waiting()));
+                  stdio.println(enumCase(Tiny.State(true)));
+                  stdio.println(enumCase(Tiny.State(false)));
+                  stdio.println(optionCase(Some(true)));
+                  stdio.println(optionCase(Some(false)));
+                  stdio.println(optionCase(None));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(sourceText)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, sourceText, "finite-adt-runtime.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("0\\n1\\n2\\n3\\n4\\n5".replace("\\n", "\n"),
+                output.toString(StandardCharsets.UTF_8).strip().replace("\r\n", "\n"));
+    }
+
+    @Test
     void guestRuntimeDistinguishesIdenticalPayloadShapes() throws Exception {
         String sourceText = """
                 define enum Signal as
