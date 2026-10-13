@@ -1953,6 +1953,13 @@ public final class TypeChecker {
                     ? new Named("Option", List.of(narrowed))
                     : narrowed;
         }
+        if (expr instanceof Ast.TrapExpr trapped) {
+            Type inner = typeOf(trapped.expression(), env, generics, self);
+            if (inner instanceof Borrow)
+                throw new IllegalArgumentException(
+                        "trap cannot wrap a borrowed value without a proven Option loan lifetime");
+            return new Named("Option", List.of(inner));
+        }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
             if (unary.operator().equals("&")) {
@@ -6379,6 +6386,8 @@ public final class TypeChecker {
         } else if (expression instanceof Ast.BinaryExpr binary) {
             rejectStaticClassGenericReferences(binary.left(), classGenerics, klass, method);
             rejectStaticClassGenericReferences(binary.right(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.TrapExpr trapped) {
+            rejectStaticClassGenericReferences(trapped.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.UnaryExpr unary) {
             rejectStaticClassGenericReferences(unary.operand(), classGenerics, klass, method);
         } else if (expression instanceof Ast.ConditionalExpr conditional) {

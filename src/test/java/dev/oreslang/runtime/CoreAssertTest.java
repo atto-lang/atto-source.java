@@ -98,6 +98,30 @@ final class CoreAssertTest {
         assertTrue(failure.getMessage().contains("Option::unwrap"), failure::toString);
     }
 
+    @Test void trapExpressionPreservesLinkedCallReachabilityAndExplicitOptionType() throws Exception {
+        assertEquals("truetrue", run("""
+            fnc failure_by_name(): bool {
+                return Assert::equal_throws(2, 3);
+            }
+            pub routine main(): void {
+                const missing: Option<bool> = trap failure_by_name();
+                const present: Option<bool> = trap Assert.equal_throws(3, 3);
+                stdio.stdout.write(missing.is_none());
+                stdio.stdout.write(present.is_some());
+                return;
+            }
+            """));
+    }
+
+    @Test void trapExpressionIsNotAnImplicitBooleanOrBorrowEscape() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+            pub fnc illegal(): bool { return trap 1; }
+            """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+            pub fnc illegal(int x): Option<int> { return trap &x; }
+            """));
+    }
+
     @Test void doubleColonDoesNotConfuseTypeAnnotationsOrTernary() throws Exception {
         assertEquals("true", run("""
             pub routine main(): void {
