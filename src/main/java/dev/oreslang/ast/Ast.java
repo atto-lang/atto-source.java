@@ -147,6 +147,20 @@ public final class Ast {
         }
         public boolean isUnion() { return name.equals("$union$"); }
 
+        /** Intersection constraints are distinct from borrowed references (&T). */
+        public static TypeRef intersection(List<TypeRef> types) {
+            java.util.ArrayList<TypeRef> flattened = new java.util.ArrayList<>();
+            for (TypeRef type : types) {
+                List<TypeRef> elements = type.isIntersection() ? type.arguments() : List.of(type);
+                for (TypeRef element : elements) if (!flattened.contains(element)) flattened.add(element);
+            }
+            if (flattened.isEmpty()) throw new IllegalArgumentException("intersection type requires at least one member");
+            if (flattened.size() == 1) return flattened.getFirst();
+            flattened.sort(java.util.Comparator.comparing(TypeRef::toString));
+            return new TypeRef("$intersection$", List.copyOf(flattened), false);
+        }
+        public boolean isIntersection() { return name.equals("$intersection$"); }
+
         public static TypeRef tupleType(List<TypeRef> elements) {
             return new TypeRef("$tuple$", List.copyOf(elements), false);
         }
