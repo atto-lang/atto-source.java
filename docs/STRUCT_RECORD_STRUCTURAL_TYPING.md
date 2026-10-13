@@ -123,3 +123,21 @@ Run Java/JUnit and both ownership + type-checker passes against
 owned readonly parameters in async and actor functions, actual explicit
 borrows in direct/nested positions, and explicit structural views.
 Validate execution, AOT/hybrid, and native LLVM parity before merging.
+
+### Actor call-site payload check
+
+A declared actor parameter like `record{foo: int}` describes the fields the
+callee may read, not a license to ship an arbitrary structurally matching
+object. When a call supplies a nominal `Candidate` class instance with a
+public `foo` field, that class instance still carries identity and cannot
+be sent by value through an actor mailbox, even if its shape matches.
+
+The actor-call validator therefore checks **the original argument's type**
+as well as the declared parameter's shape, with checked tuple spreads,
+before dispatch. Owned data-only records with extra fields are accepted.
+Other actor send pathways must apply the same runtime-payload rule, and
+the actual actor serializer must enforce the isolation boundary.
+
+This integration branch adds a source-level negative regression for
+`actor fnc ... (record{foo: int})` invoked with `new Candidate()` and a
+positive regression with `infer struct{foo: 3, extra: "kept"}`.
