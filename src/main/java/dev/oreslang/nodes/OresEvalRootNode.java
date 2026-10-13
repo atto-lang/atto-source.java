@@ -133,6 +133,7 @@ public final class OresEvalRootNode extends RootNode {
         /** Exact immutable image published by link(); shared by all source actors. */
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+        private final Map<String, Map<Integer, List<Ast.FunctionDecl>>> nominalFunctionFamilies = new HashMap<>();
         private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> declarationModules =
                 new IdentityHashMap<>();
@@ -304,18 +305,30 @@ public final class OresEvalRootNode extends RootNode {
             } else {
                 ambiguousFunctions.add(fn.name());
                 functions.remove(fn.name());
+                nominalFunctionFamilies.remove(fn.name());
             }
         }
 
         private void indexFunctionSlot(String key, Ast.FunctionDecl fn) {
-            LinkedHashMap<Integer, Ast.FunctionDecl> family =
-                    functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
-            Ast.FunctionDecl previous = family.putIfAbsent(fn.parameters().size(), fn);
-            if (previous != null) {
-                throw new IllegalArgumentException(
-                        "callable '" + key + "' already has arity " + fn.parameters().size()
-                                + "; overload identity is name + arity only");
-            }
+            Map<Integer, List<Ast.FunctionDecl>> byArity =
+                    nominalFunctionFamilies.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
+            List<Ast.FunctionDecl> previous =
+                    byArity.getOrDefault(fn.parameters().size(), List.of());
+            List<Ast.FunctionDecl> candidates = new ArrayList<>(previous);
+            candidates.add(fn);
+            dev.oreslang.types.FreeCallableOverloads.requireUnambiguous(
+                    candidates, messageTypes.enums().keySet(), key);
+            byArity.put(fn.parameters().size(), List.copyOf(candidates));
+            functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>())
+                    .putIfAbsent(fn.parameters().size(), fn);
+        }
+
+        private Ast.FunctionDecl selectFunctionForValues(String name, int arity, List<?> args) {
+            Map<Integer, List<Ast.FunctionDecl>> byArity = nominalFunctionFamilies.get(name);
+            List<Ast.FunctionDecl> candidates = byArity == null ? null : byArity.get(arity);
+            if (candidates == null || candidates.isEmpty()) return null;
+            return dev.oreslang.types.FreeCallableOverloads.chooseRuntime(
+                    candidates, args, messageTypes.enums().keySet(), name);
         }
 
         private static <T> void index(Map<String, T> map, Set<String> ambiguous, String module, String name, T value) {
@@ -361,7 +374,9 @@ public final class OresEvalRootNode extends RootNode {
                 LinkedHashMap<Integer, Ast.FunctionDecl> family,
                 String displayName) {
             if (family == null || family.isEmpty()) return null;
-            if (family.size() > 1) {
+            if (family.size() > 1 || (nominalFunctionFamilies.containsKey(displayName)
+                    && nominalFunctionFamilies.get(displayName).values().stream()
+                            .anyMatch(variants -> variants.size() > 1))) {
                 throw new IllegalArgumentException(
                         "overloaded callable '" + displayName
                                 + "' must be called so name + arity can select a slot");
@@ -725,7 +740,9 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export public function '" + name + "'");
             }
-            Object result = callFunction(fn, java.util.Arrays.asList(arguments));
+            Object result = callFunction(
+                    selectFunctionForValues(name, arguments.length, java.util.Arrays.asList(arguments)),
+                    java.util.Arrays.asList(arguments));
             return result instanceof HostObjectFacade host ? host.value() : result;
         }
 
@@ -3914,7 +3931,9 @@ public final class OresEvalRootNode extends RootNode {
                                 }
                                 try {
                                     Invocation invocation =
-                                            functionInvocation(direct, values);
+                                            functionInvocation(
+                                                    selectFunctionForValues(name.name(), values.size(), values),
+                                                    values);
                                     completeSourceInvocation(
                                             t,
                                             invocation,
@@ -5368,7 +5387,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, directName.name());
                     List<Object> args = evaluateArguments(call.arguments(), env);
-                    return functionInvocation(direct, args);
+                    return functionInvocation(
+                            selectFunctionForValues(directName.name(), args.size(), args), args);
                 }
             }
 
@@ -5503,6 +5523,14 @@ public final class OresEvalRootNode extends RootNode {
                             namespace.kind(), methodCall.member(), args);
                 }
 
+                if (receiver instanceof EnumNamespace enumNamespace) {
+                    var enumCase = messageCase(enumNamespace.name() + "." + methodCall.member());
+                    if (enumCase == null) throw new IllegalArgumentException(
+                            "unknown enum case " + enumNamespace.name() + "." + methodCall.member());
+                    return invokableInvocation(
+                            ignored -> constructVariant(enumCase, args.isEmpty() ? null : args.getFirst()),
+                            args);
+                }
                 Object callee = member(receiver, methodCall.member(), env);
                 if (!(callee instanceof Invokable invokable)) {
                     throw new IllegalArgumentException("value is not callable: " + callee);
@@ -6130,6 +6158,8 @@ public final class OresEvalRootNode extends RootNode {
                 var c = messageCase(symbol.name() + "." + name);
                 if (c == null) throw new IllegalArgumentException(
                         "unknown enum case " + symbol.name() + "." + name);
+                // Nullary enum cases are first-class values, not constructor functions.
+                if (c.sourcePayload() == null) return constructVariant(c, null);
                 return (Invokable) args -> {
                     int expected = c.sourcePayload() == null ? 0 : 1;
                     if (args.size() != expected) {
@@ -7129,7 +7159,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareImportedInvocation(Ast.ImportKind kind, String name, List<Object> args) {
-            Ast.FunctionDecl fn = findFunction(name, args.size());
+            Ast.FunctionDecl fn = selectFunctionForValues(name, args.size(), args);
             if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export callable '" + name + "'");
@@ -7388,21 +7418,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
-            Ast.FunctionDecl match = null;
-            for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn
-                        && fn.name().equals(name)
-                        && fn.parameters().size() == args.size()
-                        && fn.visibility() == Ast.Visibility.PUBLIC) {
-                    if (match != null) {
-                        throw new IllegalArgumentException(
-                                "duplicate callable slot '" + module.name() + "." + name
-                                        + "' at arity " + args.size());
-                    }
-                    match = fn;
-                }
+            Ast.FunctionDecl match = selectFunctionForValues(
+                    module.name() + "." + name, args.size(), args);
+            if (match != null && match.visibility() == Ast.Visibility.PUBLIC) {
+                return functionInvocation(match, args);
             }
-            if (match != null) return functionInvocation(match, args);
             throw new IllegalArgumentException("module '" + module.name()
                     + "' does not export callable '" + name + "' at arity " + args.size());
         }
