@@ -142,6 +142,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
+        private final IdentityHashMap<Ast.ClassDecl, String> classModules = new IdentityHashMap<>();
         /**
          * Immutable effective method slots, constructed before the evaluator is
          * published to actor carriers. Dispatch performs one selector lookup
@@ -293,6 +294,7 @@ public final class OresEvalRootNode extends RootNode {
                     if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                     else if (decl instanceof Ast.ClassDecl klass) {
                         index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                        classModules.put(klass, module.name());
                         for (Ast.MethodDecl method : klass.methods()) methodOwners.put(method, klass);
                     } else if (decl instanceof Ast.InterfaceDecl iface) {
                         index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
@@ -369,7 +371,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.TypeRef parentRef : klass.parents()) {
                     if (parentRef.name().equals("Object") || parentRef.name().equals("List"))
                         continue;
-                    Ast.ClassDecl parent = findClass(parentRef.name());
+                    Ast.ClassDecl parent = dispatchParent(klass, parentRef);
                     if (parent == null) continue;
                     for (Map.Entry<CallableSelector, Ast.MethodDecl> inherited :
                             compileCallableSlots(parent, active).entrySet()) {
@@ -396,6 +398,18 @@ public final class OresEvalRootNode extends RootNode {
             } finally {
                 active.remove(klass);
             }
+        }
+
+        private Ast.ClassDecl dispatchParent(Ast.ClassDecl child, Ast.TypeRef parentRef) {
+            // A simple parent name resolves in the lexical class module.
+            // Using findClass(name) alone incorrectly reports ambiguity when
+            // unrelated modules each declare a class named Base.
+            String module = classModules.get(child);
+            if (module != null) {
+                Ast.ClassDecl local = classes.get(module + "." + parentRef.name());
+                if (local != null) return local;
+            }
+            return findClass(parentRef.name());
         }
 
         private boolean hasFunctionFamily(String name) {
