@@ -30,4 +30,10 @@ Do not mark parity completed for token reservation, AST parsing alone, policy
 helpers, or native C++ tests. Actual guest code must be executed on both
 production backends and checked against the same source Git blob.
 
+Escaping `throw`/`raise` remains typed while unwinding ordinary call frames;
+when it reaches an actor or non-actor task/root execution boundary unhandled,
+that boundary emits terminal `Panic(origin=Throw|Raise)` with the original
+cause retained. Direct `panic` is already terminal and actor-local recovery is
+forbidden. See `contracts/EXCEPTION_CONTROL_V1.md`.
+
 Tracks LLVM issue #143 and Java/LLVM existing supervision draft work.
