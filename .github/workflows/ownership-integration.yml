@@ -10,6 +10,7 @@ on:
       - "src/test/java/dev/oreslang/**"
       - "docs/formal/OwnershipCarrierHandoff*"
       - ".github/workflows/ownership-integration.yml"
+      - "scripts/verify-ownership-tlc.sh"
 
 permissions:
   contents: read
@@ -51,3 +52,23 @@ jobs:
             test
       - name: Verify full source suite
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
+
+  formal-ownership-tlc:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'audit/integrated-ownership-effects-20261012'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact TLC source commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Safe model and two counterexample mutations
+        run: bash scripts/verify-ownership-tlc.sh
