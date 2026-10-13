@@ -45,6 +45,37 @@ final class StructuralOwnershipBoundaryIntegrationTest {
     }
 
     @Test
+    void actorSendAcceptsOwnedRecordWithExtraFields() {
+        String source = """
+                actor fnc dispatch(record{foo: int} value): void { return; }
+                fnc safe(): void {
+                    dispatch(infer struct{foo: 3, extra: "kept"});
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void structuralMatchCannotSendANominalClassThroughActorMailbox() {
+        String source = """
+                define class Candidate as
+                    pub val int foo = 3;
+                end
+                actor fnc dispatch(record{foo: int} value): void { return; }
+                fnc unsafe(): void {
+                    dispatch(new Candidate());
+                    return;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(error.getMessage().contains("class instance")
+                || error.getMessage().contains("actor")
+                || error.getMessage().contains("transport"), error.getMessage());
+    }
+
+    @Test
     void borrowingHiddenInsideOwnedShapeIsNotSendable() {
         String source = """
                 async fnc bad(record{foo: &int} v): void { return; }
