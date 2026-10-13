@@ -745,12 +745,14 @@ public final class TreeShaker {
                             arm.bindingKind(),
                             arm.bindingName(),
                             rewriteStatements(arm.body(), module, armLocals),
-                            arm.mutableReferent()));
+                            arm.mutableReferent(),
+                            arm.bindingType()));
                 }
                 return List.of(new Ast.SelectStmt(
                         selected.mode(),
                         selected.policy(),
-                        arms));
+                        arms,
+                        selected.explicitDo()));
             }
             if (statement instanceof Ast.TryStmt tried) {
                 LinkedHashMap<String, Object> catchLocals = new LinkedHashMap<>(locals);
