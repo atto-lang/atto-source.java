@@ -249,7 +249,11 @@ final class CriticalRwGateTest {
             // cancel(false) is then deferred until the carrier unwinds.
             task.cancel(false);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-            while (!task.isDone() && System.nanoTime() < deadline) Thread.yield();
+            while ((!task.isCancelled() || gate.queuedCount() != 0)
+                    && System.nanoTime() < deadline) Thread.yield();
+            // OresFuture publishes terminal state before invoking its runtime
+            // completion waiters. Permit revocation must be observed itself,
+            // even after task.isCancelled() becomes true.
             assertTrue(task.isCancelled(),
                     "scheduler cancellation must eventually publish after carrier unwind");
             assertEquals(0, gate.queuedCount(),
