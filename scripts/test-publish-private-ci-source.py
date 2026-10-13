@@ -129,6 +129,63 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_parent_directory_swap_to_symlink_fails_before_upload(self):
+        nested = self.source / "nested"
+        nested.mkdir()
+        (nested / "inside.ores").write_text("safe")
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "private.ores").write_text("do not export")
+        original_open = pub.os.open
+        swapped = [False]
+        def swap_parent(name, flags, *args, **kwargs):
+            if name == "nested" and kwargs.get("dir_fd") is not None and not swapped[0]:
+                swapped[0] = True
+                nested.rename(self.source / "nested-original")
+                nested.symlink_to(outside, target_is_directory=True)
+            return original_open(name, flags, *args, **kwargs)
+        with patch.object(pub.os, "open", side_effect=swap_parent):
+            with self.assertRaises(pub.Denied):
+                self.publish()
+        self.assertTrue(swapped[0])
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_file_swap_to_symlink_fails_before_upload(self):
+        sensitive = self.root / "outside-secret"
+        sensitive.write_text("secret")
+        in_source = self.source / "hello.ores"
+        original_open = pub.os.open
+        swapped = [False]
+        def swap_file(name, flags, *args, **kwargs):
+            if name == "hello.ores" and kwargs.get("dir_fd") is not None and not swapped[0]:
+                swapped[0] = True
+                in_source.unlink()
+                in_source.symlink_to(sensitive)
+            return original_open(name, flags, *args, **kwargs)
+        with patch.object(pub.os, "open", side_effect=swap_file):
+            with self.assertRaises(pub.Denied):
+                self.publish()
+        self.assertTrue(swapped[0])
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_hardlink_to_outside_file_fails_before_upload(self):
+        sensitive = self.root / "outside-secret"
+        sensitive.write_text("secret")
+        (self.source / "hardlink.ores").hardlink_to(sensitive)
+        with self.assertRaisesRegex(pub.Denied, "hardlinked"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_nonregular_source_fifo_fails_before_upload(self):
+        import os
+        import stat
+        fifo = self.source / "suspicious-fifo"
+        os.mkfifo(fifo)
+        self.assertTrue(stat.S_ISFIFO(fifo.stat().st_mode))
+        with self.assertRaises(pub.Denied):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
     def test_invalid_api_sha_rejects_without_commit(self):
         original = self.fake_api
         def bad(route, method="GET", payload=None):
