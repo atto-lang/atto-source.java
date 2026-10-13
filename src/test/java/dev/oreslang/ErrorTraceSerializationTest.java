@@ -41,7 +41,7 @@ final class ErrorTraceSerializationTest {
                         "secret", List.of("main"), false));
         assertEquals(
                 "{\"schema\":1,\"code\":9007,\"name\":\"ActorAskTimeoutError\","
-                        + "\"message\":\"test\\n\\\"escaped\\\"\",\"stack\":[\"main\"]}",
+                        + "\"message\":\"test\\n\"escaped\"\",\"stack\":[\"main\"]}",
                 GuestErrorWireCodec.json("ActorAskTimeoutError", 9007,
                         "test\n\"escaped\"", List.of("main"), true));
         assertEquals("Error (0)", GuestErrorWireCodec.text("Error", 0, "", List.of()));
@@ -137,7 +137,7 @@ final class ErrorTraceSerializationTest {
 
         GuestErrorWireCodec.ErrorSnapshot transfer =
                 GuestErrorWireCodec.supervisorCompactSnapshot("ActorAskTimeoutError", 9007, fields);
-        assertEquals("{\\\"schema\\\":1,\\\"code\\\":9007,\\\"name\\\":\\\"ActorAskTimeoutError\\\"}",
+        assertEquals("{\"schema\":1,\"code\":9007,\"name\":\"ActorAskTimeoutError\"}",
                 transfer.toJson());
         assertEquals(0x83L, transfer.toMessagePack().getFirst());
         assertEquals(List.of(8L, 1L, 16L, 175L, 70L),
@@ -164,8 +164,8 @@ final class ErrorTraceSerializationTest {
         fields.put("message", "changed");
         assertEquals(List.of("main", "process"), trusted.frames());
         assertEquals("test", trusted.message());
-        assertEquals("{\\\"schema\\\":1,\\\"code\\\":0,\\\"name\\\":\\\"Error\\\","
-                + "\\\"message\\\":\\\"test\\\",\\\"stack\\\":[\\\"main\\\",\\\"process\\\"]}",
+        assertEquals("{\"schema\":1,\"code\":0,\"name\":\"Error\","
+                + "\"message\":\"test\",\"stack\":[\"main\",\"process\"]}",
                 trusted.toJson());
 
         fields.put("stack", List.of((Runnable) () -> {
