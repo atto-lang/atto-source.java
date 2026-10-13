@@ -32,6 +32,11 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class ChannelRuntime {
     private ChannelRuntime() { }
 
+    /** A finite default prevents an idle producer from retaining unbounded select waiters. */
+    public static final int DEFAULT_MAX_PENDING_REGISTRATIONS = 4096;
+    /** Bound dynamic select fan-in before allocating waiter registrations. */
+    public static final int MAX_SELECT_CASES = 256;
+
     private static final ReentrantLock COORDINATOR = new ReentrantLock(true);
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
     private static long nextTicket;
@@ -64,6 +69,13 @@ public final class ChannelRuntime {
         }
     }
 
+    /** Admission exhaustion is distinct from closure; no waiter is retained. */
+    public static final class ChannelBackpressureException extends IllegalStateException {
+        public ChannelBackpressureException(String message) {
+            super(message);
+        }
+    }
+
     public static final class ChannelClosedException extends IllegalStateException {
         public ChannelClosedException(String message) {
             super(message);
@@ -78,21 +90,49 @@ public final class ChannelRuntime {
      */
     public static final class Channel<T> implements AutoCloseable {
         private final int capacity;
+        private final int maxPendingRegistrations;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
         private boolean closed;
         private Throwable closeCause;
 
         public Channel(int capacity) {
+            this(capacity, DEFAULT_MAX_PENDING_REGISTRATIONS);
+        }
+
+        /**
+         * Pending operation quota counts registered select arms, not only
+         * buffered values. A multi-arm select counts once per referenced arm;
+         * it is admitted atomically across every participating channel.
+         */
+        public Channel(int capacity, int maxPendingRegistrations) {
             if (capacity < 0) {
                 throw new IllegalArgumentException(
                         "channel capacity cannot be negative");
             }
+            if (maxPendingRegistrations < 1) {
+                throw new IllegalArgumentException(
+                        "max pending channel registrations must be positive");
+            }
             this.capacity = capacity;
+            this.maxPendingRegistrations = maxPendingRegistrations;
         }
 
         public int capacity() {
             return capacity;
+        }
+
+        public int maxPendingRegistrations() {
+            return maxPendingRegistrations;
+        }
+
+        public int pendingRegistrations() {
+            COORDINATOR.lock();
+            try {
+                return registrations.size();
+            } finally {
+                COORDINATOR.unlock();
+            }
         }
 
         public int size() {
@@ -275,6 +315,10 @@ public final class ChannelRuntime {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
             }
+            if (cases.size() > MAX_SELECT_CASES) {
+                throw new IllegalArgumentException(
+                        "select case count exceeds maximum " + MAX_SELECT_CASES);
+            }
             this.cases = List.copyOf(cases);
             this.fairCursor.set(initialFairCursor);
             long defaults = this.cases.stream()
@@ -293,6 +337,10 @@ public final class ChannelRuntime {
         public static SelectSet from(Iterable<? extends SelectCase> cases) {
             ArrayList<SelectCase> copy = new ArrayList<>();
             for (SelectCase selectCase : cases) {
+                if (copy.size() == MAX_SELECT_CASES) {
+                    throw new IllegalArgumentException(
+                            "select case count exceeds maximum " + MAX_SELECT_CASES);
+                }
                 copy.add(Objects.requireNonNull(selectCase));
             }
             return new SelectSet(copy);
@@ -512,6 +560,9 @@ public final class ChannelRuntime {
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
+                // Even when the retained-waiter quota is full, a ready
+                // rendezvous or immediate probe must be able to make progress.
+                // A transient registration is held only while under the lock.
                 registerLocked(this);
                 pumpLocked(completions);
 
@@ -523,6 +574,15 @@ public final class ChannelRuntime {
                                     SelectOperation.DEFAULT,
                                     null),
                             completions);
+                }
+
+                if (!decided && !immediateOnly
+                        && exceedsPendingBudgetLocked(this)) {
+                    decided = true;
+                    unregisterLocked(this);
+                    completions.add(() -> future.failFromRuntime(
+                            new ChannelBackpressureException(
+                                    "channel pending registration budget exhausted")));
                 }
 
                 if (!decided && immediateOnly) {
@@ -549,8 +609,20 @@ public final class ChannelRuntime {
         }
     }
 
+    private static boolean exceedsPendingBudgetLocked(
+            SelectRegistration selection) {
+        for (CaseRegistration registration : selection.registrations) {
+            Channel<?> channel = registration.channel();
+            if (channel.registrations.size() > channel.maxPendingRegistrations) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static void registerLocked(SelectRegistration selection) {
         if (selection.decided || selection.registered) return;
+
         selection.registered = true;
         ACTIVE.add(selection);
 

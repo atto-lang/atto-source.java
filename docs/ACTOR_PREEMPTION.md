@@ -89,15 +89,20 @@ a handoff must never reset a logical task's quota.
 
 ## Automatic loop cooperation in heap-owned source tasks
 
-The source interpreter now lowers `for`, `for-of`, destructuring `for-of`,
-and `loop` back-edges **inside an existing `SourceTask`** into an iterative
-callback trampoline. No `await` or explicit `rt cooperate` is needed in such
-a loop. Every 32 back-edges, a trusted source task polls cancellation and runtime
-state; an UNTRUSTED task charges fuel at **every** back-edge.
-It cooperates after a nominal 2 ms soft quantum or at most 512 back-edges,
-whichever is reached first at a poll. The continuation preserves loop indices,
-iterator cursors, locals, and pending callbacks. A new physical dispatch can
-start only after the previous guest turn fully unwinds.
+The source interpreter now lowers `while`, `for`, `for-of`,
+destructuring `for-of`, and `loop` back-edges **inside an existing
+`SourceTask`** into an iterative callback trampoline. No `await` or explicit
+`rt cooperate` is needed in such a loop. Each heap-owned task keeps its own
+64-bit saturating reduction counter and a dispatch-local monotonic clock.
+A trusted source task checks the watchdog, runtime cancellation and its 2 ms
+soft quantum every **64** back-edges until reaching the **512**-backedge
+reduction cap. Thereafter, it checks at **every** subsequent committed
+back-edge so release of a live no-yield guard cannot be followed by another
+64-iteration scheduling delay. An UNTRUSTED task charges fuel at **every**
+back-edge and still cannot automatically cooperate until logical quota
+continuity is proven. The continuation preserves loop indices, iterator
+cursors, locals, and pending callbacks. A new physical dispatch can start
+only after the previous guest turn fully unwinds.
 
 This is a **soft** scheduling quantum, not a 2 ms deadline guarantee. Long
 single iteration bodies, synchronous helper calls, host/FFI calls, JIT pauses,
@@ -141,6 +146,186 @@ priority/reservation admission, interrupt/native execution boundaries, a
 suitable OS, and WCET plus end-to-end latency proof. Non-cooperating trusted
 code cannot be safely suspended by `Thread.yield()`, Java interruption, or
 a timer; forceful revocation requires a dedicated isolated execution boundary.
+
+## Independent 4 ms turn watchdog
+
+`ActorTurnWatchdog` is a daemon monitor separate from ordinary actor and
+scheduler carriers. Its 2 ms polling cadence detects a physical dispatch turn
+whose monotonic wall time has reached **4 ms** without releasing the carrier.
+The threshold is an observation policy, **not a hard timing guarantee**:
+OS scheduling, GC, JIT and host execution may delay the monitor itself.
+
+For each dispatch, the runtime registers an identity-unique lease and retires
+it when the carrier exits. The monitor synchronizes retirement and inspection
+to avoid reporting a previous actor turn against a reused carrier. Its only
+authority is to set an advisory preemption bit and publish nonblocking
+accounting. It never invokes guest callbacks, interrupts a carrier, performs
+signal-based stack rewrites, or forces a VM suspension.
+
+- `OresScheduler.preemptionRequested()` observes the logical source task's
+  current dispatch; `OresScheduler.watchdogOverruns()` counts flagged turns.
+- `ActorRuntime.watchdogPreemptionRequested()` observes the current actor
+  dispatch. `pollWatchdogNotice()` supplies a bounded host-only notice
+  containing actor id/kind and wall/checkpoint ages; `watchdogOverruns()`
+  counts all detections, including notices dropped by a full notice queue.
+  `watchdogNoticesDropped()` counts bounded-queue drops. These methods and
+  `watchdogObserverFailures()` require host/supervisor authority: ordinary
+  actors and Mailman callbacks cannot drain another actor's diagnostics.
+  When an internal observer fails, the watchdog counts the failure, skips
+  only that observer and continues inspecting peers and future dispatches.
+- `OresContext.watchdogPreemptionRequested()` combines the two sources.
+  The source-loop trampoline honors that advisory bit **only** where it
+  already owns a continuation and no lexical `MutexGuard` is held.
+- Safepoints record checkpoint progress, but checkpoint polling alone **does
+  not** count as releasing the physical carrier.
+
+An idle-carrier heartbeat is optional diagnostic optimization, not a reliable
+watchdog: no carrier is idle when all carriers are trapped in greedy loops.
+The monitor is independent of the guest dispatch pools.
+
+### UNTRUSTED logical source-task quota prototype (issue #402)
+
+`ActorRuntime.startActorTask` now carries a heap-owned
+`UntrustedLogicalQuota` through every cooperative or awaited dispatch of
+an UNTRUSTED task. It inherits remaining physical-turn fuel, original wall
+start and CPU debt on first admission. Nested tasks inherit the currently
+active quota instead of minting another budget. CPU measurements are added
+**per carrier segment**, never subtracted across unrelated thread clocks.
+`schedulerSafepoint` charges the retained logical quota while executing
+one of these tasks, while synchronous actor turns continue their existing
+physical-batch quota checks. Task entry and step completion independently
+check the persistent wall and CPU budgets, even without a loop backedge.
+
+An await cannot restart the deadline; a cooperate cannot refund fuel.
+One live top-level source-task quota cohort is permitted per UNTRUSTED actor.
+Additional top-level task admission fails closed while it is active; nested
+source tasks must share the same actor-bound quota. Each task releases
+exactly one cohort reference only after scheduler-confirmed **carrier
+quiescence**, not merely when its Future settles. Last-quiescent-task
+retirement clears the cohort. Outstanding nested source tasks are
+bounded by the runtime's internal continuation-slot cap (currently 1,024);
+exceeding it rejects admission rather than overflowing the cohort counter.
+In particular `Future.cancel(false)` can
+settle while a guest turn is still physically executing; that does not
+grant permission to free its quota or start a second root task.
+A synchronous actor mailbox turn cannot consume a separate physical-turn
+quota at a safepoint while the cohort is live: it must run inside the
+authorized continuation or wait for quota retirement.
+
+The quota is bound to the owning runtime and actor incarnation. A
+different actor/runtime cannot import it through carrier ThreadLocal state;
+a parallel segment entry is rejected atomically. This deliberately
+restricts parallel untrusted source-task spawning until aggregate
+per-actor/per-isolate accounting can be proven. The budget is bound to
+the source task's scheduled execution and does not remain installed on
+reusable carrier thread-local storage after its resume exits.
+
+Scheduler shutdown and admission are linearized at the open-state check
+and task registration, without holding the admission lock across the
+executor's enqueue operation. A blocked enqueue cannot prevent close from
+cancelling that registered task. Task references are retained through
+terminal Future settlement until the physical guest dispatch is quiescent;
+a stale duplicate dispatch cannot clear the legitimate dispatch's lease.
+
+Close uses a two-phase snapshot: it first revokes every task and detaches all
+suspended wait registrations, then publishes Future cancellation. A synchronous
+completion subscriber blocking on the first cancelled Future must not prevent
+other tasks from losing their runtime authority. Terminal callbacks run only
+after guest task quiescence, and quiescent-task accounting retires before any
+external terminal subscriber executes. Callback-triggered close from the
+scheduler's own physical carrier also must not wait for that same executor
+thread to terminate (even though the logical task binding is already cleared).
+These guarantees are checked by deterministic callback/cancel/close races.
+
+### Independent logical wall deadlines
+
+Each UNTRUSTED source-task descendant inherits the **remaining** cohort wall
+budget. A host-owned daemon timer runs independently of scheduler carriers
+and revokes the task when the deadline expires, even when its awaited Future
+never settles. Expiration detaches the source-task waiter and, if no guest
+carrier is executing, retires its quota slot without another actor turn.
+An active guest turn may have its completion suppressed immediately but
+**must exit its physical carrier before its memory/quota can be released**.
+
+Timed UNTRUSTED source tasks acquire both a **32-per-actor admission**
+and one of **256 process-wide timed-admission reservations** before admission.
+Admission is fail-closed when either limit is full, preventing a single actor
+from monopolizing all process-wide notifier capacity. A rejected task does
+not receive a new quota or enter the scheduler. Actor-local reservations
+are held until **both** physical guest/quota retirement and the winning
+Future's synchronous subscriber notification drain finish. The global
+reservation follows the same dual-retirement fence. Visible cancellation
+or Future settlement alone cannot recycle either reservation while a guest
+carrier or host callback remains active. Cancellation hooks revoke internal
+task authority before notifying even blocked synchronous subscribers;
+late subscribers registered during revocation are queued for the subsequent
+notification pass rather than running early or blocking the hook.
+
+Deadline task revocation runs on dedicated host timer workers; potentially
+blocking actor retirement and synchronous Future notifications run on a
+separate host virtual finalizer, bounded by those reservations. One actor's
+blocked terminal subscriber or lifecycle lock cannot consume a shared timer
+worker. Timer registrations are cancelled on task retirement and
+cancelled/finalized tasks cannot receive a second deadline result.
+A late nested child cannot mint a fresh wall budget.
+
+This is cooperative/structured cancellation, **not** forcible termination of
+unsafepointed FFI, native host calls or hung Java guest threads. An external
+isolate-level revoker is still required for hard wall-time enforcement.
+
+**Not an authorization to enable UNTRUSTED automatic loop cooperation.**
+Other continuation/cancellation/cleanup paths, nested source scopes, early
+termination and isolate-level hard revocation still need full cross-backend
+conformance and whole-repository runtime stress. This incremental accounting
+fix is not a hard CPU or wall-time enforcement guarantee when host FFI
+blocks without safepoints. CPU samples may be unavailable on a JVM, so
+fuel/wall fallback and host sandbox limits remain mandatory.
+
+**Current limits:** A synchronous Java/FFI call or non-continuation-backed
+method cannot be transparently preempted. UNTRUSTED source-loop cooperation
+remains disabled until fuel, CPU, and wall budgets are bound to the persistent
+logical task across await/resume and carrier migration. The watchdog reports
+and requests cooperation, but does not itself revoke an untrusted execution
+domain. Supervisors may poll notices and apply an explicit structured or
+isolate-backed cancellation policy; only a proven isolated revoker may force
+termination.
+
+## Bounded scheduler state-space and adversarial admission gates
+
+The Java regression `OresSchedulerStateModelTest` exhaustively enumerates
+reachable states for **two source tasks sharing one actor**, with up to
+**two carrier turns per task**, including producer completion, await/cooperate,
+timeouts, cancellation, scheduler close, notification drain and retirement.
+The model rejects overlapping actor carriers, terminal-state resource reuse
+before quiescence and notification completion, and executing already-retired
+guest state. Negative-model mutations verify that its assertions actually
+detect illegal states.
+
+The live `UntrustedLogicalQuotaTest` actor single-writer regression drives
+six nested source continuations through repeated `cooperate` handoffs,
+interleaves eight ordinary actor messages, and verifies the observed
+maximum number of simultaneously executing guest turns remains one.
+This exercises the actual actor mailbox and source dispatcher (including
+handoff between physical carriers), rather than only the model's guards.
+
+The model is an **independent, bounded reference specification**. Passing
+its exploration does not prove that production CAS operations linearize
+according to those transitions, and does not establish a hard interrupt
+guarantee for a running FFI call. A production actor-instrumented refinement
+proof and JVM/LLVM cross-backend evidence remain separate release gates.
+
+`OresSchedulerQuiescenceTest` additionally exhausts the **256 process-wide
+host deadline admissions across four distinct scheduler instances**. It
+verifies fail-closed overload for each scheduler, shutdown retirement of
+queued and waiting tasks, and detachment of producer Future waiters. This
+is separate from the **32-per-UNTRUSTED-actor** cap and existing blocked
+host callback/cancellation regressions.
+
+Run the bounded checker and runtime-focused regressions together:
+
+```sh
+mvn -Dtest=OresSchedulerStateModelTest,OresSchedulerQuiescenceTest,UntrustedLogicalQuotaTest test
+```
 
 ## Required invariants
 
@@ -195,10 +380,10 @@ single-writer lease is retired.
 
 ## UNTRUSTED continuation quota dependency
 
-The runtime currently meters UNTRUSTED execution per physical actor batch;
-this is not yet a sufficient quota contract for arbitrary `await` and
-resumable source-task handoffs. In particular, fuel, elapsed wall time and
-cross-carrier CPU time must belong to the logical task before automatic
-preemption can be enabled for UNTRUSTED code (issue #402). The language
-currently rejects `rt cooperate` for UNTRUSTED actors, but that guard is
-**not** proof that all resumable `await` paths are quota-continuous.
+UNTRUSTED source tasks now retain logical fuel, wall-time and CPU debt
+across `await` and carrier migration, including an independent deadline
+for never-settling Futures. Physical actor batches remain separately metered.
+This does not imply that force-killing an uncooperative native/Java carrier
+is safe. `rt cooperate` remains rejected for UNTRUSTED actors until all
+source-lowering paths, cancellation races, bounded host-resource admission,
+isolate revocation and cross-backend conformance are verified (issue #402).
