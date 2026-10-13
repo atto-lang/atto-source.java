@@ -4226,11 +4226,8 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (receiver instanceof ImportedNamespace namespace) {
-                rejectUnboundNamedCall(call);
                 return namespace.owner().prepareImportedInvocation(
-                        namespace.kind(),
-                        member.member(),
-                        args);
+                        namespace.kind(), member.member(), args, call);
             }
 
             rejectUnboundNamedCall(call);
@@ -5669,9 +5666,8 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (receiver instanceof ImportedNamespace namespace) {
-                    rejectUnboundNamedCall(call);
                     return namespace.owner().prepareImportedInvocation(
-                            namespace.kind(), methodCall.member(), args);
+                            namespace.kind(), methodCall.member(), args, call);
                 }
 
                 rejectUnboundNamedCall(call);
@@ -5686,12 +5682,12 @@ public final class OresEvalRootNode extends RootNode {
                 ImportedBinding directImport = namedImports.get(importedName.name());
                 if (directImport != null
                         && directImport.declaration().kind() == Ast.ImportKind.FUNCTION) {
-                    rejectUnboundNamedCall(call);
                     List<Object> args = evaluateArguments(call.arguments(), env);
                     return importedTarget(directImport.declaration()).prepareImportedInvocation(
                             Ast.ImportKind.FUNCTION,
                             directImport.sourceName(),
-                            args);
+                            args,
+                            call);
                 }
             }
 
