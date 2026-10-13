@@ -119,34 +119,34 @@ final class NativeOresHttpStdlibTest {
             int port = Integer.parseInt(portText.trim());
             try (java.net.Socket socket = new java.net.Socket("127.0.0.1", port)) {
                 socket.setSoTimeout(5000);
-                socket.getOutputStream().write("GET /shared HTTP/1.1\\r\\nHost: loc".getBytes(StandardCharsets.US_ASCII));
+                socket.getOutputStream().write("GET /shared HTTP/1.1\r\nHost: loc".getBytes(StandardCharsets.US_ASCII));
                 socket.getOutputStream().flush();
-                socket.getOutputStream().write("alhost\\r\\nConnection: close\\r\\n\\r\\n".getBytes(StandardCharsets.US_ASCII));
+                socket.getOutputStream().write("alhost\r\nConnection: close\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
                 String response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
-                assertTrue(response.startsWith("HTTP/1.1 200 OK\\r\\n"), response);
-                assertTrue(response.contains("Content-Length: 3\\r\\n"), response);
-                assertTrue(response.endsWith("ok\\n"), response);
+                assertTrue(response.startsWith("HTTP/1.1 200 OK\r\n"), response);
+                assertTrue(response.contains("Content-Length: 3\r\n"), response);
+                assertTrue(response.endsWith("ok\n"), response);
             }
             try (java.net.Socket socket = new java.net.Socket("127.0.0.1", port)) {
                 socket.setSoTimeout(5000);
                 socket.getOutputStream().write((
-                        "GET /isolated HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n" +
-                        "GET /shared HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n")
+                        "GET /isolated HTTP/1.1\r\nHost: localhost\r\n\r\n" +
+                        "GET /shared HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
                         .getBytes(StandardCharsets.US_ASCII));
                 String response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
                 assertEquals(2, response.split("HTTP/1.1 200 OK", -1).length - 1, response);
                 assertTrue(response.contains("Connection: keep-alive"), response);
-                assertTrue(response.endsWith("ok\\n"), response);
+                assertTrue(response.endsWith("ok\n"), response);
             }
             for (String invalid : java.util.List.of(
-                    "GET /shared HTTP/1.1\\r\\nHost: localhost\\r\\nContent-Length: 0\\r\\n\\r\\n",
-                    "GET /shared HTTP/1.1\\r\\nConnection: close\\r\\n\\r\\n")) {
+                    "GET /shared HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+                    "GET /shared HTTP/1.1\r\nConnection: close\r\n\r\n")) {
                 try (java.net.Socket socket = new java.net.Socket("127.0.0.1", port)) {
                     socket.setSoTimeout(5000);
                     socket.getOutputStream().write(invalid.getBytes(StandardCharsets.US_ASCII));
                     String response = new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
-                    assertTrue(response.startsWith("HTTP/1.1 400 Bad Request\\r\\n"), response);
-                    assertTrue(response.contains("Content-Length: 0\\r\\n"), response);
+                    assertTrue(response.startsWith("HTTP/1.1 400 Bad Request\r\n"), response);
+                    assertTrue(response.contains("Content-Length: 0\r\n"), response);
                 }
             }
             program.get(30, java.util.concurrent.TimeUnit.SECONDS);
