@@ -395,6 +395,12 @@ final class ActorStateBoundaryKeywordTest {
         Ast.ActorStateAccessExpr forged = new Ast.ActorStateAccessExpr(
                 Ast.StateAccessMode.READ, callback);
         assertNotNull(forged);
+        Ast.LambdaExpr forgedStructural = new Ast.LambdaExpr(
+                List.of(new Ast.Param(Ast.TypeRef.inferred(), "s", true, false)),
+                new Ast.LiteralExpr(1L), null);
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.ActorStateAccessExpr(Ast.StateAccessMode.READ, forgedStructural),
+                "structural callback bindings must never mint implicit state capabilities");
         // Both independent compiler security boundaries must reject even
         // when the protected actor has no state{} declaration.
         Ast.Program parsed = Parser.parse("""
