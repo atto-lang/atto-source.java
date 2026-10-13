@@ -251,6 +251,12 @@ final class ImportInertConstantSyntaxTest {
 
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("define pub const int x = 1 / 0;"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        fnc sideEffect(): bool { return true; }
+                        define pub const bool x = false && sideEffect();
+                        """), "short-circuit must not hide a runtime call");
     }
 
     @Test
