@@ -621,6 +621,13 @@ fnc receive(Channel<{x: int, y: string}> messages): void {
 The `let` before `{x,y}` determines binding mutability, not ownership
 of the original message. Selection consumes one payload; field
 projections do not perform another `readch`. `when` is canonical.
+In a **synchronous** `do match` or `do select`, an explicit `return`
+inside a winning arm returns from the enclosing callable. The arrow
+does not create an implicit arm-local function. By contrast,
+`do nb select` arms run later in detached actor continuations:
+their returns remain arm-local and returned values are discarded with
+a `W-SELECT-RETURN` diagnostic. Existing blocking do-select tests were
+updated alongside this clarified control-flow contract.
 Existing `case` and brace-only select bodies remain accepted pending
 formatter normalization. An unprefixed `{fields} ->` is recognized as
 record destructuring, while `{ statements }` without an arrow
