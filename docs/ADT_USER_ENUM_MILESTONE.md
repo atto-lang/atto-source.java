@@ -85,3 +85,32 @@ constructors/fields/generics, forbidden mixed payload shape, empty enums,
 qualified pattern identity, and fail-closed compiler admission. The
 **runtime milestone remains incomplete** until full executable-source tests
 pass; no test has yet validated construction or evaluation of `Expr` values.
+
+## Overloads with enum and primitive parameters
+
+Current implementation selects ordinary `fnc`, `routine`, static `fnc`,
+instance `method` and interface signatures by explicit **arity**, and checks
+argument types after selecting the signature. A second same-name/same-arity
+declaration is rejected, regardless of `int` vs `float` or `Expr` vs
+`Tree<T>`. Runtime and ownership must not accept a signature that the
+compiler cannot dispatch to deterministically.
+
+Target typed overloading is tracked in [Java issue #843](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/843).
+Its selector must preserve callable domain (`fnc`/`routine` shared,
+static vs instance distinct), explicit positional arity, and concrete
+parameter-type identity. Primitive exact matches outrank widening, with
+ties rejected at compile time; return type, declaration order, annotations,
+or implicit effect differences never pick an overload. Nominal enums
+discriminate by **enum declaration type**, never by variant tag or
+payload shape. `Expr.Literal` and `Expr.Add` are variants of the same
+`Expr` type and cannot differentiate overload signatures.
+
+Generic `Option<T>`, `Result<T,E>` and enum instantiations need a
+reification/erasure policy before generic payload distinctions may select
+runtime overloads. Overloading based only on erased generic arguments is
+forbidden until all backends can preserve that information. Override slots,
+module-qualified functions, actor boundary ownership, borrowed arguments,
+function-value extraction, and LLVM ABI names must select the same symbol.
+
+Until this entire contract has executable parity tests, the compiler **must
+continue rejecting** same-name/same-arity overloads by primitive or enum type.
