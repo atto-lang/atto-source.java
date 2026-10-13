@@ -83,12 +83,25 @@ public final class CriticalRwGate implements AutoCloseable {
             return identity;
         }
 
-        public OresFuture<Void> enterAsync() {
+        private void registerOrReclaim(boolean synchronous) {
             try {
-                // Registration is itself a fallible admission step. Reclaim
-                // denied tickets too; otherwise repeated nested/upgrade
-                // attempts accumulate in the facade's tracked ticket set.
-                registerOwner(logicalOwner(false));
+                registerOwner(logicalOwner(synchronous));
+            } catch (RuntimeException | Error failure) {
+                boolean neverRequested;
+                synchronized (this) {
+                    neverRequested = !requested && !closed;
+                }
+                // A denied *new* ticket must not remain tracked. However, a
+                // duplicate enter on a previously admitted ticket must NOT
+                // revoke that original admission.
+                if (neverRequested) close();
+                throw failure;
+            }
+        }
+
+        public OresFuture<Void> enterAsync() {
+            registerOrReclaim(false);
+            try {
                 OresFuture<Void> readiness = underlying.enterAsync();
                 readiness.whenCompleteRuntime((value, failure) -> {
                     if (failure != null) unregisterOwner();
@@ -101,8 +114,8 @@ public final class CriticalRwGate implements AutoCloseable {
         }
 
         public void enterSync() {
+            registerOrReclaim(true);
             try {
-                registerOwner(logicalOwner(true));
                 underlying.enterSync();
             } catch (RuntimeException | Error failure) {
                 close();
