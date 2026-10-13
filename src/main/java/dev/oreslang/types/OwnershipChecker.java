@@ -1245,6 +1245,16 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        // A constructor owns an unpublished, incompletely initialized object.
+        // Calling any instance method on self can transitively read absent
+        // fields, publish the receiver or invoke suspension. No transitive
+        // constructor-safe method effect summaries exist yet, so fail closed.
+        if (initializingClass != null
+                && call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr name
+                && name.name().equals("self")) {
+            throw error("constructor cannot invoke methods on partially initialized self");
+        }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
