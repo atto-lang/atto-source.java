@@ -4425,6 +4425,8 @@ public final class TypeChecker {
             };
             case "HttpHandler" -> switch (name) {
                 case "isolated" -> Primitive.BOOL;
+                case "created", "reused" -> Primitive.INT;
+                case "pooled" -> new Function(List.of(Primitive.INT), new Named("HttpHandler", List.of()));
                 case "dispatch" -> new Function(List.of(new Borrow(exchange, true)), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
             };
@@ -5292,6 +5294,9 @@ public final class TypeChecker {
             return Types.unionOf(union.options().stream()
                     .map(option -> resolveSharedGeneric(option, bindings))
                     .toList());
+        }
+        if (type instanceof Types.Not not) {
+            return Types.notOf(resolveSharedGeneric(not.excluded(), bindings));
         }
         if (type instanceof Function fn) {
             return new Function(
@@ -6781,6 +6786,7 @@ public final class TypeChecker {
         if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList(), tuple.kind());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> substituteGenerics(t, bindings)).toList());
+        if (type instanceof Types.Not not) return Types.notOf(substituteGenerics(not.excluded(), bindings));
         if (type instanceof Named named) return new Named(named.name(), named.arguments().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Function fn) return new Function(
                 fn.parameters().stream().map(t -> substituteGenerics(t, bindings)).toList(),
@@ -6802,6 +6808,7 @@ public final class TypeChecker {
         if (type instanceof ListType list) return containsUnknown(list.element());
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsUnknown);
         if (type instanceof Union union) return union.options().stream().anyMatch(this::containsUnknown);
+        if (type instanceof Types.Not not) return containsUnknown(not.excluded());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsUnknown);
         if (type instanceof Function fn) return fn.parameters().stream().anyMatch(this::containsUnknown)
                 || containsUnknown(fn.result());
@@ -6817,6 +6824,7 @@ public final class TypeChecker {
         if (type instanceof ListType list) return containsGenericNamed(list.element(), names);
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Union union) return union.options().stream().anyMatch(t -> containsGenericNamed(t, names));
+        if (type instanceof Types.Not not) return containsGenericNamed(not.excluded(), names);
         if (type instanceof Named named) return named.arguments().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Function fn) return fn.parameters().stream().anyMatch(t -> containsGenericNamed(t, names))
                 || containsGenericNamed(fn.result(), names);
@@ -7142,6 +7150,8 @@ public final class TypeChecker {
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
+        if (ref.isComplement()) return Types.notOf(resolve(ref.complementedType(), generics, self, allowNullMarker));
+        if (ref.isBoolLiteral()) return new Types.BoolLiteral(ref.boolLiteralValue());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
         if (ref.name().equals("self")) {
@@ -7393,6 +7403,9 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        // A negative constraint requires positive evidence that values are disjoint.
+        // The generic/Unknown and dynamic compatibility paths below are not evidence.
+        if (expected instanceof Types.Not) return Types.isAssignable(actual, expected);
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())
