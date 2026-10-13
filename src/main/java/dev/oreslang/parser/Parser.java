@@ -946,18 +946,13 @@ public final class Parser {
             throw error(peek(), "class field initializer requires ':' or '='");
         }
         Ast.Expr initializer = parseExpression();
-        if (compileTimeOnly && !(initializer instanceof Ast.LiteralExpr)) {
-            // This is a deliberately bounded subset: constant-expression folding
-            // must land before expressions such as 1 + 2 become admissible.
-            // Never erase 'const' on a runtime expression in a formatter.
-            throw error(previous(), "'final const' class field currently requires a literal initializer");
-        }
         consumeExpressionClassFieldTerminator(initializer, "field declaration should end with ';'");
         // Slot reassignment and mutation through its stored referent are
         // separate capabilities. 'final' does NOT silently grant mutable
         // referent access; only an explicit 'mut' modifier requests it.
         Ast.BindingKind kind = isFinal ? Ast.BindingKind.VAL : Ast.BindingKind.LET;
-        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent, isFinal);
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer,
+                mutableReferent, isFinal, compileTimeOnly);
     }
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
