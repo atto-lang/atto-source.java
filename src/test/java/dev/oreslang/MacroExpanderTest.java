@@ -52,6 +52,33 @@ final class MacroExpanderTest {
     }
 
     @Test
+    void macroCallsInsideWhileConditionAndBackedgePreserveBothFeatures() {
+        // Regression for the simultaneous pre-1.0 macro and heap-owned
+        // while-loop integration. Expanded expressions must be parsed before
+        // the shared ForStmt/backedge continuation is type-checked.
+        String source = """
+                macro_rules! increment {
+                  ($value:expr) => { ($value + 1) };
+                }
+                define module app as
+                  pub fnc run(): int {
+                    let int value = 0;
+                    while (value < increment!(2)) do
+                      value = increment!(value);
+                    done
+                    return value;
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source));
+        List<Token> expanded = MacroExpander.expand(new Lexer(source).scan()).tokens();
+        assertTrue(expanded.stream().anyMatch(t -> t.type() == Token.Type.WHILE),
+                "while token must remain a first-class control-flow keyword");
+        assertFalse(expanded.stream().anyMatch(t -> t.lexeme().equals("increment")),
+                "macro invocations must be removed before guest compilation");
+    }
+
+    @Test
     void defaultsToAotWithoutAnAnnotation() {
         String source = AOT.replace("@expand(aot)\n", "");
         assertDoesNotThrow(() -> Parser.parse(source));
