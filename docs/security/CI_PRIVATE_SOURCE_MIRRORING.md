@@ -40,10 +40,14 @@ a tree, a commit, and a **new** `ci/oreslang-*` ref under the fixed
 are never updated.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
-per file, rejects symbolic links and `.git` directories, and does not
-print source contents in API failure output. API failure before ref
-creation can leave unreferenced Git objects in the private destination;
-a follow-up retention policy is still needed.
+per file, requires the source directory to remain **inside the trusted
+checkout**, rejects symbolic links, unsafe source reads and `.git`
+directories, and verifies every uploaded Git blob SHA-1 against the source
+bytes. It checks that the reviewed destination policy has not changed
+before every API write, in addition to rechecking the destination's live
+private visibility. It does not print source contents in API failures.
+API failure before ref creation can leave unreferenced Git objects in
+the private destination; a follow-up retention policy is still needed.
 
 It does **not** intercept arbitrary connector/API tool writes, cannot
 completely prevent visibility changes between API checks, and cannot
