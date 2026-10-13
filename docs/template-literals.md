@@ -30,3 +30,8 @@ remove embedded newlines before writing; use one println per complete record.
 This initial language feature does not promise a single allocation, implicit
 stringification, or a specialized StringBuilder; it lowers to ordinary String
 concatenation and retains the current optimizer's behavior.
+
+Nested templates have a scanner limit of 64 active template frames. Deeper input
+rejects with a template-nesting diagnostic before recursing further. The counter
+is released on both success and failure; ordinary sequential templates do not
+consume each other's nesting budget.

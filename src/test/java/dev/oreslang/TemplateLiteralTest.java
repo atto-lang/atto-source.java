@@ -55,6 +55,23 @@ final class TemplateLiteralTest {
                 tokens.get(1).lexeme());
     }
 
+    private static String nestedTemplate(int depth) {
+        String text = "\"leaf\"";
+        for (int n = 0; n < depth; n++) text = "`outer ${" + text + "}`";
+        return text;
+    }
+
+    @Test
+    void boundedTemplateNestingFailsWithDiagnosticInsteadOfStackOverflow() {
+        assertDoesNotThrow(() -> new Lexer(nestedTemplate(64)).scan());
+        assertDoesNotThrow(() -> new Lexer(nestedTemplate(64) + " + " + nestedTemplate(64)).scan());
+        for (int depth : new int[]{65, 4096}) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> new Lexer(nestedTemplate(depth)).scan());
+            assertTrue(error.getMessage().contains("template nesting limit"), error.getMessage());
+        }
+    }
+
     @Test
     void rejectsIncompleteOrEmptyInterpolations() {
         assertTrue(assertThrows(IllegalArgumentException.class,
