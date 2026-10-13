@@ -81,53 +81,42 @@ final class InlineStructuralRecordContractTest {
     }
 
     @Test
-    void readonlyInlineShapesCannotBecomeMutableAsyncOrActorParameters() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                async fnc bad(record{foo: int} value): int {
-                    return value.foo;
-                }
-                """)));
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                actor fnc bad(struct{foo: int} value): void {
-                    return;
-                }
+    void ownedReadonlyRecordCanCrossAsyncAndSuspendBoundaries() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                async fnc read(record{foo: int} value): int { return value.foo; }
+                suspend fnc hold(struct{foo: int} value): int { return value.foo; }
                 """)));
     }
 
     @Test
-    void suspendCallableCannotRetainReadonlyShapeView() {
-        IllegalArgumentException problem = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                suspend fnc bad(record{foo: int} value): int {
-                    return value.foo;
-                }
+    void ownedNestedReadonlyRecordsCanCrossAsyncAndActorBoundaries() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                async fnc process(List<record{foo: int}> values): void { return; }
+                actor fnc dispatch(List<struct{foo: int}> values): void { return; }
                 """)));
-        assertTrue(problem.getMessage().contains("outlive"), problem.getMessage());
     }
 
     @Test
-    void suspendCallableCannotRetainExplicitStructuralViewEither() {
-        IllegalArgumentException problem = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                suspend fnc bad(structural {foo: int} value): int {
-                    return value.foo;
-                }
-                """)));
-        assertTrue(problem.getMessage().contains("outlive"), problem.getMessage());
+    void borrowedStructuralViewsCannotEscapeAsyncSuspendOrActorBoundaries() {
+        for (String source : java.util.List.of(
+                "async fnc bad(structural {foo: int} v): int { return v.foo; }",
+                "suspend fnc bad(structural {foo: int} v): int { return v.foo; }",
+                "actor fnc bad(structural {foo: int} v): void { return; }")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
     }
 
     @Test
-    void suspensionAndActorCannotHideReadonlyShapeViewsInsideContainers() {
-        IllegalArgumentException suspended = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                suspend fnc bad(List<record{foo: int}> values): void { return; }
-                """)));
-        assertTrue(suspended.getMessage().contains("outlive"), suspended.getMessage());
-        IllegalArgumentException actor = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                actor fnc bad(List<struct{foo: int}> values): void { return; }
-                """)));
-        assertTrue(actor.getMessage().contains("mailbox boundary"), actor.getMessage());
+    void actualBorrowsCannotEscapeViaNestedContainers() {
+        for (String source : java.util.List.of(
+                "suspend fnc bad(List<&int> values): void { return; }",
+                "async fnc bad(List<&int> values): void { return; }",
+                "actor fnc bad(List<&int> values): void { return; }",
+                "suspend fnc bad(List<&record{foo: int}> values): void { return; }")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
     }
 
     @Test
