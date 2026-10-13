@@ -1395,6 +1395,16 @@ public final class ActorRuntime implements AutoCloseable {
         return () -> cell.ownedResources.remove(resource);
     }
 
+    /**
+     * A domain-wide critical close must not physically revoke an actor's
+     * admitted grant while its native carrier is still executing guest code.
+     * Capture the owning cell rather than a thread (turns can migrate).
+     */
+    java.util.function.Consumer<Runnable> captureCurrentActorCarrierExit() {
+        ActorCell<?> cell = currentActor.get();
+        return cell == null ? null : cell::afterPhysicalCarrierExit;
+    }
+
     /** Package-private leak diagnostic for actor-owned runtime capabilities. */
     int trackedActorResourceCount(ActorRef<?> ref) {
         Objects.requireNonNull(ref, "ref");
@@ -6446,6 +6456,9 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean resourceRevocationActive;
         /** Held permits must outlive an already-running physical actor turn. */
         private boolean resourceRevocationDeferred;
+        /** Domain-close callbacks held until physical guest/TurnExecutor exit. */
+        private final java.util.ArrayDeque<Runnable> physicalExitCallbacks =
+                new java.util.ArrayDeque<>();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
@@ -6956,12 +6969,26 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private void afterPhysicalCarrierExit(Runnable callback) {
+            Objects.requireNonNull(callback, "callback");
+            synchronized (lifecycleLock) {
+                if (carrierActive) {
+                    // Bounded by actor-owned ticket quotas: one callback per
+                    // admitted ticket and a domain can close only once.
+                    physicalExitCallbacks.addLast(callback);
+                    return;
+                }
+            }
+            callback.run(); // never execute guest-facing cleanup under lifecycleLock
+        }
+
         private void runBatch(Object dispatchTicket) {
             // A STOP may be admitted while guest code is still executing.
             // Transfer its resources only after TurnExecutor has returned and
             // the physical carrier lease is released, never while holding the
             // lifecycle monitor or while shared critical state is in use.
             List<AutoCloseable> afterCarrierRevoke = List.of();
+            List<Runnable> afterCarrierClose = List.of();
             boolean finishDeferredResourceRevocation = false;
             // Nested or obsolete dispatch attempts must not mutate the
             // thread-local authority of an already executing actor.
@@ -7068,6 +7095,13 @@ public final class ActorRuntime implements AutoCloseable {
                                     && !finalized
                                     && hasQueuedWorkLocked();
                         }
+                        // An external domain-close request may have arrived
+                        // while guest code held its critical grant. Retire it
+                        // only after the physical TurnExecutor boundary.
+                        if (!carrierActive && !physicalExitCallbacks.isEmpty()) {
+                            afterCarrierClose = List.copyOf(physicalExitCallbacks);
+                            physicalExitCallbacks.clear();
+                        }
                         // Snapshot only once the execution lease is physically
                         // gone; callbacks below may wake another actor or host.
                         if (resourceRevocationDeferred && !carrierActive) {
@@ -7084,10 +7118,27 @@ public final class ActorRuntime implements AutoCloseable {
                         else ACTOR_CARRIER.remove();
                     }
                 }
+                Error fatalClose = null;
+                for (Runnable close : afterCarrierClose) {
+                    try {
+                        close.run();
+                    } catch (Throwable failure) {
+                        // A misbehaving close observer cannot skip other
+                        // quiescence callbacks or silently preserve grants.
+                        fail(failure);
+                        if (failure instanceof Error error) {
+                            if (fatalClose == null) fatalClose = error;
+                            else if (fatalClose != error) fatalClose.addSuppressed(error);
+                        }
+                    }
+                }
                 if (finishDeferredResourceRevocation) {
                     finishResourceRevocation(afterCarrierRevoke);
                 }
                 if (reschedule) schedule();
+                if (fatalClose instanceof VirtualMachineError vm) throw vm;
+                if (fatalClose instanceof ThreadDeath death) throw death;
+                if (fatalClose instanceof LinkageError linkage) throw linkage;
             }
         }
 
