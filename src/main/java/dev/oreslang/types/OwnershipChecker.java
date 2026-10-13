@@ -2107,7 +2107,7 @@ public final class OwnershipChecker {
                 definePatternAliases(
                         tuple.elements().get(i),
                         elementType,
-                        source,
+                        isCopyType(elementType) ? null : source,
                         destination);
             }
             return;
