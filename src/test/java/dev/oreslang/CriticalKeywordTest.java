@@ -29,6 +29,25 @@ final class CriticalKeywordTest {
         }
     }
 
+    @Test void nearMissRwModifiersCannotMisclassifyLegacyCritical() {
+        // Exact adjacency is mandatory. In particular comments, whitespace
+        // and longer suffix identifiers cannot grant source-level RW effects.
+        String[] nearMisses = {
+                "pub fnc critical - read peek(): int { return 1; }",
+                "pub fnc critical- read peek(): int { return 1; }",
+                "pub fnc critical -read peek(): int { return 1; }",
+                "pub fnc critical/*comment*/-read peek(): int { return 1; }",
+                "pub fnc critical-readonly peek(): int { return 1; }",
+                "pub fnc critical--write peek(): int { return 1; }"
+        };
+        for (String source : nearMisses) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source), source);
+            assertFalse(error.getMessage().contains("reader/writer critical declaration requires"),
+                    () -> "near-miss classified as an RW mode: " + source);
+        }
+    }
+
     @Test void criticalModifiersPreserveFileAndInstanceEffects() {
         Ast.Program parsed = Parser.parse("""
                 pub critical fnc file_counter(): int { return 1; }
