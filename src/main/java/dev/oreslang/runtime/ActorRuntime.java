@@ -7295,13 +7295,16 @@ public final class ActorRuntime implements AutoCloseable {
                 })) {
                     // Reclaim admitted CONTROL mail even after termination.
                 }
-                while (urgentMailbox.drainOne(envelope -> {
-                    releaseMailboxSlot(false, true);
-                    envelope.close();
-                })) {
-                    // Reclaim reserved urgent credits even on failed actors.
-                }
                 sourceHandoffRequested = false;
+            }
+
+            // Release user envelopes outside the inner lifecycle monitor,
+            // matching normal-mail cleanup and avoiding an extra lock edge.
+            while (urgentMailbox.drainOne(envelope -> {
+                releaseMailboxSlot(false, true);
+                envelope.close();
+            })) {
+                // Reclaim reserved urgent credits even on failed actors.
             }
 
             while (mailbox.drainOne(envelope -> {
