@@ -1415,7 +1415,14 @@ public final class ActorRuntime implements AutoCloseable {
      * message on the same actor, or a stale actor handle must wait for the
      * owning physical carrier to leave the TurnExecutor.
      */
-    java.util.function.Consumer<Runnable> captureCurrentActorTicketRelease(Object ownerDomain) {
+    interface TicketReleaseAuthority {
+        /** True only on the original actor incarnation and logical owner. */
+        boolean isOwnerTurn();
+        /** Invoke inline for the owner, otherwise queue after quiescence. */
+        void release(Runnable close);
+    }
+
+    TicketReleaseAuthority captureCurrentActorTicketRelease(Object ownerDomain) {
         ActorCell<?> cell = currentActor.get();
         if (cell == null) return null;
         // Scheduler task domains already identify one logical task across
@@ -1425,23 +1432,31 @@ public final class ActorRuntime implements AutoCloseable {
         Object invocation = CURRENT_ACTOR_ENVELOPE.get();
         if (invocation == null) invocation = CURRENT_ACTOR_EXECUTION.get();
         final Object ownerInvocation = invocation;
-        return close -> {
-            boolean ownTurn;
-            synchronized (cell.lifecycleLock) {
-                Object currentDomain = OresScheduler.currentTaskDomain();
-                if (currentDomain == null) currentDomain = currentActorExecutionDomain();
-                ownTurn = currentActor.get() == cell
-                        && cell.carrierActive
-                        && cell.carrierOwnerThread == Thread.currentThread()
-                        && !cell.physicalExitCleanupActive
-                        && currentDomain == ownerDomain
-                        && (hasSchedulerTask
-                            || (CURRENT_ACTOR_ENVELOPE.get() == null
-                                ? CURRENT_ACTOR_EXECUTION.get()
-                                : CURRENT_ACTOR_ENVELOPE.get()) == ownerInvocation);
+        return new TicketReleaseAuthority() {
+            @Override
+            public boolean isOwnerTurn() {
+                synchronized (cell.lifecycleLock) {
+                    Object currentDomain = OresScheduler.currentTaskDomain();
+                    if (currentDomain == null) {
+                        currentDomain = currentActorExecutionDomain();
+                    }
+                    return currentActor.get() == cell
+                            && cell.carrierActive
+                            && cell.carrierOwnerThread == Thread.currentThread()
+                            && !cell.physicalExitCleanupActive
+                            && currentDomain == ownerDomain
+                            && (hasSchedulerTask
+                                || (CURRENT_ACTOR_ENVELOPE.get() == null
+                                    ? CURRENT_ACTOR_EXECUTION.get()
+                                    : CURRENT_ACTOR_ENVELOPE.get()) == ownerInvocation);
+                }
             }
-            if (ownTurn) close.run();
-            else cell.afterPhysicalCarrierExit(close);
+
+            @Override
+            public void release(Runnable close) {
+                if (isOwnerTurn()) close.run();
+                else cell.afterPhysicalCarrierExit(close);
+            }
         };
     }
 
