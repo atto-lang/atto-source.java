@@ -16,6 +16,37 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void pooledAdmissionIsAtomicBoundedAndWorkerSpecific() throws Exception {
+        var tracked = new ConcurrentHashMap<String, Set<Integer>>();
+        tracked.put("worker-a", ConcurrentHashMap.newKeySet());
+        var outcomes = new ConcurrentLinkedQueue<NativeHttp.PoolAdmission>();
+        try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
+            CountDownLatch ready = new CountDownLatch(1);
+            var executions = new java.util.ArrayList<Future<?>>();
+            for (int i = 0; i < 256; i++) {
+                final int token = i;
+                executions.add(calls.submit(() -> {
+                    ready.await();
+                    outcomes.add(NativeHttp.registerPoolAdmission(tracked, "worker-a", token, 64));
+                    return null;
+                }));
+            }
+            ready.countDown();
+            for (var task : executions) task.get(10, TimeUnit.SECONDS);
+        }
+        assertEquals(64, tracked.get("worker-a").size());
+        assertEquals(64, outcomes.stream().filter(x -> x == NativeHttp.PoolAdmission.REGISTERED).count());
+        assertEquals(192, outcomes.stream().filter(x -> x == NativeHttp.PoolAdmission.FULL).count());
+        tracked.remove("worker-a");
+        assertEquals(NativeHttp.PoolAdmission.WORKER_GONE,
+                NativeHttp.registerPoolAdmission(tracked, "worker-a", 999, 64));
+        tracked.put("worker-b", ConcurrentHashMap.newKeySet());
+        assertEquals(NativeHttp.PoolAdmission.REGISTERED,
+                NativeHttp.registerPoolAdmission(tracked, "worker-b", 999, 64));
+        assertEquals(1, tracked.get("worker-b").size(),
+                "replacement workers must not inherit an old worker's retained exchanges");
+    }
+
     @Test void cleanupAcceptedOrRejectedByExecutorRunsExactlyOnceAndNeverInlineOnRejection() throws Exception {
         java.util.concurrent.atomic.AtomicInteger successes = new java.util.concurrent.atomic.AtomicInteger();
         NativeHttp.executeCleanup(Runnable::run, successes::incrementAndGet);
