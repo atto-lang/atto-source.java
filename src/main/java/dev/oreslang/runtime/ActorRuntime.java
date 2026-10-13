@@ -276,6 +276,90 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Compiler/interpreter-facing typed exceptional effect. This host marker
+     * is deliberately not the guest catch/trap implementation. A compiler
+     * must route catch/recover by effect kind before the actor boundary.
+     *
+     * Extending Error keeps it out of Java Exception-only interop catches;
+     * this does not authorize exposing it to guest Java/Throwable catches.
+     */
+    public static final class GuestEffectSignal extends Error {
+        private final ExceptionBoundaryPolicy.Effect effect;
+        private final long originCode;
+
+        private GuestEffectSignal(ExceptionBoundaryPolicy.Effect effect, long originCode) {
+            super("Oreslang " + Objects.requireNonNull(effect, "effect"),
+                    null, false, false);
+            if (effect != ExceptionBoundaryPolicy.Effect.THROW
+                    && effect != ExceptionBoundaryPolicy.Effect.RAISE
+                    && effect != ExceptionBoundaryPolicy.Effect.PANIC) {
+                throw new IllegalArgumentException(
+                        "only throw, raise and panic are guest exceptional signals");
+            }
+            // Also rejects negative and greater-than-uint32 codes.
+            ExceptionBoundaryPolicy.actorTerminal(effect, originCode);
+            this.effect = effect;
+            this.originCode = originCode;
+        }
+
+        public static GuestEffectSignal throwing(long code) {
+            return new GuestEffectSignal(ExceptionBoundaryPolicy.Effect.THROW, code);
+        }
+
+        public static GuestEffectSignal raising(long code) {
+            return new GuestEffectSignal(ExceptionBoundaryPolicy.Effect.RAISE, code);
+        }
+
+        public static GuestEffectSignal panicking(long code) {
+            return new GuestEffectSignal(ExceptionBoundaryPolicy.Effect.PANIC, code);
+        }
+
+        public ExceptionBoundaryPolicy.Effect effect() { return effect; }
+        public long originCode() { return originCode; }
+    }
+
+    /**
+     * Immutable, host-owned terminal classification. No Throwable or mutable
+     * guest object may be exported into a supervisor's CONTROL envelope.
+     * Publication occurs once on actor finalization after the guest carrier
+     * has quiesced, independent of ordinary user mailbox capacity.
+     */
+    public record ActorFailureNotice(
+            ActorId actor,
+            Optional<ActorId> parent,
+            ActorKind actorKind,
+            ExceptionBoundaryPolicy.Terminal terminal,
+            String diagnosticType) {
+        public ActorFailureNotice {
+            Objects.requireNonNull(actor, "actor");
+            Objects.requireNonNull(parent, "parent");
+            Objects.requireNonNull(actorKind, "actorKind");
+            Objects.requireNonNull(terminal, "terminal");
+            Objects.requireNonNull(diagnosticType, "diagnosticType");
+            if (!terminal.failed()) {
+                throw new IllegalArgumentException("normal actor return has no failure notice");
+            }
+        }
+    }
+
+    private static ExceptionBoundaryPolicy.Terminal actorTerminalOf(Throwable failure) {
+        if (failure instanceof GuestEffectSignal effect) {
+            return ExceptionBoundaryPolicy.actorTerminal(effect.effect(), effect.originCode());
+        }
+        if (failure instanceof CancellationException) {
+            return ExceptionBoundaryPolicy.actorTerminal(ExceptionBoundaryPolicy.Effect.CANCEL);
+        }
+        if (failure instanceof VirtualMachineError
+                || failure instanceof ThreadDeath
+                || failure instanceof LinkageError) {
+            return ExceptionBoundaryPolicy.actorTerminal(ExceptionBoundaryPolicy.Effect.HOST_FATAL);
+        }
+        // Arbitrary Java exceptions are not guest Throw/Raise. Treat a host
+        // actor crash as Panic without fabricating a typed guest origin.
+        return ExceptionBoundaryPolicy.actorTerminal(ExceptionBoundaryPolicy.Effect.PANIC);
+    }
+
     public enum CarrierBackend { NATIVE_PTHREAD, JVM_THREAD_POOL }
 
     private static final String CARRIER_BACKEND_PROPERTY = "ores.runtime.carriers";
@@ -1788,6 +1872,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
+        private final AtomicReference<ActorFailureNotice> terminalFailureNotice =
+                new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
         private final OresFuture<Void> readyFuture =
@@ -1817,6 +1903,16 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
+
+        /**
+         * Host/supervisor-only typed terminal snapshot, available after
+         * finalization. This is a verified metadata record, NOT yet a queued
+         * supervisor actor CONTROL turn or a guest-visible error handler.
+         */
+        public Optional<ActorFailureNotice> terminalFailureNotice() {
+            requireSupervisorContext("inspect actor terminal failure CONTROL metadata");
+            return Optional.ofNullable(terminalFailureNotice.get());
+        }
 
         /**
          * Actor initialization barrier. Accessing ready starts an unstarted
@@ -6722,6 +6818,18 @@ public final class ActorRuntime implements AutoCloseable {
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
             if (memorySlice != null) memorySlice.close();
+            Throwable terminalForNotice = ref.terminationCause.get();
+            if (terminalForNotice != null) {
+                // Frozen primitive/host-owned metadata only. The original
+                // Throwable remains local to ActorRef.failure()/done(), and
+                // never crosses into the supervisor CONTROL record.
+                ref.terminalFailureNotice.compareAndSet(null,
+                        new ActorFailureNotice(
+                                ref.id(), parent == null
+                                        ? Optional.empty() : Optional.of(parent.ref.id()),
+                                kind, actorTerminalOf(terminalForNotice),
+                                terminalForNotice.getClass().getName()));
+            }
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
