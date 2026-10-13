@@ -1823,7 +1823,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "untrusted actor cannot reference private Symbol #" + symbol.name());
                 }
-                return new Named("Symbol", List.of());
+                return new Named("$Symbol", List.of());
             }
             if (value instanceof Ast.Imaginary) return Primitive.COMPLEX;
             return Unknown.INSTANCE;
@@ -2137,7 +2137,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "untrusted actors may only use allowlisted #core literals, not dynamic Symbol factories");
                 }
-                return new Named("Symbol", List.of());
+                return new Named("$Symbol", List.of());
             }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
@@ -7217,11 +7217,11 @@ public final class TypeChecker {
                 Type key = resolve(ref.arguments().get(0), generics, self);
                 Type value = resolve(ref.arguments().get(1), generics, self);
                 boolean keyAllowed = key == Primitive.STRING
-                        || key instanceof Named named && named.name().equals("Symbol")
+                        || key instanceof Named named && named.name().equals("$Symbol")
                                 && named.arguments().isEmpty()
                         || key instanceof Union union && union.options().size() == 2
                                 && union.options().contains(Primitive.STRING)
-                                && union.options().contains(new Named("Symbol", List.of()));
+                                && union.options().contains(new Named("$Symbol", List.of()));
                 if (!keyAllowed) {
                     throw new IllegalArgumentException(
                             "Map<K,V> currently supports only String, Symbol, or String | Symbol keys");
@@ -7241,7 +7241,7 @@ public final class TypeChecker {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol is not generic");
                 }
-                yield new Named("Symbol", List.of());
+                yield new Named("$Symbol", List.of());
             }
             case "void" -> Primitive.VOID;
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
