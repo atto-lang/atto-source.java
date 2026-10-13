@@ -231,10 +231,22 @@ select_stmt     = ( "do" [ "nb" ] | [ select_wait_mode ] )
 select_wait_mode= "nb" | "try" ;
 select_policy   = "first" | "fair" | "random" ;
 select_arm      = select_arm_keyword "readch" expression ":"
-                  [ binding_kind IDENT ] { statement }
+                  [ select_read_binding ] [ "->" ] block
                 | select_arm_keyword "writech" expression "," expression ":"
-                  { statement } ;
-(* Static select arms cannot use nb/try modifiers on readch/writech; the enclosing select supplies wait mode. *)
+                  [ "->" ] block
+                | select_arm_keyword [ binding_kind ] IDENT "=" "readch" "(" expression ")"
+                  "->" block ;
+select_read_binding
+                = [ binding_kind ] [ "mut" ]
+                  ( IDENT
+                  | IDENT ":" type_ref [ "mut" ]
+                  | type_ref [ "mut" ] IDENT
+                  | sequence_pattern
+                  | object_pattern ) ;
+(* Static select arms cannot use nb/try modifiers on readch/writech; the enclosing select supplies wait mode.
+   Typed select-read bindings default to const; prefix tuple and record
+   projections bind variables only within the winning arm, never another read.
+   The "->" is canonical; the bare braced-body spelling is retained. *)
 select_arm_keyword = "when" | "case" ; (* "when" is canonical; "case" is accepted for compatibility. *)
 (* "when" and "case" are contextual keywords: outside these grammar positions they are ordinary IDENT names. *)
 select_default  = "default" ":" { statement } ;
