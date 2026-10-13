@@ -145,6 +145,24 @@ final class StructuralReadViewCoercionHardeningTest {
     }
 
     @Test
+    void functionValueVarianceCannotInventNumericAbiAdapters() {
+        Types.Function returnsInt = new Types.Function(
+                java.util.List.of(), Types.Primitive.INT);
+        Types.Function promisesFloat = new Types.Function(
+                java.util.List.of(), Types.Primitive.FLOAT);
+        Types.Function acceptsFloat = new Types.Function(
+                java.util.List.of(Types.Primitive.FLOAT), Types.Primitive.VOID);
+        Types.Function onlyAcceptsInt = new Types.Function(
+                java.util.List.of(Types.Primitive.INT), Types.Primitive.VOID);
+        assertFalse(Types.isAssignable(returnsInt, promisesFloat));
+        assertFalse(Types.isAssignable(acceptsFloat, onlyAcceptsInt),
+                "int caller input cannot be redirected without a scalar conversion");
+        assertTrue(Types.isAssignable(
+                new Types.Function(java.util.List.of(), new Types.StringLiteral("ok")),
+                new Types.Function(java.util.List.of(), Types.Primitive.STRING)));
+    }
+
+    @Test
     void readonlyCovarianceStillAllowsSafeWidthAndUnionViews() {
         Types.Record actual = new Types.Record(
                 Map.of("foo", Types.Primitive.INT, "bar", Types.Primitive.STRING), true);
