@@ -209,6 +209,35 @@ final class ModuleVisibilityProofTest {
     }
 
     @Test
+    void privateCompanionAliasCanTypePublicFieldButCannotBeImportedAsAName() {
+        String library = """
+                define pub module Models as
+                  type InternalInt = int;
+                  pub class Box as
+                    pub InternalInt value: 9
+                  end
+                end
+                """;
+        String entry = """
+                import class Box from './lib';
+                pub fnc main(): int {
+                  val Box box = new Box();
+                  return box.value;
+                }
+                """;
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(Map.of(
+                "pkg/lib.ores", library, "pkg/main.ores", entry)));
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(Map.of(
+                        "pkg/lib.ores", library,
+                        "pkg/main.ores", "import type InternalInt from './lib';"
+                                + " pub fnc main(): void { return; }")));
+        assertTrue(failure.getMessage().contains("does not match an exported declaration"),
+                failure.getMessage());
+    }
+
+    @Test
     void explicitlyPublicFileRootMembersRemainImportable() {
         Map<String, String> files = Map.of(
                 "pkg/lib.ores",
