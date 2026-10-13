@@ -22,6 +22,7 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
@@ -851,9 +852,10 @@ public final class OresEvalRootNode extends RootNode {
         private final class SourceTask implements OresScheduler.Task<Object> {
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
-            private static final int LOOP_SAFEPOINT_INTERVAL = 32;
-            private static final int MAX_LOOP_BACKEDGES_PER_TURN = 512;
-            private static final long SOFT_LOOP_QUANTUM_NANOS = 2_000_000L;
+            // The reduction counter and clock belong to the heap-owned
+            // task, never to the carrier thread or a per-resume stack.
+            private final SourceCooperationQuantum cooperationQuantum =
+                    new SourceCooperationQuantum();
 
             private SourceValueCont pendingLoopContinuation;
             private Env pendingLoopGuardEnv;
@@ -922,6 +924,9 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private OresScheduler.Step<Object> resumeSource(OresScheduler.Resume resume) {
+                // An await starts a new physical dispatch quantum. Neither an
+                // await nor generator yield is counted as a cooperate handoff.
+                cooperationQuantum.beginDispatch();
                 nextStep = null;
 
                 if (resume.initial()) {
@@ -1015,29 +1020,29 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private void drainLoopContinuations() {
-                long started = System.nanoTime();
-                int backedges = 0;
+                // Post-commit continuations retain all lexical state. Never
+                // attempt to suspend arbitrary Java/Truffle stack frames.
+                final boolean untrusted = ActorRuntime.currentActorKind()
+                        == ActorRuntime.ActorKind.UNTRUSTED;
                 while (nextStep == null && pendingLoopContinuation != null) {
                     SourceValueCont next = pendingLoopContinuation;
                     Env guardEnv = pendingLoopGuardEnv;
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
-                    ++backedges;
-                    boolean untrusted = ActorRuntime.currentActorKind()
-                            == ActorRuntime.ActorKind.UNTRUSTED;
-                    if (untrusted || (backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0) {
-                        // Untrusted fuel is charged at EVERY loop backedge, not
-                        // once per 32 iterations. Trusted tasks poll at 32.
+
+                    // Cheap 64-bit counter / mask on every trusted backedge.
+                    // For UNTRUSTED, fuel is still charged on *every* backedge,
+                    // and implicit cooperation stays disabled pending quota
+                    // continuity and revocation conformance.
+                    boolean checkDue = cooperationQuantum.completedBackedgeNeedsCheck();
+                    if (untrusted || checkDue) {
                         context.schedulerSafepoint();
-                        // Issue #402: an UNTRUSTED carrier handoff can currently
-                        // mint a fresh physical-turn quota, so fail closed.
-                        // Never auto-cooperate while a live lexical mutex guard
-                        // is held: the guard is a no-yield critical region.
-                        if (!untrusted
-                                && (backedges >= MAX_LOOP_BACKEDGES_PER_TURN
-                                    || System.nanoTime() - started >= SOFT_LOOP_QUANTUM_NANOS
-                                    || context.watchdogPreemptionRequested())
-                                && !guardEnv.hasLiveMutexGuards()) {
+                        // The watchdog is advisory. It cannot interrupt a live
+                        // MutexGuard or hand off without a saved continuation.
+                        if (!untrusted && checkDue
+                                && !guardEnv.hasLiveMutexGuards()
+                                && cooperationQuantum.shouldCooperateAtCheck(
+                                        context.watchdogPreemptionRequested())) {
                             context.recordSourceLoopCooperate();
                             cooperate(next);
                             return;
@@ -1068,6 +1073,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 awaitingContinuation = continuation;
                 nextStep = OresScheduler.cooperate();
+                cooperationQuantum.recordedCooperate();
             }
 
             private void done(Object value) {
@@ -2387,6 +2393,16 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt select,
                 Env env,
                 SourceFlowCont continuation) {
+            // A blocking/nonblocking select arms callback or Future state.
+            // Validate before selecting: late rejection could consume a
+            // message, publish a send, or leave an armed callback behind.
+            if (select.mode() != Ast.WaitMode.IMMEDIATE
+                    && env.hasLiveMutexGuards()) {
+                continuation.accept(task, SourceFlow.throwing(
+                        new IllegalStateException(
+                                "cannot arm select while holding a live MutexGuard")));
+                return;
+            }
             ChannelRuntime.SelectSet set =
                     buildStaticSelectSet(select, env);
             ChannelRuntime.SelectPolicy policy =
@@ -2964,6 +2980,7 @@ public final class OresEvalRootNode extends RootNode {
                                     suspendOnAwaitable(
                                             t,
                                             value,
+                                            env,
                                             continuation);
                                 }
                             });
@@ -3011,6 +3028,10 @@ public final class OresEvalRootNode extends RootNode {
                                                                 null),
                                                 null);
                                         return;
+                                    }
+                                    if (env.hasLiveMutexGuards()) {
+                                        throw new IllegalStateException(
+                                                "cannot arm select while holding a live MutexGuard");
                                     }
                                     OresFuture<
                                             ChannelRuntime.SelectResult> future =
@@ -3562,6 +3583,7 @@ public final class OresEvalRootNode extends RootNode {
         private void suspendOnAwaitable(
                 SourceTask task,
                 Object value,
+                Env env,
                 SourceValueCont continuation) {
             OresFuture<?> future;
             if (value instanceof OresFuture<?> oresFuture) {
@@ -3599,6 +3621,15 @@ public final class OresEvalRootNode extends RootNode {
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(task, null, failure);
                 }
+                return;
+            }
+
+            if (env.hasLiveMutexGuards()) {
+                continuation.accept(
+                        task,
+                        null,
+                        new IllegalStateException(
+                                "cannot await a pending Future while holding a live MutexGuard"));
                 return;
             }
 
@@ -3664,6 +3695,14 @@ public final class OresEvalRootNode extends RootNode {
                                 return;
                             }
 
+                            if (operation.mode() == Ast.WaitMode.BLOCKING
+                                    && env.hasLiveMutexGuards()) {
+                                continuation.accept(
+                                        t, null,
+                                        new IllegalStateException(
+                                                "cannot readch while holding a live MutexGuard"));
+                                return;
+                            }
                             OresFuture<Object> future =
                                     channel.readAsync();
                             if (operation.mode()
@@ -3770,6 +3809,14 @@ public final class OresEvalRootNode extends RootNode {
                                         return;
                                     }
 
+                                    if (operation.mode() == Ast.WaitMode.BLOCKING
+                                            && env.hasLiveMutexGuards()) {
+                                        continuation.accept(
+                                                t2, null,
+                                                new IllegalStateException(
+                                                        "cannot writech while holding a live MutexGuard"));
+                                        return;
+                                    }
                                     OresFuture<Void> future =
                                             channel.writeAsync(value);
                                     if (operation.mode()
@@ -3832,6 +3879,17 @@ public final class OresEvalRootNode extends RootNode {
                                     "rt cooperate is disabled for untrusted actors until continuation quota state survives scheduler handoffs"));
                     return;
                 }
+                // Explicit cooperate must obey the SAME no-yield authority
+                // boundary as automatic loop preemption. Otherwise a source
+                // task could park while owning an actor-local MutexGuard.
+                if (env.hasLiveMutexGuards()) {
+                    continuation.accept(
+                            task,
+                            null,
+                            new IllegalStateException(
+                                    "cannot rt cooperate while holding a live MutexGuard"));
+                    return;
+                }
                 task.cooperate((t, ignored, failure) ->
                         continuation.accept(t, null, failure));
                 return;
@@ -3891,6 +3949,7 @@ public final class OresEvalRootNode extends RootNode {
                                             t,
                                             invocation,
                                             invocationDeclaresAsync(invocation),
+                                            env,
                                             continuation);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
@@ -3933,6 +3992,7 @@ public final class OresEvalRootNode extends RootNode {
                                                     t2,
                                                     invocation,
                                                     declaredFuture,
+                                                    env,
                                                     continuation);
                                         } catch (RuntimeException | Error failure3) {
                                             continuation.accept(t2, null, failure3);
@@ -3974,6 +4034,7 @@ public final class OresEvalRootNode extends RootNode {
                                             t2,
                                             invocation,
                                             false,
+                                            env,
                                             continuation);
                                 });
                     });
@@ -3983,11 +4044,32 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Invocation invocation,
                 boolean declaredFuture,
+                Env env,
                 SourceValueCont continuation) {
             try {
                 Object result = invoke(invocation);
                 if (result instanceof OresFuture<?> future
                         && !declaredFuture) {
+                    // A settled Future is a value, not a suspension: do not
+                    // publish Await or relinquish the actor's execution lease.
+                    // In particular, no-yield guards can remain held across
+                    // this already-committed result without re-entering the
+                    // scheduler or running another actor's mailbox turn.
+                    if (future.isDone()) {
+                        Object completed;
+                        try {
+                            completed = future.join();
+                        } catch (RuntimeException | Error completedFailure) {
+                            continuation.accept(task, null, completedFailure);
+                            return;
+                        }
+                        continuation.accept(task, completed, null);
+                        return;
+                    }
+                    if (env.hasLiveMutexGuards()) {
+                        throw new IllegalStateException(
+                                "cannot suspend on an implicit Future while holding a live MutexGuard");
+                    }
                     task.suspend(
                             future,
                             (t, value, failure) ->
@@ -5976,6 +6058,19 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("rt cooperate takes no arguments");
                     }
                     if (activeGeneratorEmitter.get() != null) {
+                        // Legacy generator execution is a virtual-thread
+                        // compatibility bridge, not a SourceTask continuation.
+                        // It must never bypass the language's no-yield guard
+                        // rule just because the source evaluator runs directly.
+                        if (env.hasLiveMutexGuards()) {
+                            throw new IllegalStateException(
+                                    "cannot rt cooperate while holding a live MutexGuard");
+                        }
+                        if (ActorRuntime.currentActorKind()
+                                == ActorRuntime.ActorKind.UNTRUSTED) {
+                            throw new SecurityException(
+                                    "rt cooperate is disabled for untrusted actors until continuation quotas persist across handoffs");
+                        }
                         AsyncRuntime.cooperateCurrentCarrier();
                         return null;
                     }

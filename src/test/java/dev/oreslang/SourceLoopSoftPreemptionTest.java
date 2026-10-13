@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Timeout;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @Timeout(20)
 final class SourceLoopSoftPreemptionTest {
@@ -151,6 +152,341 @@ final class SourceLoopSoftPreemptionTest {
                   return;
                 }
                 """));
+    }
+
+    @Test
+    void blockingChannelAndSelectCannotArmUnderLiveMutexGuard() {
+        // These must fail promptly instead of creating pending channel
+        // waiters or consuming a message while a no-yield guard is live.
+        for (String operation : new String[] {
+                "readch pipe;",
+                "writech pipe, 7;",
+                "select { case readch pipe: val item { } }"
+        }) {
+            RuntimeException rejected = assertThrows(RuntimeException.class,
+                    () -> run("""
+                            define class Counter as
+                              pub let int value = 0;
+                            end
+                            pub async routine main(): void {
+                              val mutex = Mutex.new(new Counter());
+                              val Channel<int> pipe = Channel.new<int>(0);
+                              val guard = mutex.lock();
+                            """ + operation + """
+                              guard.release();
+                              return;
+                            }
+                            """), operation);
+            assertTrue(rejected.getMessage().contains("MutexGuard"),
+                    operation + ": " + rejected.getMessage());
+        }
+    }
+
+    @Test
+    void blockingChannelReadWriteRemainUsableAfterReleasingMutex()
+            throws Exception {
+        assertEquals("7", run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val Channel<int> pipe = Channel.new<int>(1);
+                  val guard = mutex.lock();
+                  guard.value = 7;
+                  guard.release();
+                  writech pipe, 7;
+                  stdio.stdout.write(readch pipe);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void generatorCannotUseCooperateToEscapeALiveMutexGuard() {
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> run("""
+                        define class Counter as
+                          pub let int value = 0;
+                        end
+                        generator fnc bad(): int {
+                          val mutex = Mutex.new(new Counter());
+                          val guard = mutex.lock();
+                          rt cooperate;
+                          guard.release();
+                          yield 7;
+                          return;
+                        }
+                        pub routine main(): void {
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("MutexGuard"),
+                "generator must retain no-yield guard authority: " + failure.getMessage());
+    }
+
+    @Test
+    void generatorMayCooperateOnceItsGuardIsReleased() throws Exception {
+        assertEquals("7", run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                generator fnc values(): int {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  guard.value = 7;
+                  guard.release();
+                  rt cooperate;
+                  yield 7;
+                  return;
+                }
+                pub async routine main(): void {
+                  for const value of values() do
+                    stdio.stdout.write(value);
+                  done
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void explicitRtCooperateCannotSuspendALiveMutexGuard() {
+        RuntimeException error = assertThrows(RuntimeException.class, () -> run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  rt cooperate;
+                  guard.release();
+                  return;
+                }
+                """));
+        assertTrue(error.getMessage().contains("MutexGuard"),
+                "guard violation must fail closed: " + error.getMessage());
+    }
+
+    @Test
+    void explicitRtCooperateWorksImmediatelyAfterGuardRelease()
+            throws Exception {
+        assertEquals("released-then-cooperated", run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  guard.value = guard.value + 1;
+                  guard.release();
+                  rt cooperate;
+                  stdio.stdout.write("released-then-cooperated");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void overdueWhileLoopNeverYieldsWithGuardButCooperatesAfterRelease()
+            throws Exception {
+        String output = run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val mutex = Mutex.new(new Counter());
+                  val guard = mutex.lock();
+                  let i = 0;
+                  while (i < 1024) do
+                    guard.value = guard.value + 1;
+                    i = i + 1;
+                  done
+                  stdio.stdout.write(guard.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  guard.release();
+
+                  // The dispatch has already exhausted its budget. A newly
+                  // safe backedge must cooperate immediately, rather than
+                  // waiting for another full 64-backedge polling batch.
+                  let resumed = 0;
+                  while resumed < 1 do
+                    resumed = resumed + 1;
+                  done
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("1024|0|"), output);
+        assertTrue(Long.parseLong(output.substring("1024|0|".length())) > 0,
+                "release of an overdue lexical guard must restore fairness");
+    }
+
+    @Test
+    void infiniteCpuActorDoesNotStarvePeerWithOneSharedCarrier()
+            throws Exception {
+        // Both actors deliberately use the SHARED lane. With one physical
+        // worker, a non-cooperating infinite loop deadlocks the peer output.
+        // Keep this scoped to the test to avoid changing other contexts.
+        String setting = "ores.runtime.actor.shared.parallelism";
+        String before = System.getProperty(setting);
+        System.setProperty(setting, "1");
+        try {
+            String output = run("""
+                    define actor Greedy as
+                      let int spins;
+
+                      on_start(): void {
+                        self.spins = 0;
+                        return;
+                      }
+
+                      receive(ActorMail<String> mail): void {
+                        self.send("entered");
+                        while (true) do
+                          self.spins = self.spins + 1;
+                        done
+                      }
+                    end
+
+                    define actor Peer as
+                      receive(ActorMail<String> mail): void {
+                        self.send("peer");
+                        self.end();
+                        return;
+                      }
+                    end
+
+                    pub async routine main(): void {
+                      val greedy = spawn Greedy();
+                      val peer = spawn Peer();
+                      await greedy.get_ready();
+                      await peer.get_ready();
+
+                      greedy.send("begin");
+                      // Admission barrier: greedy has reached receive before
+                      // the peer is submitted, not merely been enqueued.
+                      val entered = (await greedy.outputs.next()).value.unwrap();
+                      peer.send("begin");
+                      val reply = (await peer.outputs.next()).value.unwrap();
+                      stdio.stdout.write(reply.value);
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(process.descriptor.source_loop_cooperates);
+
+                      // Cancellation must release the actual executing actor;
+                      // no forced thread stop or guest-stack unwinding.
+                      greedy.stop();
+                      await greedy.get_done();
+                      await peer.get_done();
+                      return;
+                    }
+                    """);
+            assertTrue(output.startsWith("peer|"),
+                    "peer starved or failed to execute: " + output);
+            long handoffs = Long.parseLong(output.substring("peer|".length()));
+            assertTrue(handoffs > 0,
+                    "an infinite source loop must release its physical carrier");
+        } finally {
+            if (before == null) System.clearProperty(setting);
+            else System.setProperty(setting, before);
+        }
+    }
+
+    @Test
+    void sustainedMailboxTrafficRemainsOrderedWhileInfiniteActorIsCooperating()
+            throws Exception {
+        String setting = "ores.runtime.actor.shared.parallelism";
+        String before = System.getProperty(setting);
+        System.setProperty(setting, "1");
+        try {
+            String output = run("""
+                    define actor Greedy as
+                      receive(ActorMail<String> mail): void {
+                        self.send("entered");
+                        while true do
+                          let n = 1 + 1;
+                        done
+                      }
+                    end
+
+                    define actor Peer as
+                      let int count;
+                      on_start(): void {
+                        self.count = 0;
+                        return;
+                      }
+                      receive(ActorMail<String> mail): void {
+                        if mail.value == "stop" then
+                          self.end();
+                          return;
+                        fi
+                        self.count = self.count + 1;
+                        self.send(self.count);
+                        return;
+                      }
+                    end
+
+                    pub async routine main(): void {
+                      val greedy = spawn Greedy();
+                      val peer = spawn Peer();
+                      await greedy.get_ready();
+                      await peer.get_ready();
+                      greedy.send("start");
+                      val entered = (await greedy.outputs.next()).value.unwrap();
+
+                      // Each reply must make progress even though a separate
+                      // shared-lane actor never voluntarily exits its loop.
+                      let i = 1;
+                      while i <= 64 do
+                        peer.send("tick");
+                        val reply = (await peer.outputs.next()).value.unwrap();
+                        if reply.value != i then
+                          stdio.stdout.write("replayed-or-reordered");
+                          return;
+                        fi
+                        i = i + 1;
+                      done
+                      peer.send("stop");
+                      greedy.stop();
+                      await greedy.get_done();
+                      await peer.get_done();
+                      stdio.stdout.write("64|");
+                      stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                      return;
+                    }
+                    """);
+            assertTrue(output.startsWith("64|"),
+                    "progress or mailbox ordering failure: " + output);
+            assertTrue(Long.parseLong(output.substring("64|".length())) >= 1,
+                    "infinite CPU actor never returned its physical carrier");
+        } finally {
+            if (before == null) System.clearProperty(setting);
+            else System.setProperty(setting, before);
+        }
+    }
+
+    @Test
+    void whileSourceSyntaxRetainsReductionCooperationAcrossAotCompatibleBackedges()
+            throws Exception {
+        String output = run("""
+                async fnc count(): int {
+                  let value = 0;
+                  while value < 4000 do
+                    value = value + 1;
+                  done
+                  return value;
+                }
+                pub async routine main(): void {
+                  stdio.stdout.write(await count());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("4000|"), output);
+        assertTrue(Long.parseLong(output.substring("4000|".length())) > 0,
+                "while must lower to the same resumable budgeted backedge");
     }
 
     private static String run(String sourceText) throws Exception {
