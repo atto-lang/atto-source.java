@@ -1254,9 +1254,7 @@ public final class Parser {
             return statement;
         }
         if (looksLikeStaticSelectStatement()) {
-            Ast.SelectStmt statement = parseStaticSelectStatement(false);
-            match(SEMICOLON); // Additive syntax only; historical bare selects remain unchanged.
-            return statement;
+            throw error(peek(), "bare static select statement is forbidden; use 'do select' for procedural arms or 'return select' for a value");
         }
         if (looksLikeImmediateChannelExpression()) {
             Ast.Expr expression = parseExpression();
@@ -1330,8 +1328,9 @@ public final class Parser {
             return new Ast.ContinueStmt();
         }
         if (match(IF)) return parseIf();
-        if (match(MATCH)) return parseMatch();
-        if (match(SWITCH)) return parseSwitch();
+        if (check(MATCH) || check(SWITCH)) {
+            throw error(peek(), "bare match/switch statement is forbidden; use 'do match', 'return match', 'do switch' or 'return switch'");
+        }
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
@@ -1343,6 +1342,8 @@ public final class Parser {
         }
 
         Ast.Expr expression = parseExpression();
+        if (expression instanceof Ast.DynamicSelectExpr)
+            throw error(previous(), "bare dynamic select discards a result; return or bind select from cases");
         consumeStatementTerminator("expression statement should end with ';'");
         return new Ast.ExprStmt(expression);
     }
