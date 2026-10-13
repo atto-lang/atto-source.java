@@ -50,7 +50,14 @@ class SymbolTypingTest {
                 "untrusted actor Guard as val Symbol state = #ready; end")));
     }
 
-    @Test void historicalSymbolConstructorIsRejectedAtCompileTime() {
+    @Test void symbolTypeCannotBeShadowedByAUserClassOrGeneric() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(
+                Parser.parse("class Symbol { }")));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(
+                Parser.parse("fnc identity<Symbol>(Symbol value) -> Symbol { return value; }")));
+    }
+
+        @Test void historicalSymbolConstructorIsRejectedAtCompileTime() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse(
                 "pub fnc bad() : Symbol { return new Symbol(\"ready\"); }")));
     }
