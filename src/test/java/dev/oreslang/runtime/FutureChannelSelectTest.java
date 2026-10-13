@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
 import org.junit.jupiter.api.Test;
 
 /** Future completion and channel transfer must share one atomic select winner. */
@@ -97,8 +98,8 @@ final class FutureChannelSelectTest {
         var selected = ChannelRuntime.SelectSet.of(
                 ChannelRuntime.await(future), ChannelRuntime.read(channel))
                 .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
-        var thrown = assertThrows(IllegalStateException.class, selected::join);
-        assertTrue(thrown == failure || thrown.getCause() == failure);
+        var thrown = assertThrows(CompletionException.class, selected::join);
+        assertEquals(failure, thrown.getCause());
         assertFalse(channel.tryRead().isPresent());
     }
 
