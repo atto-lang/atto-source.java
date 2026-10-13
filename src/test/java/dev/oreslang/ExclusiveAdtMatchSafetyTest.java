@@ -70,7 +70,7 @@ final class ExclusiveAdtMatchSafetyTest {
         // binding 'x', each arm binds a different tuple component.
         rejectsOverlap("""
                 fnc classify(Tuple[int, int] pair): int {
-                    match pair
+                    match pair;
                         (x, _) when x < 10 -> { return 1; }
                         (_, x) when x > 10 -> { return 2; }
                         else -> { return 0; }
@@ -104,6 +104,40 @@ final class ExclusiveAdtMatchSafetyTest {
                         on true when condition -> { return 2; }
                         on false -> { return 0; }
                         on _ -> { return 3; }
+                    end
+                }
+                """);
+    }
+
+    @Test
+    void wideGuardBoundsCannotBecomeDisjointThroughDoubleRounding() {
+        // 9007199254740993 rounds to 9007199254740992 as double.
+        // The guards overlap for the exact integer 9007199254740992.
+        rejectsOverlap("""
+                define enum State as
+                    Count: int
+                end
+                fnc classify(State input): int {
+                    match input
+                        State.Count(x) when x < 9007199254740993 -> { return 1; }
+                        State.Count(x) when x >= 9007199254740992 -> { return 2; }
+                        else -> { return 0; }
+                    end
+                }
+                """);
+    }
+
+    @Test
+    void ExactRepresentableGuardBoundRemainsProvablyDisjoint() {
+        accepts("""
+                define enum State as
+                    Count: int
+                end
+                fnc classify(State input): int {
+                    match input
+                        State.Count(x) when x < 9007199254740992 -> { return 1; }
+                        State.Count(x) when x >= 9007199254740992 -> { return 2; }
+                        else -> { return 0; }
                     end
                 }
                 """);
