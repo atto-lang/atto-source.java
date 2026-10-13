@@ -176,6 +176,34 @@ final class ErrorTraceSerializationTest {
         assertTrue(invalid.getMessage().contains("non-string"), invalid::getMessage);
     }
 
+
+    @Test
+    void guestErrorCodecCannotExecuteOverriddenCodeMethod() throws Exception {
+        Path entry = temp.resolve("untrusted-error-code.ores");
+        Files.writeString(entry, """
+                import class Error from "std/error";
+
+                define class DangerousError extends Error as
+                  pub code(): int {
+                    stdio.stdout.write("EXECUTED");
+                    return 9123;
+                  }
+                end
+
+                pub routine main(): void {
+                  val e = new DangerousError();
+                  stdio.stdout.write(e.to_json());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        assertThrows(Exception.class, () -> LinkedProgramRunner.run(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), output, new ByteArrayOutputStream()));
+        assertFalse(output.toString(StandardCharsets.UTF_8).contains("EXECUTED"),
+                "serializing Error must not invoke overridden guest code()");
+    }
+
     @Test
     void sourceCapturesTraceWithoutConstructingAnException() throws Exception {
         Path entry = temp.resolve("trace.ores");
