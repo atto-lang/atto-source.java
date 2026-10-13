@@ -5929,7 +5929,13 @@ public final class OresEvalRootNode extends RootNode {
                         Object currentValue = object.fields.get(target.member());
                         boolean constructorInitialization =
                                 env.canInitialize(object)
-                                        && currentValue == UNINITIALIZED_FIELD;
+                                        && currentValue == UNINITIALIZED_FIELD
+                                        // Only legacy fields without declaration
+                                        // initialization may be filled in a body.
+                                        // Otherwise an initializer callback could
+                                        // write an uninitialized sibling final slot
+                                        // before its own initializer overwrites it.
+                                        && field.initializer() == null;
                         if (field.bindingKind() != Ast.BindingKind.LET
                                 && !constructorInitialization) {
                             throw new IllegalArgumentException("field '" + object.klass.name() + "."
