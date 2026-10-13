@@ -219,9 +219,9 @@ final class ExclusiveAdtMatchSafetyTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(guest);
         }
-        assertEquals("1\\n3\\n0",
+        assertEquals("1\n3\n0",
                 output.toString(StandardCharsets.UTF_8)
-                        .strip().replace("\\r\\n", "\\n"));
+                        .strip().replace("\r\n", "\n"));
     }
 
     @Test
