@@ -425,8 +425,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
-    /** The host currently retiring an actor must never synchronously wait on
-     * its own finalization or on a nested actor shutdown from a cleanup hook. */
+    /** An actor retirement/cancellation callback may run nested host code;
+     * it must never synchronously await DONE or close the runtime on its stack. */
     private final ThreadLocal<ActorCell<?>> finalizingOnThread = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
@@ -7081,6 +7081,14 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
             }
 
+            // Mailbox-close, drain, operation-cancel and descendant-stop hooks can
+            // synchronously call back into host actor APIs. These callbacks are
+            // part of the retirement stack: waiting here for this (or a nested)
+            // DONE receipt deadlocks the publisher. Carry the same nonblocking
+            // host-context guard used by post-monitor finalization throughout
+            // termination cleanup, restoring it after any nested actor teardown.
+            ActorCell<?> previousRetiringActor = finalizingOnThread.get();
+            finalizingOnThread.set(this);
             try {
                 // Stop admission already linearized under lifecycleLock. Closing
                 // a channel settles registered asynchronous selectors inline.
@@ -7117,7 +7125,12 @@ public final class ActorRuntime implements AutoCloseable {
                     finalizeStopLocked();
                     lifecycleLock.notifyAll();
                 }
-                completeFinalizationOutsideLock();
+                try {
+                    completeFinalizationOutsideLock();
+                } finally {
+                    if (previousRetiringActor == null) finalizingOnThread.remove();
+                    else finalizingOnThread.set(previousRetiringActor);
+                }
             }
         }
     }
