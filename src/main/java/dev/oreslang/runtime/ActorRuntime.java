@@ -68,8 +68,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int URGENT_USER_MESSAGE_SLOTS = 16;
     /** Give NORMAL a dispatch turn after sustained URGENT traffic. */
     private static final int URGENT_USER_BURST = 8;
-    /** Wakeups are preferred but cannot indefinitely starve runnable user mail. */
-    private static final int CONTINUATION_BURST = 8;
+    // Continuations retain their logical actor-task priority. They must
+    // not be overtaken by later user messages on a transient burst counter.
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
     private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
@@ -6687,7 +6687,7 @@ public final class ActorRuntime implements AutoCloseable {
         private int queuedUserMessages;
         private int queuedUrgentMessages;
         private int consecutiveUrgentMessages;
-        private int consecutiveContinuations;
+
         /** Separate control-lane quota; never borrow user mailbox headroom. */
         private int queuedContinuations;
         private long nextUserMessageSequence;
@@ -7452,17 +7452,13 @@ public final class ActorRuntime implements AutoCloseable {
                         // Stop closes the user mailbox under this same lock.
                         if (stopped.get() || finalized) break;
 
-                        // Continuations always outrank user mail. While a
-                        // source receive is suspended, user mail is not runnable.
-                        // STOP/CANCEL is out-of-band. Continuation wakeups are
-                        // high-priority scheduling work, but their flood cannot
-                        // indefinitely starve runnable user mail. A suspended
-                        // source receive is the exception: user mail must not
-                        // bypass its outstanding logical handler lease.
-                        envelope = sourceReceiveSuspended
-                                || consecutiveContinuations < CONTINUATION_BURST
-                                        ? continuationMailbox.tryRead().orElse(null)
-                                        : null;
+                        // A cooperative task retains its logical actor lane
+                        // across scheduler continuations. Giving later user
+                        // mail a burst-based turn here breaks its happens-before
+                        // contract (ActorCooperateOrderingTest). Keep
+                        // continuations ahead of *both* user priority lanes.
+                        // STOP/CANCEL remains out-of-band.
+                        envelope = continuationMailbox.tryRead().orElse(null);
                         if (envelope == null && !sourceReceiveSuspended) {
                             if (consecutiveUrgentMessages >= URGENT_USER_BURST) {
                                 envelope = mailbox.tryRead().orElse(null);
@@ -7474,19 +7470,10 @@ public final class ActorRuntime implements AutoCloseable {
                                 envelope = mailbox.tryRead().orElse(null);
                             }
                         }
-                        if (envelope == null) {
-                            envelope = continuationMailbox.tryRead().orElse(null);
-                        }
-                        if (envelope != null) {
-                            if (envelope.isContinuation()) {
-                                consecutiveContinuations = Math.min(
-                                        CONTINUATION_BURST, consecutiveContinuations + 1);
-                            } else {
-                                consecutiveContinuations = 0;
-                                consecutiveUrgentMessages = envelope.isUrgent()
-                                        ? Math.min(URGENT_USER_BURST, consecutiveUrgentMessages + 1)
-                                        : 0;
-                            }
+                        if (envelope != null && !envelope.isContinuation()) {
+                            consecutiveUrgentMessages = envelope.isUrgent()
+                                    ? Math.min(URGENT_USER_BURST, consecutiveUrgentMessages + 1)
+                                    : 0;
                         }
                     }
                     if (envelope == null) break;
