@@ -60,6 +60,35 @@ final class DynamicPipelineGuestSourceTest {
                 failure.toString());
     }
 
+    @Test void sameEnumOwnerWithoutSharedMailboxPatternIsNotEnough() throws Exception {
+        String baseline = source();
+        // Rogue is a compiler-declared variant owned by Signal, but no
+        // compiler-owned pipeline mailbox pattern includes Signal.Rogue.
+        // A same-enum-owner shortcut would mistakenly accept this type.
+        String guest = baseline.replace(
+                "    Result: int = 2\nend",
+                "    Result: int = 2\n    Rogue: int = 3\nend")
+                .replace(
+                "    await first.send(Signal.Data(5));",
+                "    await first.send<Signal.Rogue>(Signal.Data(5));");
+        assertNotEquals(baseline, guest);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(guest)));
+        assertTrue(failure.toString().contains("no shared closed nominal domain"),
+                failure.toString());
+    }
+
+    @Test void inferredResultCaseCannotBypassExplicitReplyContract() throws Exception {
+        String baseline = source();
+        String guest = baseline.replace(
+                "    await first.send(Signal.Data(5));",
+                "    await first.send<Signal.Result<>>(Signal.Data(5));");
+        assertNotEquals(baseline, guest);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(guest)),
+                "an inferred type argument is not an exact nominal result case");
+    }
+
     @Test void arbitraryResultTypeIsRejectedBeforeExecution() throws Exception {
         String guest = source().replace(
                 "    await first.send(Signal.Data(5));",
