@@ -3419,7 +3419,7 @@ public final class Parser {
         String word = peek().lexeme();
         return ((word.equals("suspend") || word.equals("method")
                 || word.equals("final") || word.equals("critical"))
-                && (checkNext(IDENT) || checkNext(FNC) || checkNext(LPAREN)))
+                && (checkNext(IDENT) || checkNext(MUT) || checkNext(FNC) || checkNext(LPAREN)))
                 || looksLikeTypeFirstClassField();
     }
 
