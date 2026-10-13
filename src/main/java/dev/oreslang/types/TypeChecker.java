@@ -3989,13 +3989,13 @@ public final class TypeChecker {
         int fixedArity = restIndex >= 0 ? restIndex : bindings.size();
 
         if (source instanceof Tuple tuple) {
-            if (restIndex < 0 && tuple.elements().size() != fixedArity) {
+            // Destructuring selects a positional prefix. Unlike a tuple
+            // *type* or tuple *match pattern*, this is not an exact-arity test.
+            // Trailing unselected elements are discarded, not bound.
+            if (tuple.elements().size() < fixedArity) {
                 throw new IllegalArgumentException("destructure arity mismatch: tuple has " + tuple.elements().size()
-                        + " element(s), pattern has " + fixedArity);
-            }
-            if (restIndex >= 0 && tuple.elements().size() < fixedArity) {
-                throw new IllegalArgumentException("destructure arity mismatch: tuple has " + tuple.elements().size()
-                        + " element(s), pattern requires at least " + fixedArity + " before rest");
+                        + " element(s), pattern requires at least " + fixedArity
+                        + (restIndex >= 0 ? " before rest" : ""));
             }
 
             List<Type> result = new ArrayList<>(bindings.size());
