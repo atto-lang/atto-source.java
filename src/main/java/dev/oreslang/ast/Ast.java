@@ -751,14 +751,27 @@ public final class Ast {
             BindingKind bindingKind,
             String bindingName,
             List<Stmt> body,
-            boolean mutableReferent) {
+            boolean mutableReferent,
+            TypeRef bindingType,
+            DestructureKind destructureKind,
+            List<DestructureBinding> destructureBindings) {
         public SelectArm {
-            if (operation == ChannelOperation.DEFAULT && mutableReferent) {
-                throw new IllegalArgumentException("default select arm cannot carry mutable binding");
-            }
             body = List.copyOf(body);
+            destructureBindings = List.copyOf(destructureBindings);
+            boolean hasSimpleBinding = bindingName != null;
+            boolean hasPattern = destructureKind != null;
+            if (hasPattern != !destructureBindings.isEmpty()) {
+                throw new IllegalArgumentException("select destructure kind/bindings must appear together");
+            }
+            if (hasSimpleBinding && hasPattern) {
+                throw new IllegalArgumentException("select arm cannot use both a name and destructure pattern");
+            }
+            if (bindingType != null && !hasSimpleBinding) {
+                throw new IllegalArgumentException("select binding type requires a named binding");
+            }
             if (operation == ChannelOperation.DEFAULT) {
-                if (channel != null || value != null || bindingKind != null || bindingName != null) {
+                if (channel != null || value != null || bindingKind != null
+                        || hasSimpleBinding || hasPattern || bindingType != null || mutableReferent) {
                     throw new IllegalArgumentException("default select arm cannot carry channel/value/binding metadata");
                 }
             } else {
@@ -769,13 +782,32 @@ public final class Ast {
                 if (operation == ChannelOperation.WRITE && value == null) {
                     throw new IllegalArgumentException("write select arm requires a value");
                 }
-                if ((bindingKind == null) != (bindingName == null)) {
+                if (hasSimpleBinding && bindingKind == null) {
                     throw new IllegalArgumentException("select binding kind/name must appear together");
                 }
-                if (operation == ChannelOperation.WRITE && bindingName != null) {
+                if (operation == ChannelOperation.WRITE && (hasSimpleBinding || hasPattern)) {
                     throw new IllegalArgumentException("write select arm cannot bind a read value");
                 }
+                if (hasPattern) {
+                    if (operation != ChannelOperation.READ || bindingKind == null) {
+                        throw new IllegalArgumentException("select destructuring requires a read arm and binding kind");
+                    }
+                    validateRestBinding(destructureBindings, "select destructure");
+                    java.util.Set<String> names = new java.util.HashSet<>();
+                    for (DestructureBinding binding : destructureBindings) {
+                        if (!binding.isDiscard() && !names.add(binding.name())) {
+                            throw new IllegalArgumentException(
+                                    "duplicate select destructure binding '" + binding.name() + "'");
+                        }
+                    }
+                }
             }
+        }
+        public SelectArm(ChannelOperation operation, Expr channel, Expr value,
+                         BindingKind bindingKind, String bindingName, List<Stmt> body,
+                         boolean mutableReferent) {
+            this(operation, channel, value, bindingKind, bindingName, body, mutableReferent,
+                    null, null, List.of());
         }
         public SelectArm(ChannelOperation operation, Expr channel, Expr value,
                          BindingKind bindingKind, String bindingName, List<Stmt> body) {
