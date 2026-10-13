@@ -87,7 +87,7 @@ final class WithStateCapabilityContractTest {
                 ActorStateContract.verify(Parser.parse(actor("with state.read",
                     "self.handle_state(|s| -> { self.handle_state(|t| -> { return t.v; }); return s.v; })"))));
     }
-    @Test void referenceBearingActorStateResultsNeedProvenDetachedSnapshot() {
+    @Test void onlyFlatIntegerListStateResultsHaveRuntimeDetachmentProof() {
         for (String callback : new String[] {
             "self.handle_state(|s| -> { return s.items; })",
             "using state.read(|s| -> { return s.items; })",
@@ -97,8 +97,17 @@ final class WithStateCapabilityContractTest {
             String source = "define actor Counter as "
                     + "state { items: List[int] = [1, 2]; } "
                     + "get(): List[int] with state.read { return " + callback + "; } end";
-            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+            assertDoesNotThrow(
                     () -> TypeChecker.checkTypes(Parser.parse(source)), callback);
+        }
+
+        for (String elementType : new String[] { "bool", "string", "List[int]" }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[" + elementType + "]; } "
+                    + "get(): List[" + elementType + "] with state.read { "
+                    + "return self.handle_state(|s| -> { return s.items; }); } end";
+            var denied = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), elementType);
             assertTrue(denied.getMessage().contains("verified detached snapshot"),
                     denied::getMessage);
         }
