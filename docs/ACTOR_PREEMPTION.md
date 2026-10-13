@@ -89,15 +89,20 @@ a handoff must never reset a logical task's quota.
 
 ## Automatic loop cooperation in heap-owned source tasks
 
-The source interpreter now lowers `for`, `for-of`, destructuring `for-of`,
-and `loop` back-edges **inside an existing `SourceTask`** into an iterative
-callback trampoline. No `await` or explicit `rt cooperate` is needed in such
-a loop. Every 32 back-edges, a trusted source task polls cancellation and runtime
-state; an UNTRUSTED task charges fuel at **every** back-edge.
-It cooperates after a nominal 2 ms soft quantum or at most 512 back-edges,
-whichever is reached first at a poll. The continuation preserves loop indices,
-iterator cursors, locals, and pending callbacks. A new physical dispatch can
-start only after the previous guest turn fully unwinds.
+The source interpreter now lowers `while`, `for`, `for-of`,
+destructuring `for-of`, and `loop` back-edges **inside an existing
+`SourceTask`** into an iterative callback trampoline. No `await` or explicit
+`rt cooperate` is needed in such a loop. Each heap-owned task keeps its own
+64-bit saturating reduction counter and a dispatch-local monotonic clock.
+A trusted source task checks the watchdog, runtime cancellation and its 2 ms
+soft quantum every **64** back-edges until reaching the **512**-backedge
+reduction cap. Thereafter, it checks at **every** subsequent committed
+back-edge so release of a live no-yield guard cannot be followed by another
+64-iteration scheduling delay. An UNTRUSTED task charges fuel at **every**
+back-edge and still cannot automatically cooperate until logical quota
+continuity is proven. The continuation preserves loop indices, iterator
+cursors, locals, and pending callbacks. A new physical dispatch can start
+only after the previous guest turn fully unwinds.
 
 This is a **soft** scheduling quantum, not a 2 ms deadline guarantee. Long
 single iteration bodies, synchronous helper calls, host/FFI calls, JIT pauses,
