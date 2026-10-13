@@ -7434,17 +7434,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             OresObject object = new OresObject(this, klass, fields);
 
-            // Field initializers run before the constructor body and with the
-            // declaring class's private-member authority.
-            for (Ast.FieldDecl field : classFields) {
-                if (field.initializer() == null) continue;
-                OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
-                Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
-                Env initializerEnv = new Env(null, false, fieldOwner);
-                initializerEnv.define("self", object, Ast.BindingKind.VAL);
-                fields.put(field.name(), eval(field.initializer(), initializerEnv));
-            }
-
+            // Bind constructor parameters before evaluating field initializers.
+            // The object is not returned or published until all initializers
+            // and constructor-body validation have completed.
             Env constructorEnv = new Env(null, false, klass, object);
             constructorEnv.define("self", object, Ast.BindingKind.VAL);
             bindCallableArguments(
@@ -7452,6 +7444,22 @@ public final class OresEvalRootNode extends RootNode {
                     constructor.parameters(),
                     args,
                     "constructor " + klass.name());
+
+            // Field initializers run before the constructor body and with the
+            // declaring class's private-member authority. Only the declaring
+            // class may read its own constructor arguments, not inherited
+            // parent-field initializers.
+            for (Ast.FieldDecl field : classFields) {
+                if (field.initializer() == null) continue;
+                OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
+                Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
+                Env initializerEnv = new Env(
+                        fieldOwner == klass ? constructorEnv : null,
+                        false, fieldOwner, object);
+                initializerEnv.define("self", object, Ast.BindingKind.VAL);
+                fields.put(field.name(), eval(field.initializer(), initializerEnv));
+            }
+
             try {
                 executeBlock(constructor.body(), constructorEnv);
             } catch (ReturnSignal signal) {
