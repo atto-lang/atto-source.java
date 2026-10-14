@@ -77,4 +77,26 @@ final class ArrowArmBoundaryTest {
                 }
                 """));
     }
+    @Test
+    void selectAstRejectsBindingPermissionsWithoutAnActualBinding() {
+        var channel = new Ast.NameExpr("messages");
+        assertThrows(IllegalArgumentException.class, () -> new Ast.SelectArm(
+                Ast.ChannelOperation.READ, channel, null,
+                Ast.BindingKind.CONST, null, java.util.List.of(), false));
+        assertThrows(IllegalArgumentException.class, () -> new Ast.SelectArm(
+                Ast.ChannelOperation.READ, channel, null,
+                null, null, java.util.List.of(), true));
+        assertThrows(IllegalArgumentException.class, () -> new Ast.SelectArm(
+                Ast.ChannelOperation.WRITE, channel, new Ast.LiteralExpr(1),
+                Ast.BindingKind.VAL, null, java.util.List.of(), false));
+
+        // Legacy no-binding read and write arms still have valid AST shapes.
+        assertDoesNotThrow(() -> new Ast.SelectArm(
+                Ast.ChannelOperation.READ, channel, null,
+                null, null, java.util.List.of(), false));
+        assertDoesNotThrow(() -> new Ast.SelectArm(
+                Ast.ChannelOperation.WRITE, channel, new Ast.LiteralExpr(1),
+                null, null, java.util.List.of(), false));
+    }
+
 }
