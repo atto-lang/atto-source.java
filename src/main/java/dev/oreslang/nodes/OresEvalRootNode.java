@@ -9077,9 +9077,19 @@ public final class OresEvalRootNode extends RootNode {
         }
         @Override public Iterable<?> sharedStateChildren(){return fields.values();}
         @Override public String toString(){
+            // Implicit display/logging is an external observation boundary.
+            // Never dump private fields (including private inherited fields)
+            // simply because an object reference is printable.
             LinkedHashMap<String,Object> display = new LinkedHashMap<>();
-            fields.forEach((name, value) ->
-                    display.put(name, value == Evaluator.UNINITIALIZED_FIELD ? "<uninitialized>" : value));
+            fields.forEach((name, value) -> {
+                Evaluator.OwnedField slot = owner.findField(
+                        klass, name, new LinkedHashSet<>());
+                if (slot != null
+                        && slot.field().visibility() == Ast.Visibility.PUBLIC) {
+                    display.put(name,
+                            value == Evaluator.UNINITIALIZED_FIELD ? "<uninitialized>" : value);
+                }
+            });
             return klass.name()+display;
         }
     }
