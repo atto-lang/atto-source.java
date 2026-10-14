@@ -72,6 +72,42 @@ final class IncrementalEffectAbiTest {
     }
 
     @Test
+    void sameTypedPrivateAndPublicConstructorFieldReordersInvalidateImporters() {
+        assertImporterRebuilds("""
+                define pub class Box as
+                  private int hidden: 1
+                  pub int visible: 2
+                end
+                """, """
+                define pub class Box as
+                  pub int visible: 2
+                  private int hidden: 1
+                end
+                """, """
+                import class Box from './lib';
+                pub fnc main(): void { return; }
+                """);
+    }
+
+    @Test
+    void synthesizedConstructorFieldVisibilityChangesInvalidateImporters() {
+        assertImporterRebuilds("""
+                define pub class Box as
+                  private int first: 1
+                  pub int second: 2
+                end
+                """, """
+                define pub class Box as
+                  pub int first: 1
+                  pub int second: 2
+                end
+                """, """
+                import class Box from './lib';
+                pub fnc main(): void { return; }
+                """);
+    }
+
+    @Test
     void privateFunctionEffectsDoNotChangeAnUnrelatedPublicAbi() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         String api = "pub fnc value(): int { return 7; }\n";
