@@ -4,6 +4,10 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+
+import java.io.ByteArrayOutputStream;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -75,26 +79,69 @@ final class PinnedValueMatchConformanceTest {
     }
 
     @Test
-    void noValueMustFailWithTheSpecificValueMatchParserDiagnostic() {
+    void noValueMustFailInParserWithTheSpecificDiagnostic() throws Exception {
+        // A generic type/ownership failure must never masquerade as a parser verdict.
+        String source = readPinned("reject-no-value.ores");
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> admit("reject-no-value.ores"));
+                () -> Parser.parse(source), "missing value must be rejected by the parser");
+        assertNotNull(failure.getMessage());
         assertTrue(failure.getMessage().contains("value match arms require exactly one"),
-                "wrong rejection reason: " + failure.getMessage());
+                "wrong parser rejection reason: " + failure.getMessage());
     }
 
     @Test
-    void nonExhaustiveMustFailWithTheSpecificCoverageDiagnostic() {
+    void nonExhaustiveMustParseThenFailAtTypeCoverage() throws Exception {
+        var parsed = assertDoesNotThrow(
+                () -> Parser.parse(readPinned("reject-nonexhaustive.ores")),
+                "non-exhaustive fixture must be syntactically valid");
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> admit("reject-nonexhaustive.ores"));
+                () -> TypeChecker.check(parsed), "type checker must reject uncovered cases");
+        assertNotNull(failure.getMessage());
         assertTrue(failure.getMessage().contains("non-exhaustive match"),
-                "wrong rejection reason: " + failure.getMessage());
+                "wrong type-checker rejection reason: " + failure.getMessage());
     }
 
     @Test
-    void mixedArmTypesMustFailAtTheValueMatchTypeBoundary() {
+    void mixedArmTypesMustParseThenFailAtTheValueMatchTypeBoundary() throws Exception {
+        var parsed = assertDoesNotThrow(
+                () -> Parser.parse(readPinned("reject-mismatched-types.ores")),
+                "mismatched arm types must not fail due to an unrelated parse error");
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> admit("reject-mismatched-types.ores"));
+                () -> TypeChecker.check(parsed), "type checker must reject mixed result types");
+        assertNotNull(failure.getMessage());
         assertTrue(failure.getMessage().contains("value match arm"),
-                "wrong rejection reason: " + failure.getMessage());
+                "wrong type-checker rejection reason: " + failure.getMessage());
+    }
+
+    /**
+     * Execute the exact, SHA-pinned positive fixture bytes, not a hand-written
+     * replacement of the examples. Successful compilation alone is insufficient
+     * to prove the value match returned to the expression rather than the
+     * enclosing callable, or that do-match kept its procedural return.
+     */
+    private static String executePinnedMain(String name) throws Exception {
+        String program = readPinned(name);
+        var typed = TypeChecker.check(Parser.parse(program));
+        OwnershipChecker.check(typed);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source guest = Source.newBuilder(OresLanguage.ID, program, name)
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(guest);
+        }
+        return output.toString(StandardCharsets.UTF_8).trim().replace("\r", "");
+    }
+
+    @Test
+    void optionBracedFixtureExecutesWithExactOutputs() {
+        assertEquals("42:0", assertDoesNotThrow(
+                () -> executePinnedMain("value-option-braced.ores")));
+    }
+
+    @Test
+    void proceduralReturnDoesNotReplaceValueExpressionReturn() {
+        assertEquals("142:42", assertDoesNotThrow(
+                () -> executePinnedMain("value-vs-procedural.ores")));
     }
 }
