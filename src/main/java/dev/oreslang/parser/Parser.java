@@ -3462,15 +3462,37 @@ public final class Parser {
 
     private boolean looksLikeLambda() {
         int depth = 0;
+        boolean followedByArrow = false;
         for (int i = current; i < tokens.size(); i++) {
             Token.Type type = tokens.get(i).type();
             if (type == LPAREN) depth++;
             else if (type == RPAREN) {
                 depth--;
-                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == ARROW;
+                if (depth == 0) {
+                    followedByArrow = i + 1 < tokens.size()
+                            && tokens.get(i + 1).type() == ARROW;
+                    break;
+                }
             }
         }
-        return false;
+        if (!followedByArrow) return false;
+
+        // A match arm also uses '->': 'on true when (x = y) -> {...}'
+        // must parse '(x = y)' as a guarded expression, NOT reinterpret
+        // it as typed lambda parameters merely because an arm arrow follows.
+        // Look ahead using the real parameter grammar, without committing
+        // any token consumption. This also preserves valid typed lambdas.
+        int saved = current;
+        try {
+            consume(LPAREN, "expected '(' before lambda parameters");
+            parseParametersUntil(RPAREN);
+            consume(RPAREN, "expected ')' after lambda parameters");
+            return check(ARROW);
+        } catch (IllegalArgumentException notLambdaParameters) {
+            return false;
+        } finally {
+            current = saved;
+        }
     }
 
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
