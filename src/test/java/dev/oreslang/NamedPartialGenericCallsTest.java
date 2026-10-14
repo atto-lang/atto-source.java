@@ -93,4 +93,27 @@ final class NamedPartialGenericCallsTest {
                 end
                 """)));
     }
+
+    @Test
+    void namedGenericBindingsCannotBypassMoveChecking() {
+        String source = """
+                define module app
+                  define class Resource as
+                    pub val int id = 7;
+                  end
+
+                  fnc sink<T, U>(T value, U marker): void { return; }
+                  fnc bad(): void {
+                    let Resource resource = new Resource();
+                    sink<U=int, T=Resource>(resource, 42);
+                    stdio.println(resource.id);
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("use of moved value"),
+                failure.getMessage());
+    }
 }
