@@ -60,6 +60,18 @@ final class IncrementalEffectAbiTest {
     }
 
     @Test
+    void publicClassAbstractionChangesInvalidateClassImporters() {
+        assertImporterRebuilds("""
+                define pub class Service as end
+                """, """
+                define pub abstract class Service as end
+                """, """
+                import class Service from './lib';
+                pub fnc main(): void { return; }
+                """);
+    }
+
+    @Test
     void privateFunctionEffectsDoNotChangeAnUnrelatedPublicAbi() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         String api = "pub fnc value(): int { return 7; }\n";
