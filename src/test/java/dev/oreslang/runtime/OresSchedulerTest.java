@@ -16,6 +16,261 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OresSchedulerTest {
 
     @Test
+    void cleanupPrivilegeBeginsOnlyAfterCancellationWasDeliveredToTask()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            CountDownLatch running = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicBoolean ordinaryTurnSawCleanupPrivilege = new AtomicBoolean(true);
+            AtomicBoolean cleanupTurnSawPrivilege = new AtomicBoolean();
+            AtomicInteger resumes = new AtomicInteger();
+
+            OresFuture<Void> task = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Void>() {
+                        @Override public OresScheduler.Step<Void> resume(
+                                OresScheduler.Resume resume) throws Exception {
+                            if (resumes.getAndIncrement() == 0) {
+                                running.countDown();
+                                assertTrue(release.await(5, TimeUnit.SECONDS));
+                                ordinaryTurnSawCleanupPrivilege.set(
+                                        OresScheduler.currentTaskInCleanup());
+                                return OresScheduler.cooperate();
+                            }
+                            assertInstanceOf(
+                                    java.util.concurrent.CancellationException.class,
+                                    resume.failure());
+                            cleanupTurnSawPrivilege.set(
+                                    OresScheduler.currentTaskInCleanup());
+                            return OresScheduler.done(null);
+                        }
+                    });
+            assertTrue(running.await(5, TimeUnit.SECONDS));
+            assertTrue(task.cancel(false));
+            release.countDown();
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertFalse(ordinaryTurnSawCleanupPrivilege.get(),
+                    "request alone must not grant post-STOP actor privileges");
+            assertTrue(cleanupTurnSawPrivilege.get(),
+                    "terminal delivery grants lexical cleanup its actor lane");
+            assertEquals(2, resumes.get());
+        }
+    }
+
+    @Test
+    void cleanupAwareCancellationDetachesProducerAndAwaitsLexicalCleanup() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> cleanupGate = new OresFuture<>();
+            CountDownLatch firstTurn = new CountDownLatch(1);
+            CountDownLatch cleanupStarted = new CountDownLatch(1);
+            AtomicInteger resumes = new AtomicInteger();
+            AtomicInteger cleanupCalls = new AtomicInteger();
+
+            OresFuture<Integer> task = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Integer>() {
+                        @Override
+                        public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+                            assertSame(scheduler, OresScheduler.current());
+                            int step = resumes.getAndIncrement();
+                            if (step == 0) {
+                                assertTrue(resume.initial());
+                                firstTurn.countDown();
+                                return OresScheduler.await(producer);
+                            }
+                            if (step == 1) {
+                                assertFalse(resume.initial());
+                                assertInstanceOf(
+                                        java.util.concurrent.CancellationException.class,
+                                        resume.failure());
+                                cleanupCalls.incrementAndGet();
+                                cleanupStarted.countDown();
+                                return OresScheduler.await(cleanupGate);
+                            }
+                            assertEquals(2, step);
+                            assertNull(resume.failure(),
+                                    "the one-shot cancellation must not abort async cleanup");
+                            assertEquals(99, resume.value());
+                            return OresScheduler.done(123);
+                        }
+                    });
+            assertTrue(firstTurn.await(5, TimeUnit.SECONDS));
+            assertTrue(task.cancel(false));
+            assertFalse(task.cancel(false), "second cancellation must not replay cleanup");
+            assertTrue(cleanupStarted.await(5, TimeUnit.SECONDS));
+            assertFalse(task.isDone(), "external Future cannot settle before cleanup completes");
+            assertEquals(1, cleanupCalls.get());
+            assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                    "abandoned producer cannot retain cancelled source continuation");
+
+            producer.completeFromRuntime(7);
+            assertEquals(2, resumes.get(),
+                    "late producer settlement must never re-enter guest source");
+            cleanupGate.completeFromRuntime(99);
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertTrue(task.isCancelled());
+            assertEquals(3, resumes.get());
+            assertEquals(1, cleanupCalls.get());
+        }
+    }
+
+    @Test
+    void cleanupAwareCancellationBeforeFirstTurnDoesNotExecuteGuestSource()
+            throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch occupied = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        carrier.execute(() -> {
+            occupied.countDown();
+            try {
+                release.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        assertTrue(occupied.await(5, TimeUnit.SECONDS));
+        AtomicInteger guestResumes = new AtomicInteger();
+        try (OresScheduler scheduler =
+                     OresScheduler.runtimeOwned("cancel-before-source-start", 1, carrier)) {
+            OresFuture<Integer> result = scheduler.start(
+                    (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                        guestResumes.incrementAndGet();
+                        return OresScheduler.done(4);
+                    });
+            assertTrue(result.cancel(false));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertEquals(0, guestResumes.get());
+        } finally {
+            release.countDown();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void cancellationSettlementFollowsFinalGuestContextExit() throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        AtomicBoolean insideGuestTurn = new AtomicBoolean();
+        AtomicBoolean cancelledDuringGuestTurn = new AtomicBoolean();
+        AtomicInteger resumes = new AtomicInteger();
+        CountDownLatch reachedAwait = new CountDownLatch(1);
+        CountDownLatch cancelledObserved = new CountDownLatch(1);
+        OresFuture<Integer> producer = new OresFuture<>();
+
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "cleanup-context-exit", 1, executor, turn -> {
+                    assertFalse(insideGuestTurn.get(),
+                            "cleanup may not nest a language/context turn");
+                    insideGuestTurn.set(true);
+                    try {
+                        turn.run();
+                    } finally {
+                        insideGuestTurn.set(false);
+                    }
+                })) {
+            OresFuture<Integer> task = scheduler.start(
+                    (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                        if (resumes.getAndIncrement() == 0) {
+                            reachedAwait.countDown();
+                            return OresScheduler.await(producer);
+                        }
+                        assertInstanceOf(
+                                java.util.concurrent.CancellationException.class,
+                                resume.failure());
+                        return OresScheduler.done(100);
+                    });
+            task.whenCompleteRuntime((value, failure) -> {
+                cancelledDuringGuestTurn.set(insideGuestTurn.get());
+                cancelledObserved.countDown();
+            });
+            assertTrue(reachedAwait.await(5, TimeUnit.SECONDS));
+            assertTrue(task.cancel(false));
+            assertTrue(cancelledObserved.await(5, TimeUnit.SECONDS));
+            assertTrue(task.isCancelled());
+            assertFalse(cancelledDuringGuestTurn.get(),
+                    "terminal cancellation must publish only after context leave");
+            assertEquals(2, resumes.get(), "exactly one cleanup resume is admitted");
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void failingCleanupRetainsOriginalCancellationAndSuppressedDiagnostic()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            CountDownLatch firstTurn = new CountDownLatch(1);
+            AtomicInteger cleanupRuns = new AtomicInteger();
+            var cleanupFailure = new IllegalStateException("cleanup failed");
+            OresFuture<Integer> task = scheduler.start(
+                    (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                        if (resume.initial()) {
+                            firstTurn.countDown();
+                            return OresScheduler.await(producer);
+                        }
+                        cleanupRuns.incrementAndGet();
+                        assertInstanceOf(
+                                java.util.concurrent.CancellationException.class,
+                                resume.failure());
+                        throw cleanupFailure;
+                    });
+            assertTrue(firstTurn.await(5, TimeUnit.SECONDS));
+            assertTrue(task.cancel(false));
+            var cancelled = assertThrows(
+                    java.util.concurrent.CancellationException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertEquals(1, cleanupRuns.get());
+            assertArrayEquals(new Throwable[] {cleanupFailure}, cancelled.getSuppressed());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
+    void closingSchedulerWithAlreadyCancelledPendingCleanupCannotHangFuture()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        try {
+            CountDownLatch initial = new CountDownLatch(1);
+            CountDownLatch cleanupStarted = new CountDownLatch(1);
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> neverFinishedCleanup = new OresFuture<>();
+            AtomicInteger resumes = new AtomicInteger();
+            OresFuture<Integer> task = scheduler.start(
+                    (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                        int pc = resumes.getAndIncrement();
+                        if (pc == 0) {
+                            initial.countDown();
+                            return OresScheduler.await(producer);
+                        }
+                        assertEquals(1, pc, "closed scheduler must not revive cleanup");
+                        cleanupStarted.countDown();
+                        return OresScheduler.await(neverFinishedCleanup);
+                    });
+            assertTrue(initial.await(5, TimeUnit.SECONDS));
+            assertTrue(task.cancel(false));
+            assertTrue(cleanupStarted.await(5, TimeUnit.SECONDS));
+            assertFalse(task.isDone(), "normal cancellation waits for cleanup");
+            scheduler.close();
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertTrue(task.isDone());
+            assertTrue(task.isCancelled());
+            assertEquals(2, resumes.get());
+            neverFinishedCleanup.completeFromRuntime(9);
+            producer.completeFromRuntime(10);
+            assertEquals(2, resumes.get(),
+                    "late producer and cleanup settlements cannot resurrect closed scheduler");
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    @Test
     void rejectedGuestContextAdmissionSettlesTheOwningTask() throws Exception {
         IllegalStateException failure = new IllegalStateException("guest context entry rejected");
         try (OresScheduler scheduler = OresScheduler.managed(1, runnable -> { throw failure; })) {
