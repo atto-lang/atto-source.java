@@ -42,7 +42,7 @@ final class TypedValueMatchParameterTest {
         OwnershipChecker.check(typed);
 
         var fn = (Ast.FunctionDecl) parsed.modules().getFirst().declarations().getFirst();
-        var binding = (Ast.VarBindingStmt) fn.body().getFirst();
+        var binding = (Ast.BindingStmt) fn.body().getFirst();
         // Ensure callers never accidentally lose the annotation during parsing.
         assertInstanceOf(Ast.MatchExpr.class, binding.initializer());
         assertEquals("int", ((Ast.MatchExpr) binding.initializer()).resultType().name());
