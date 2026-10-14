@@ -17,6 +17,7 @@ is still not an external export. The synthetic file-root may export its own
 | Default object stringification/logging | Display public fields only, including through inheritance. Do not display private field names or values. |
 | External module/class/function imports | Both the named container and member must be public. Root public declarations are an explicit exception for container eligibility. |
 | Host reflection, dynamic member APIs and interop | No implicit authority escalation. Any new reflection bridge must enforce the same owner/visibility rule as lexical member access. |
+| `@FromJson` on class fields | This is an existing explicit annotation contract: expansion generates **public getters and setters even when the annotated field is private**. Treat it as an intentional API exposure. Do not annotate sensitive private fields without considering this consequence; changing this behavior requires a separately reviewed language compatibility decision. |
 | External JSON/MessagePack/protobuf serialization | Not implemented as a general object-export API by this PR. A future codec must be explicit about exported fields, custom serializers, schema version, actor restrictions, cycles, capabilities and redaction; private state must not silently become a public map. |
 | Internal actor isolation/copy | Preserve class ownership and visibility metadata for private internal state; transport may need private data for correct behavior. Internal actor copies are NOT equivalent to external serialization/export. |
 
