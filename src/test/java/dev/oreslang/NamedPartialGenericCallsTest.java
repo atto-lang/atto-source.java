@@ -135,4 +135,62 @@ final class NamedPartialGenericCallsTest {
                 }
                 """)));
     }
+
+    @Test
+    void rejectsUnsupportedNamedGenericArgumentsInTypePositions() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          define class Box<T> as
+                            pub val T value;
+                          end
+                          fnc use(Box<T=int> box): void { return; }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("named generic type arguments"));
+    }
+
+    @Test
+    void rejectsTypeApplicationToTypeVariableOrScalar() {
+        IllegalArgumentException variable = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc bad<T>(T<int> value): void { return; }
+                        end
+                        """)));
+        assertTrue(variable.getMessage().contains("cannot be parameterized"));
+
+        IllegalArgumentException scalar = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc bad(int<String> value): void { return; }
+                        end
+                        """)));
+        assertTrue(scalar.getMessage().contains("cannot accept type arguments"));
+    }
+
+    @Test
+    void intrinsicChannelFactoryRejectsNamedAndHoleTypeArguments() {
+        IllegalArgumentException named = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc bad(): void {
+                            Channel.new<T=int>(4);
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(named.getMessage().contains("positional concrete payload type"));
+
+        IllegalArgumentException hole = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc bad(): void {
+                            Channel.new<_>(4);
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(hole.getMessage().contains("positional concrete payload type"));
+    }
 }
