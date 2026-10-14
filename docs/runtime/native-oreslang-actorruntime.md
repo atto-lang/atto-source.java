@@ -153,6 +153,34 @@ against a new VM. A production handle should additionally carry VM-instance
 identity and a generation-scoped secret/nonce independent of allocation
 address.
 
+### Physical carrier identity hardening (2026-10-14)
+
+A raw `pthread_t` is not a durable turn ownership identity: operating systems
+may recycle thread identifiers once a carrier exits, and `pthread_equal`
+with an expired identifier is not a safe authentication strategy. Turn leases
+now capture a **process-monotonic token** assigned to each native thread via
+C11 thread-local storage. A new thread cannot inherit a prior thread's token
+even if the OS reuses its thread ID. A process-wide atomic counter refuses
+to wrap; token exhaustion fails closed rather than granting a recycled lease.
+
+This is **physical release ownership only**. The trusted VM must still
+authenticate a real SourceTask and continuation, prove the guest frame has
+physically exited, and provide a controlled abandoned-carrier recovery design.
+A replacement thread may never release an abandoned lease simply because its
+OS thread ID matches an old one. This prototype intentionally refuses to
+retire an actor while such a lease remains outstanding.
+
+The regression suite adds **512 carrier create/claim/release/join cycles** per
+test executable, supplementing the 200 STOP-vs-user and 200
+force-revoke-vs-cleanup iterations. Private/private validation mirrored exactly
+four source blobs, with root tree
+`2585bd1f9a239534ba6bdbd16239dab77befa8f5`, and checked them against
+source PR head `9a2dec270b28175003c6a222edf3022b27ac5f7a`.
+[Funded Actions run #38657233362](https://github.com/canonical-cloud/canonical-e2e/actions/runs/38657233362)
+executed successfully with GCC/Clang, -O0/-O2 and ASan/UBSan (eight
+executions). This is **exact-native-blob evidence only**, not proof that the
+entire Git tree, Java guest loader or LLVM compiler passed.
+
 Native compiler-and-test evidence is required on the exact Git tree; successful
 registration of a GitHub Actions workflow without executed job steps is not
 validation. Cross-org CI mirrors require private/private pinned repository IDs
