@@ -9018,9 +9018,9 @@ public final class OresEvalRootNode extends RootNode {
             // turns. Actor maps are independently denied, but this also guards
             // any unchecked host or dynamic entry path.
             for (Slot slot : slots.values()) {
-                if (slot.value instanceof OresKeyedMap<?, ?>) {
+                if (containsEmbeddedTypedMap(slot.value, new IdentityHashMap<>(), 0)) {
                     throw new SecurityException(
-                            "cannot snapshot typed Map across deferred execution without ownership proof");
+                            "cannot snapshot typed Map or Map-containing aggregate across deferred execution without ownership proof");
                 }
             }
             Env cp = new Env(
@@ -9044,7 +9044,8 @@ public final class OresEvalRootNode extends RootNode {
             // and typed Maps cannot be captured at all in V1. Omit maps even
             // when unused; runtime lookup will fail closed on attempted use.
             for (Map.Entry<String, Slot> entry : slots.entrySet()) {
-                if (!(entry.getValue().value instanceof OresKeyedMap<?, ?>)) {
+                if (!containsEmbeddedTypedMap(
+                        entry.getValue().value, new IdentityHashMap<>(), 0)) {
                     cp.slots.put(entry.getKey(), entry.getValue());
                 }
             }
