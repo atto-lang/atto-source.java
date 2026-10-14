@@ -59,6 +59,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
     private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+    /** Structured STOP may finish lexical cleanup; deadline revokes its lane. */
+    private static final long ACTOR_CLEANUP_GRACE_MILLIS = 2_000L;
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
@@ -1732,17 +1734,16 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (!(task instanceof OresScheduler.CleanupAwareTask<?>)) {
-            return cell.sourceScheduler().start(task);
-        }
-        // Tracking starts before stop may snapshot owned tasks. Keep lexical
-        // cleanup as part of actor lifetime even when the caller did not
-        // explicitly register its returned Future as a pending operation.
+        // Registration and STOP are serialized even for ordinary tasks:
+        // cancellation cleanup cannot spawn fresh user work past the seal.
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized || closed.get()) {
                 throw terminated(cell.ref);
             }
             OresFuture<T> future = cell.sourceScheduler().start(task);
+            if (!(task instanceof OresScheduler.CleanupAwareTask<?>)) {
+                return future;
+            }
             cell.sourceCleanupTasks.add(future);
             future.whenCompleteRuntime((ignored, failure) -> {
                 synchronized (cell.lifecycleLock) {
@@ -4335,7 +4336,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (currentActor.get() != null) return;
 
         try {
-            cell.awaitFinalized(CLOSE_WAIT_NANOS);
+            cell.awaitFinalized(TimeUnit.MILLISECONDS.toNanos(
+                    ACTOR_CLEANUP_GRACE_MILLIS + 1_000L));
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(
@@ -6094,6 +6096,8 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private boolean sourceHandoffRequested;
         private OresScheduler sourceScheduler;
+        /** Prevent a queued continuation being dropped before STOP injects cancellation. */
+        private boolean sourceCancellationPending;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
@@ -6239,7 +6243,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean hasSourceCleanup() {
-            return !sourceCleanupTasks.isEmpty()
+            return !sourceCancellationPending && !sourceCleanupTasks.isEmpty()
                     && !forceKillFenced && !closed.get();
         }
 
@@ -6339,6 +6343,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()
+                    || sourceCancellationPending
                     || hasSourceCleanup()) return;
             finalized = true;
             continuationMailbox.close(ref.terminationCause.get());
@@ -6870,6 +6875,30 @@ public final class ActorRuntime implements AutoCloseable {
             terminateTree(cancellation, true);
         }
 
+        /**
+         * Fail closed when a guest cleanup suspends forever. Deadline handling
+         * never runs guest code off-lane: it only revokes pending source tasks.
+         * A turn already executing retains the ordinary activeTurns barrier.
+         */
+        private void expireSourceCleanup() {
+            final OresScheduler scheduler;
+            synchronized (lifecycleLock) {
+                if (finalized || !stopped.get() || sourceCleanupTasks.isEmpty()) return;
+                ref.terminationCause.compareAndSet(null,
+                        new IllegalStateException(
+                                "actor source cleanup exceeded bounded STOP deadline: "
+                                        + ref.id()));
+                scheduler = sourceScheduler;
+            }
+            if (scheduler != null) {
+                scheduler.close();
+            }
+            synchronized (lifecycleLock) {
+                finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
+        }
+
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
@@ -6879,16 +6908,21 @@ public final class ActorRuntime implements AutoCloseable {
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
+                // A second STOP must not reset the cancellation-ordering fence
+                // or close a mailbox reserved for in-flight lexical cleanup.
+                if (stopped.get()) return;
                 stopped.set(true);
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 lexicalCleanup = List.copyOf(sourceCleanupTasks);
-                // Only previously-owned stackless lexical continuations may
-                // cross the stop barrier. Ordinary control/user mail is sealed.
-                if (lexicalCleanup.isEmpty() || forceKillFenced || closed.get()) {
+                sourceCancellationPending = !lexicalCleanup.isEmpty()
+                        && !forceKillFenced && !closed.get();
+                if (!sourceCancellationPending) {
                     continuationMailbox.close(cause);
                     drainMailboxReservations();
                 } else {
+                    // Keep bounded control capacity exclusively for authorized
+                    // cleanup after all normal user messages are sealed.
                     drainUserMailboxReservations();
                 }
                 for (var waiter : pendingSourceReceiveWaiters) waiter.detach();
@@ -6900,13 +6934,27 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
             }
 
-            // Cancellation removes channel/select waiter registrations before
-            // any future channel activity can revive work for this dead actor.
-            for (OresFuture<?> future : pending) future.cancel(false);
-            // Source tasks remain owned even if their caller omitted the
-            // generic ownCurrentActorFuture registration. Request terminal
-            // unwind through the actor's private continuation mailbox.
-            for (OresFuture<?> future : lexicalCleanup) future.cancel(false);
+            try {
+                // The stop fence must stay raised until every task has
+                // observed its cancellation request. Otherwise an old queued
+                // resume can be discarded before its cleanup permit exists.
+                for (OresFuture<?> future : pending) future.cancel(false);
+                for (OresFuture<?> future : lexicalCleanup) future.cancel(false);
+            } finally {
+                boolean cleanupActive;
+                synchronized (lifecycleLock) {
+                    sourceCancellationPending = false;
+                    cleanupActive = hasSourceCleanup();
+                    finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
+                if (cleanupActive) {
+                    schedule();
+                    CompletableFuture.delayedExecutor(
+                            ACTOR_CLEANUP_GRACE_MILLIS, TimeUnit.MILLISECONDS)
+                            .execute(this::expireSourceCleanup);
+                }
+            }
 
             for (ActorCell<?> child : descendants) {
                 child.cancel(new ActorCancelledException(
