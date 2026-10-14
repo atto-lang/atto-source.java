@@ -88,6 +88,12 @@ public final class TypeChecker {
     private boolean currentMaySuspend;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
+    /** Innermost static value-select result context, null outside its arms. */
+    private List<Type> currentSelectReturnTypes;
+    /** Deferred select-value arms cannot unwind a completed callable. */
+    private boolean inDeferredValueSelectArm;
+    /** Callable return type stays available while checking nested expression arms. */
+    private Type currentCallableReturnType;
     private final List<String> warnings = new ArrayList<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
@@ -1406,7 +1412,9 @@ public final class TypeChecker {
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
         Env env = new Env(parent);
         Env previousTypeScope = currentTypeScope;
+        Type previousReturnType = currentCallableReturnType;
         currentTypeScope = env;
+        currentCallableReturnType = expectedReturn;
         try {
             // Reserve names before checking any initializer, so a use before the
             // declaration cannot silently resolve as an unrelated nominal type.
@@ -1419,6 +1427,7 @@ public final class TypeChecker {
             for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
         } finally {
             currentTypeScope = previousTypeScope;
+            currentCallableReturnType = previousReturnType;
         }
     }
 
@@ -1433,6 +1442,33 @@ public final class TypeChecker {
 
     private void checkCallableBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
         checkIsolatedArmBlock(body, parent, generics, expectedReturn, self, false);
+    }
+
+    /**
+     * A lambda owns its own return target, even when syntactically nested
+     * inside a deferred nb-select arm or an outer value-select expression.
+     * Preserve the outer selection's scope while checking the closure body:
+     * resetting these flags for all isolated blocks would incorrectly let a
+     * detached select arm unwind its already-completed caller.
+     */
+    private <T> T inLambdaReturnScope(
+            Type returnType, java.util.function.Supplier<T> check) {
+        List<Type> savedSelectResults = currentSelectReturnTypes;
+        boolean savedDeferred = inDeferredValueSelectArm;
+        boolean savedDiscard = inDiscardingSelectArm;
+        Type savedCallableReturn = currentCallableReturnType;
+        try {
+            currentSelectReturnTypes = null;
+            inDeferredValueSelectArm = false;
+            inDiscardingSelectArm = false;
+            currentCallableReturnType = returnType;
+            return check.get();
+        } finally {
+            currentSelectReturnTypes = savedSelectResults;
+            inDeferredValueSelectArm = savedDeferred;
+            inDiscardingSelectArm = savedDiscard;
+            currentCallableReturnType = savedCallableReturn;
+        }
     }
 
     private void checkIsolatedArmBlock(List<Ast.Stmt> body, Env parent, Set<String> generics,
@@ -1579,10 +1615,28 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
+            if (inDeferredValueSelectArm && ret.target() == Ast.ReturnTarget.FUNCTION) {
+                throw new IllegalArgumentException(
+                        "deferred nb select arms cannot return from the enclosing callable");
+            }
+            if (ret.target() == Ast.ReturnTarget.SELECT_VALUE) {
+                if (currentSelectReturnTypes == null || ret.value() == null) {
+                    throw new IllegalArgumentException(
+                            "value-select return must have a value and target an active select arm");
+                }
+                Type returned = typeOf(ret.value(), env, generics, self);
+                if (returned == Primitive.VOID || returned == Unknown.INSTANCE
+                        || returned instanceof Borrow) {
+                    throw new IllegalArgumentException(
+                            "value-select return must be a statically typed, owned, non-void value");
+                }
+                currentSelectReturnTypes.add(returned);
+                return;
+            }
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
-                        ? "W-SELECT-RETURN: legacy do nb select return; exits only the detached arm"
-                        : "W-SELECT-RETURN: legacy do nb select return value is arm-local and discarded");
+                        ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
+                        : "W-SELECT-RETURN: return value in do select exits only the selected arm; the value is discarded");
             }
             if (currentGenerator) {
                 if (ret.value() != null) {
@@ -1703,6 +1757,13 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
+            if (inDeferredValueSelectArm && selected.explicitDo()
+                    && selected.mode() == Ast.WaitMode.BLOCKING) {
+                // A nested procedural arm cannot return from an outer callable
+                // after the deferred value select has returned its Future.
+                throw new IllegalArgumentException(
+                        "procedural do select inside deferred nb select value arm is not yet safe");
+            }
             if (selected.mode() == Ast.WaitMode.NONBLOCKING
                     && currentActorKind == Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
@@ -1730,28 +1791,53 @@ public final class TypeChecker {
                         requireMutableReferentCompatible(
                                 element, arm.mutableReferent(),
                                 "select binding '" + arm.bindingName() + "'");
+                        Type bindingType = arm.declaredBindingType() == null
+                                ? element : resolve(arm.declaredBindingType(), generics, self);
+                        requireAssignable(element, bindingType,
+                                "typed select read binding '" + arm.bindingName() + "'");
                         armEnv.define(
                                 arm.bindingName(),
-                                element,
+                                bindingType,
                                 arm.bindingKind());
                     }
                 }
-                if (selected.explicitDo() && selected.mode() == Ast.WaitMode.NONBLOCKING) {
-                    // Legacy detached do-nb-select arms cannot return from an
-                    // already-continued enclosing callable.
+                if (selected.explicitDo()
+                        && selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    // Legacy detached do-nb-select arms have no enclosing
+                    // callable to return from. Preserve the compatibility
+                    // warning until this form is removed.
                     checkIsolatedArmBlock(arm.body(), armEnv, generics,
                             Unknown.INSTANCE, self, true);
                 } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
                     // Compatibility: detached legacy nb select arms cannot return a value.
                     checkCallableBlock(arm.body(), armEnv, generics, Primitive.VOID, self);
                 } else {
-                    checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                    // A selected arm is a loop-control barrier even though
+                    // a blocking procedural return targets the callable.
+                    // A break/continue must not jump into an enclosing loop.
+                    int savedLoopDepth = loopDepth;
+                    loopDepth = 0;
+                    try {
+                        checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                    } finally {
+                        loopDepth = savedLoopDepth;
+                    }
                     exits.add(env.initializationSnapshot());
                 }
             }
             if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
                 env.restoreInitialization(before);
             } else {
+                if (selected.mode() == Ast.WaitMode.IMMEDIATE
+                        && selected.arms().stream().noneMatch(arm ->
+                                arm.operation() == Ast.ChannelOperation.DEFAULT)) {
+                    // try select is only a probe. With no ready case and no
+                    // default, execution falls through WITHOUT running an arm.
+                    // Its pre-select initialization state is a real CFG exit.
+                    // Omitting this predecessor unsoundly promotes writes in
+                    // speculative arms to definite initialization.
+                    exits.add(before);
+                }
                 env.mergeInitialization(exits);
             }
             return;
@@ -3406,6 +3492,60 @@ public final class TypeChecker {
                 case IMMEDIATE -> new Named("Option", List.of(element));
             };
         }
+        if (expr instanceof Ast.StaticSelectExpr resultSelect) {
+            Ast.SelectStmt selected = resultSelect.select();
+            if (selected.mode() == Ast.WaitMode.NONBLOCKING
+                    && currentActorKind == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "nb select value expressions require an actor execution domain");
+            }
+            // Each nested select has its own lexical result target. An outer
+            // detached arm remains detached even when it contains a blocking
+            // value-select or ordinary nested blocks.
+            List<Type> prior = currentSelectReturnTypes;
+            boolean priorDeferred = inDeferredValueSelectArm;
+            List<Type> returns = new ArrayList<>();
+            currentSelectReturnTypes = returns;
+            inDeferredValueSelectArm |= selected.mode() == Ast.WaitMode.NONBLOCKING;
+            try {
+                checkStatement(selected, env, generics,
+                        currentCallableReturnType == null
+                                ? Primitive.VOID : currentCallableReturnType, self);
+            } finally {
+                currentSelectReturnTypes = prior;
+                inDeferredValueSelectArm = priorDeferred;
+            }
+            for (Ast.SelectArm arm : selected.arms()) {
+                if (!definitelySelectArmReturns(arm.body())) {
+                    throw new IllegalArgumentException(
+                            "every reachable value-select arm path must explicitly 'return value'");
+                }
+            }
+            if (returns.isEmpty()) {
+                throw new IllegalArgumentException("value select has no typed arm return");
+            }
+            Type joined = widenCollectionElement(returns.getFirst());
+            for (int i = 1; i < returns.size(); i++) {
+                joined = commonType(joined, widenCollectionElement(returns.get(i)));
+                if (joined == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "value-select arms return incompatible types");
+                }
+            }
+            if (joined == Primitive.VOID || joined == Unknown.INSTANCE
+                    || joined instanceof Borrow) {
+                throw new IllegalArgumentException(
+                        "value select must produce an owned, statically typed non-void value");
+            }
+            for (Type returned : returns) {
+                requireReadonlyCapabilityPreserved(returned, joined,
+                        "value-select return");
+                requireAssignable(returned, joined, "value-select return");
+            }
+            return selected.mode() == Ast.WaitMode.NONBLOCKING
+                    ? new Named("Future", List.of(joined))
+                    : joined;
+        }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
@@ -3512,12 +3652,13 @@ public final class TypeChecker {
             currentConstructorOwner = null;
             Type result;
             try {
-                if (lambda.expressionBody() != null) {
-                    result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
-                } else {
+                result = inLambdaReturnScope(Unknown.INSTANCE, () -> {
+                    if (lambda.expressionBody() != null) {
+                        return typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+                    }
                     checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
-                    result = Unknown.INSTANCE;
-                }
+                    return Unknown.INSTANCE;
+                });
             } finally {
                 // Lambda bodies are checked now but execute later. Never let
                 // assignments inside a closure establish definite-init facts
@@ -4181,13 +4322,16 @@ public final class TypeChecker {
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
-            if (lambda.expressionBody() != null) {
-                Type actual = typeOfAgainstExpected(
-                        lambda.expressionBody(), Primitive.VOID, lambdaEnv, generics, self);
-                requireAssignable(actual, Primitive.VOID, "mutex callback expression body");
-            } else {
-                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
-            }
+            inLambdaReturnScope(Primitive.VOID, () -> {
+                if (lambda.expressionBody() != null) {
+                    Type actual = typeOfAgainstExpected(
+                            lambda.expressionBody(), Primitive.VOID, lambdaEnv, generics, self);
+                    requireAssignable(actual, Primitive.VOID, "mutex callback expression body");
+                } else {
+                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
+                }
+                return null;
+            });
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
@@ -4228,17 +4372,20 @@ public final class TypeChecker {
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
-            if (lambda.expressionBody() != null) {
-                Type actual = typeOfAgainstExpected(
-                        lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
-                requireReadonlyCapabilityPreserved(
-                        actual,
-                        expected.result(),
-                        "lambda expression body");
-                requireAssignable(actual, expected.result(), "lambda expression body");
-            } else {
-                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
-            }
+            inLambdaReturnScope(expected.result(), () -> {
+                if (lambda.expressionBody() != null) {
+                    Type actual = typeOfAgainstExpected(
+                            lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
+                    requireReadonlyCapabilityPreserved(
+                            actual,
+                            expected.result(),
+                            "lambda expression body");
+                    requireAssignable(actual, expected.result(), "lambda expression body");
+                } else {
+                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+                }
+                return null;
+            });
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
@@ -7797,6 +7944,38 @@ public final class TypeChecker {
         return false;
     }
 
+    /** Normal-completion proof for lexical select-result returns.
+     * Function returns, nested value expressions, and loop jumps cannot
+     * accidentally satisfy the enclosing select's result contract.
+     */
+    private boolean definitelySelectArmReturns(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ReturnStmt ret
+                    && ret.target() == Ast.ReturnTarget.SELECT_VALUE) return true;
+            if (stmt instanceof Ast.BlockStmt block
+                    && definitelySelectArmReturns(block.body())) return true;
+            if (stmt instanceof Ast.IfStmt conditional
+                    && !conditional.branches().isEmpty()
+                    && !conditional.elseBody().isEmpty()
+                    && conditional.branches().stream().allMatch(
+                            arm -> definitelySelectArmReturns(arm.body()))
+                    && definitelySelectArmReturns(conditional.elseBody())) return true;
+            if (stmt instanceof Ast.MatchStmt matched
+                    && !matched.arms().isEmpty()
+                    && matched.arms().stream().allMatch(
+                            arm -> definitelySelectArmReturns(arm.body()))) return true;
+            if (stmt instanceof Ast.SwitchStmt switched
+                    && !switched.defaultBody().isEmpty()
+                    && switched.cases().stream().allMatch(
+                            arm -> definitelySelectArmReturns(arm.body()))
+                    && definitelySelectArmReturns(switched.defaultBody())) return true;
+            if (stmt instanceof Ast.TryStmt attempted
+                    && definitelySelectArmReturns(attempted.body())
+                    && definitelySelectArmReturns(attempted.catchBody())) return true;
+        }
+        return false;
+    }
+
     private boolean definitelyReturns(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
@@ -7816,6 +7995,19 @@ public final class TypeChecker {
                     && !switched.defaultBody().isEmpty()
                     && switched.cases().stream().allMatch(arm -> definitelyReturns(arm.body()))
                     && definitelyReturns(switched.defaultBody())) return true;
+            if (stmt instanceof Ast.SelectStmt select
+                    && select.mode() != Ast.WaitMode.NONBLOCKING
+                    && (select.mode() != Ast.WaitMode.IMMEDIATE
+                            || select.arms().stream().anyMatch(arm ->
+                                    arm.operation() == Ast.ChannelOperation.DEFAULT))
+                    && select.arms().stream().allMatch(arm ->
+                            definitelyReturns(arm.body()))) {
+                // Blocking select never falls through normally without a
+                // selected arm; immediate select needs a default to rule out
+                // the no-winner edge. Detached nb select never returns from
+                // the enclosing callable, even if its own arms return.
+                return true;
+            }
             if (stmt instanceof Ast.TryStmt attempted) {
                 if (definitelyReturns(attempted.finallyBody())) return true;
                 if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;

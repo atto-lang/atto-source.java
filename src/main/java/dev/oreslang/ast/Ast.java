@@ -575,7 +575,17 @@ public final class Ast {
         }
     }
 
-    public record ReturnStmt(Expr value) implements Stmt { }
+    /** Return targets are fixed lexically by the parser, not by runtime stack unwinding. */
+    public enum ReturnTarget { FUNCTION, SELECT_VALUE }
+    public record ReturnStmt(Expr value, ReturnTarget target) implements Stmt {
+        public ReturnStmt(Expr value) { this(value, ReturnTarget.FUNCTION); }
+        public ReturnStmt {
+            if (target == null) throw new IllegalArgumentException("return target is required");
+            if (target == ReturnTarget.SELECT_VALUE && value == null) {
+                throw new IllegalArgumentException("value-select arms require 'return value'");
+            }
+        }
+    }
     public record YieldStmt(Expr value, boolean delegated) implements Stmt {
         public YieldStmt(Expr value) {
             this(value, false);
@@ -756,8 +766,15 @@ public final class Ast {
             BindingKind bindingKind,
             String bindingName,
             List<Stmt> body,
-            boolean mutableReferent) {
+            boolean mutableReferent,
+            TypeRef declaredBindingType) {
         public SelectArm {
+            if (operation == null) {
+                throw new IllegalArgumentException("select arm operation is required");
+            }
+            if (body == null) {
+                throw new IllegalArgumentException("select arm body is required");
+            }
             if (operation == ChannelOperation.DEFAULT && mutableReferent) {
                 throw new IllegalArgumentException("default select arm cannot carry mutable binding");
             }
@@ -781,19 +798,28 @@ public final class Ast {
                     throw new IllegalArgumentException("write select arm cannot bind a read value");
                 }
             }
+            if (declaredBindingType != null
+                    && (operation != ChannelOperation.READ || bindingName == null)) {
+                throw new IllegalArgumentException("typed select binding requires a read arm with a binding");
+            }
+        }
+        public SelectArm(ChannelOperation operation, Expr channel, Expr value,
+                         BindingKind bindingKind, String bindingName, List<Stmt> body,
+                         boolean mutableReferent) {
+            this(operation, channel, value, bindingKind, bindingName, body,
+                    mutableReferent, null);
         }
         public SelectArm(ChannelOperation operation, Expr channel, Expr value,
                          BindingKind bindingKind, String bindingName, List<Stmt> body) {
             this(operation, channel, value, bindingKind, bindingName, body,
-                    bindingKind == BindingKind.VAL);
+                    bindingKind == BindingKind.VAL, null);
         }
     }
 
     /**
-     * Static select carries an explicitDo marker for procedural dispatch.
-     * In blocking do-select, return/break/continue belong to the enclosing
-     * callable/loop, just as in do-match/do-switch. Detached nb-select arms
-     * retain their separate compatibility-only continuation control scope.
+     * Static select carries an explicitDo source marker for result-discarding
+     * dispatch. Historical select/nb select statement syntax remains accepted;
+     * callers that intentionally want side effects use "do select".
      */
     public record SelectStmt(
             WaitMode mode,
@@ -814,14 +840,26 @@ public final class Ast {
             }
             arms = List.copyOf(arms);
             if (arms.isEmpty()) throw new IllegalArgumentException("select requires at least one arm");
-            long defaults = arms.stream().filter(arm -> arm.operation() == ChannelOperation.DEFAULT).count();
-            if (defaults > 1) throw new IllegalArgumentException("select permits at most one default arm");
+            boolean sawDefault = false;
+            for (SelectArm arm : arms) {
+                if (arm.operation() == ChannelOperation.DEFAULT) {
+                    if (sawDefault) {
+                        throw new IllegalArgumentException("select permits at most one default arm");
+                    }
+                    sawDefault = true;
+                } else if (sawDefault) {
+                    // ASTs can be built by tools and compiler passes, not only
+                    // the parser. Keep the source-order invariant at this
+                    // boundary so lowerings never see an impossible shape.
+                    throw new IllegalArgumentException("select default arm must be last");
+                }
+            }
         }
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr, StaticSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -939,6 +977,22 @@ public final class Ast {
      * SelectCase values. Static select remains a statement so branch control
      * flow (return/break/continue) is checked in its enclosing callable.
      */
+    /** Blocking, value-producing static select. Share the same atomic arm contract as SelectStmt. */
+    public record StaticSelectExpr(SelectStmt select) implements Expr {
+        public StaticSelectExpr {
+            if (select == null || select.mode() == WaitMode.IMMEDIATE
+                    || select.explicitDo()) {
+                throw new IllegalArgumentException(
+                        "value select requires a blocking or nonblocking non-procedural selection");
+            }
+            for (SelectArm arm : select.arms()) {
+                if (arm.body().isEmpty()) {
+                    throw new IllegalArgumentException("value select arms require an explicit return");
+                }
+            }
+        }
+    }
+
     public record DynamicSelectExpr(
             WaitMode mode,
             SelectPolicy policy,

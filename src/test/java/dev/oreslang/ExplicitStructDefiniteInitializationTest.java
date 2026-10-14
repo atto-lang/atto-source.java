@@ -117,6 +117,57 @@ final class ExplicitStructDefiniteInitializationTest {
     }
 
     @Test
+    void immediateSelectWithoutDefaultCannotProveFieldInitialization() {
+        // A failed probe executes no arm. The checker must join the entry
+        // state, not just the optimistic successful-read branch.
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<int> input): bool {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  try select {
+                    when readch input: val item {
+                      point.ready = true;
+                    }
+                  }
+                  return point.ready;
+                }
+                """)));
+    }
+
+    @Test
+    void immediateSelectWithDefaultCanInitializeEveryPath() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(Channel<int> input): bool {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  try select {
+                    when readch input: val item {
+                      point.ready = true;
+                    }
+                    default: {
+                      point.ready = false;
+                    }
+                  }
+                  return point.ready;
+                }
+                """)));
+    }
+
+    @Test
+    void immediateWriteSelectWithoutDefaultCannotProveFieldInitialization() {
+        // A full channel can make writech non-ready without running the body.
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<int> output): bool {
+                  const mut point = struct{foo: string, ready: bool}{foo: "before"};
+                  try select {
+                    when writech output, 5: {
+                      point.ready = true;
+                    }
+                  }
+                  return point.ready;
+                }
+                """)));
+    }
+
+    @Test
     void nonblockingSelectCannotCapturePartialExplicitStruct() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 actor fnc bad(): void {

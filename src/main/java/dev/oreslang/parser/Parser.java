@@ -22,6 +22,8 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    /** Lexical target for return statements while parsing value-producing select arms. */
+    private boolean inSelectValueArm;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -1674,9 +1676,6 @@ public final class Parser {
             throw error(peek(), "typed exceptional effect '" + peek().lexeme()
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
-        // The value-producing static select expression is not lowered yet.
-        // Preserve historical statement sources until expression migration
-        // provides an executable replacement; do-select stays procedural.
         if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
@@ -1749,7 +1748,8 @@ public final class Parser {
         if (match(RETURN)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
-            return new Ast.ReturnStmt(value);
+            return new Ast.ReturnStmt(value,
+                    inSelectValueArm ? Ast.ReturnTarget.SELECT_VALUE : Ast.ReturnTarget.FUNCTION);
         }
         if (match(YIELD)) {
             boolean delegated = match(STAR);
@@ -1791,14 +1791,6 @@ public final class Parser {
             return new Ast.ForStmt(null, condition, null, parseLoopBody());
         }
         if (match(IF)) return parseIf();
-        if (match(DO)) {
-            if (match(MATCH)) return parseMatch();
-            if (match(SWITCH)) return parseSwitch();
-            throw error(previous(), "'do' requires match, switch, or a braced select");
-        }
-        // Preserve legacy statements during the explicit-do migration.
-        // A parser-only prohibition would break working programs before
-        // the corresponding value expressions and formatter are available.
         if (match(MATCH)) return parseMatch();
         if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
@@ -1843,7 +1835,11 @@ public final class Parser {
                         || tokens.get(i).lexeme().equals("random"))) {
             i++;
         }
-        return i < tokens.size() && tokens.get(i).type() == LBRACE;
+        return i < tokens.size()
+                && (tokens.get(i).type() == LBRACE
+                        || (tokens.get(i).type() == IDENT
+                                && (tokens.get(i).lexeme().equals("over")
+                                        || tokens.get(i).lexeme().equals("among"))));
     }
 
     /** A select arm participates in one atomic selection; only the enclosing select sets its wait mode. */
@@ -1875,11 +1871,52 @@ public final class Parser {
 
         consume(SELECT, "expected 'select'");
         Ast.SelectPolicy policy = parseSelectPolicy();
-        consume(LBRACE, "static select requires '{ ... }'; use 'select from cases' for dynamic select");
+        return parseStaticSelectBody(mode, policy, explicitDo, false);
+    }
+
+    private Ast.Expr parseStaticSelectExpression(Ast.WaitMode mode) {
+        if (mode == Ast.WaitMode.IMMEDIATE) {
+            throw error(peek(), "value-select expressions require blocking select or nb select");
+        }
+        Ast.SelectPolicy policy = parseSelectPolicy();
+        return new Ast.StaticSelectExpr(
+                parseStaticSelectBody(mode, policy, false, true));
+    }
+
+    private List<Ast.Stmt> parseSelectArmBlock(boolean valueProducing) {
+        boolean previous = inSelectValueArm;
+        inSelectValueArm = valueProducing;
+        try {
+            return parseBlock();
+        } finally {
+            inSelectValueArm = previous;
+        }
+    }
+
+    private Ast.SelectStmt parseStaticSelectBody(
+            Ast.WaitMode mode, Ast.SelectPolicy policy,
+            boolean explicitDo, boolean valueProducing) {
+        boolean endDelimited = matchContextualIdentifier("over")
+                || matchContextualIdentifier("among");
+        if (endDelimited) {
+            if (!valueProducing && (!explicitDo || mode != Ast.WaitMode.BLOCKING)) {
+                throw error(previous(),
+                        "end-delimited procedural select requires 'do select over/among'; "
+                                + "a value-producing select must be used in expression position");
+            }
+        } else {
+            consume(LBRACE,
+                    "static select requires '{ ... }' or 'do select over/among ... end'; "
+                            + "use 'select from cases' for dynamic select");
+        }
 
         List<Ast.SelectArm> arms = new ArrayList<>();
-        while (!check(RBRACE) && !check(EOF)) {
+        boolean sawDefault = false;
+        while (!(endDelimited ? check(END) : check(RBRACE)) && !check(EOF)) {
             if (matchContextualKeyword("when", "case")) {
+                if (sawDefault) {
+                    throw error(previous(), "select default arm must be last");
+                }
                 rejectPerArmChannelWaitModifier();
                 Ast.ChannelOperation operation;
                 Ast.Expr channel;
@@ -1887,6 +1924,7 @@ public final class Parser {
                 Ast.BindingKind bindingKind = null;
                 String bindingName = null;
                 boolean mutableReferent = false;
+                Ast.TypeRef declaredBindingType = null;
 
                 if (match(READCH)) {
                     operation = Ast.ChannelOperation.READ;
@@ -1897,6 +1935,15 @@ public final class Parser {
                         mutableReferent = parseReferentMutability(bindingKind);
                         bindingName = consume(IDENT, "readch select arm binding requires a name").lexeme();
                         match(SEMICOLON);
+                    } else if (check(IDENT)) {
+                        // The canonical typed spelling is: readch channel: int name -> { ... }
+                        declaredBindingType = parseTypeRef();
+                        bindingKind = Ast.BindingKind.CONST;
+                        bindingName = consume(IDENT,
+                                "typed readch select arm requires a binding name").lexeme();
+                    } else if (valueProducing) {
+                        throw error(peek(),
+                                "value select read arm requires a typed or explicit binding");
                     }
                 } else if (match(WRITECH)) {
                     operation = Ast.ChannelOperation.WRITE;
@@ -1926,10 +1973,13 @@ public final class Parser {
                     operation = Ast.ChannelOperation.READ;
                 }
 
+                // Both legacy 'readch ch: val x { ... }' and canonical
+                // 'readch ch: val x -> { ... }' remain parseable.
+                if (check(ARROW)) advance();
                 if (!check(LBRACE)) {
                     throw error(peek(), "select arm requires a braced body '{ ... }'");
                 }
-                List<Ast.Stmt> body = parseBlock();
+                List<Ast.Stmt> body = parseSelectArmBlock(valueProducing);
                 arms.add(new Ast.SelectArm(
                         operation,
                         channel,
@@ -1937,16 +1987,21 @@ public final class Parser {
                         bindingKind,
                         bindingName,
                         body,
-                        mutableReferent));
+                        mutableReferent,
+                        declaredBindingType));
                 continue;
             }
 
             if (match(DEFAULT)) {
-                consume(COLON, "select default arm requires ':'");
+                if (sawDefault) throw error(previous(), "select permits at most one default arm");
+                sawDefault = true;
+                if (!match(ARROW)) {
+                    consume(COLON, "select default arm requires ':' or '->'");
+                }
                 if (!check(LBRACE)) {
                     throw error(peek(), "select default arm requires a braced body '{ ... }'");
                 }
-                List<Ast.Stmt> body = parseBlock();
+                List<Ast.Stmt> body = parseSelectArmBlock(valueProducing);
                 arms.add(new Ast.SelectArm(
                         Ast.ChannelOperation.DEFAULT,
                         null,
@@ -1960,8 +2015,30 @@ public final class Parser {
             throw error(peek(), "expected when/case/default inside select");
         }
 
-        consume(RBRACE, "expected '}' after select");
+        if (endDelimited) {
+            consume(END, "expected 'end' after select over/among");
+        } else {
+            consume(RBRACE, "expected '}' after select");
+        }
         return new Ast.SelectStmt(mode, policy, arms, explicitDo);
+    }
+
+    /** Look ahead without reserving contextual policy identifiers globally. */
+    private boolean staticSelectUsesDynamicCases() {
+        int saved = current;
+        try {
+            parseSelectPolicy();
+            return check(FROM);
+        } finally {
+            current = saved;
+        }
+    }
+
+    private boolean isSelectPolicyToken() {
+        return check(FIRST) || check(IDENT)
+                && (peek().lexeme().equals("first")
+                        || peek().lexeme().equals("fair")
+                        || peek().lexeme().equals("random"));
     }
 
     private Ast.SelectPolicy parseSelectPolicy() {
@@ -3018,7 +3095,12 @@ public final class Parser {
             }
             if (match(READCH)) return parseChannelOperation(Ast.ChannelOperation.READ, Ast.WaitMode.NONBLOCKING);
             if (match(WRITECH)) return parseChannelOperation(Ast.ChannelOperation.WRITE, Ast.WaitMode.NONBLOCKING);
-            if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.NONBLOCKING);
+            if (match(SELECT)) {
+                if (staticSelectUsesDynamicCases()) {
+                    return parseDynamicSelect(Ast.WaitMode.NONBLOCKING);
+                }
+                return parseStaticSelectExpression(Ast.WaitMode.NONBLOCKING);
+            }
             throw error(previous(), "'nb' must prefix readch, writech, select, or cb writech");
         }
 
@@ -3035,7 +3117,12 @@ public final class Parser {
 
         if (match(READCH)) return parseChannelOperation(Ast.ChannelOperation.READ, Ast.WaitMode.BLOCKING);
         if (match(WRITECH)) return parseChannelOperation(Ast.ChannelOperation.WRITE, Ast.WaitMode.BLOCKING);
-        if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.BLOCKING);
+        if (match(SELECT)) {
+            if (staticSelectUsesDynamicCases()) {
+                return parseDynamicSelect(Ast.WaitMode.BLOCKING);
+            }
+            return parseStaticSelectExpression(Ast.WaitMode.BLOCKING);
+        }
 
         return parsePostfix();
     }
@@ -3452,10 +3539,18 @@ public final class Parser {
         // else starts a normal expression body. This is intentionally lexical:
         // future prefix expressions such as `struct{...}{...}` must remain
         // expression bodies rather than being confused with a lambda block.
-        if (check(LBRACE)) {
-            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        // Returns inside an embedded lambda always target the lambda, not
+        // an enclosing select result expression.
+        boolean previous = inSelectValueArm;
+        inSelectValueArm = false;
+        try {
+            if (check(LBRACE)) {
+                return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+            }
+            return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
+        } finally {
+            inSelectValueArm = previous;
         }
-        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
     }
 
     private boolean looksLikeLambda() {

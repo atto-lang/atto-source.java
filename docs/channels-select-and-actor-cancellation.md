@@ -179,42 +179,66 @@ read can rendezvous with a pending select-write.
 
 ## Static select
 
-**Control-flow contract (2026-10-13 correction):** Blocking `do select { ... }`
-is procedural, like `do switch` and `do match`. A `return` in the
-winning arm returns from the **containing function/method**, never just the
-select arm; its value is type-checked against that callable's return type.
-Lexically valid `break` and `continue` can target enclosing loops.
-An arm that falls through continues after the select statement. A blocked
-selection suspends the actor source task and must preserve this same control
-flow after resumption; defers/finally execute exactly once.
+**Current Java/GraalVM modes:** Blocking procedural `do select { ... }`,
+`do select over ... end`, and `do select among ... end` execute arms
+for side effects. A `return` inside a blocking procedural arm exits its
+**containing callable**, with return-type and ownership checks.
 
-The long-term result-mode surface is:
+Blocking **value-producing** `select { ... }`, `select over ... end`,
+and `select among ... end` are now compiled in **expression positions**.
+Each normally completing winning arm must explicitly `return value;`;
+this supplies a statically typed value to the select expression, **not**
+to the containing callable. A read arm can use `when readch ch: int x ->`.
+The winning body executes through resumable source-task flow so waiting does
+not pin a scheduler carrier. The implementation uses a separate lexical
+return target for value arms and rejects missing or incompatible results.
 
-- `select { ... }` — **expression**, suspends until an arm wins, yields
-  that arm's result `T`. Arm-local `return T;` provides the expression result.
-- `do select { ... }` — **statement**, suspends until an arm wins, yields
-  no result. `return T;` (or `return;`) exits the surrounding callable.
-- `nb select { ... }` — **expression** returning `Future<T>` immediately,
-  completed only after the winning arm itself completes on the actor lane;
-  its arm returns never escape into the already-continued outer callable.
-- `do nb select { ... }` — not a canonical new form. Detached
-  no-result arms obscure completion/failure/cancellation; callers should
-  keep a returned `Future<void>` when they want side effects.
+The historical `select { ... }` and `nb select { ... }` are still accepted
+as **legacy statement forms** for compatibility, while `do nb select { ... }`
+remains a legacy detached/no-result form: its arm-local returns are discarded
+with a warning because they cannot return from an already-ended callable.
+In an actor **expression position**, `nb select { ... }`,
+`nb select over ... end`, and `nb select among ... end` now produce
+`Future<T>`. The event winner is selected using ChannelRuntime's atomic
+arbitration, but the exposed result Future only resolves after its winning
+arm runs on the owning actor's serialized source-task scheduler. The Future
+is actor-owned; cancellation revokes the pending selection or requests
+cancellation of its active arm source task. An actor STOP also revokes its
+owned pending Futures. The exposed Future does not execute guest callbacks
+on the producer/completion thread.
 
-**Implementation gap:** Java/Graal main still models static `select` and
-`nb select` as legacy statements; static `select<T>` expression and
-`Future<T>` result tracking are not implemented by the do-select control-flow
-correction. Legacy `do nb select` remains temporarily parseable and
-arm-local/discarding for compatibility only; it is *not* evidence for the
-canonical `Future<void>` semantics. LLVM must fail closed for unsupported
-source forms. See `contracts/v1/static-select-result-and-return.md`.
+Still pending: static Future/`Selectable`/Observable arms, LLVM/native-image
+proof, formatter normalization, and adversarial cancellation-cleanup barrier
+conformance. A `Future<T>` completing normally follows the winning arm's
+ordinary defer/finally cleanup; cancellation race behavior must be tested
+separately and is not claimed to wait for all asynchronous cleanup.
+
+Exact-source proof: commit `e913464efcd0c9b83996bea24f4891c66a93bb3c`,
+GraalVM JDK 25 `mvn verify`, 2,002 tests passed:
+https://github.com/zed-pkg-test/java-app/actions/runs/38497303669
+
+Canonical compiled Java value-select example:
+
+```ores
+fnc choose(Channel<int> input): int {
+  const int result = select over
+    when readch input: int x -> {
+      return x * 2;
+    }
+    default -> {
+      return 0;
+    }
+  end;
+  return result + 1;
+}
+```
 
 `cb select` and `nb cb select` are **not** aliases: the parser rejects
 both with a hint to use `do select` or `do nb select`. The existing
 `nb cb writech ... || -> { ... }` is different: it actually supplies a
 callback function and remains supported.
 
-Canonical blocking procedural syntax:
+Canonical explicit no-result static syntax:
 
 ```ores
 do select {
@@ -242,7 +266,12 @@ for indentation: arms sit one level inside `select`, and their statements sit
 one level inside the arm. The same rules apply to `nb select`, `do nb select`, and `try select`.
 Legacy unbraced arms are rejected by the parser; `oresfmt` migrates them.
 
-A select may include one `default: { ... }` arm.
+A select may include one `default: { ... }` or `default -> { ... }` arm,
+which must appear last. Procedural end-delimited select arms may use
+`when readch ch: val item -> { ... }` and other supported legacy
+binding spellings. Typed `readch ch: int item` and explicit value-arm returns are supported
+in Java blocking value-producing `select` expressions. These do **not** turn
+`do select` procedural arms into value expressions.
 
 A static select arm is a non-throwing control-flow boundary. An ordinary
 `throw` may be handled by a local `try/catch`, or absorbed by a called
@@ -339,6 +368,9 @@ not a producer or I/O thread.
 
 ## Nonblocking static select
 
+The following is **legacy detached/no-result** syntax retained for source
+compatibility. It is not the canonical value-producing form:
+
 ```ores
 do nb select {
   when readch incoming: let msg {
@@ -366,11 +398,17 @@ Semantics:
 The branch never runs on a producer/I/O/Future callback thread and never runs
 concurrently against that actor's state.
 
-Because the enclosing stack has already continued, a nonblocking arm is a
-detached `void` continuation scope:
+For legacy detached `do nb select`, the enclosing stack has
+continued and the arm is a `void` continuation scope. For the canonical
+**value-producing `nb select` expression**, a selected arm instead uses
+`return value;` to resolve its `Future<T>`; `return;` without a value is
+invalid. In either case, a late arm cannot return from the original callable.
 
-- `return;` exits the arm itself;
-- `return value;` is invalid;
+Legacy detached restrictions and shared capture rules:
+
+- in legacy `do nb select`, `return;` exits the arm itself;
+- in legacy `do nb select`, `return value;` is a discarded compatibility
+  value (with a warning), **not** the canonical `Future<T>` result;
 - `break`/`continue` cannot escape into an enclosing loop that has already
   continued;
 - Copy values and locally-copyable channel/select handles may be captured while

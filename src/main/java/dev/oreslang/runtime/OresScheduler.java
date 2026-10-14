@@ -90,6 +90,9 @@ public final class OresScheduler implements AutoCloseable {
         Step<T> resume(Resume resume) throws Exception;
     }
 
+    /** Source tasks unwind lexical cleanup before cancellation becomes terminal. */
+    public interface CleanupAwareTask<T> extends Task<T> { }
+
     /** Result of one resumable task turn. */
     public sealed interface Step<T> permits Done, Await, Cooperate { }
 
@@ -570,6 +573,8 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        private final AtomicBoolean cancellationInjected = new AtomicBoolean();
+        private final AtomicBoolean closeCancellationPending = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -594,7 +599,8 @@ public final class OresScheduler implements AutoCloseable {
             this.timedAdmission = timedAdmission;
             this.onNotificationDrained = onNotificationDrained;
             this.completion = new OresFuture<>(
-                    this::cancelFromFuture, this::notificationDrained);
+                    this::cancelFromFuture, this::notificationDrained,
+                    task instanceof CleanupAwareTask<?>);
         }
 
         private void reserveDeadlineSlot() {
@@ -707,6 +713,16 @@ public final class OresScheduler implements AutoCloseable {
                     return;
                 }
 
+                java.util.concurrent.CancellationException requested =
+                        completion.deferredCancellationCause();
+                if (requested != null && cancellationInjected.compareAndSet(false, true)) {
+                    if (resume.initial()) {
+                        failTerminal(requested);
+                        return;
+                    }
+                    resume = Resume.completed(null, requested);
+                }
+
                 final Step<T> step;
                 try {
                     step = Objects.requireNonNull(
@@ -783,7 +799,10 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void armCooperate() {
-            Resume resume = Resume.completed(null, null);
+            java.util.concurrent.CancellationException requested =
+                    completion.deferredCancellationCause();
+            Resume resume = Resume.completed(null,
+                    requested != null && !cancellationInjected.get() ? requested : null);
             if (!pendingResume.compareAndSet(null, resume)) {
                 failTerminal(new IllegalStateException(
                         "cooperate attempted to publish more than one resume"));
@@ -798,6 +817,12 @@ public final class OresScheduler implements AutoCloseable {
 
         private void armAwait(OresFuture<?> awaited) {
             if (!phase.compareAndSet(RUNNING, WAITING)) {
+                return;
+            }
+            java.util.concurrent.CancellationException requested =
+                    completion.deferredCancellationCause();
+            if (requested != null && !cancellationInjected.get()) {
+                pendingResume.set(Resume.completed(null, requested));
                 return;
             }
 
@@ -848,12 +873,15 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void deliverAwaitCompletion(Object value, Throwable failure) {
-            if (phase.get() == TERMINAL) return;
+            if (phase.get() == TERMINAL || (completion.deferredCancellationCause() != null
+                    && !cancellationInjected.get())) return;
 
             Resume resume = Resume.completed(
                     value,
                     failure == null ? null : OresFuture.unwrap(failure));
             if (!pendingResume.compareAndSet(null, resume)) {
+                if (completion.deferredCancellationCause() != null
+                        && !cancellationInjected.get()) return;
                 failTerminal(new IllegalStateException(
                         "await delivered more than one resume to the same task"));
                 return;
@@ -970,9 +998,26 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void publishTerminalIfReady() {
-            if (phase.get() != TERMINAL || completion.isDone()) return;
+            if (phase.get() != TERMINAL || completion.isDone() || executing.get()
+                    || closeCancellationPending.get()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
-            if (outcome instanceof TerminalSuccess<?> success) {
+            if (outcome == null) return;
+            java.util.concurrent.CancellationException requested =
+                    completion.deferredCancellationCause();
+            if (requested != null && !(outcome instanceof TerminalFailure<?> failure
+                    && (failure.failure() instanceof VirtualMachineError
+                    || failure.failure() instanceof ThreadDeath
+                    || failure.failure() instanceof LinkageError
+                    || failure.failure() instanceof ActorRuntime.UntrustedActorQuotaExceededException))) {
+                if (outcome instanceof TerminalFailure<?> failed && failed.failure() != requested) {
+                    synchronized (requested) {
+                        if (requested.getSuppressed().length < 64) {
+                            requested.addSuppressed(failed.failure());
+                        }
+                    }
+                }
+                completion.completeDeferredCancellationFromRuntime();
+            } else if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")
                 T value = (T) success.value();
                 completion.completeFromRuntime(value);
@@ -986,6 +1031,10 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void cancelFromFuture() {
+            if (task instanceof CleanupAwareTask<?>) {
+                requestCleanupCancellation();
+                return;
+            }
             detachActiveAwaitRegistration();
             int observed;
             do {
@@ -996,17 +1045,47 @@ public final class OresScheduler implements AutoCloseable {
             retireWhenQuiescent();
         }
 
+        private void requestCleanupCancellation() {
+            java.util.concurrent.CancellationException requested =
+                    completion.deferredCancellationCause();
+            if (requested == null) throw new IllegalStateException("no cancellation request");
+            detachActiveAwaitRegistration();
+            int observed = phase.get();
+            if (observed == TERMINAL) {
+                publishTerminalIfReady();
+                return;
+            }
+            Resume queued = pendingResume.get();
+            if (observed == NEW || (observed == QUEUED && queued != null && queued.initial())) {
+                failTerminal(requested);
+                return;
+            }
+            if (observed == RUNNING) return;
+            pendingResume.set(Resume.completed(null, requested));
+            if (observed == WAITING) scheduleReadyResume();
+        }
+
         private void revokeFromSchedulerClose() {
-            // Quiesce internal state even when another cancellation thread has
-            // settled the Future but is blocked notifying its waiters.
-            cancelFromFuture();
+            // No cleanup lane survives close. Fail closed if lexical cleanup
+            // cannot be resumed; never claim it completed successfully.
+            if (task instanceof CleanupAwareTask<?>) {
+                closeCancellationPending.set(true);
+                failTerminal(new RejectedExecutionException(
+                        "scheduler closed before source cleanup completed"));
+            } else {
+                cancelFromFuture();
+            }
         }
 
         private void publishCancelledFromSchedulerClose() {
-            // Task-local revocation for the entire snapshot has completed.
-            // Subscriber delivery is allowed to block, but cannot now delay
-            // cancellation/await detachment for any other admitted task.
-            completion.cancel(false);
+            try {
+                completion.cancel(false);
+            } finally {
+                if (task instanceof CleanupAwareTask<?>) {
+                    closeCancellationPending.set(false);
+                    publishTerminalIfReady();
+                }
+            }
         }
     }
 

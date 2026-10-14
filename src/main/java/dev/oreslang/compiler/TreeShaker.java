@@ -186,7 +186,8 @@ public final class TreeShaker {
 
         private boolean containsLambda(Ast.Expr expression) {
             if (expression == null) return false;
-            if (expression instanceof Ast.LambdaExpr) return true;
+            if (expression instanceof Ast.LambdaExpr
+                    || expression instanceof Ast.StaticSelectExpr) return true;
             if (expression instanceof Ast.TypeTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.PatternTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.CastExpr cast) return containsLambda(cast.value());
@@ -647,7 +648,8 @@ public final class TreeShaker {
             }
             if (statement instanceof Ast.ReturnStmt returned) {
                 return List.of(new Ast.ReturnStmt(
-                        rewriteExpression(returned.value(), module, locals)));
+                        rewriteExpression(returned.value(), module, locals),
+                        returned.target()));
             }
             if (statement instanceof Ast.YieldStmt yielded) {
                 return List.of(new Ast.YieldStmt(
@@ -749,12 +751,14 @@ public final class TreeShaker {
                             arm.bindingKind(),
                             arm.bindingName(),
                             rewriteStatements(arm.body(), module, armLocals),
-                            arm.mutableReferent()));
+                            arm.mutableReferent(),
+                            arm.declaredBindingType()));
                 }
                 return List.of(new Ast.SelectStmt(
                         selected.mode(),
                         selected.policy(),
-                        arms));
+                        arms,
+                        selected.explicitDo()));
             }
             if (statement instanceof Ast.TryStmt tried) {
                 LinkedHashMap<String, Object> catchLocals = new LinkedHashMap<>(locals);
@@ -924,6 +928,15 @@ public final class TreeShaker {
                         operation.mode(),
                         rewriteExpression(operation.channel(), module, locals),
                         rewriteExpression(operation.value(), module, locals));
+            }
+            if (expression instanceof Ast.StaticSelectExpr valueSelect) {
+                List<Ast.Stmt> rewritten = rewriteStatement(
+                        valueSelect.select(), module,
+                        new LinkedHashMap<>(locals));
+                if (rewritten.size() != 1 || !(rewritten.getFirst() instanceof Ast.SelectStmt selected)) {
+                    throw new IllegalStateException("value-select rewrite lost selection AST");
+                }
+                return new Ast.StaticSelectExpr(selected);
             }
             if (expression instanceof Ast.DynamicSelectExpr selected) {
                 return new Ast.DynamicSelectExpr(
@@ -1185,6 +1198,7 @@ public final class TreeShaker {
                         if (arm.bindingName() != null) {
                             armLocals.add(arm.bindingName());
                         }
+                        scanType(arm.declaredBindingType());
                         scanStatements(module, arm.body(), armLocals);
                     }
                 } else if (statement instanceof Ast.TryStmt tried) {
@@ -1294,6 +1308,9 @@ public final class TreeShaker {
             else if (expression instanceof Ast.ChannelOpExpr operation) {
                 scanExpression(module, operation.channel(), locals);
                 scanExpression(module, operation.value(), locals);
+            } else if (expression instanceof Ast.StaticSelectExpr selected) {
+                scanStatements(module, List.of(selected.select()),
+                        new LinkedHashSet<>(locals));
             } else if (expression instanceof Ast.DynamicSelectExpr selected) {
                 scanExpression(module, selected.cases(), locals);
             } else if (expression instanceof Ast.ListExpr list) {
