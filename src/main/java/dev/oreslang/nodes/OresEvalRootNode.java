@@ -1630,6 +1630,9 @@ public final class OresEvalRootNode extends RootNode {
                 return expressionContainsPotentialSuspension(
                         test.value(), seen);
             }
+            if (expr instanceof Ast.OptionBindExpr binding) {
+                return expressionContainsPotentialSuspension(binding.value(), seen);
+            }
             if (expr instanceof Ast.CastExpr cast) {
                 return expressionContainsPotentialSuspension(
                         cast.value(), seen);
@@ -2313,7 +2316,7 @@ public final class OresEvalRootNode extends RootNode {
                                             branchEnv.define(
                                                     name,
                                                     value,
-                                                    Ast.BindingKind.VAL));
+                                                    conditionalBindingKind(branch.condition(), name)));
                             runBlock(
                                     t,
                                     branch.body(),
@@ -2924,6 +2927,27 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        private Ast.BindingKind conditionalBindingKind(Ast.Expr expr, String name) {
+            if (expr instanceof Ast.OptionBindExpr binding && binding.binding().equals(name)) {
+                return binding.kind();
+            }
+            if (expr instanceof Ast.BinaryExpr binary) {
+                Ast.BindingKind left = conditionalBindingKind(binary.left(), name);
+                return left != Ast.BindingKind.VAL ? left
+                        : conditionalBindingKind(binary.right(), name);
+            }
+            return Ast.BindingKind.VAL;
+        }
+
+        private ConditionResult optionBindingResult(Ast.OptionBindExpr binding, Object carrier) {
+            if (!(carrier instanceof OptionValue option)) {
+                throw new IllegalArgumentException("conditional binding requires Option<T>");
+            }
+            return option.present()
+                    ? new ConditionResult(true, Map.of(binding.binding(), option.value()))
+                    : ConditionResult.noMatch();
+        }
+
         private void evalSuspendableCondition(
                 SourceTask task,
                 Ast.Expr condition,
@@ -2940,10 +2964,13 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, left);
                                 return;
                             }
+                            Env rightEnv = new Env(env);
+                            left.bindings().forEach((name, value) ->
+                                    rightEnv.define(name, value, conditionalBindingKind(binary.left(), name)));
                             evalSuspendableCondition(
                                     t,
                                     binary.right(),
-                                    env,
+                                    rightEnv,
                                     (t2, right) ->
                                             continuation.accept(
                                                     t2,
@@ -2954,6 +2981,33 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            if (condition instanceof Ast.OptionBindExpr binding) {
+                evalSuspendableExpr(task, binding.value(), env, (t, value, failure) -> {
+                    if (failure != null) throw sourceFailure(failure);
+                    continuation.accept(t, optionBindingResult(binding, value));
+                });
+                return;
+            }
+            if (condition instanceof Ast.BinaryExpr binary
+                    && (binary.operator().equals("eq") || binary.operator().equals("neq"))
+                    && binary.left() instanceof Ast.OptionBindExpr binding) {
+                evalSuspendableExpr(task, binding.value(), env, (t, value, failure) -> {
+                    if (failure != null) throw sourceFailure(failure);
+                    ConditionResult extracted = optionBindingResult(binding, value);
+                    if (!extracted.matched()) {
+                        continuation.accept(t, extracted);
+                        return;
+                    }
+                    evalSuspendableExpr(t, binary.right(), env, (t2, rhs, rhsFailure) -> {
+                        if (rhsFailure != null) throw sourceFailure(rhsFailure);
+                        boolean equal = valueEquals(extracted.bindings().get(binding.binding()), rhs);
+                        continuation.accept(t2,
+                                (binary.operator().equals("eq") ? equal : !equal)
+                                        ? extracted : ConditionResult.noMatch());
+                    });
+                });
+                return;
+            }
             if (condition instanceof Ast.TypeTestExpr test) {
                 evalSuspendableExpr(
                         task,
@@ -5027,7 +5081,7 @@ public final class OresEvalRootNode extends RootNode {
                     if (condition.matched()) {
                         Env branchEnv = new Env(env);
                         condition.bindings().forEach((name, value) ->
-                                branchEnv.define(name, value, Ast.BindingKind.VAL));
+                                branchEnv.define(name, value, conditionalBindingKind(branch.condition(), name)));
                         executeBlock(
                                 branch.body(),
                                 branchEnv,
@@ -7907,12 +7961,25 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private ConditionResult evalCondition(Ast.Expr condition, Env env) {
+            if (condition instanceof Ast.OptionBindExpr binding) {
+                return optionBindingResult(binding, eval(binding.value(), env));
+            }
+            if (condition instanceof Ast.BinaryExpr binary
+                    && (binary.operator().equals("eq") || binary.operator().equals("neq"))
+                    && binary.left() instanceof Ast.OptionBindExpr binding) {
+                ConditionResult extracted = optionBindingResult(binding, eval(binding.value(), env));
+                if (!extracted.matched()) return extracted;
+                boolean equal = valueEquals(extracted.bindings().get(binding.binding()),
+                        eval(binary.right(), env));
+                return (binary.operator().equals("eq") ? equal : !equal)
+                        ? extracted : ConditionResult.noMatch();
+            }
             if (condition instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
                 ConditionResult left = evalCondition(binary.left(), env);
                 if (!left.matched()) return ConditionResult.noMatch();
                 Env rightEnv = new Env(env);
                 left.bindings().forEach((name, value) ->
-                        rightEnv.define(name, value, Ast.BindingKind.VAL));
+                        rightEnv.define(name, value, conditionalBindingKind(binary.left(), name)));
                 ConditionResult right = evalCondition(binary.right(), rightEnv);
                 if (!right.matched()) return ConditionResult.noMatch();
                 LinkedHashMap<String, Object> merged = new LinkedHashMap<>(left.bindings());
