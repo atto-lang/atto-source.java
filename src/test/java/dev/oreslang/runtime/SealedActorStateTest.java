@@ -160,8 +160,9 @@ final class SealedActorStateTest {
                         access.writeOwnedByte("blob", 2, 99);
                         return null;
                     });
-                    assertEquals(99, state.critical(false,
-                            access -> access.readOwnedByte("blob", 2)));
+                    int observed = state.critical(false,
+                            access -> access.readOwnedByte("blob", 2));
+                    assertEquals(99, observed);
                     assertThrows(SecurityException.class,
                             () -> state.critical(false, access -> {
                                 access.writeOwnedByte("blob", 0, 11);
