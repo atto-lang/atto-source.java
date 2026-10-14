@@ -1747,6 +1747,12 @@ public final class ActorRuntime implements AutoCloseable {
             cell.sourceCleanupTasks.add(future);
             future.whenCompleteRuntime((ignored, failure) -> {
                 synchronized (cell.lifecycleLock) {
+                    // Scheduler-level cancellation never hides host-fatal or
+                    // untrusted-quota failures. Propagate the same precedence
+                    // to parent CONTROL/get_done before retiring actor state.
+                    if (cell.stopped.get() && failure != null) {
+                        cell.recordDominantSourceFailure(failure);
+                    }
                     cell.sourceCleanupTasks.remove(future);
                     if (cell.stopped.get()) {
                         cell.finalizeStopLocked();
@@ -6239,6 +6245,31 @@ public final class ActorRuntime implements AutoCloseable {
             return !continuationMailbox.isEmpty()
                         || (!stopped.get() && !serialTurnGate.occupied()
                             && !mailbox.isEmpty());
+        }
+
+        /**
+         * A source task can fail fatally during an already-requested STOP.
+         * Preserve fatal/quota authority over an earlier cancellation cause;
+         * ordinary cleanup failures remain diagnostics on the task Future.
+         * Called under lifecycleLock before the completion barrier is removed.
+         */
+        private void recordDominantSourceFailure(Throwable failure) {
+            Throwable incoming = OresFuture.unwrap(failure);
+            int incomingPriority = sourceFailurePriority(incoming);
+            if (incomingPriority == 0) return;
+            for (;;) {
+                Throwable existing = ref.terminationCause.get();
+                if (sourceFailurePriority(existing) >= incomingPriority) return;
+                if (ref.terminationCause.compareAndSet(existing, incoming)) return;
+            }
+        }
+
+        private int sourceFailurePriority(Throwable failure) {
+            if (failure instanceof VirtualMachineError
+                    || failure instanceof ThreadDeath
+                    || failure instanceof LinkageError) return 3;
+            if (failure instanceof UntrustedActorQuotaExceededException) return 2;
+            return 0;
         }
 
         private boolean authorizedCleanupContinuation(Runnable command) {
