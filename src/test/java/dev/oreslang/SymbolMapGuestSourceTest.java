@@ -200,6 +200,59 @@ final class SymbolMapGuestSourceTest {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
     }
 
+    @Test void typedMapKeyTypesMustNotBeBorrowed() {
+        String[] sources = {
+            "pub fnc bad(): void { let mut m = new Map<&Symbol, int>(); return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol | &String, int>(); return; }",
+            "pub fnc bad(): void { let mut m = new Map<&String | Symbol, int>(); return; }"
+        };
+        for (String source : sources) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), source);
+        }
+    }
+
+    @Test void destructuringCannotAliasMapOwnership() {
+        String source = """
+                pub fnc bad(): void {
+                    let mut m = new Map<Symbol, int>();
+                    val [alias, _] = (m, 1);
+                    return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("cannot destructure a typed Map"),
+                failure.getMessage());
+    }
+
+    @Test void forOfCannotAliasMapOwnership() {
+        String source = """
+                pub fnc bad(): void {
+                    let mut m = new Map<Symbol, int>();
+                    for val alias of [m] { }
+                    return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("cannot bind typed Maps through iteration"),
+                failure.getMessage());
+    }
+
+    @Test void ordinaryDestructureAndIterationRemainValid() {
+        String source = """
+                pub fnc ok(): void {
+                    val [first, _] = (1, 2);
+                    for val item of [1, 2] { }
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
+    }
+
     @Test void nestedContainersCannotLaunderMapOwnership() {
         String[] sources = {
             "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); let xs = [m]; return; }",
