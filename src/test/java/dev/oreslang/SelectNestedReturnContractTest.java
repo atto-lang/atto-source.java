@@ -83,6 +83,23 @@ final class SelectNestedReturnContractTest {
     }
 
     @Test
+    void proceduralSelectReturnIsAlsoCheckedInClassMethods() {
+        String source = """
+                define class Resolver as
+                  pub fnc choose(): int {
+                    do select {
+                      default: {
+                        return 17;
+                      }
+                    }
+                    return 99;
+                  }
+                end
+                """;
+        assertWarnings(source, 0);
+    }
+
+    @Test
     void nestedLambdaReturnProducesNoSelectWarning() throws Exception {
         String source = """
                 pub fnc main(): void {
