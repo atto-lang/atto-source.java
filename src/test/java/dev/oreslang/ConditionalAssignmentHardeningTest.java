@@ -75,20 +75,17 @@ final class ConditionalAssignmentHardeningTest {
     }
 
     @Test
-    void unsupportedOptionalBindingsCannotBypassBorrowCheckingViaCastParsing() {
+    void optionBindingsAreExplicitPredicatesRatherThanCasts() {
         for (String mode : new String[] {"const", "let"}) {
-            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                    () -> Parser.parse("""
-                            fnc test(Option<int> input): int {
-                              if input as %s value then
-                                return value;
-                              else
-                                return 0;
-                              fi
-                            }
-                            """.formatted(mode)));
-            assertTrue(error.getMessage().contains("not yet supported by the borrow checker"),
-                    error.getMessage());
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                    fnc test(Option<int> input): int {
+                      if input as %s value then
+                        return value;
+                      else
+                        return 0;
+                      fi
+                    }
+                    """.formatted(mode))));
         }
     }
 
