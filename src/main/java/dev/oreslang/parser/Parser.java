@@ -24,6 +24,10 @@ public final class Parser {
     private boolean suppressRefinementOperators;
     /** Lexical value-match completion boundary, reset by independent lambdas. */
     private int valueArmDepth;
+    /** Return type of the lexically enclosing function/method, not a match arm. */
+    private Ast.TypeRef callableReturnType;
+    /** Set only while parsing a direct 'return match ...' expression. */
+    private Ast.TypeRef directReturnMatchType;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -439,7 +443,7 @@ public final class Parser {
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
             annotations = parseSignatureEffects(annotations);
-            List<Ast.Stmt> body = parseBlock();
+            List<Ast.Stmt> body = parseCallableBody(returnType);
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
                     generics, params, returnType, annotations, body);
         }
@@ -450,7 +454,7 @@ public final class Parser {
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         annotations = parseSignatureEffects(annotations);
-        List<Ast.Stmt> body = parseBlock();
+        List<Ast.Stmt> body = parseCallableBody(returnType);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body);
     }
@@ -1045,7 +1049,7 @@ public final class Parser {
         if (mods.isAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
-        } else body = parseBlock();
+        } else body = parseCallableBody(returnType);
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body);
     }
@@ -1626,6 +1630,24 @@ public final class Parser {
         return name.toString();
     }
 
+    /**
+     * A nested callable owns its own lexical return contract. Save and
+     * restore it even when parsing fails; a lambda with inferred return type
+     * must NOT inherit the enclosing function's type by accident.
+     */
+    private List<Ast.Stmt> parseCallableBody(Ast.TypeRef declaredReturnType) {
+        Ast.TypeRef previous = callableReturnType;
+        Ast.TypeRef previousDirectMatch = directReturnMatchType;
+        callableReturnType = declaredReturnType;
+        directReturnMatchType = null;
+        try {
+            return parseBlock();
+        } finally {
+            callableReturnType = previous;
+            directReturnMatchType = previousDirectMatch;
+        }
+    }
+
     private List<Ast.Stmt> parseBlock() {
         consume(LBRACE, "expected '{'");
         List<Ast.Stmt> body = new ArrayList<>();
@@ -1725,7 +1747,20 @@ public final class Parser {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
         if (match(RETURN)) {
-            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
+            // Infer a missing <ret=T> only from an immediately returned
+            // match and only in a real callable, never an ARM_RESULT arm.
+            // This reuses the existing typed value-match AST and result owner;
+            // no procedural MatchStmt is emitted in expression position.
+            Ast.TypeRef previous = directReturnMatchType;
+            directReturnMatchType = valueArmDepth == 0 && check(MATCH)
+                    ? callableReturnType : null;
+            Ast.Expr value;
+            try {
+                value = check(SEMICOLON) || isSafeStatementBoundary()
+                        ? null : parseExpression();
+            } finally {
+                directReturnMatchType = previous;
+            }
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return valueArmDepth > 0
                     ? new Ast.ArmReturnStmt(value)
@@ -2596,7 +2631,15 @@ public final class Parser {
             consume(GT, "expected '>' after match return-type contract");
         }
         if (valuePosition && returnContract == null) {
-            throw error(peek(), "value-producing match requires <ret=Type> during staged lowering");
+            if (directReturnMatchType == null
+                    || "void".equalsIgnoreCase(directReturnMatchType.name())) {
+                throw error(peek(), "value-producing match requires <ret=Type> "
+                        + "unless used directly as 'return match' in a callable with a typed result");
+            }
+            // Typechecker, ownership checker and actor runtime consume this
+            // explicit AST result contract. Never infer a contract from an
+            // expression's runtime value or from a neighboring match arm.
+            returnContract = directReturnMatchType;
         }
         if (valuePosition && procedural) {
             throw error(peek(), "do match cannot produce an expression result");
@@ -3488,7 +3531,7 @@ public final class Parser {
         // future prefix expressions such as `struct{...}{...}` must remain
         // expression bodies rather than being confused with a lambda block.
         if (check(LBRACE)) {
-            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, critical);
+            return new Ast.LambdaExpr(params, null, parseCallableBody(null), nonLexical, critical);
         }
         return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical, critical);
         } finally {
