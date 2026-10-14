@@ -592,10 +592,12 @@ public final class OwnershipChecker {
                                     Origin.LOCAL));
                 }
 
-                if (selected.mode() == Ast.WaitMode.NONBLOCKING || selected.explicitDo()) {
+                if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
                     int previousLoopDepth = loopDepth;
                     boolean previousDiscard = discardingSelectReturn;
                     loopDepth = 0;
+                    // Only legacy detached 'do nb select' discards return.
+                    // Blocking 'do select' shares the callable return target.
                     discardingSelectReturn = selected.explicitDo();
                     try {
                         checkBlock(arm.body(), armScope,
