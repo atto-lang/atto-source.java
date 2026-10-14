@@ -106,16 +106,16 @@ final class StructuralPrivacyBoundaryTest {
                   private val int secret = 99;
                 end
 
-                fnc check(Any value): int {
-                  match value over
-                    on structural PublicShape shaped -> { return shaped.id; }
-                    on _ -> { return -1; }
-                  end
-                }
-
                 pub fnc main(): void {
                   const row = infer struct{id: 42};
-                  stdio.println(check(row));
+                  match row over
+                    on structural PublicShape shaped -> {
+                      stdio.println(shaped.id);
+                    }
+                    on _ -> {
+                      stdio.println(-1);
+                    }
+                  end
                   return;
                 }
                 """;
@@ -124,28 +124,28 @@ final class StructuralPrivacyBoundaryTest {
     }
 
     @Test
-    void plainRecordCannotClaimNamedClassMethodsItDoesNotImplement() throws Exception {
-        String program = """
-                define class CallableShape as
-                  pub val int id = 0;
-                  pub read(): int { return 1; }
-                end
+    void recordWithoutMethodsCannotStaticallyClaimNamedClassMethodContract() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                        define class CallableShape as
+                          pub val int id = 0;
+                          pub read(): int { return 1; }
+                        end
 
-                fnc check(Any value): int {
-                  match value over
-                    on structural CallableShape shaped -> { return 99; }
-                    on _ -> { return 0; }
-                  end
-                }
-
-                pub fnc main(): void {
-                  const row = infer struct{id: 42};
-                  stdio.println(check(row));
-                  return;
-                }
-                """;
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
-        assertEquals("0\n", execute(program).replace("\r\n", "\n"));
+                        pub fnc main(): void {
+                          const row = infer struct{id: 42};
+                          match row over
+                            on structural CallableShape shaped -> {
+                              stdio.println(99);
+                            }
+                            on _ -> { stdio.println(0); }
+                          end
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("unreachable structural pattern")
+                        || error.getMessage().contains("cannot satisfy"),
+                error.getMessage());
     }
 
     @Test
