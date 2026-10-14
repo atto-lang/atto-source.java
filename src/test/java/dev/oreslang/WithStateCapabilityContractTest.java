@@ -34,6 +34,38 @@ final class WithStateCapabilityContractTest {
                 """.formatted(expression);
     }
 
+    @Test void sealedStateCallbackCannotForgeExplicitParameterType() {
+        for (String callback : new String[] {
+                "self.handle_state(|int s| -> { return s.v; })",
+                "using state.read(|int s| -> { return s.v; })",
+                "self.handle_state(|Map<string, int> s| -> { return s.v; })"
+        }) {
+            Ast.Program parsed = Parser.parse(actor("with state.read", callback));
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(parsed), callback);
+            assertTrue(failure.getMessage().contains("must be untyped"),
+                    failure.getMessage());
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(parsed), callback);
+        }
+    }
+
+    @Test void shadowedNestedLambdaParameterDoesNotInheritStateLoan() {
+        String source = actor("with state.read",
+                "self.handle_state(|s| -> { "
+                + "val transform = |int s| -> s + 1; return s.v; })");
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(source)));
+
+        String captured = actor("with state.read",
+                "self.handle_state(|s| -> { "
+                + "val captured = || -> s.v; return s.v; })");
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(Parser.parse(captured)));
+        assertTrue(failure.getMessage().contains("captured")
+                        || failure.getMessage().contains("nested closures"),
+                failure.getMessage());
+    }
+
     @Test void actorStateDefaultsMustBeDetachedContextFreeScalars() {
         for (String value : new String[] {
                 "compute()", "external", "1 + 2", "new Wrapper(1)"
