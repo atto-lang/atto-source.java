@@ -91,4 +91,70 @@ final class LinkedNominalActorMessageTest {
                         "src/other.ores", second,
                         "src/main.ores", sender)));
     }
+    @Test
+    void identicalEnumNamesAndTagsFromDifferentSourcesRemainDistinct() {
+        String sender = ACTOR.replace(
+                "import type Messages from \"./protocol.ores\";",
+                "import type Messages from \"./protocol.ores\";\n"
+                        + "import type Messages as Other from \"./other.ores\";")
+                .replace("worker.send(Messages.Delta(", "worker.send(Other.Delta(");
+        assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(Map.of(
+                        "src/protocol.ores", PROTOCOL,
+                        "src/other.ores", PROTOCOL,
+                        "src/main.ores", sender)));
+    }
+
+    @Test
+    void explicitlyAliasedEnumCanTypeCheckAndExecuteInActor() throws Exception {
+        String aliased = ACTOR.replace(
+                "import type Messages from", "import type Messages as Inbox from")
+                .replace("ActorMail<Messages>", "ActorMail<Inbox>")
+                .replace("on Messages.", "on Inbox.")
+                .replace("worker.send(Messages.", "worker.send(Inbox.");
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(Map.of(
+                "src/protocol.ores", PROTOCOL, "src/main.ores", aliased)));
+        Path protocol = temp.resolve("protocol.ores");
+        Path main = temp.resolve("main.ores");
+        Files.writeString(protocol, PROTOCOL);
+        Files.writeString(main, aliased);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(main, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out,
+                new ByteArrayOutputStream());
+        assertEquals("42", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void linkedParseScopeRejectsByteDriftAndCleansUp() {
+        var build = new IncrementalCompiler().compile(Map.of(
+                "src/protocol.ores", PROTOCOL,
+                "src/main.ores", ACTOR));
+        assertNull(dev.oreslang.compiler.OresCompiler.linkedProgramOrNull("src/main.ores", ACTOR));
+        try (var scope = dev.oreslang.compiler.OresCompiler.beginLinkedParse(build)) {
+            assertSame(build.units().get("src/main.ores").program(),
+                    dev.oreslang.compiler.OresCompiler.linkedProgramOrNull("src/main.ores", ACTOR));
+            assertThrows(SecurityException.class,
+                    () -> dev.oreslang.compiler.OresCompiler.linkedProgramOrNull(
+                            "src/main.ores", ACTOR + "\n// unvalidated"));
+            assertThrows(IllegalStateException.class,
+                    () -> dev.oreslang.compiler.OresCompiler.beginLinkedParse(build));
+        }
+        assertNull(dev.oreslang.compiler.OresCompiler.linkedProgramOrNull("src/main.ores", ACTOR));
+    }
+
+    @Test
+    void changesToPublicEnumTagsInvalidateImportedActor() {
+        var compiler = new IncrementalCompiler();
+        var before = Map.of("src/protocol.ores", PROTOCOL, "src/main.ores", ACTOR);
+        compiler.compile(before);
+        assertTrue(compiler.compile(before).rebuiltUnits().isEmpty());
+        var modified = Map.of(
+                "src/protocol.ores", PROTOCOL.replace("} 1;", "} 9;"),
+                "src/main.ores", ACTOR);
+        var built = compiler.compile(modified);
+        assertTrue(built.rebuiltUnits().contains("src/protocol.ores"));
+        assertTrue(built.rebuiltUnits().contains("src/main.ores"));
+    }
+
 }
