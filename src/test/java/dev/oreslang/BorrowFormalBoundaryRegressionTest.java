@@ -52,6 +52,15 @@ final class BorrowFormalBoundaryRegressionTest {
     }
 
     @Test
+    void nestedBorrowCannotBeStoredInClassField() {
+        reject(BOX + """
+                define class Holder as
+                  pub let Option<borrow Box> view = None;
+                end
+                """, "cannot store a borrowed reference");
+    }
+
+    @Test
     void ownedScalarGeneratorStillAdmitted() {
         assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
                 gen* fnc good(): Iterator<int> {
