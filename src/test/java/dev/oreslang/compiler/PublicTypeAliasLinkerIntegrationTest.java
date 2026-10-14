@@ -8,7 +8,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Cross-file proof: export checking is insufficient without real alias expansion. */
 final class PublicTypeAliasLinkerIntegrationTest {
     private static final String SOURCE = """
-            define module products
+            define module products as
                 type Internal<K,V> = record{key: K, value: V};
                 define pub type alias Pair<K,V> as Internal<K,V>;
             end
@@ -73,7 +73,7 @@ final class PublicTypeAliasLinkerIntegrationTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new IncrementalCompiler().compile(Map.of(
                         "library.ores", """
-                                define module products
+                                define module products as
                                     define pub type alias Handle as PrivateClass;
                                 end
                                 """,
@@ -88,7 +88,7 @@ final class PublicTypeAliasLinkerIntegrationTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new IncrementalCompiler().compile(Map.of(
                         "library.ores", """
-                                define module products
+                                define module products as
                                     type A = B;
                                     type B = A;
                                     define pub type alias Public as A;
@@ -131,7 +131,7 @@ final class PublicTypeAliasLinkerIntegrationTest {
 
     @Test
     void repeatedAliasExpansionHasAGlobalBudget() {
-        StringBuilder source = new StringBuilder("define module product\n");
+        StringBuilder source = new StringBuilder("define module product as\n");
         source.append("type A0<T> = Tuple[T,T];\n");
         for (int i = 1; i <= 15; i++) {
             source.append("type A").append(i).append("<T> = Tuple[A")
