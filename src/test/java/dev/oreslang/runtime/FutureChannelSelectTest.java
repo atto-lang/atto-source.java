@@ -281,28 +281,41 @@ final class FutureChannelSelectTest {
                     ChannelRuntime.await(producer), ChannelRuntime.read(channel))
                     .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
             var gate = new CountDownLatch(1);
+            var workerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
             Thread canceller = Thread.startVirtualThread(() -> {
-                awaitStart(gate);
-                selected.cancel(false);
+                try {
+                    awaitStart(gate);
+                    selected.cancel(false);
+                } catch (Throwable error) {
+                    workerFailure.compareAndSet(null, error);
+                }
             });
             Thread settler = Thread.startVirtualThread(() -> {
-                awaitStart(gate);
-                assertTrue(producer.completeFromRuntime(19));
+                try {
+                    awaitStart(gate);
+                    assertTrue(producer.completeFromRuntime(19));
+                } catch (Throwable error) {
+                    workerFailure.compareAndSet(null, error);
+                }
             });
             gate.countDown();
             canceller.join(5_000);
             settler.join(5_000);
             assertFalse(canceller.isAlive(), "cancel stalled in round " + round);
             assertFalse(settler.isAlive(), "settlement stalled in round " + round);
+            if (workerFailure.get() != null) {
+                throw new AssertionError("select race worker failed in round " + round,
+                        workerFailure.get());
+            }
             if (selected.isCancelled()) {
                 assertThrows(CancellationException.class, selected::join);
             } else {
-                assertEquals(ChannelRuntime.SelectOperation.FUTURE,
-                        selected.join().operation());
-                assertEquals(19, selected.join().value());
+                var winner = selected.get(5, TimeUnit.SECONDS);
+                assertEquals(ChannelRuntime.SelectOperation.FUTURE, winner.operation());
+                assertEquals(19, winner.value());
             }
             assertEquals(0, producer.pendingRuntimeWaiterCount());
-            assertEquals(19, producer.join());
+            assertEquals(19, producer.get(5, TimeUnit.SECONDS));
             assertTrue(channel.tryWrite(73));
             assertEquals(73, channel.tryRead().orElseThrow());
         }
