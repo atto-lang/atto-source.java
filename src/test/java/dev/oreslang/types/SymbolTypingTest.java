@@ -60,12 +60,12 @@ class SymbolTypingTest {
     @Test void switchAcceptsSymbolCasesAndRejectsLogicalDuplicates() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(
                 "pub fnc read(Symbol tag) : int { "
-                + "switch tag case #ready -> { return 1; } "
+                + "do switch tag case #ready -> { return 1; } "
                 + "case #error -> { return 2; } "
                 + "default -> { return 0; } end }")));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse(
                 "pub fnc bad(Symbol tag) : int { "
-                + "switch tag case #ready -> { return 1; } "
+                + "do switch tag case #ready -> { return 1; } "
                 + "case #\"ready\" -> { return 2; } "
                 + "default -> { return 0; } end }")));
     }
@@ -73,7 +73,7 @@ class SymbolTypingTest {
     @Test void switchDistinguishesLiteralStringFromSymbolWithSameRendering() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(
                 "pub fnc read(Symbol | String tag) : int { "
-                + "switch tag case \"#foo\" -> { return 1; } "
+                + "do switch tag case \"#foo\" -> { return 1; } "
                 + "case #foo -> { return 2; } "
                 + "default -> { return 0; } end }")));
     }

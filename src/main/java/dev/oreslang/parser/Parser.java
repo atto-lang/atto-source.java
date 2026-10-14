@@ -1788,6 +1788,14 @@ public final class Parser {
             return new Ast.ForStmt(null, condition, null, parseLoopBody());
         }
         if (match(IF)) return parseIf();
+        // Explicit procedural forms share exactly the legacy statement AST.
+        // The leading 'do' disambiguates them from value-producing match/switch.
+        if (check(DO) && (checkNext(MATCH) || checkNext(SWITCH))) {
+            advance();
+            if (match(MATCH)) return parseMatch();
+            consume(SWITCH, "expected 'switch' after 'do'");
+            return parseSwitch();
+        }
         if (match(MATCH)) return parseMatch();
         if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();

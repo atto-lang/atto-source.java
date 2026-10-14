@@ -32,7 +32,7 @@ final class SymbolEndToEndSourceTest {
         String source = """
                 pub routine main(): void {
                   const r = infer struct{status: #ready};
-                  match r.status over
+                  do match r.status over
                     on #ready -> { stdio.stdout.write("matched"); }
                     on _ -> { stdio.stdout.write("fallback"); }
                   end
@@ -60,7 +60,7 @@ final class SymbolEndToEndSourceTest {
         String source = """
                 pub routine main(): void {
                   const Symbol tag = #ready;
-                  match tag over
+                  do match tag over
                     on "ready" -> { return; }
                     on _ -> { return; }
                   end
