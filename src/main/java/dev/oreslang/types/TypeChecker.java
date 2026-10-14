@@ -70,7 +70,14 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     /** TYPE/TYPES imports are not structural witnesses until the trusted linker supplies them. */
     private final Set<String> unlinkedImportedTypes = new HashSet<>();
-    private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    // Track concrete instantiations, not declaration identity alone:
+    // Alias<Alias<int>> is finite, while Alias<int> -> Alias<int> is a cycle.
+    private final IdentityHashMap<Ast.TypeAliasDecl, Set<List<Ast.TypeRef>>> resolvingAliases =
+            new IdentityHashMap<>();
+    private int aliasResolutionDepth;
+    private int aliasExpansionNodes;
+    private static final int MAX_ALIAS_RESOLUTION_DEPTH = 64;
+    private static final int MAX_ALIAS_EXPANSION_NODES = 16_384;
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
     // Unlike private-member access, declaration origin must survive nlex.
@@ -7346,7 +7353,17 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()
                         + " type argument(s), got " + ref.arguments().size());
             }
-            if (!resolvingAliases.add(alias)) throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
+            if (aliasResolutionDepth == 0) aliasExpansionNodes = 0;
+            if (aliasResolutionDepth >= MAX_ALIAS_RESOLUTION_DEPTH) {
+                throw new IllegalArgumentException("type alias expansion exceeds "
+                        + MAX_ALIAS_RESOLUTION_DEPTH + " levels");
+            }
+            Set<List<Ast.TypeRef>> active = resolvingAliases.computeIfAbsent(alias,
+                    ignored -> new HashSet<>());
+            if (!active.add(ref.arguments())) {
+                throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
+            }
+            aliasResolutionDepth++;
             try {
                 Map<String, Ast.TypeRef> substitutions = new HashMap<>();
                 for (int i = 0; i < alias.genericParameters().size(); i++) {
@@ -7354,7 +7371,9 @@ public final class TypeChecker {
                 }
                 return resolve(substituteAliasType(alias.target(), substitutions), generics, self, allowNullMarker);
             } finally {
-                resolvingAliases.remove(alias);
+                aliasResolutionDepth--;
+                active.remove(ref.arguments());
+                if (active.isEmpty()) resolvingAliases.remove(alias);
             }
         }
 
@@ -7502,6 +7521,10 @@ public final class TypeChecker {
     }
 
     private Ast.TypeRef substituteAliasType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
+        if (++aliasExpansionNodes > MAX_ALIAS_EXPANSION_NODES) {
+            throw new IllegalArgumentException("type alias expansion exceeds "
+                    + MAX_ALIAS_EXPANSION_NODES + " nodes");
+        }
         Ast.TypeRef replacement = substitutions.get(ref.name());
         if (replacement != null && ref.arguments().isEmpty() && !ref.inferArguments()) return replacement;
         return new Ast.TypeRef(
