@@ -4363,8 +4363,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unsupported runtime Map value type");
             }
             return switch (value.name()) {
-                case "int", "i8", "i16", "i32", "i64", "u8", "u16",
-                        "u32", "u64", "uint", "bigint" -> OresKeyedMap.ValueDomain.INT;
+                case "int" -> OresKeyedMap.ValueDomain.INT;
                 case "bool", "Bool" -> OresKeyedMap.ValueDomain.BOOL;
                 case "String", "string" -> OresKeyedMap.ValueDomain.STRING;
                 case "Symbol" -> OresKeyedMap.ValueDomain.SYMBOL;
