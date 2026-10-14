@@ -159,10 +159,19 @@ implemented. Standalone `Option` and `Result` remain ADT match subjects.
 
 ## Ordered versus exclusive match safety
 
-Canonical `match value over` is an ordered first-match decision and may
-contain intentionally overlapping patterns (subject to unreachable-arm
-diagnostics). The legacy bare `match value` form is **exclusive**: exactly
-one non-fallback arm may succeed for each value. The Java runtime already
+Both `match value over` and `do match value over` are valid
+statement dispatch and implement the same ordered first-match decision.
+They may contain intentionally overlapping patterns (subject to
+unreachable-arm diagnostics). Both `match value` and `do match value`
+retain **exclusive** legacy matching: exactly one non-fallback arm may
+succeed for each value. The presence of `do` alone must never change
+ordered versus exclusive semantics; the `over` boundary selects the mode.
+Both `switch value` and `do switch value` remain valid statements.
+Similarly `select { ... }` and `do select { ... }` remain valid static
+dispatch, but `do select` retains its explicitly arm-local return policy.
+`return match ...` as a first-class match expression is not yet lowered
+by this Java backend; it must not be claimed as implemented merely by
+accepting the two statement spellings. The Java runtime already
 enforces this with an ambiguous-match exception, so its type checker must
 prove explicit arms pairwise disjoint rather than treating them as ordered.
 
