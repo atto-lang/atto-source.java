@@ -28,6 +28,7 @@ final class SwitchConstantProofHardeningTest {
     void acceptsPureArithmeticSwitchConstants() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(switchProgram("1 + 2"))));
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(switchProgram("(2 * 3) - 3"))));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(switchProgram("(1 << 1) | 1"))));
     }
 
     @Test
