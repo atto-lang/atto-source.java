@@ -149,6 +149,35 @@ final class SourceTypedMatchTerminalFlowTest {
     }
 
     @Test
+    void synchronousAndResumableCleanupChooseTheSameTerminalPriority() {
+        CancellationException cancelled = new CancellationException("cancel");
+        LinkageError hostFatal = new LinkageError("host fatal");
+        IllegalStateException ordinary = new IllegalStateException("guest");
+
+        assertEquals(true, call(EVALUATOR, "sourceTerminalControl",
+                new Class<?>[] {Throwable.class}, cancelled));
+        assertEquals(true, call(EVALUATOR, "sourceTerminalControl",
+                new Class<?>[] {Throwable.class}, hostFatal));
+        assertEquals(false, call(EVALUATOR, "sourceTerminalControl",
+                new Class<?>[] {Throwable.class}, ordinary));
+
+        // Host-fatal cleanup beats actor cancellation; cancellation beats an
+        // ordinary guest failure. Ordinary cleanup cannot erase cancellation.
+        assertEquals(true, call(EVALUATOR, "sourceCleanupDominates",
+                new Class<?>[] {Throwable.class, Throwable.class},
+                ordinary, cancelled));
+        assertEquals(false, call(EVALUATOR, "sourceCleanupDominates",
+                new Class<?>[] {Throwable.class, Throwable.class},
+                cancelled, ordinary));
+        assertEquals(true, call(EVALUATOR, "sourceCleanupDominates",
+                new Class<?>[] {Throwable.class, Throwable.class},
+                cancelled, hostFatal));
+        assertEquals(false, call(EVALUATOR, "sourceCleanupDominates",
+                new Class<?>[] {Throwable.class, Throwable.class},
+                hostFatal, cancelled));
+    }
+
+    @Test
     void terminalCancellationCannotBeReplacedByAnyGuestFinallyOutcome() {
         CancellationException cancelled = new CancellationException("stop");
         Object terminal = throwing(cancelled);
