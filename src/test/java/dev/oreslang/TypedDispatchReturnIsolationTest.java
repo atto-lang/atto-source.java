@@ -131,6 +131,39 @@ final class TypedDispatchReturnIsolationTest {
     }
 
     @Test
+    void unsupportedReturnSwitchAndBracedSelectFailClosedRatherThanReturningFromFunction() {
+        for (String source : new String[] {
+                """
+                fnc wrong(int n): int {
+                    return switch n
+                        case 1 -> { return 1; }
+                        default -> { return 2; }
+                    end
+                }
+                """,
+                """
+                fnc wrong(): int {
+                    return select {
+                        default: { return 1; }
+                    }
+                }
+                """
+        }) {
+            IllegalArgumentException error =
+                    assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+            assertTrue(error.getMessage().contains("ARM_RESULT"), error::toString);
+        }
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc wrong(bool x): int {
+                    return do match x over
+                        on true -> { return 1; }
+                        on _ -> { return 2; }
+                    end
+                }
+                """));
+    }
+
+    @Test
     void illegalBareDispatchIsRejectedBeforeRuntime() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc invalid(int n): int {
