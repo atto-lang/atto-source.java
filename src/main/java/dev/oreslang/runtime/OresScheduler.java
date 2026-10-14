@@ -574,6 +574,7 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
         private final AtomicBoolean cancellationInjected = new AtomicBoolean();
+        private final AtomicBoolean closeCancellationPending = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -997,7 +998,8 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void publishTerminalIfReady() {
-            if (phase.get() != TERMINAL || completion.isDone() || executing.get()) return;
+            if (phase.get() != TERMINAL || completion.isDone() || executing.get()
+                    || closeCancellationPending.get()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
             if (outcome == null) return;
             java.util.concurrent.CancellationException requested =
@@ -1067,6 +1069,7 @@ public final class OresScheduler implements AutoCloseable {
             // No cleanup lane survives close. Fail closed if lexical cleanup
             // cannot be resumed; never claim it completed successfully.
             if (task instanceof CleanupAwareTask<?>) {
+                closeCancellationPending.set(true);
                 failTerminal(new RejectedExecutionException(
                         "scheduler closed before source cleanup completed"));
             } else {
@@ -1075,8 +1078,14 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void publishCancelledFromSchedulerClose() {
-            completion.cancel(false);
-            if (task instanceof CleanupAwareTask<?>) publishTerminalIfReady();
+            try {
+                completion.cancel(false);
+            } finally {
+                if (task instanceof CleanupAwareTask<?>) {
+                    closeCancellationPending.set(false);
+                    publishTerminalIfReady();
+                }
+            }
         }
     }
 
