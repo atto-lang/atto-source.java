@@ -2,7 +2,12 @@ package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -56,6 +61,48 @@ final class SwitchConstantProofHardeningTest {
             assertTrue(failure.getMessage().contains("duplicate switch case"),
                     failure.getMessage());
         }
+    }
+
+    @Test
+    void mixedIntegerAndFloatCasesOverlapUnderRuntimeValueEquality() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val float value = 1.0;
+                          switch value
+                            case 1 -> { }
+                            case 1.0 -> { }
+                            default -> { }
+                          end
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("duplicate switch case"),
+                failure.getMessage());
+    }
+
+    @Test
+    void resumableSwitchUsesOreslangNumericEqualityNotJavaBoxEquality() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val float value = 1.0;
+                  switch value
+                    case 1 -> { stdio.stdout.write("matched"); }
+                    default -> { stdio.stdout.write("missed"); }
+                  end
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "switch-scalar-equality.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("matched", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
