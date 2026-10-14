@@ -79,9 +79,11 @@ The exact codec and collector sources compiled against Oreslang's actual
 `Ast.java` using JDK 21 in a **private** authorized CI repository; 32
 standalone smoke assertions passed across deterministic encoding, frozen
 wire tags, Unicode lengths, duplicate identities, nested generic resolution,
-private native layout, import rejection, and malformed-wire boundaries:
+private native layout, import rejection, and malformed-wire boundaries.
+An additional **1,024 seeded byte-mutation cases** checked that every accepted
+payload is canonical:
 
-https://github.com/canonical-cloud/canonical-docs/actions/runs/38621052654
+https://github.com/canonical-cloud/canonical-docs/actions/runs/38621336358
 
 This does NOT verify the full JVM/GraalVM compiler, Java PR #924 or the
 LLVM backend; all require their own integration and conformance gates.
