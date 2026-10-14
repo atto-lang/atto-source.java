@@ -47,6 +47,7 @@ public final class TypeChecker {
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Map<String, Ast.EnumDecl> enums = new HashMap<>();
     private final IdentityHashMap<Ast.EnumDecl, String> enumOwners = new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.EnumDecl, String> linkedEnumSourceIds = new IdentityHashMap<>();
     private final Set<String> ambiguousEnums = new HashSet<>();
     // Foreign aliases are visible only while expanding a public field in
     // their declaring class, never as names available to importer source.
@@ -127,10 +128,27 @@ public final class TypeChecker {
      * A missing linked signature must remain Unknown (and fail on arithmetic)
      * rather than fabricating an integer or disabling type checking.
      */
+    public record LinkedEnum(Ast.EnumDecl declaration, String sourceUnitId, String moduleName) {
+        public LinkedEnum {
+            java.util.Objects.requireNonNull(declaration, "enum declaration");
+            if (sourceUnitId == null || sourceUnitId.isBlank()
+                    || moduleName == null || moduleName.isBlank()) {
+                throw new IllegalArgumentException("linked nominal enum requires source unit and module");
+            }
+        }
+    }
+
     public static Ast.Program checkTypesWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
-        if (linkedClasses == null || linkedAliases == null) {
+        return checkTypesWithImportedSymbols(program, linkedClasses, linkedAliases, Map.of());
+    }
+
+    public static Ast.Program checkTypesWithImportedSymbols(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, LinkedEnum> linkedEnums) {
+        if (linkedClasses == null || linkedAliases == null || linkedEnums == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
         program = AnnotationExpander.expand(program);
@@ -166,6 +184,23 @@ public final class TypeChecker {
         }
         if (!linkedClasses.keySet().containsAll(linkedAliases.keySet())) {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
+        }
+        for (Map.Entry<String, LinkedEnum> entry : linkedEnums.entrySet()) {
+            String local = entry.getKey();
+            LinkedEnum linked = entry.getValue();
+            boolean imported = program.imports().stream().anyMatch(use ->
+                    use.kind() == Ast.ImportKind.TYPE && !use.wildcard()
+                            && use.names().stream().anyMatch(n ->
+                            dev.oreslang.imports.ImportRules.localName(use, n).equals(local)
+                                    && n.equals(linked.declaration().name())));
+            if (!imported || linked.declaration().visibility() != Ast.Visibility.PUBLIC
+                    || checker.enums.containsKey(local) || checker.ambiguousEnums.contains(local)) {
+                throw new IllegalArgumentException("invalid or unimported nominal enum '" + local + "'");
+            }
+            checker.enums.put(local, linked.declaration());
+            checker.enumOwners.put(linked.declaration(), linked.moduleName());
+            checker.linkedEnumSourceIds.put(linked.declaration(), linked.sourceUnitId());
+            checker.enums.put(checker.qualifiedEnumName(linked.declaration()), linked.declaration());
         }
         checker.validate(program);
         return program;
@@ -1352,7 +1387,7 @@ public final class TypeChecker {
     }
 
     private void rejectUnimportedEnumNamespace(Ast.EnumDecl target) {
-        if (!insideActorLexicalBoundary()) return;
+        if (!insideActorLexicalBoundary() || linkedEnumSourceIds.containsKey(target)) return;
         throw new IllegalArgumentException(
                 "actor '" + lexicalClassOrigin.name()
                         + "' cannot implicitly access same-file enum '" + target.name()
@@ -1391,7 +1426,7 @@ public final class TypeChecker {
         }
 
         Ast.EnumDecl localEnum = findEnum(name);
-        if (localEnum != null) {
+        if (localEnum != null && !linkedEnumSourceIds.containsKey(localEnum)) {
             throw new IllegalArgumentException(
                     "actor '" + lexicalClassOrigin.name()
                             + "' cannot use same-file enum '" + name
@@ -7973,7 +8008,9 @@ public final class TypeChecker {
     }
 
     private String qualifiedEnumName(Ast.EnumDecl declarationEnum) {
-        return enumOwners.get(declarationEnum) + "." + declarationEnum.name();
+        String base = enumOwners.get(declarationEnum) + "." + declarationEnum.name();
+        String origin = linkedEnumSourceIds.get(declarationEnum);
+        return origin == null ? base : origin + "::" + base;
     }
 
     private Ast.EnumVariant enumVariant(Ast.EnumDecl declarationEnum, String variantName) {
