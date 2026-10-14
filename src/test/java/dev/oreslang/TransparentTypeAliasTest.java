@@ -66,7 +66,7 @@ final class TransparentTypeAliasTest {
                 fnc bad(Pair<int, string> pair): int {
                     return pair[0];
                 }
-                """, "indexing requires");
+                """, "object/map key has type INT but expected STRING");
     }
 
     @Test
