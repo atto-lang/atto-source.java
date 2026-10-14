@@ -285,6 +285,37 @@ final class OresKeyedMapTest {
                 "quota failure must be transactional");
     }
 
+    @Test void aggregateWireKeyBudgetRejectsOversizedKeySetAndRefundsOnRemove() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        String prefix = "x".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES - 2);
+        for (int i = 0; i < 63; i++) {
+            map.put(prefix + String.format("%02d", i), i);
+        }
+        assertEquals(63, map.size());
+        assertThrows(IllegalArgumentException.class,
+                () -> map.put(prefix + "63", 63),
+                "64 length-16384 keys exceed the 1 MiB tagged key budget");
+        assertEquals(63, map.size());
+        assertEquals(0, map.remove(prefix + "00"));
+        map.put(prefix + "63", 63);
+        assertEquals(63, map.size(), "removal must refund exactly one key envelope");
+        map.clear();
+        map.put(prefix + "99", 99);
+        assertEquals(1, map.size(), "clear must refund all key bytes");
+    }
+
+    @Test void aggregateKeyBudgetFailsBeforeAnyBatchModification() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        map.put("original", 7);
+        String prefix = "z".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES - 2);
+        LinkedHashMap<String, Integer> batch = new LinkedHashMap<>();
+        for (int i = 0; i < 64; i++) {
+            batch.put(prefix + String.format("%02d", i), i);
+        }
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(batch));
+        assertEquals(Map.of("original", 7), map.shallowSnapshot());
+    }
+
     @Test void exportedViewsCannotMutateTheInternalMapping() {
         OresKeyedMap<OresSymbol, Integer> map = OresKeyedMap.symbolKeys();
         map.put(OresSymbol.process("a"), 1);
