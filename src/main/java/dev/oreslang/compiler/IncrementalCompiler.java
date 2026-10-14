@@ -258,7 +258,16 @@ public final class IncrementalCompiler {
                     abi.append('\n');
                 }
             }
-            for (Ast.Decl decl : module.declarations()) appendAbi(abi, decl);
+            // Declaration order is not part of the public contract. Keep
+            // each declaration's internal parameter/type order, but sort
+            // complete entries so source reordering never dirties importers.
+            List<String> declarations = new ArrayList<>();
+            for (Ast.Decl decl : module.declarations()) {
+                StringBuilder entry = new StringBuilder();
+                appendAbi(entry, decl);
+                if (!entry.isEmpty()) declarations.add(entry.toString());
+            }
+            declarations.stream().sorted().forEach(abi::append);
         }
         return digest(abi.toString());
     }
