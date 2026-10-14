@@ -14,7 +14,14 @@ public final class BoundedSourceReader {
 
     private BoundedSourceReader() { }
 
+    /** Immutable decoded source and its actual encoded length for closure-wide budgeting. */
+    public record ReadResult(String text, int byteCount) { }
+
     public static String readUtf8(Path path) throws IOException {
+        return readWithByteCount(path).text();
+    }
+
+    public static ReadResult readWithByteCount(Path path) throws IOException {
         byte[] bytes;
         try (InputStream input = Files.newInputStream(path)) {
             bytes = input.readNBytes(MAX_BYTES + 1);
@@ -22,9 +29,10 @@ public final class BoundedSourceReader {
         if (bytes.length > MAX_BYTES) {
             throw new IllegalArgumentException("Oreslang source exceeds 16 MiB source limit");
         }
-        return StandardCharsets.UTF_8.newDecoder()
+        String text = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT)
                 .decode(ByteBuffer.wrap(bytes)).toString();
+        return new ReadResult(text, bytes.length);
     }
 }
