@@ -46,6 +46,17 @@ Current source revision must be taken from the PR head, **not from this document
 
 These changes harden *flow classification and cleanup precedence only*. They do NOT prove abrupt actor-stop cleanup actually runs, enforce actor-generation fences on outstanding Futures, or reconcile #823's cleanup-aware scheduler/carrier implementation. Their formal-model/implementation refinement and Native Image/LLVM parity remain open blockers.
 
+## Scheduler cancellation foundation integrated from #823 (2026-10-13)
+
+**Merged incrementally into this draft source branch; NOT a passing runtime integration gate.**
+
+- `OresFuture`: deferred cancellation admission/linearization, request-vs-completion arbitration, non-guest cancellation hooks, bounded diagnostic suppression, and timed-waiter detachment. The implementation is taken from the current #823 source implementation; review this file for any future upstream changes.
+- `OresScheduler`: stackless `CleanupAwareTask`, unforgeable `CleanupTurn` envelopes, post-carrier publication, once-only injected terminal resume, detached abandoned producer waiters and bounded scheduler-close fallback. **#709's `startActorBound(task, taskPlacement)` is retained**, and every scheduler turn uses the issued task-specific placement executor rather than a global actor-root fallback.
+- Ported all six #823 scheduler cancellation regression tests while preserving the 16 existing scheduler tests. Added one more to assert the same actor-issued task placement for initial execution and post-`await` resumption (23 scheduler tests authored). The focused JVM and native-carrier workflow selectors now include `OresSchedulerTest`.
+- **Actor STOP is not integrated yet**: #709's `ActorRuntime` closes its control mailbox and revokes source-task tickets during shutdown, with no protected cleanup lane, cleanup-task lifecycle tracking, or bounded post-stop source cleanup. **Do not mark SourceTask as `CleanupAwareTask`** until STOP is updated to preserve authorization, generation fencing and quiescence. `ActorRuntime.startActorTask` explicitly rejects marked tasks before issuing a ticket and a negative test asserts that fail-closed behavior.
+- The next integration milestone is to port #823's deferred STOP sequencing/cleanup task tracking, but with #709's serial `SerialExecutionTicket` provenance checks. The only acceptable post-stop dispatch is an authenticated `OresScheduler.CleanupTurn` that was first injected as a terminal resume, owned by the same scheduler, actor incarnation, serial execution lease and task ticket. Never admit ordinary queued CONTROL turns or new guest source frames after stop.
+- Then verify actor STOP/cancel/await race, actor-finalization quiescence, late producer completion and callback retirement, cleanup deadline, quota and fatal precedence, and Native Image. Treat absence of an executable CI result as a blocker.
+
 ## Outstanding correctness and security proof obligations
 
 - Model `FUNCTION_RETURN`, `ARM_RESULT`, `THROW`, actor cancellation, fatal host errors, and (where necessary) terminal quota exhaustion in one explicit flow lattice. Cleanup must run exactly once, preserve authoritative failure priority, cap suppressed diagnostic allocation, and reject stale task-generation publications. Maintain the extra `matchFrameId`/`ownerTask` ownership from #709 when introducing the terminal failure rules from #823.
