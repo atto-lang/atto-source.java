@@ -205,6 +205,48 @@ final class ExclusiveAdtMatchSafetyTest {
     }
 
     @Test
+    void largeIntegerAndRoundedDoubleAreProvablyDifferentPatterns() {
+        accepts("""
+                fnc classify(int value): int {
+                    match value
+                        9007199254740992.0 -> { return 1; }
+                        9007199254740993 -> { return 2; }
+                        else -> { return 0; }
+                    end
+                }
+                """);
+    }
+
+    @Test
+    void guestRuntimePreservesExactLargeNumericPatternIdentity() throws Exception {
+        String program = """
+                fnc classify(int value): int {
+                    match value
+                        9007199254740992.0 -> { return 1; }
+                        9007199254740993 -> { return 2; }
+                        else -> { return 0; }
+                    end
+                }
+                pub fnc main(): void {
+                    stdio.println(classify(9007199254740993));
+                    stdio.println(classify(9007199254740992));
+                    return;
+                }
+                """;
+        accepts(program);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source guest = Source.newBuilder(OresLanguage.ID,
+                program, "mixed-integer-double-exact-pattern.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(guest);
+        }
+        assertEquals("2\n1", output.toString(StandardCharsets.UTF_8)
+                .strip().replace("\r\n", "\n"));
+    }
+
+    @Test
     void orderedMatchRejectsNumericallyEquivalentDeadLiteralArm() {
         String source = """
                 fnc classify(int value): int {
