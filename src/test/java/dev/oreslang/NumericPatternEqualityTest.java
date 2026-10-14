@@ -42,6 +42,21 @@ final class NumericPatternEqualityTest {
     }
 
     @Test
+    void finiteOrderingAgreesWithExactNumericEquality() {
+        assertTrue(NumericPatternEquality.compareFinite(
+                9007199254740993L, 9007199254740992.0) > 0);
+        assertTrue(NumericPatternEquality.compareFinite(
+                9007199254740992.0, 9007199254740993L) < 0);
+        assertEquals(0, NumericPatternEquality.compareFinite(
+                9007199254740992L, 9007199254740992.0));
+        assertEquals(0, NumericPatternEquality.compareFinite(-0.0, 0L));
+        assertEquals(0, NumericPatternEquality.compareFinite(
+                new BigDecimal("1.000"), 1.0));
+        assertNull(NumericPatternEquality.compareFinite(
+                Double.NaN, 1L));
+    }
+
+    @Test
     void unknownNumericCarriersNeverEnterStaticProof() {
         Number custom = new Number() {
             @Override public int intValue() { return 1; }
