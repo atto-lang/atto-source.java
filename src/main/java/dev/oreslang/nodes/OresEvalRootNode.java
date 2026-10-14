@@ -2304,7 +2304,7 @@ public final class OresEvalRootNode extends RootNode {
                     // A loop, not recursion, handles all unguarded and
                     // nonmatching arms (including the 4096-arm upper bound).
                     for (int i = nextIndex; i < matched.arms().size(); i++) {
-                        if (completed.get()) return;
+                        if (queue.terminated()) return;
                         // A long match scan is execution, even when every arm
                         // fails before evaluating a guard. Account for this
                         // work so 4096-arm dispatch cannot evade the actor
