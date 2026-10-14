@@ -70,6 +70,32 @@ final class ColonClassFieldInitializerTest {
     }
 
     @Test
+    void initializedFinalFieldCannotBeReplacedByPositionalConstruction() {
+        for (String modifier : new String[]{"final", "final const"}) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define class Config as
+                              %s int value: 5
+                            end
+                            fnc build(): Config {
+                              return new Config(9);
+                            }
+                            """.formatted(modifier))));
+            assertTrue(error.getMessage().contains("cannot replace initialized final field"),
+                    error.getMessage());
+        }
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Config as
+                  int value: 5
+                end
+                fnc build(): Config {
+                  return new Config(9);
+                }
+                """)));
+    }
+
+    @Test
     void finalConstIsNotWritableFromMutableMethod() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define class Foo as
