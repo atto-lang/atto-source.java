@@ -103,4 +103,46 @@ final class TypedValueMatchParameterTest {
             """;
         TypeChecker.check(Parser.parse(guest));
     }
+
+    @Test
+    void positiveAndNegativeTypePatternsPartitionAUnion() throws Exception {
+        String guest = """
+            fnc discriminate(int | string v): int {
+                return match<int> v over
+                    on int as n -> { return 10; }
+                    on !int as other -> { return 20; }
+                end;
+            }
+            pub fnc main(): void {
+                stdio.println(discriminate(5));
+                stdio.println(discriminate("text"));
+                return;
+            }
+            """;
+        var typed = TypeChecker.check(Parser.parse(guest));
+        OwnershipChecker.check(typed);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        var source = Source.newBuilder(OresLanguage.ID, guest, "typed-complement-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("10\\n20", output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+    }
+
+    @Test
+    void nonReifiableNegativePatternsFailClosed() {
+        String guest = """
+            fnc bad(Option<int> v): int {
+                return match<int> v over
+                    on !Option<int> as other -> { return 1; }
+                    on _ -> { return 2; }
+                end;
+            }
+            """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(guest)));
+    }
+
 }
