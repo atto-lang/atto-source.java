@@ -5354,27 +5354,10 @@ public final class TypeChecker {
      * return null, meaning that no disjointness/subsumption proof exists.
      */
     private static Boolean numericPatternLiteralEquality(Number a, Number b) {
-        boolean ai = a instanceof Byte || a instanceof Short
-                || a instanceof Integer || a instanceof Long;
-        boolean bi = b instanceof Byte || b instanceof Short
-                || b instanceof Integer || b instanceof Long;
-        if (ai && bi) return a.longValue() == b.longValue();
-
-        if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal
-                || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger) {
-            try {
-                return new java.math.BigDecimal(a.toString())
-                        .compareTo(new java.math.BigDecimal(b.toString())) == 0;
-            } catch (NumberFormatException ignored) {
-                return null;
-            }
-        }
-        boolean af = a instanceof Float || a instanceof Double;
-        boolean bf = b instanceof Float || b instanceof Double;
-        if ((ai || af) && (bi || bf)) {
-            return a.doubleValue() == b.doubleValue();
-        }
-        return null;
+        // Static subsumption/disjointness must use the same exact equality
+        // contract as runtime pattern matching. In particular 2^53+1 does
+        // not equal the binary64 representation of 2^53.
+        return dev.oreslang.runtime.NumericPatternEquality.equal(a, b);
     }
 
     private boolean patternSubsumes(
