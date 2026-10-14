@@ -29,8 +29,7 @@ mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AlgebraicDataTypeMatchTest,Enu
 mvn -B -ntp -Dores.runtime.carriers=native verify
 ```
 
-The manifest now contains 19 cases, including synchronous and suspendable
-legacy exclusive matches, terminal INT32_MAX enum tags, large integer guard
+The manifest now contains 21 cases, including bare and explicit-do ordered and exclusive suspendable matches, terminal INT32_MAX enum tags, large integer guard
 boundaries, and unary unsigned underflow.
 
 The JUnit test reads the TOML manifest and fixtures directly; file paths
