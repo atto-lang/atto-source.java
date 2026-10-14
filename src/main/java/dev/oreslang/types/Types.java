@@ -42,7 +42,16 @@ public final class Types {
      * regained through aliases while preserving ordinary shape matching.
      */
     public record Record(Map<String, Type> members, boolean readOnly) implements Type {
-        public Record { members = Map.copyOf(members); }
+        public Record {
+            // The product binder's source slots must follow declaration
+            // order. Map.copyOf is immutable but does not preserve iteration
+            // order; relying on its iteration can silently reorder the
+            // compiler's checked record fields relative to the guest AST.
+            // Keep Map.copyOf's fail-closed null validation.
+            Map.copyOf(members);
+            members = java.util.Collections.unmodifiableMap(
+                    new java.util.LinkedHashMap<>(members));
+        }
         public Record(Map<String, Type> members) { this(members, false); }
     }
 
