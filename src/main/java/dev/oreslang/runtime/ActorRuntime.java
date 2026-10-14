@@ -6926,7 +6926,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean authorizedCleanupContinuation(Runnable command) {
-            return !sourceCancellationPending && !sourceCleanupRevoked
+            // A cancellation turn may be ENQUEUED while STOP is still injecting
+            // cancellations. hasSourceCleanup() gates EXECUTION until the
+            // injection barrier is released, preventing lost continuations.
+            return !sourceCleanupRevoked
                     && !forceKillFenced && !closed.get() && !finalized
                     && !sourceCleanupTasks.isEmpty()
                     && command instanceof OresScheduler.CleanupTurn turn
