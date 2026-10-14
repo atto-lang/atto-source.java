@@ -188,7 +188,7 @@ final class OresKeyedMapTest {
         java.util.IdentityHashMap<OresSymbol, Integer> batch =
                 new java.util.IdentityHashMap<>();
         OresSymbol composed = OresSymbol.process("café");
-        OresSymbol decomposed = OresSymbol.process("cafe\\u0301");
+        OresSymbol decomposed = OresSymbol.process("café");
         assertNotSame(composed, decomposed);
         assertEquals(composed, decomposed);
         batch.put(composed, 1);
