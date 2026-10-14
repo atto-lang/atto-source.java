@@ -8929,6 +8929,10 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
+                if (slot.value instanceof OresKeyedMap<?, ?> || value instanceof OresKeyedMap<?, ?>) {
+                    throw new SecurityException(
+                            "typed Map rebinding is disabled until exclusive moves can be verified");
+                }
                 slot.value = value;
                 return;
             }
