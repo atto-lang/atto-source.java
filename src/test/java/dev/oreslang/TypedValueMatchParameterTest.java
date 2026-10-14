@@ -211,8 +211,8 @@ final class TypedValueMatchParameterTest {
                 .allowAllAccess(false).out(output).build()) {
             ctx.eval(source);
         }
-        assertEquals("20\\n10\\nfalse",
-                output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+        assertEquals("20\n10\nfalse",
+                output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 
     @Test
@@ -238,7 +238,7 @@ final class TypedValueMatchParameterTest {
                 .allowAllAccess(false).out(output).build()) {
             ctx.eval(source);
         }
-        assertEquals("10\\n20",
-                output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+        assertEquals("10\n20",
+                output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 }
