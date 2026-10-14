@@ -2,8 +2,10 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -83,4 +85,49 @@ final class OresSchedulerCleanupTurnProvenanceTest {
             assertEquals(0, guestTurns.get());
         }
     }
+    @Test
+    void activeGuestTurnDoesNotGainCleanupOutputAuthorityBeforeCancellationInjection()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean beforeRequest = new AtomicBoolean(true);
+        AtomicBoolean afterRequestButBeforeUnwind = new AtomicBoolean(true);
+        AtomicBoolean terminalResumeAuthorized = new AtomicBoolean(false);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresFuture<Integer> result = scheduler.start(
+                    (OresScheduler.CleanupAwareTask<Integer>) event -> {
+                        if (event.initial()) {
+                            beforeRequest.set(OresScheduler.currentTaskInCleanup());
+                            entered.countDown();
+                            if (!release.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError("source turn did not release");
+                            }
+                            afterRequestButBeforeUnwind.set(
+                                    OresScheduler.currentTaskInCleanup());
+                            return OresScheduler.await(source);
+                        }
+                        assertInstanceOf(CancellationException.class, event.failure());
+                        terminalResumeAuthorized.set(
+                                OresScheduler.currentTaskInCleanup());
+                        return OresScheduler.done(1);
+                    });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertTrue(result.cancel(false));
+                assertFalse(result.isDone());
+            } finally {
+                release.countDown();
+            }
+            assertThrows(CancellationException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertFalse(beforeRequest.get(), "initial guest execution is not cleanup");
+            assertFalse(afterRequestButBeforeUnwind.get(),
+                    "a racing STOP cannot authorize ordinary still-running guest code");
+            assertTrue(terminalResumeAuthorized.get(),
+                    "authenticated cancellation resume can run lexical cleanup");
+            assertFalse(source.isCancelled(), "cancellation does not take producer ownership");
+        }
+    }
+
 }

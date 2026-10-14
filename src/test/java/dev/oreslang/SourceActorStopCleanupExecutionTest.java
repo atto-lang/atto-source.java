@@ -19,15 +19,15 @@ final class SourceActorStopCleanupExecutionTest {
                 define actor Worker as
                   receive(ActorMail<String> mail): void {
                     val Channel<int> gate = Channel.new<int>(0);
-                    defer self.send("defer");
+                    defer stdio.stdout.write("|defer");
                     try {
                       self.send("entered");
                       readch gate;
                       self.send("unreachable");
                     } catch (err) {
-                      self.send("caught");
+                      stdio.stdout.write("|caught");
                     } finally {
-                      self.send("finally");
+                      stdio.stdout.write("|finally");
                     }
                     return;
                   }
@@ -40,11 +40,7 @@ final class SourceActorStopCleanupExecutionTest {
                   val entered = (await worker.outputs.next()).value.unwrap();
                   stdio.stdout.write(entered.value);
                   worker.stop();
-                  for await const output of worker.outputs {
-                    stdio.stdout.write("|");
-                    stdio.stdout.write(output.value);
-                  }
-                  await worker.get_done();
+                   await worker.get_done();
                   return;
                 }
                 """;

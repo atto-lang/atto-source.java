@@ -353,7 +353,11 @@ public final class OresScheduler implements AutoCloseable {
     public static boolean currentTaskInCleanup() {
         Object domain = CURRENT_TASK_DOMAIN.get();
         return domain instanceof TaskRunner<?> runner
-                && runner.cleanupAuthorized();
+                && runner.cleanupAuthorized()
+                // An accepted request does not mean the RUNNING guest frame
+                // has observed cancellation. Only a terminally-resumed frame
+                // has the authority to emit cleanup output after STOP.
+                && runner.cancellationInjected.get();
     }
 
     /**
