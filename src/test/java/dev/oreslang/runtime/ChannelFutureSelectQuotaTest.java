@@ -14,34 +14,55 @@ import org.junit.jupiter.api.Test;
  */
 final class ChannelFutureSelectQuotaTest {
     @Test
+    @org.junit.jupiter.api.Timeout(90)
     void globalArmQuotaIncludesFutureCasesAndRefundsOnCancellation() {
-        var producer = new OresFuture<Integer>();
+        // Use independent producers so this test isolates global arm credits.
+        // Repeated aliases of a single Future are covered by the separate
+        // ordering and listener-detachment regressions.
+        var producers = new java.util.ArrayList<OresFuture<Integer>>();
         var operations = new java.util.ArrayList<ChannelRuntime.SelectCase>();
         for (int i = 0; i < ChannelRuntime.MAX_SELECT_CASES; i++) {
+            var producer = new OresFuture<Integer>();
+            producers.add(producer);
             operations.add(ChannelRuntime.await(producer));
         }
         var set = new ChannelRuntime.SelectSet(operations);
+        int admitted = ChannelRuntime.MAX_PENDING_SELECT_ARM_REGISTRATIONS
+                / ChannelRuntime.MAX_SELECT_CASES;
+        assertEquals(0, ChannelRuntime.MAX_PENDING_SELECT_ARM_REGISTRATIONS
+                % ChannelRuntime.MAX_SELECT_CASES,
+                "quota fixture must fill the arm budget exactly");
         var accepted = new java.util.ArrayList<OresFuture<ChannelRuntime.SelectResult>>();
         try {
-            // Sixteen selections, each with 256 pending Future cases, occupy
-            // all 4,096 global registration credits without a channel.
-            for (int i = 0; i < 16; i++) accepted.add(set.selectAsync());
-            assertEquals(4_096, producer.pendingRuntimeWaiterCount());
+            for (int i = 0; i < admitted; i++) {
+                var selection = set.selectAsync();
+                assertFalse(selection.isDone(), "unexpected rejection at " + i);
+                accepted.add(selection);
+            }
+            assertEquals(admitted, producers.getFirst().pendingRuntimeWaiterCount());
 
             var rejected = set.selectAsync();
+            // Fail immediately on a quota regression instead of joining a
+            // still-pending Future and hanging the CI runner indefinitely.
+            assertTrue(rejected.isDone(), "excess arm selection must reject immediately");
             var failure = assertThrows(CompletionException.class, rejected::join);
             assertTrue(failure.getCause() instanceof ChannelRuntime.SelectAdmissionException);
-            assertEquals(4_096, producer.pendingRuntimeWaiterCount());
-            assertFalse(producer.isDone(), "selection failure must not cancel its source");
+            assertEquals(admitted, producers.getFirst().pendingRuntimeWaiterCount());
+            assertFalse(producers.getFirst().isDone(),
+                    "selection failure must not cancel its source");
         } finally {
-            for (var selected : accepted) selected.cancel(false);
+            for (var selected : accepted) assertTrue(selected.cancel(false));
         }
-        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        for (var producer : producers) {
+            assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                    "cancellation must refund every Future listener");
+            assertFalse(producer.isDone(), "cancellation must not settle the shared source");
+        }
 
         var retry = set.selectAsync();
-        assertEquals(ChannelRuntime.MAX_SELECT_CASES, producer.pendingRuntimeWaiterCount());
+        assertEquals(1, producers.getFirst().pendingRuntimeWaiterCount());
         assertTrue(retry.cancel(false));
-        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertEquals(0, producers.getFirst().pendingRuntimeWaiterCount());
     }
 
     @Test
