@@ -1254,9 +1254,16 @@ public final class Parser {
     private List<String> parseGenericParameters() {
         if (!match(LT)) return List.of();
         List<String> names = new ArrayList<>();
-        do names.add(consume(IDENT, "expected generic parameter name").lexeme()); while (match(COMMA));
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        do {
+            String name = consume(IDENT, "expected generic parameter name").lexeme();
+            if (!seen.add(name)) {
+                throw error(previous(), "duplicate generic parameter name '" + name + "'");
+            }
+            names.add(name);
+        } while (match(COMMA));
         consume(GT, "expected '>' after generic parameters");
-        return names;
+        return List.copyOf(names);
     }
 
     private void requireDistinctParameterNames(List<Ast.Param> params) {

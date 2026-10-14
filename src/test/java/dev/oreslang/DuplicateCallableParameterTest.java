@@ -35,4 +35,29 @@ final class DuplicateCallableParameterTest {
             assertDoesNotThrow(() -> Parser.parse(declaration), declaration);
         }
     }
+
+    @Test
+    void duplicateGenericTypeParametersAreRejectedBeforeTypeChecking() {
+        for (String declaration : new String[] {
+                "fnc pick<T, T>(T value): T { return value; }",
+                "define class Box<T, T> as end",
+                "define interface Api<T, T> as end"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(declaration), declaration);
+            assertTrue(error.getMessage().contains("duplicate generic parameter name"),
+                    "must reject duplicate binder, not malformed syntax: " + declaration);
+        }
+    }
+
+    @Test
+    void distinctGenericTypeParametersRemainAccepted() {
+        for (String declaration : new String[] {
+                "fnc pick<T, U>(T value): T { return value; }",
+                "define class Box<T, U> as end",
+                "define interface Api<T, U> as end"
+        }) {
+            assertDoesNotThrow(() -> Parser.parse(declaration), declaration);
+        }
+    }
 }
