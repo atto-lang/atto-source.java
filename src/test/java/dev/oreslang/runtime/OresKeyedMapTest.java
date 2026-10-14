@@ -108,6 +108,60 @@ final class OresKeyedMapTest {
                 ActorRuntime.freeze(List.of(Map.of("embedded", map))));
     }
 
+    @Test void requiredReadsFailClosedForAbsentKeys() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT);
+        assertNull(map.get("missing")); // Host API retains conventional semantics.
+        assertThrows(IllegalArgumentException.class, () -> map.getRequired("missing"));
+        map.put("present", 42);
+        assertEquals(42, map.getRequired("present"));
+        map.remove("present");
+        assertThrows(IllegalArgumentException.class, () -> map.getRequired("present"));
+    }
+
+    @Test void concurrentRemovalNeverReturnsSpuriousNullFromRequiredLookup() throws Exception {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT);
+        java.util.concurrent.ExecutorService executor =
+                java.util.concurrent.Executors.newFixedThreadPool(2);
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        try {
+            var producer = executor.submit(() -> {
+                try {
+                    start.await();
+                    for (int i = 0; i < 10_000; i++) {
+                        map.put("shared", i);
+                        map.remove("shared");
+                    }
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(failure);
+                }
+            });
+            var observer = executor.submit(() -> {
+                try {
+                    start.await();
+                    for (int i = 0; i < 10_000; i++) {
+                        try {
+                            assertNotNull(map.getRequired("shared"),
+                                    "present keys must never read as null");
+                        } catch (IllegalArgumentException missing) {
+                            assertEquals("unknown typed Map key", missing.getMessage());
+                        }
+                    }
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(failure);
+                }
+            });
+            start.countDown();
+            producer.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            observer.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
     @Test void concurrentWritesCannotLoseKeysOrCorruptIteration() throws Exception {
         OresKeyedMap<String, Integer> map =
                 OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
