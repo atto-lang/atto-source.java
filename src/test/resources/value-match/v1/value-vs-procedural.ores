@@ -1,0 +1,19 @@
+fnc value(Option<int> input): int {
+  val int x = match input over {
+    on Some(n) { return n + 1; }
+    on None { return 0; }
+  };
+  return x + 100;
+}
+fnc procedural(Option<int> input): int {
+  do match input over {
+    on Some(n) { return n + 1; }
+    on None { return 0; }
+  }
+}
+pub fnc main(): void {
+  stdio.stdout.write(value(Some(41)));
+  stdio.stdout.write(":");
+  stdio.stdout.write(procedural(Some(41)));
+  return;
+}

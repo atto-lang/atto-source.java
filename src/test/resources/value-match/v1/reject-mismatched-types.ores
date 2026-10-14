@@ -1,0 +1,6 @@
+fnc compute(bool input): int {
+  return match input over {
+    on true { return 1; }
+    on false { return "wrong"; }
+  };
+}

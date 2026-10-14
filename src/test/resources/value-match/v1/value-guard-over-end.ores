@@ -1,0 +1,6 @@
+fnc compute(int value): int {
+  return match value over
+    on int n when n > 0 -> { return n + 1; }
+    on _ -> { return 0; }
+  end;
+}
