@@ -22,6 +22,41 @@ public final class OresCompiler {
         return program;
     }
 
+    /**
+     * Minted only by OresCompiler after Oreslang type and ownership admission.
+     * Unlike AnalysisResult (a presentation value), this class has no public
+     * constructor and must not be decoded or synthesized from cache contents.
+     *
+     * Currently local-only: a cross-file admitted snapshot must instead be
+     * constructed by the future trusted SCC linker after linked resolution.
+     */
+    public static final class CheckedProgram {
+        private final Ast.Program program;
+        private final java.util.Map<String, TypeChecker.PublicNominalOrigin> nominalOrigins;
+        private final java.util.List<String> warnings;
+
+        private CheckedProgram(TypeChecker.CheckedPublicNominals verified) {
+            this.program = verified.program();
+            this.nominalOrigins = java.util.Map.copyOf(verified.resolvedNames());
+            this.warnings = java.util.List.copyOf(verified.warnings());
+        }
+
+        public Ast.Program program() { return program; }
+        public java.util.Map<String, TypeChecker.PublicNominalOrigin> nominalOrigins() {
+            return nominalOrigins;
+        }
+        public java.util.List<String> warnings() { return warnings; }
+    }
+
+    /** Local, no-import front-end admission with an unforgeable checked token. */
+    public static CheckedProgram admitLocal(Ast.Program program) {
+        return new CheckedProgram(TypeChecker.checkTypesAndSnapshotPublicNominals(program));
+    }
+
+    public static CheckedProgram parseAndAdmitLocal(String source) {
+        return admitLocal(Parser.parse(source));
+    }
+
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
     public record AnalysisResult(Ast.Program program, java.util.List<String> warnings) {
         public AnalysisResult { warnings = java.util.List.copyOf(warnings); }
