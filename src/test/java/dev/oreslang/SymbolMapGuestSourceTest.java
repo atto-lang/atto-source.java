@@ -30,7 +30,7 @@ final class SymbolMapGuestSourceTest {
     @Test void symbolMapCanWriteAndReadWithLogicalKeys() throws Exception {
         String program = """
                 pub routine main(): void {
-                    let m = new Map<Symbol, int>();
+                    let mut m = new Map<Symbol, int>();
                     m[#ready] = 41;
                     m[#ready] = 42;
                     if m[#ready] eq 42 then
@@ -47,7 +47,7 @@ final class SymbolMapGuestSourceTest {
     @Test void mixedKeysAreDistinctAtRuntime() throws Exception {
         String program = """
                 pub routine main(): void {
-                    let m = new Map<Symbol | String, int>();
+                    let mut m = new Map<Symbol | String, int>();
                     m[#ready] = 5;
                     m["ready"] = 9;
                     if (m[#ready] eq 5) && (m["ready"] eq 9) then
@@ -64,21 +64,21 @@ final class SymbolMapGuestSourceTest {
     @Test void staticCheckerRejectsWrongKeyAndValueTypes() {
         String wrongKey = """
                 pub fnc bad(): void {
-                    let m = new Map<Symbol, int>();
+                    let mut m = new Map<Symbol, int>();
                     m["ready"] = 3;
                     return;
                 }
                 """;
         String wrongValue = """
                 pub fnc bad(): void {
-                    let m = new Map<Symbol, int>();
+                    let mut m = new Map<Symbol, int>();
                     m[#ready] = "bad";
                     return;
                 }
                 """;
         String wrongReadKey = """
                 pub fnc bad(): void {
-                    let m = new Map<String, int>();
+                    let mut m = new Map<String, int>();
                     let x = m[#ready];
                     return;
                 }
@@ -91,13 +91,13 @@ final class SymbolMapGuestSourceTest {
 
     @Test void invalidMapDomainsAndConstructorShapesFailClosed() {
         String[] sources = {
-            "pub fnc bad(): void { let m = new Map<int, int>(); return; }",
-            "pub fnc bad(): void { let m = new Map<Symbol>(); return; }",
-            "pub fnc bad(): void { let m = new Map<Symbol, void>(); return; }",
-            "pub fnc bad(): void { let m = new Map<Symbol, int>(1); return; }",
-            "pub fnc bad(): void { let m = new Map<Symbol | int, int>(); return; }",
-            "pub fnc bad(): void { let m = new Map<Symbol, float>(); return; }",
-            "pub fnc bad(): void { let m = new Map<Symbol, Array<int>>(); return; }"
+            "pub fnc bad(): void { let mut m = new Map<int, int>(); return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol>(); return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol, void>(); return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(1); return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol | int, int>(); return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol, float>(); return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol, Array<int>>(); return; }"
         };
         for (String source : sources) {
             assertThrows(IllegalArgumentException.class,
@@ -107,9 +107,9 @@ final class SymbolMapGuestSourceTest {
 
     @Test void mapKeysNeverBecomeStringNamedDotProperties() {
         String[] invalid = {
-            "pub fnc bad(): void { let m = new Map<Symbol, int>(); let v = m.ready; return; }",
-            "pub fnc bad(): void { let m = new Map<Symbol, int>(); m.ready = 4; return; }",
-            "pub fnc bad(): void { let m = new Map<String, int>(); m.get(\"ready\"); return; }"
+            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); let v = m.ready; return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); m.ready = 4; return; }",
+            "pub fnc bad(): void { let mut m = new Map<String, int>(); m.get(\"ready\"); return; }"
         };
         for (String source : invalid) {
             assertThrows(IllegalArgumentException.class,
@@ -120,7 +120,7 @@ final class SymbolMapGuestSourceTest {
     @Test void guestStringMapValueTypeChecksAreEnforced() throws Exception {
         String guest = """
                 pub routine main(): void {
-                    let m = new Map<String, String>();
+                    let mut m = new Map<String, String>();
                     m["status"] = "ready";
                     if m["status"] eq "ready" then
                         stdio.stdout.write("ok");
@@ -133,9 +133,9 @@ final class SymbolMapGuestSourceTest {
 
     @Test void wrongScalarValueOrKeyIsRejectedAtCompileTime() {
         String[] invalid = {
-            "pub fnc bad(): void { let m = new Map<Symbol, bool>(); m[#ready] = 1; return; }",
-            "pub fnc bad(): void { let m = new Map<String, Symbol>(); m[\"state\"] = \"ready\"; return; }",
-            "pub fnc bad(): void { let m = new Map<Symbol, int>(); m[5] = 6; return; }"
+            "pub fnc bad(): void { let mut m = new Map<Symbol, bool>(); m[#ready] = 1; return; }",
+            "pub fnc bad(): void { let mut m = new Map<String, Symbol>(); m[\"state\"] = \"ready\"; return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); m[5] = 6; return; }"
         };
         for (String source : invalid) {
             assertThrows(IllegalArgumentException.class,
@@ -143,9 +143,37 @@ final class SymbolMapGuestSourceTest {
         }
     }
 
+    @Test void ordinaryConstAndLetBindingsCannotMutateMapReferent() {
+        String[] invalid = {
+            "pub fnc bad(): void { const m = new Map<Symbol, int>(); m[#ready] = 1; return; }",
+            "pub fnc bad(): void { let m = new Map<Symbol, int>(); m[#ready] = 1; return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); let mut alias = m; alias[#ready] = 1; return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); let mut alias = m; return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); m = new Map<Symbol, int>(); return; }"
+        };
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), source);
+        }
+    }
+
+    @Test void readOnlyAliasCanReadButCannotBePromotedToWritable() {
+        String source = """
+                pub fnc bad(): void {
+                    val m = new Map<Symbol, int>();
+                    m[#ready] = 1;
+                    const alias = m;
+                    alias[#ready] = 2;
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+    }
+
     @Test void keylessOrAmbiguousGenericMapCannotBeReified() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse(
-                "pub fnc bad(): void { let m = new Map<>(); return; }")));
+                "pub fnc bad(): void { let mut m = new Map<>(); return; }")));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse(
                 "class Map { }")));
     }
