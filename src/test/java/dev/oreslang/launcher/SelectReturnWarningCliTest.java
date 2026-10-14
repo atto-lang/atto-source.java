@@ -10,22 +10,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SelectReturnWarningCliTest {
     @Test
-    void cliReportsOneWarningForDiscardedArmValueButNotOuterCallableReturn() {
+    void cliDoesNotWarnForBlockingProceduralCallableReturn() {
         String source = """
-                fnc check(): void {
+                fnc check(): int {
                   do select {
                     default: {
                       return 7;
                     }
                   }
-                  return;
+                  return 0;
                 }
                 """;
         List<String> warnings = OresMain.formatSelectReturnWarnings(
                 Path.of("check.ores"), source);
-        assertEquals(1, warnings.size(), warnings.toString());
-        assertTrue(warnings.getFirst().contains("W-SELECT-RETURN"), warnings.toString());
-        assertTrue(warnings.getFirst().contains("check.ores"), warnings.toString());
+        assertTrue(warnings.isEmpty(), warnings.toString());
     }
 
     @Test
