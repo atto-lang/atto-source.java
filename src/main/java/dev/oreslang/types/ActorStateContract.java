@@ -221,6 +221,28 @@ public final class ActorStateContract {
                         + "without verified ownership and lifetime lowering");
             }
         }
+        // Match arms and refinement predicates can introduce implicit local
+        // bindings for their subject. A reference-backed state projection
+        // would then be reachable under a fresh name whose actor provenance
+        // is not tracked by the current AST-only contract. Even a wildcard
+        // pattern may dispatch through unverified structural/match effects.
+        // Keep all three entry points fail-closed for state-owned references
+        // until typed pattern provenance and effect lowering are proved.
+        if (activeAccess != null && keys != null) {
+            Ast.Expr matched = null;
+            if (node instanceof Ast.MatchStmt match) {
+                matched = match.subject();
+            } else if (node instanceof Ast.TypeTestExpr typeTest) {
+                matched = typeTest.value();
+            } else if (node instanceof Ast.PatternTestExpr patternTest) {
+                matched = patternTest.value();
+            }
+            if (matched != null && projectsReferenceState(matched, activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state reference projection cannot enter match or "
+                        + "pattern/type binding without verified ownership provenance");
+            }
+        }
         // Nested member/index accesses and calls can mutate or materialize
         // references to an object reachable through s.key. No typed graph
         // ownership or method-effect summaries exist for these projections
