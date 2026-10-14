@@ -129,13 +129,27 @@ public final class TypeChecker {
      */
     public record PublicNominalOrigin(String module, String symbol, boolean isInterface) { }
 
-    public record CheckedPublicNominals(Ast.Program program,
-                                        Map<String, PublicNominalOrigin> resolvedNames,
-                                        List<String> warnings) {
-        public CheckedPublicNominals {
-            resolvedNames = Map.copyOf(resolvedNames);
-            warnings = List.copyOf(warnings);
+    /**
+     * A verified public-symbol snapshot can only be created by this checker,
+     * after its semantic and ownership passes. A public record constructor
+     * would allow unverified clients to fabricate an allegedly checked result.
+     */
+    public static final class CheckedPublicNominals {
+        private final Ast.Program program;
+        private final Map<String, PublicNominalOrigin> resolvedNames;
+        private final List<String> warnings;
+
+        private CheckedPublicNominals(
+                Ast.Program program, Map<String, PublicNominalOrigin> resolvedNames,
+                List<String> warnings) {
+            this.program = java.util.Objects.requireNonNull(program, "checked program");
+            this.resolvedNames = Map.copyOf(resolvedNames);
+            this.warnings = List.copyOf(warnings);
         }
+
+        public Ast.Program program() { return program; }
+        public Map<String, PublicNominalOrigin> resolvedNames() { return resolvedNames; }
+        public List<String> warnings() { return warnings; }
     }
 
     /**
