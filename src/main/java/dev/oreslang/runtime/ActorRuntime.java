@@ -1732,7 +1732,29 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        return cell.sourceScheduler().start(task);
+        if (!(task instanceof OresScheduler.CleanupAwareTask<?>)) {
+            return cell.sourceScheduler().start(task);
+        }
+        // Tracking starts before stop may snapshot owned tasks. Keep lexical
+        // cleanup as part of actor lifetime even when the caller did not
+        // explicitly register its returned Future as a pending operation.
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || closed.get()) {
+                throw terminated(cell.ref);
+            }
+            OresFuture<T> future = cell.sourceScheduler().start(task);
+            cell.sourceCleanupTasks.add(future);
+            future.whenCompleteRuntime((ignored, failure) -> {
+                synchronized (cell.lifecycleLock) {
+                    cell.sourceCleanupTasks.remove(future);
+                    if (cell.stopped.get()) {
+                        cell.finalizeStopLocked();
+                    }
+                    cell.lifecycleLock.notifyAll();
+                }
+            });
+            return future;
+        }
     }
 
     private boolean ownFuture(
@@ -1781,7 +1803,9 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
-        if (cell == null || cell.stopped.get() || closed.get()) return false;
+        if (cell == null || closed.get()) return false;
+        if (cell.stopped.get() && !cell.authorizedCleanupContinuation(continuation))
+            return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
@@ -1791,7 +1815,9 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if (cell.stopped.get() || cell.finalized || closed.get()) return false;
+                if (cell.finalized || closed.get()
+                        || (cell.stopped.get()
+                            && !cell.authorizedCleanupContinuation(continuation))) return false;
                 if (!cell.continuationMailbox.tryWrite(
                         MessageEnvelope.continuation(continuation))) {
                     throw new IllegalStateException(
@@ -6019,6 +6045,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** SourceTasks with in-flight lexical cleanup gate state retirement. */
+        private final Set<OresFuture<?>> sourceCleanupTasks = ConcurrentHashMap.newKeySet();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
@@ -6198,7 +6226,20 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean hasQueuedWorkLocked() {
             return !continuationMailbox.isEmpty()
-                        || (!serialTurnGate.occupied() && !mailbox.isEmpty());
+                        || (!stopped.get() && !serialTurnGate.occupied()
+                            && !mailbox.isEmpty());
+        }
+
+        private boolean authorizedCleanupContinuation(Runnable command) {
+            return !forceKillFenced && !closed.get() && !finalized
+                    && !sourceCleanupTasks.isEmpty()
+                    && command instanceof OresScheduler.CleanupTurn turn
+                    && turn.authorizedBy(sourceScheduler);
+        }
+
+        private boolean hasSourceCleanup() {
+            return !sourceCleanupTasks.isEmpty()
+                    && !forceKillFenced && !closed.get();
         }
 
         private OresScheduler sourceScheduler() {
