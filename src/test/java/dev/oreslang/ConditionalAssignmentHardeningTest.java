@@ -53,7 +53,23 @@ final class ConditionalAssignmentHardeningTest {
                           end
                         }
                         """)));
-        assertTrue(guard.getMessage().contains("assignment"));
+        assertTrue(guard.getMessage().contains("assignment"), guard.getMessage());
+    }
+
+    @Test
+    void matchArmArrowDoesNotConvertParenthesizedGuardIntoLambda() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc probe(bool x, bool y): int {
+                  match x over
+                    on true when (x eq y) -> { return 1; }
+                    on _ -> { return 0; }
+                  end
+                }
+                """)));
+
+        var lambda = new Parser(new dev.oreslang.parser.Lexer(
+                "(int n) -> n + 1").scan()).parseExpression();
+        assertInstanceOf(dev.oreslang.ast.Ast.LambdaExpr.class, lambda);
     }
 
     @Test
