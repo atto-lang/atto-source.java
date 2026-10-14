@@ -154,6 +154,14 @@ public final class ActorStateContract {
             if (variable.equals("self")) {
                 throw new IllegalArgumentException("actor state access parameter cannot shadow self");
             }
+            // A slim-arrow callback has an implicit return expression, not
+            // an Ast.ReturnStmt. Applying escape checks only to ReturnStmt
+            // silently exposes s.referenceField via |s| -> s.referenceField.
+            if (projectsReferenceState(lambda.expressionBody(), variable, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state reference projection cannot escape expression-bodied "
+                        + "state callback without verified detached snapshot lowering");
+            }
             visit(lambda.expressionBody(), actor, keys, variable, false, instanceMethod, loanMode);
             visit(lambda.blockBody(), actor, keys, variable, false, instanceMethod, loanMode);
             return;
