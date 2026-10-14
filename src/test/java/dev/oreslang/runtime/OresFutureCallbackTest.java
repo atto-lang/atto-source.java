@@ -83,6 +83,37 @@ final class OresFutureCallbackTest {
     }
 
     @Test
+    void settledWaiterCanReenterRegistrationWithoutLockingOrQueueRetention()
+            throws Exception {
+        var producer = new OresFuture<Integer>();
+        var notifications = new java.util.concurrent.atomic.AtomicInteger();
+        producer.whenCompleteRuntime((value, failure) -> {
+            assertNull(failure);
+            assertEquals(44, value);
+            producer.whenCompleteRuntime((nested, nestedFailure) -> {
+                assertNull(nestedFailure);
+                assertEquals(44, nested);
+                notifications.incrementAndGet();
+            });
+            notifications.incrementAndGet();
+        });
+        assertTrue(producer.completeFromRuntime(44));
+        assertEquals(2, notifications.get());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        // Re-registering after the terminal drain must never add a waiter.
+        for (int i = 0; i < 256; i++) {
+            var handle = producer.whenCompleteRuntimeCancellable((value, failure) -> {
+                assertNull(failure);
+                assertEquals(44, value);
+                notifications.incrementAndGet();
+            });
+            handle.detach();
+        }
+        assertEquals(258, notifications.get());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     void consumerCancellationDropsFirstLateForeignCallbackButStillRejectsDuplicates() {
         AtomicReference<OresFuture.Callback<Integer>> completion = new AtomicReference<>();
 
