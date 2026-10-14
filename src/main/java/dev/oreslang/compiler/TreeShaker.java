@@ -175,6 +175,10 @@ public final class TreeShaker {
                     || !function.genericParameters().isEmpty()
                     || function.actorKind() != Ast.ActorKind.NONE
                     || function.async()
+                    || function.suspends()
+                    || function.trapped()
+                    || function.generator()
+                    || function.nonLexical()
                     || function.parameters().size() != arguments.size()
                     || function.body().size() != 1
                     || !(function.body().getFirst() instanceof Ast.ReturnStmt returned)
