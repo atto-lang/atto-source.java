@@ -398,6 +398,14 @@ public final class OwnershipChecker {
                         ? "MutexGuard values cannot cross a yield* delegation boundary"
                         : "MutexGuard values cannot be yielded from a generator");
             }
+            // A direct yield creates a loan after the pre-yield live-loan check.
+            // Delegation can also conceal borrowed elements inside generic types.
+            // Until iterator lifetimes are tracked, neither may escape.
+            if (isBorrowValue(value) || containsBorrowType(exposed)) {
+                throw error(yielded.delegated()
+                        ? "cannot yield borrowed elements without a proven iterator lifetime"
+                        : "cannot yield a borrowed value without a proven generator lifetime");
+            }
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) {
@@ -1090,6 +1098,11 @@ public final class OwnershipChecker {
                 ValueInfo info = checkExpr(arg, scope, true);
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a constructed object");
+                }
+                // Constructors may retain parameters as fields. With no scoped
+                // constructor-escape proof, borrowed arguments must fail closed.
+                if (isBorrowValue(info) || containsBorrowType(info.type)) {
+                    throw error("constructor cannot retain a borrowed argument without a proven scoped lifetime");
                 }
                 argumentTypes.add(info.type);
             }
@@ -2104,6 +2117,17 @@ public final class OwnershipChecker {
                 && (value.kind == ValueKind.IMM_BORROW
                     || value.kind == ValueKind.MUT_BORROW
                     || (value.type != null && value.type.isBorrow()));
+    }
+
+    // Reject recursively nested borrowed elements at ownership-escaping
+    // boundaries (e.g. Iterator<Option<borrow T>>), not only top-level &T.
+    private static boolean containsBorrowType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsBorrowType(argument)) return true;
+        }
+        return false;
     }
 
     private boolean isIncomingBorrow(VarState state) {
