@@ -597,6 +597,19 @@ public final class ChannelRuntime {
                             completions);
                 }
 
+                if (!decided && !immediateOnly
+                        && exceedsPendingBudgetLocked(this)) {
+                    // Per-channel admission is independent of the global select
+                    // budget. A mixed Future/channel select retains a channel
+                    // registration only if that channel has available credits.
+                    // This check follows pumpLocked so an immediately ready
+                    // operation may still succeed even when waiters are full.
+                    decided = true;
+                    unregisterLocked(this);
+                    completions.add(() -> future.failFromRuntime(
+                            new ChannelBackpressureException(
+                                    "channel pending registration budget exhausted")));
+                }
                 if (!decided && immediateOnly) {
                     decided = true;
                     unregisterLocked(this);
@@ -680,6 +693,20 @@ public final class ChannelRuntime {
             }
             return new CaseRegistration(this, index, set.cases.get(index));
         }
+    }
+
+    private static boolean exceedsPendingBudgetLocked(
+            SelectRegistration selection) {
+        for (CaseRegistration registration : selection.registrations) {
+            if (registration.selectCase instanceof ReadCase<?>
+                    || registration.selectCase instanceof WriteCase<?>) {
+                Channel<?> channel = registration.channel();
+                if (channel.registrations.size() > channel.maxPendingRegistrations) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static void registerLocked(SelectRegistration selection) {
