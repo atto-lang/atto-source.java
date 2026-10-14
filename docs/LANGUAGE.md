@@ -406,9 +406,11 @@ Removing assignment expressions from *all* source positions is a separate
 compatibility migration; the current compiler does **not** claim
 assignment-statement-only grammar everywhere.
 
-The proposed optional-binding syntax `if option as const value then` and
-`if option as let value then` must remain unadmitted until the ownership,
-definite-initialization, and backend lowering obligations in
+Draft Java conditional-binding syntax `if option as const value then` and
+`if option as let value then` now has a **Copy-payload-only** implementation
+path, but has not passed CI and is not production-ready. Move-only and
+borrow-bearing payloads must fail closed until the proof, initialization
+and backend obligations in
 [the conditional binding/borrow contract](CONDITIONAL_BINDING_BORROW_CONTRACT.md)
 are implemented. Neither cast syntax nor implicit truthiness is a fallback.
 
