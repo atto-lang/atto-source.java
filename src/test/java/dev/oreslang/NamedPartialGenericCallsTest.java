@@ -116,4 +116,23 @@ final class NamedPartialGenericCallsTest {
         assertTrue(failure.getMessage().contains("use of moved value"),
                 failure.getMessage());
     }
+
+    @Test
+    void qualifiedFunctionsAndInstanceMethodsShareNamedBindingRules() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module util
+                  pub fnc pick<T, U>(T value, U spare): T { return value; }
+                end
+
+                define class Service as
+                  pub pick<T, U>(T value, U spare): T { return value; }
+                end
+
+                fnc use(Service service): int {
+                  val int a = util.pick<U=bool, T=int>(5, true);
+                  val int b = service.pick<int, U=bool>(6, true);
+                  return a + b;
+                }
+                """)));
+    }
 }
