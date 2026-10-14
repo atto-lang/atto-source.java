@@ -1677,7 +1677,7 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> beforeCases = env.initializationSnapshot();
             List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
             Set<String> seenAggregateShapes = new HashSet<>();
-            List<Object> seenScalarValues = new ArrayList<>();
+            SwitchScalarCaseSet seenScalarValues = new SwitchScalarCaseSet();
             for (Ast.SwitchCase arm : switched.cases()) {
                 env.restoreInitialization(beforeCases);
                 if (arm.constants().isEmpty()) throw new IllegalArgumentException("switch case requires at least one constant");
@@ -1698,12 +1698,9 @@ public final class TypeChecker {
                         }
                     } else {
                         Object value = CompileTimeConstantEvaluator.evaluate(constant);
-                        for (Object prior : seenScalarValues) {
-                            if (switchScalarValuesEqual(prior, value)) {
-                                throw new IllegalArgumentException("duplicate switch case: " + constant);
-                            }
+                        if (!seenScalarValues.add(value)) {
+                            throw new IllegalArgumentException("duplicate switch case: " + constant);
                         }
-                        seenScalarValues.add(value);
                     }
                 }
                 checkBlock(arm.body(), env, generics, expectedReturn, self);
@@ -7860,17 +7857,34 @@ public final class TypeChecker {
     }
 
     /**
-     * Mirrors Oreslang's scalar valueEquals dispatch for switch overlap:
-     * exact integer equality, numeric widening for mixed int/float, and
-     * nominal Symbol equality distinct from String equality. Do not use
-     * AST.toString(), which misses e.g. (1 + 2) versus 3.
+     * Runtime-equivalent scalar switch overlap with O(1) average admission per
+     * arm. Integers compare exactly to integers, but widen to f64 when
+     * compared with a float. Distinct i64 values above 2^53 must NOT collapse
+     * merely because both round to the same double.
+     *
+     * A float compares +0 and -0 equally at runtime, unlike Double.equals.
+     * Symbols remain nominally separate from equal-spelling Strings.
      */
-    private static boolean switchScalarValuesEqual(Object left, Object right) {
-        if (left instanceof Long a && right instanceof Long b) return a.longValue() == b.longValue();
-        if (left instanceof Number a && right instanceof Number b) {
-            return a.doubleValue() == b.doubleValue();
+    private static final class SwitchScalarCaseSet {
+        private final Set<Long> integers = new HashSet<>();
+        private final Set<Double> floats = new HashSet<>();
+        private final Set<Double> widenedIntegers = new HashSet<>();
+        private final Set<Object> otherScalars = new HashSet<>();
+
+        boolean add(Object value) {
+            if (value instanceof Long integer) {
+                double widened = integer.doubleValue();
+                if (!integers.add(integer) || floats.contains(widened)) return false;
+                widenedIntegers.add(widened);
+                return true;
+            }
+            if (value instanceof Double floating) {
+                double normalized = floating.doubleValue() == 0.0d ? 0.0d : floating.doubleValue();
+                if (!floats.add(normalized) || widenedIntegers.contains(normalized)) return false;
+                return true;
+            }
+            return otherScalars.add(value);
         }
-        return java.util.Objects.equals(left, right);
     }
 
     private boolean constant(Ast.Expr expr) {
