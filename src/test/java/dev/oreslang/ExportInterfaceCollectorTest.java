@@ -96,4 +96,14 @@ final class ExportInterfaceCollectorTest {
                 ExportInterfaceCollector.collect(source(inferArguments), HEADER));
     }
 
+    @Test void importsWithoutVersionedDependencyFingerprintsFailClosed() {
+        var imported = new Ast.ImportDecl(
+                Ast.ImportKind.FUNCTION, List.of("remote"), false, null, "./dependency.ores");
+        var program = new Ast.Program(List.of(imported), List.of(
+                new Ast.ModuleDecl("api", List.of(fn("local", "value", Ast.Visibility.PUBLIC)))));
+        assertThrows(IllegalArgumentException.class, () ->
+                ExportInterfaceCollector.collect(program, HEADER),
+                "an unchanged local signature cannot hide a changed imported nominal identity");
+    }
+
 }
