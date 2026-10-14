@@ -1747,7 +1747,16 @@ public final class TypeChecker {
                     // Compatibility: detached legacy nb select arms cannot return a value.
                     checkCallableBlock(arm.body(), armEnv, generics, Primitive.VOID, self);
                 } else {
-                    checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                    // A selected arm is a loop-control barrier even though
+                    // a blocking procedural return targets the callable.
+                    // A break/continue must not jump into an enclosing loop.
+                    int savedLoopDepth = loopDepth;
+                    loopDepth = 0;
+                    try {
+                        checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                    } finally {
+                        loopDepth = savedLoopDepth;
+                    }
                     exits.add(env.initializationSnapshot());
                 }
             }
