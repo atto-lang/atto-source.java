@@ -57,6 +57,49 @@ public final class InterfaceSccPlanner {
     }
 
     /**
+     * Integrates the plan with Oreslang's real import resolution and visibility
+     * checks, including user-supplied effective import target overrides.
+     *
+     * The caller must provide compiler-admitted (type/ownership-checked)
+     * programs and true exported interfaces; this method does not perform
+     * type checking or authenticate imported package fingerprints.
+     *
+     * External dependencies are keyed by the import's exact source path,
+     * not guessed from a module name. Missing external pins are rejected.
+     */
+    public static Plan fromValidatedImportGraph(
+            Map<String, dev.oreslang.ast.Ast.Program> admittedPrograms,
+            Map<String, ExportInterfaceCodec.InterfaceFile> publicExports,
+            Map<String, Map<String, String>> resolvedOverrides,
+            Map<String, Map<String, String>> externalImportPins) {
+        Objects.requireNonNull(admittedPrograms, "admittedPrograms");
+        Objects.requireNonNull(resolvedOverrides, "resolvedOverrides");
+        Objects.requireNonNull(externalImportPins, "externalImportPins");
+        if (!admittedPrograms.keySet().equals(externalImportPins.keySet())) {
+            throw new IllegalArgumentException("external pins must be specified per source unit");
+        }
+        ImportGraph.validateLinkedImports(admittedPrograms, resolvedOverrides);
+        Map<String, Set<String>> edges = ImportGraph.resolveDependencies(
+                admittedPrograms, admittedPrograms.keySet(), resolvedOverrides);
+        for (Map.Entry<String, dev.oreslang.ast.Ast.Program> entry : admittedPrograms.entrySet()) {
+            String unit = entry.getKey();
+            Map<String, String> pins = externalImportPins.get(unit);
+            if (pins == null) throw new IllegalArgumentException("null external pins");
+            Set<String> required = new HashSet<>();
+            for (dev.oreslang.ast.Ast.ImportDecl use : entry.getValue().imports()) {
+                String target = ImportGraph.resolveImportUnitId(unit, use,
+                        admittedPrograms.keySet(), resolvedOverrides);
+                if (target == null) required.add(use.path());
+            }
+            if (!required.equals(pins.keySet())) {
+                throw new IllegalArgumentException(
+                        "external import fingerprints must match every unresolved import path");
+            }
+        }
+        return compute(edges, publicExports, externalImportPins);
+    }
+
+    /**
      * @param localEdges unit -> in-repository, resolved provider IDs
      * @param publicExports exactly one trusted, checked canonical v1 envelope per unit
      * @param externalDependencies unit -> external provider ID -> verified ABI sha256
