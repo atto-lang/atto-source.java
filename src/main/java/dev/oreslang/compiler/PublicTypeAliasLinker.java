@@ -19,6 +19,17 @@ import java.util.Set;
  */
 final class PublicTypeAliasLinker {
     private static final int MAX_EXPANSION_DEPTH = 64;
+    private static final int MAX_EXPANSION_NODES = 16_384;
+
+    private static final class Budget {
+        int remaining = MAX_EXPANSION_NODES;
+        void consume() {
+            if (--remaining < 0) {
+                throw new IllegalArgumentException(
+                        "imported type alias expansion exceeds " + MAX_EXPANSION_NODES + " nodes");
+            }
+        }
+    }
     private static final Set<String> BUILTIN_TYPES = Set.of(
             "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
             "int", "uint", "bigint", "f32", "f64", "float", "decimal",
@@ -88,7 +99,7 @@ final class PublicTypeAliasLinker {
                 }
                 Ast.TypeRef expanded = expand(selected.target(), localAliases,
                         bindings, Set.copyOf(bindings.keySet()),
-                        new HashSet<>(Set.of(selected.name())), 0);
+                        new HashSet<>(Set.of(selected.name())), 0, new Budget());
                 String localName = ImportRules.localName(use, name);
                 Ast.TypeAliasDecl exported = new Ast.TypeAliasDecl(localName,
                         Ast.Visibility.PUBLIC, selected.genericParameters(), expanded);
@@ -100,13 +111,29 @@ final class PublicTypeAliasLinker {
         return Map.copyOf(linked);
     }
 
+    private static boolean compilerGeneratedTypeRef(String name) {
+        return switch (name) {
+            case "$record$", "$readonly_record$", "$tuple$", "$union$",
+                    "$intersection$", "$borrow$", "$borrow_mut$", "$shape$",
+                    "$repeat_many$", "$infer$" -> true;
+            default -> (name.startsWith("$field$") && name.length() > "$field$".length())
+                    || name.startsWith("$repeat_exact$")
+                    || name.startsWith("$int$")
+                    || name.startsWith("$bool$")
+                    || name.startsWith("$string$")
+                    || name.startsWith("$named$");
+        };
+    }
+
     private static Ast.TypeRef expand(
             Ast.TypeRef ref,
             Map<String, Ast.TypeAliasDecl> localAliases,
             Map<String, Ast.TypeRef> bindings,
             Set<String> genericVariables,
             Set<String> visiting,
-            int depth) {
+            int depth,
+            Budget budget) {
+        budget.consume();
         if (depth >= MAX_EXPANSION_DEPTH) {
             throw new IllegalArgumentException("imported type alias expansion exceeds "
                     + MAX_EXPANSION_DEPTH + " levels");
@@ -135,10 +162,10 @@ final class PublicTypeAliasLinker {
                 for (int i = 0; i < alias.genericParameters().size(); i++) {
                     applied.put(alias.genericParameters().get(i),
                             expand(ref.arguments().get(i), localAliases, bindings,
-                                    genericVariables, visiting, depth + 1));
+                                    genericVariables, visiting, depth + 1, budget));
                 }
                 return expand(alias.target(), localAliases, applied, genericVariables,
-                        visiting, depth + 1);
+                        visiting, depth + 1, budget);
             } finally {
                 visiting.remove(alias.name());
             }
@@ -147,13 +174,13 @@ final class PublicTypeAliasLinker {
         // Synthetic AST record/tuple/union/borrow forms have '$' prefixes and
         // carry only recursively checked subtypes. No user-defined identifier
         // can inject itself into this reserved compiler namespace.
-        if (!ref.name().startsWith("$") && !BUILTIN_TYPES.contains(ref.name())) {
+        if (!(BUILTIN_TYPES.contains(ref.name()) || compilerGeneratedTypeRef(ref.name()))) {
             throw new IllegalArgumentException("imported alias target '" + ref.name()
                     + "' lacks a verified nominal/public ABI; cannot treat it as opaque");
         }
         List<Ast.TypeRef> parts = ref.arguments().stream()
                 .map(arg -> expand(arg, localAliases, bindings,
-                        genericVariables, visiting, depth + 1)).toList();
+                        genericVariables, visiting, depth + 1, budget)).toList();
         return new Ast.TypeRef(ref.name(), parts, ref.inferArguments());
     }
 }
