@@ -167,7 +167,10 @@ public final class CompileTimeConstantEvaluator {
         }
         if (a instanceof String && b instanceof String) return a.equals(b);
         if (a instanceof Boolean && b instanceof Boolean) return a.equals(b);
-        throw reject("unsupported compile-time equality operands");
+        // evaluate() already limits inputs to the sealed scalar constant
+        // carriers above. Any remaining combination has different nominal
+        // kinds and compares false at runtime; no user code may be invoked.
+        return false;
     }
 
     private static long checked(java.util.function.LongSupplier operation) {
