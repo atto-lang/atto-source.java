@@ -332,6 +332,53 @@ final class PrivateVisibilityTest {
                 () -> runLinked(iteratorMain));
     }
 
+    @Test
+    void privateMutableFieldCannotBeWrittenFromOutsideDeclaringClass() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                        define class Vault as
+                          private let int secret = 4;
+
+                          pub set_private(): void {
+                            self.secret = 8;
+                            return;
+                          }
+                        end
+
+                        fnc bad(Vault vault): void {
+                          vault.secret = 99;
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("private field"), failure.getMessage());
+    }
+
+    @Test
+    void declaringClassRetainsPrivateWriteAuthorityInResumableRuntime() throws Exception {
+        String output = run("""
+                define class Vault as
+                  private let int secret = 4;
+
+                  pub set_private(): void {
+                    self.secret = 8;
+                    return;
+                  }
+
+                  pub reveal(): int {
+                    return self.secret;
+                  }
+                end
+
+                pub fnc main(): void {
+                  val Vault vault = new Vault();
+                  vault.set_private();
+                  stdio.stdout.write(vault.reveal());
+                  return;
+                }
+                """);
+        assertEquals("8", output);
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "private-visibility.ores")
