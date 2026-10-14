@@ -2192,6 +2192,40 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr namespace
+                    && env.lookup(namespace.name()) == null) {
+                Ast.EnumDecl declarationEnum = findEnum(namespace.name());
+                if (declarationEnum != null) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException("enum variant constructors do not accept type arguments");
+                    }
+                    Ast.EnumVariant variant = enumVariant(declarationEnum, member.member());
+                    int expectedCount = variant.payload() == null ? 0 : 1;
+                    if (call.arguments().size() != expectedCount) throw new IllegalArgumentException(
+                            "enum " + declarationEnum.name() + "." + variant.name()
+                                    + " expects " + expectedCount + " payload argument(s)");
+                    if (variant.payload() != null) {
+                        if (call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                            throw new IllegalArgumentException("enum payload cannot be spread");
+                        }
+                        Type actual = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+                        Type expected = resolve(
+                                Ast.TypeRef.readonlyRecordType(variant.payload().recordMembers()),
+                                generics, self);
+                        if (!(actual instanceof Record actualRecord)
+                                || !(expected instanceof Record expectedRecord)
+                                || !actualRecord.members().keySet().equals(expectedRecord.members().keySet())) {
+                            throw new IllegalArgumentException(
+                                    "enum " + declarationEnum.name() + "." + variant.name()
+                                            + " payload must have exactly the declared fields");
+                        }
+                        requireReadonlyCapabilityPreserved(actual, expected, "enum payload");
+                        requireAssignable(actual, expected, "enum payload");
+                    }
+                    return new Named(qualifiedEnumName(declarationEnum), List.of());
+                }
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
