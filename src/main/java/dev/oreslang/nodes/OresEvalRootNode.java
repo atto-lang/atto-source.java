@@ -1268,6 +1268,17 @@ public final class OresEvalRootNode extends RootNode {
             return new RuntimeException(unwrapped);
         }
 
+        /**
+         * Root-owned source tasks have heap-owned lexical continuations and can
+         * safely unwind them on their scheduler after cancellation. Actor-owned
+         * source tasks intentionally do not use this adapter until actor STOP
+         * retains their lane and authorizes only cleanup continuations.
+         */
+        private OresScheduler.CleanupAwareTask<Object> rootCleanupTask(SourceTask task) {
+            Objects.requireNonNull(task, "task");
+            return task::resume;
+        }
+
         private OresFuture<Object> startSourceFunctionTask(
                 Ast.FunctionDecl function,
                 List<?> arguments) {
@@ -1280,7 +1291,7 @@ public final class OresEvalRootNode extends RootNode {
                 OresScheduler current = OresScheduler.current();
                 future = (current != null
                         ? current
-                        : context.vm().rootScheduler()).start(task);
+                        : context.vm().rootScheduler()).start(rootCleanupTask(task));
             }
             return future;
         }
@@ -1326,7 +1337,7 @@ public final class OresEvalRootNode extends RootNode {
                 OresScheduler current = OresScheduler.current();
                 future = (current != null
                         ? current
-                        : context.vm().rootScheduler()).start(task);
+                        : context.vm().rootScheduler()).start(rootCleanupTask(task));
             }
             return future;
         }
