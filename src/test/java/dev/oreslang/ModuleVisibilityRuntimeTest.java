@@ -36,16 +36,17 @@ final class ModuleVisibilityRuntimeTest {
 
     @Test
     void wildcardCannotExposePrivateModuleOrItsPublicMembers() throws Exception {
-        Files.writeString(temp.resolve("lib.ores"), """
-                define module Service as
-                  pub fnc answer(): int { return 7; }
-                end
-                """);
-
-        for (String expression : new String[] {
-                "external.Service.answer()",
-                "external.answer()"
+        for (String header : new String[] {
+                "define module Service as",
+                "private define module Service as",
+                "define private module Service as"
         }) {
+            Files.writeString(temp.resolve("lib.ores"),
+                    header + "\n  pub fnc answer(): int { return 7; }\nend\n");
+            for (String expression : new String[] {
+                    "external.Service.answer()",
+                    "external.answer()"
+            }) {
             String source = "import * as external from './lib';\n"
                     + "pub routine main(): void {\n"
                     + "  stdio.stdout.write(" + expression + ");\n"
@@ -53,8 +54,9 @@ final class ModuleVisibilityRuntimeTest {
                     + "}\n";
             PolyglotException failure = assertThrows(
                     PolyglotException.class, () -> run(source), expression);
-            assertTrue(failure.getMessage().contains("does not export"),
-                    failure.getMessage());
+                assertTrue(failure.getMessage().contains("does not export"),
+                        header + ": " + failure.getMessage());
+            }
         }
     }
 
