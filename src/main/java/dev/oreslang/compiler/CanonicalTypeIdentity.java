@@ -59,7 +59,7 @@ public final class CanonicalTypeIdentity {
         private final String sha256;
         private TypeId(byte[] data) {
             canonical = data.clone();
-            sha256 = sha256(data);
+            sha256 = CanonicalTypeIdentity.sha256(data);
         }
         public byte[] bytes() { return canonical.clone(); }
         public String sha256() { return sha256; }
