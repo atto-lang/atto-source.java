@@ -18,6 +18,8 @@ tests=(
   StructuralOwnershipBoundaryIntegrationTest
   StructuralLoanLaunderingRegressionTest
   ActorStructuralRecordTransportTest
+  LinkedActorCompilerAdmissionTest
+  CrossFileActorCapabilityHardeningTest
   SourceActorSpawnExecutionTest
   ActorTransportHardeningTest
   InferredStructReadonlyBoundaryTest
