@@ -78,7 +78,7 @@ final class NativeGuestErrorRootTest {
     @Test void aliasesAndGenericsCannotShadowCompilerOwnedError() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
-                        define type Error as int;
+                        define type alias Error as int;
                         pub fnc main(): int { return 1; }
                         """));
         assertThrows(IllegalArgumentException.class,
