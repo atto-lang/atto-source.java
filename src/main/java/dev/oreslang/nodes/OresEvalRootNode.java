@@ -7550,6 +7550,13 @@ public final class OresEvalRootNode extends RootNode {
                 OresObject object = new OresObject(this, klass, fields);
                 for (int i = 0; i < classFields.size(); i++) {
                     Ast.FieldDecl field = classFields.get(i);
+                    if (externalConstruction && i < args.size()
+                            && field.visibility() != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException(
+                                "private synthesized constructor field '" + field.name()
+                                        + "' cannot be initialized through imported class '"
+                                        + klass.name() + "'");
+                    }
                     Object value;
                     if (i < args.size()) value = args.get(i);
                     else if (field.initializer() != null) {
