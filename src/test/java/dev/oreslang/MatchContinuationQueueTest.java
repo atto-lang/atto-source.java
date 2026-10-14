@@ -109,6 +109,57 @@ final class MatchContinuationQueueTest {
     }
 
     @Test
+    void overCapacityFailsClosedWithoutExecutingPendingArms() {
+        MatchContinuationQueue queue = new MatchContinuationQueue();
+        AtomicInteger executed = new AtomicInteger();
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> queue.enqueue(() -> {
+                    for (int i = 0; i <= MatchContinuationQueue.MAX_PENDING; i++) {
+                        queue.enqueue(executed::incrementAndGet);
+                    }
+                }));
+        assertTrue(failure.getMessage().contains("exceeds"), failure.toString());
+        assertEquals(0, executed.get());
+        assertTrue(queue.terminated());
+        queue.enqueue(executed::incrementAndGet);
+        assertEquals(0, executed.get());
+    }
+
+    @Test
+    void concurrentlyEnqueuedCallbacksNeverExecuteInParallel() throws Exception {
+        MatchContinuationQueue queue = new MatchContinuationQueue();
+        AtomicInteger active = new AtomicInteger();
+        AtomicInteger maximum = new AtomicInteger();
+        AtomicInteger completed = new AtomicInteger();
+        try (ExecutorService executor = Executors.newFixedThreadPool(8)) {
+            List<CompletableFuture<Void>> attempts = new ArrayList<>();
+            for (int i = 0; i < 512; i++) {
+                attempts.add(CompletableFuture.runAsync(() ->
+                        queue.enqueue(() -> {
+                            int currentlyActive = active.incrementAndGet();
+                            maximum.accumulateAndGet(currentlyActive, Math::max);
+                            Thread.yield();
+                            completed.incrementAndGet();
+                            active.decrementAndGet();
+                        }), executor));
+            }
+            CompletableFuture.allOf(attempts.toArray(CompletableFuture[]::new)).join();
+        }
+        assertEquals(512, completed.get());
+        assertEquals(1, maximum.get(), "two drainers must never execute guest work in parallel");
+        assertFalse(queue.terminated());
+    }
+
+    @Test
+    void nullWorkAndNullCompletionFailWithoutTerminatingTheQueue() {
+        MatchContinuationQueue queue = new MatchContinuationQueue();
+        assertThrows(NullPointerException.class, () -> queue.enqueue(null));
+        assertThrows(NullPointerException.class, () -> queue.complete(null));
+        assertFalse(queue.terminated());
+        assertTrue(queue.complete(() -> { }));
+    }
+
+    @Test
     void racingTerminalCallbacksCanDeliverOnlyOnce() {
         MatchContinuationQueue queue = new MatchContinuationQueue();
         AtomicInteger deliveries = new AtomicInteger();
