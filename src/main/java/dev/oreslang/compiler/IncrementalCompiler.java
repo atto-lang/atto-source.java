@@ -273,9 +273,18 @@ public final class IncrementalCompiler {
                 // both enforce that independently of this ABI fingerprint.
                 abi.append(" synthesized-constructor(");
                 for (Ast.FieldDecl field : klass.fields()) {
-                    abi.append(field.type() == null
-                            ? "<inferred:" + field.initializer() + ">"
-                            : typeRef(field.type())).append(',');
+                    // The positional slot index is affected by private fields
+                    // too. Hash field identity, visibility and ownership mode,
+                    // not just its type: swapping two same-typed fields or
+                    // changing a private slot to pub must rebuild importers.
+                    abi.append(field.name().length()).append(':').append(field.name())
+                            .append(':').append(field.visibility())
+                            .append(':').append(field.bindingKind())
+                            .append(':').append(field.mutableReferent()).append(':')
+                            .append(field.type() == null
+                                    ? "<inferred:" + field.initializer() + ">"
+                                    : typeRef(field.type()))
+                            .append(';');
                 }
                 abi.append(")\n");
             }
