@@ -21,6 +21,24 @@ final class CoreErrorDescriptorsTest {
                 () -> CoreErrorDescriptors.requireKnownCode(999999));
     }
 
+    @Test void legacySupervisorSnapshotRejectsForgedNamesAndCodes() {
+        var safe = GuestErrorWireCodec.supervisorCompactSnapshot(
+                "ActorAskTimeoutError", 9007, Map.of("code", (Runnable) () -> {
+                    throw new AssertionError("executed");
+                }));
+        assertEquals(9007, safe.code());
+        assertFalse(safe.full());
+        assertThrows(IllegalArgumentException.class, () ->
+                GuestErrorWireCodec.supervisorCompactSnapshot(
+                        "ActorAskTimeoutError", 0, Map.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                GuestErrorWireCodec.supervisorCompactSnapshot(
+                        "CustomFakeError", 9007, Map.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                GuestErrorWireCodec.supervisorCompactSnapshot(
+                        "ActorError", 9000, Map.of()));
+    }
+
     @Test void supervisorUsesCoreDescriptorNotGuestFieldsOrGuestCodeMethods() {
         Map<String, Object> hostile = new java.util.HashMap<>();
         hostile.put("code", (Runnable) () -> { throw new AssertionError("executed"); });

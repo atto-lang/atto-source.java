@@ -67,12 +67,19 @@ public final class GuestErrorWireCodec {
      * The result is DIAGNOSTIC DATA ONLY. Only the ActorRuntime's protected
      * CONTROL scheduler can create authoritative supervisor notices.
      */
+    @Deprecated(forRemoval = true)
     public static ErrorSnapshot supervisorCompactSnapshot(
             String trustedNominalName, int trustedCatalogCode,
             java.util.Map<String, ?> ignoredGuestFields) {
-        java.util.Objects.requireNonNull(ignoredGuestFields, "guest fields");
-        return new ErrorSnapshot(trustedNominalName, trustedCatalogCode,
-                "", List.of(), false);
+        // Compatibility only. Arbitrary guest-provided name/code pairs must
+        // never be represented as a trusted core error descriptor.
+        // No field inspection, host reflection, or guest method invocation.
+        CoreErrorDescriptors.Descriptor descriptor =
+                CoreErrorDescriptors.requireKnown(trustedNominalName);
+        if (descriptor.code() != trustedCatalogCode) {
+            throw new IllegalArgumentException("error name/code catalog mismatch");
+        }
+        return supervisorCompactCoreSnapshot(descriptor, ignoredGuestFields);
     }
 
     /**
