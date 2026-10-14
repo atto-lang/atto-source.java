@@ -33,6 +33,20 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
+    // Keep the stage-one default-type allowlist consistent with concrete
+    // compiler-known scalar and nominal constructors. Do not allocate it per
+    // recursive validation node or admit arbitrary unresolved nominal names.
+    private static final Set<String> GENERIC_DEFAULT_BUILTINS = Set.of(
+            "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+            "int", "uint", "bigint", "f32", "f64", "float",
+            "decimal", "complex64", "complex128", "complex",
+            "bool", "Bool", "string", "String", "void", "null",
+            "Symbol", "Array", "List", "Vector", "Slice",
+            "Tuple", "FixedArray", "FixedList",
+            "ActorId", "ActorKind", "ActorMail", "ActorOutput",
+            "ActorOutputStream", "Option", "Result", "Mutex",
+            "SharedMutex", "Channel", "Future", "Fnc", "Function");
+
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
             Ast.InterfaceDecl owner,
@@ -6798,19 +6812,18 @@ public final class TypeChecker {
         // turn a misspelling into an apparently concrete, unsafe specialization.
         // Keep this admission list explicit until the linked type registry
         // exposes a single authoritative "is declared type" predicate.
+        boolean compilerShape = ref.isBorrow() || ref.isComplement()
+                || ref.isUnion() || ref.isTupleType() || ref.isRecordType()
+                || ref.isSequenceShape() || ref.isRepeatExact() || ref.isRepeatMany()
+                || ref.isStringLiteral() || ref.isIntLiteral() || ref.isBoolLiteral()
+                || (ref.name().startsWith("$field$") && ref.arguments().size() == 1);
+        if (ref.name().startsWith("$") && !compilerShape) {
+            throw new IllegalArgumentException(label
+                    + " contains an invalid synthetic type '" + ref.name() + "'");
+        }
         if (!ref.name().startsWith("$")
                 && !declared.contains(ref.name())
-                && !Set.of(
-                        "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-                        "int", "uint", "bigint", "f32", "f64", "float",
-                        "decimal", "complex64", "complex128", "complex",
-                        "bool", "Bool", "string", "String", "void", "null",
-                        "Symbol", "Array", "List", "Vector", "Slice",
-                        "Tuple", "FixedArray", "FixedList",
-                        "ActorId", "ActorKind", "ActorMail", "ActorOutput",
-                        "ActorOutputStream", "Option", "Result", "Mutex",
-                        "SharedMutex", "Channel", "Future", "Fnc", "Function")
-                        .contains(ref.name())
+                && !GENERIC_DEFAULT_BUILTINS.contains(ref.name())
                 && findClass(ref.name()) == null
                 && findInterface(ref.name()) == null
                 && findTypeAlias(ref.name()) == null) {
