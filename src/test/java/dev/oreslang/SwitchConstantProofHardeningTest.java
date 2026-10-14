@@ -82,6 +82,36 @@ final class SwitchConstantProofHardeningTest {
     }
 
     @Test
+    void logicalSymbolDuplicatesAreRejectedButStringsRemainDistinct() {
+        IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val Any status = #ready;
+                          switch status
+                            case #ready -> { }
+                            case #'ready' -> { }
+                            default -> { }
+                          end
+                          return;
+                        }
+                        """)));
+        assertTrue(duplicate.getMessage().contains("duplicate switch case"),
+                duplicate.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc main(): void {
+                  val Any status = #ready;
+                  switch status
+                    case #ready -> { }
+                    case "ready" -> { }
+                    default -> { }
+                  end
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void distinctLargeIntegersRemainDistinctDespiteDoubleRounding() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc main(): void {
