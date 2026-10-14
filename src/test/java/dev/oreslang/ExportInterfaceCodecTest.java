@@ -67,4 +67,36 @@ final class ExportInterfaceCodecTest {
         ByteBuffer.wrap(inflated, 7, 4).putInt(Integer.MAX_VALUE);
         assertThrows(IllegalArgumentException.class, () -> ExportInterfaceCodec.decode(inflated));
     }
+    @Test void frozenKindTagsAndConflictingSingletonIdentitiesFailClosed() {
+        assertEquals(0, Kind.MODULE.wireTag());
+        assertEquals(1, Kind.FUNCTION.wireTag());
+        assertEquals(2, Kind.CLASS.wireTag());
+        assertEquals(5, Kind.BINDING.wireTag());
+        assertThrows(IllegalArgumentException.class, () -> ExportInterfaceCodec.encode(HEADER,
+                List.of(new Entry("mod", Kind.CLASS, "Thing", "sigA"),
+                        new Entry("mod", Kind.CLASS, "Thing", "sigB"))));
+        assertThrows(IllegalArgumentException.class, () -> ExportInterfaceCodec.encode(HEADER,
+                List.of(new Entry("mod", Kind.TYPE, "Alias", "int"),
+                        new Entry("mod", Kind.TYPE, "Alias", "String"))));
+        var overloaded = ExportInterfaceCodec.encode(HEADER,
+                List.of(new Entry("mod", Kind.FUNCTION, "f", "(int)int"),
+                        new Entry("mod", Kind.FUNCTION, "f", "(string)string")));
+        assertEquals(2, overloaded.entries().size(),
+                "callable names may recur only for distinct declared overloads");
+
+        byte[] corrupted = ExportInterfaceCodec.encode(HEADER, List.of(F)).bytes();
+        // Header contains four length-prefixed strings followed by one int count.
+        int index = 7;
+        for (int i = 0; i < 4; i++) {
+            int n = ByteBuffer.wrap(corrupted, index, 4).getInt();
+            index += 4 + n;
+        }
+        index += 4;  // count
+        int moduleBytes = ByteBuffer.wrap(corrupted, index, 4).getInt();
+        index += 4 + moduleBytes;
+        corrupted[index] = (byte) 0x7f;
+        assertThrows(IllegalArgumentException.class,
+                () -> ExportInterfaceCodec.decode(corrupted));
+    }
+
 }
