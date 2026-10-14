@@ -707,8 +707,13 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void publishTerminalIfReady() {
-            if (phase.get() != TERMINAL || completion.isDone()) return;
+            if (phase.get() != TERMINAL || completion.isDone()
+                    || executing.get()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
+            // The terminal phase CAS precedes outcome publication. A racing
+            // Future.cancel() must not settle a missing outcome or publish
+            // while the actor's guest/context turn still owns its carrier.
+            if (outcome == null) return;
             // A cleanup-aware task publishes cancellation only after its
             // cleanup continuation returns or terminally fails and after the
             // scheduler has left the guest/context turn.
