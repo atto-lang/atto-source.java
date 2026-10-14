@@ -8592,7 +8592,18 @@ public final class OresEvalRootNode extends RootNode {
 
             if (declared.isRecordType()) {
                 for (Map.Entry<String, Ast.TypeRef> member : declared.recordMembers().entrySet()) {
-                    Object nested = destructureMember(value, member.getKey());
+                    // Return-type shaping is a public structural projection,
+                    // not a method body in the value's declaring class.
+                    // Do not validate a private field and then expose the
+                    // whole object as though it satisfied a public record.
+                    Object nested = value instanceof OresObject
+                            ? publicStructuralMember(value, member.getKey())
+                            : destructureMember(value, member.getKey());
+                    if (nested == Env.MISSING) {
+                        throw new IllegalArgumentException(
+                                callable + " cannot return public record member '"
+                                        + member.getKey() + "' from a private or missing class field");
+                    }
                     shapeReturnedValue(member.getValue(), nested, callable + "." + member.getKey(), resolving);
                 }
                 return value;
