@@ -1791,15 +1791,15 @@ public final class Parser {
             return new Ast.ForStmt(null, condition, null, parseLoopBody());
         }
         if (match(IF)) return parseIf();
+        // Procedural dispatch returns from its enclosing callable. Keep this
+        // distinction in the AST instead of relying on source spelling later.
         if (match(DO)) {
-            if (match(MATCH)) return parseMatch();
+            if (match(MATCH)) return parseMatch(true);
             if (match(SWITCH)) return parseSwitch();
             throw error(previous(), "'do' requires match, switch, or a braced select");
         }
-        // Preserve legacy statements during the explicit-do migration.
-        // A parser-only prohibition would break working programs before
-        // the corresponding value expressions and formatter are available.
-        if (match(MATCH)) return parseMatch();
+        // Legacy statement syntax remains accepted during migration.
+        if (match(MATCH)) return parseMatch(false);
         if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
@@ -2631,7 +2631,7 @@ public final class Parser {
         return expr;
     }
 
-    private Ast.MatchStmt parseMatch() {
+    private Ast.MatchStmt parseMatch(boolean procedural) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
         //     on Pattern -> { ... }
@@ -2653,9 +2653,16 @@ public final class Parser {
 
         boolean canonicalOver = matchContextualIdentifier("over");
         if (!canonicalOver) match(SEMICOLON);
+        // "over { ... }" owns the outer braces, while "over ... end"
+        // retains its established terminator. Neither form may consume the
+        // enclosing function's closing brace as if it ended the match.
+        boolean braced = canonicalOver && match(LBRACE);
+        if (procedural && !canonicalOver) {
+            throw error(peek(), "'do match' requires 'over' before its arms");
+        }
 
         List<Ast.MatchArm> arms = new ArrayList<>();
-        while (!check(END) && !check(EOF)) {
+        while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
             if (canonicalOver) {
                 if (!matchContextualIdentifier("on")) {
                     if (check(ELSE) || check(DEFAULT)) {
@@ -2676,11 +2683,17 @@ public final class Parser {
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
-            consume(ARROW, "match arms use the slim arrow '->'");
+            // Canonical braced match permits an immediately braced arm:
+            //   do match x over { on Some(v) { ... } }
+            // Legacy and over/end arms retain the explicit slim arrow.
+            if (!match(ARROW) && !braced) {
+                throw error(peek(), "match arms in 'over ... end' use '->'");
+            }
             List<Ast.Stmt> body = parseBlock();
             arms.add(new Ast.MatchArm(pattern, guard, body));
         }
-        consume(END, "expected 'end' to close match");
+        if (braced) consume(RBRACE, "expected '}' to close braced match");
+        else consume(END, "expected 'end' to close match");
         if (arms.isEmpty()) {
             throw error(previous(), canonicalOver
                     ? "match requires at least one 'on' arm"
@@ -2690,7 +2703,7 @@ public final class Parser {
         // Canonical match is source-ordered. Legacy bare match retains the
         // old exclusivity/proof semantics unless explicitly written
         // `match first ...`.
-        return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms);
+        return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms, procedural);
     }
 
     private Ast.Pattern parsePattern() {
@@ -2743,6 +2756,30 @@ public final class Parser {
                 // Fall through to constructor/binding parsing from the same token.
             }
             current = patternStart;
+        }
+
+        // Qualified variant bindings are retained as *nominal* constructor
+        // patterns in the AST. Backends without enum-payload lowering reject
+        // them at the checker rather than silently treating a variant as a
+        // catch-all type or erasing its payload.
+        if (check(IDENT) && checkNext(DOT)) {
+            StringBuilder variant = new StringBuilder(advance().lexeme());
+            do {
+                consume(DOT, "expected '.' in qualified match variant");
+                variant.append('.').append(consume(IDENT,
+                        "expected variant member after '.'").lexeme());
+            } while (check(DOT));
+            consume(AS, "qualified variant destructuring requires 'as ( ... )'");
+            consume(LPAREN, "expected '(' after variant 'as'");
+            List<Ast.Pattern> fields = new ArrayList<>();
+            if (!check(RPAREN)) {
+                do {
+                    fields.add(new Ast.BindingPattern(consume(IDENT,
+                            "expected binding name in variant payload").lexeme()));
+                } while (match(COMMA));
+            }
+            consume(RPAREN, "expected ')' after variant payload bindings");
+            return new Ast.ConstructorPattern(variant.toString(), fields);
         }
 
         if (check(IDENT)) {
