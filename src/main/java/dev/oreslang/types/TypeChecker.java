@@ -1543,8 +1543,17 @@ public final class TypeChecker {
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
             requireAssignable(actual, declared, "initializer for " + binding.name());
+            // Mutable maps are affine until borrow tracking can prove there are
+            // no competing live writable aliases. Read-only aliases cannot
+            // be promoted into writable references.
+            if (binding.mutableReferent() && isTypedMapType(actual)
+                    && !(binding.initializer() instanceof Ast.NewExpr created
+                            && created.type().name().equals("Map"))) {
+                throw new IllegalArgumentException(
+                        "mutable typed Map binding must own a fresh new Map<K,V>() value; cannot upgrade or alias a Map");
+            }
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
-            else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
+            else env.define(binding.name(), declared, binding.kind(), missingExplicitFields, binding.mutableReferent());
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
@@ -1936,6 +1945,15 @@ public final class TypeChecker {
                     if (originalReceiver instanceof Borrow borrowed && !borrowed.mutable()) {
                         throw new IllegalArgumentException(
                                 "cannot mutate typed Map through a read-only borrow");
+                    }
+                    if (!(indexed.receiver() instanceof Ast.NameExpr owner)) {
+                        throw new IllegalArgumentException(
+                                "typed Map mutation requires a directly owned mutable binding");
+                    }
+                    Env.Binding ownerSlot = env.lookup(owner.name());
+                    if (ownerSlot == null || !ownerSlot.mutableReferent()) {
+                        throw new IllegalArgumentException(
+                                "typed Map mutation requires let mut or val binding");
                     }
                     requireAssignable(index, map.arguments().getFirst(), "Map key");
                     targetType = map.arguments().get(1);
@@ -7841,6 +7859,11 @@ public final class TypeChecker {
         return typeAliases.get(name);
     }
 
+    private static boolean isTypedMapType(Type type) {
+        if (type instanceof Borrow borrow) return isTypedMapType(borrow.target());
+        return type instanceof Named named && named.name().equals("$builtin$Map");
+    }
+
     private boolean isRuntimeMapValueSource(Ast.TypeRef ref) {
         if (ref.inferArguments() || !ref.arguments().isEmpty() || ref.isUnion()
                 || ref.isBorrow()) return false;
@@ -8014,7 +8037,15 @@ public final class TypeChecker {
                 Type type,
                 Ast.BindingKind kind,
                 Set<String> uninitializedFields) {
-            if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
+            define(name, type, kind, uninitializedFields, false);
+        }
+        private void define(
+                String name,
+                Type type,
+                Ast.BindingKind kind,
+                Set<String> uninitializedFields,
+                boolean mutableReferent) {
+            if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields, mutableReferent)) != null) {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }
         }
@@ -8076,14 +8107,21 @@ public final class TypeChecker {
             private final Type type;
             private final Ast.BindingKind kind;
             private final Set<String> uninitializedFields;
+            private final boolean mutableReferent;
 
             private Binding(Type type, Ast.BindingKind kind, Set<String> uninitializedFields) {
+                this(type, kind, uninitializedFields, false);
+            }
+            private Binding(Type type, Ast.BindingKind kind, Set<String> uninitializedFields,
+                            boolean mutableReferent) {
                 this.type = type;
                 this.kind = kind;
+                this.mutableReferent = mutableReferent;
                 this.uninitializedFields = new LinkedHashSet<>(uninitializedFields);
             }
             private Type type() { return type; }
             private Ast.BindingKind kind() { return kind; }
+            private boolean mutableReferent() { return mutableReferent; }
             private boolean hasUninitializedFields() { return !uninitializedFields.isEmpty(); }
             private boolean isUninitialized(String field) { return uninitializedFields.contains(field); }
             private Set<String> uninitializedFields() {
