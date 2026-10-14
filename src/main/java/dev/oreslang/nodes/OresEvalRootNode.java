@@ -3761,9 +3761,12 @@ public final class OresEvalRootNode extends RootNode {
                                     "duplicate explicit struct initializer field " + entry.getKey());
                         }
                         result.put(entry.getKey(), entry.getValue());
-                    } else if (result.putIfAbsent(entry.getKey(), entry.getValue()) != null) {
-                        throw new IllegalArgumentException(
-                                "duplicate struct field " + entry.getKey());
+                    } else {
+                        if (result.containsKey(entry.getKey())) {
+                            throw new IllegalArgumentException(
+                                    "duplicate struct field " + entry.getKey());
+                        }
+                        result.put(entry.getKey(), entry.getValue());
                     }
                 }
                 Object built = object.explicitStruct()
@@ -3783,14 +3786,21 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
-                        values.add(Map.entry(field.name(), value));
-                        evalSuspendableObjectField(
-                                t,
-                                object,
-                                env,
-                                values,
-                                index + 1,
-                                continuation);
+                        // Unlike Map.entry, this preserves a guest null
+                        // field value without throwing from an async callback.
+                        try {
+                            values.add(new java.util.AbstractMap.SimpleImmutableEntry<>(
+                                    field.name(), value));
+                            evalSuspendableObjectField(
+                                    t,
+                                    object,
+                                    env,
+                                    values,
+                                    index + 1,
+                                    continuation);
+                        } catch (RuntimeException | Error fieldFailure) {
+                            continuation.accept(t, null, fieldFailure);
+                        }
                     });
         }
 
@@ -6552,8 +6562,13 @@ public final class OresEvalRootNode extends RootNode {
                                     "duplicate explicit struct initializer field " + key);
                         }
                         result.put(key, value);
-                    } else if (result.putIfAbsent(key, value) != null) {
-                        throw new IllegalArgumentException("duplicate struct field " + key);
+                    } else {
+                        // putIfAbsent considers a present null field absent.
+                        // Field identity is determined by membership, not value.
+                        if (result.containsKey(key)) {
+                            throw new IllegalArgumentException("duplicate struct field " + key);
+                        }
+                        result.put(key, value);
                     }
                 }
                 if (object.explicitStruct()) return result;

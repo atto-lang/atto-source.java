@@ -3299,29 +3299,90 @@ public final class OwnershipChecker {
     }
 
     /**
-     * Product values have no tracked partial-move bitmap today. Identify
-     * record-rooted field/index projections to fence explicit rt take until
-     * the compiler can track exactly-once moves and drops per field.
-     * Ordinary projections are reads (potential aliases), not implicit moves.
+     * Product values have no tracked partial-move bitmap or per-slot drop
+     * glue. Reject explicit rt take from any known record projection, not
+     * only records whose outermost root is a local name. A temporary record,
+     * a record stored inside a class, and a record nested in a tuple must
+     * obey the same exactly-once ownership rule.
      */
     private boolean isRootedAtRecordProjection(Ast.Expr expr, Scope scope) {
-        Ast.Expr rootExpr = expr;
+        Ast.Expr current = expr;
         while (true) {
-            if (rootExpr instanceof Ast.MemberExpr member) {
-                rootExpr = member.receiver();
-            } else if (rootExpr instanceof Ast.IndexExpr indexed) {
-                rootExpr = indexed.receiver();
+            Ast.Expr receiver;
+            if (current instanceof Ast.MemberExpr member) {
+                receiver = member.receiver();
+            } else if (current instanceof Ast.IndexExpr indexed) {
+                receiver = indexed.receiver();
             } else {
-                break;
+                return false;
             }
+            Ast.TypeRef type = projectionType(receiver, scope);
+            if (type != null && type.isBorrow()) type = type.borrowedTarget();
+            if (type != null && type.isRecordType()) return true;
+            if (type != null && type.isTupleType()
+                    && type.arguments().stream().anyMatch(Ast.TypeRef::isRecordType)) {
+                // Dynamic indexing cannot prove which tuple slot is selected.
+                // Fail closed whenever any slot would require partial drops.
+                return true;
+            }
+            current = receiver;
         }
-        if (!(rootExpr instanceof Ast.NameExpr name)) return false;
-        VarState root = scope.lookup(name.name());
-        if (root == null) return false;
-        Ast.TypeRef rootType = root.type;
-        if (rootType == null) return false;
-        if (rootType.isBorrow()) rootType = rootType.borrowedTarget();
-        return rootType.isRecordType();
+    }
+
+    /**
+     * Side-effect-free shape resolution used only by the rt take safety gate.
+     * It must not execute guest expressions or change the checker scope.
+     */
+    private Ast.TypeRef projectionType(Ast.Expr expr, Scope scope) {
+        if (expr instanceof Ast.ObjectExpr object) {
+            LinkedHashMap<String, Ast.TypeRef> fields = new LinkedHashMap<>();
+            if (object.explicitStruct()) {
+                for (Ast.StructFieldSpec field : object.declaredFields()) {
+                    fields.put(field.name(), field.type());
+                }
+            } else {
+                for (Ast.ObjectField field : object.fields()) {
+                    fields.put(field.name(), syntacticType(field.value(), scope));
+                }
+            }
+            return object.explicitStruct()
+                    ? Ast.TypeRef.recordType(fields)
+                    : Ast.TypeRef.readonlyRecordType(fields);
+        }
+        if (expr instanceof Ast.MemberExpr member) {
+            Ast.TypeRef receiver = projectionType(member.receiver(), scope);
+            if (receiver == null) return Ast.TypeRef.inferred();
+            if (receiver.isBorrow()) receiver = receiver.borrowedTarget();
+            if (receiver.isRecordType()) {
+                return receiver.recordMembers().getOrDefault(
+                        member.member(), Ast.TypeRef.inferred());
+            }
+            Ast.ClassDecl klass = findClass(receiver.name());
+            if (klass != null) {
+                ResolvedField field = findFieldTarget(
+                        klass, receiver, member.member(), new LinkedHashSet<>());
+                if (field != null) {
+                    return substituteType(ownershipFieldType(field.field()),
+                            genericBindings(field.owner().genericParameters(),
+                                    field.ownerType().arguments()));
+                }
+            }
+            return Ast.TypeRef.inferred();
+        }
+        if (expr instanceof Ast.IndexExpr indexed) {
+            Ast.TypeRef receiver = projectionType(indexed.receiver(), scope);
+            if (receiver == null) return Ast.TypeRef.inferred();
+            if (receiver.isBorrow()) receiver = receiver.borrowedTarget();
+            if (receiver.isTupleType()
+                    && indexed.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Integer slot
+                    && slot >= 0 && slot < receiver.arguments().size()) {
+                return receiver.arguments().get(slot);
+            }
+            return collectionElementType(receiver);
+        }
+        if (expr instanceof Ast.CastExpr cast) return cast.targetType();
+        return syntacticType(expr, scope);
     }
 
     private boolean isRootedAtActorSelf(Ast.Expr expr, Scope scope) {

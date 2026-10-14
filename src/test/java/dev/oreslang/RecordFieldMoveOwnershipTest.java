@@ -86,6 +86,47 @@ final class RecordFieldMoveOwnershipTest {
                 """)));
     }
 
+    @Test
+    void rejectsTakeFromInlineTemporaryRecordField() {
+        rejectsTemporaryRecordMove(CELL + """
+                pub routine main(): void {
+                    stdio.stdout.write(consume(rt take (owned: new Cell()).owned));
+                    return;
+                }
+                """);
+    }
+
+    @Test
+    void rejectsTakeFromNestedInlineTemporaryRecordField() {
+        rejectsTemporaryRecordMove(CELL + """
+                pub routine main(): void {
+                    stdio.stdout.write(consume(rt take (nested: (owned: new Cell())).nested.owned));
+                    return;
+                }
+                """);
+    }
+
+    @Test
+    void rejectsTakeFromRecordNestedInStoredTuple() {
+        rejectsTemporaryRecordMove(CELL + """
+                pub routine main(): void {
+                    const pair = ((owned: new Cell()), 42);
+                    stdio.stdout.write(consume(rt take pair[0].owned));
+                    return;
+                }
+                """);
+    }
+
+    private static void rejectsTemporaryRecordMove(String program) {
+        var parsed = Parser.parse(program);
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(parsed));
+        assertTrue(failure.getMessage().contains("rt take from a record field/index"),
+                failure.getMessage());
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+    }
+
     private static void rejectsUntrackedRecordMove(String program) {
         var parsed = Parser.parse(program);
         // Verify TypeChecker alone can resolve the typed call; the separate
