@@ -6610,12 +6610,18 @@ public final class ActorRuntime implements AutoCloseable {
             return 0;
         }
 
-        private void pruneStoppedContinuationQueueLocked() {
+        private void pruneStoppedContinuationQueueLocked(boolean cancellationRequested) {
             List<MessageEnvelope> retained = new ArrayList<>();
             while (continuationMailbox.drainOne(envelope -> {
                 if (envelope.taskTicket() != null
                         && envelope.continuation() instanceof OresScheduler.CleanupTurn turn
-                        && turn.ownedBy(sourceScheduler)) {
+                        && turn.ownedBy(sourceScheduler)
+                        // Before STOP injects cancellation, ordinary queued
+                        // source turns may still become terminal cleanup turns.
+                        // After all requests are installed, a turn with no
+                        // current permit is permanently invalid and cannot
+                        // occupy CONTROL capacity ahead of real cleanup.
+                        && (!cancellationRequested || turn.authorizedBy(sourceScheduler))) {
                     retained.add(envelope);
                 } else {
                     releaseMailboxSlot(true);
@@ -7434,7 +7440,7 @@ public final class ActorRuntime implements AutoCloseable {
                     // Preserve only scheduler-owned cleanup-capable envelopes.
                     // Other queued CONTROL work is revoked before cancellation
                     // can enqueue its terminal resume.
-                    pruneStoppedContinuationQueueLocked();
+                    pruneStoppedContinuationQueueLocked(false);
                     drainUserMailboxReservations();
                 }
                 // Existing #709 runtime tracks await producers through the
@@ -7452,6 +7458,12 @@ public final class ActorRuntime implements AutoCloseable {
             } finally {
                 boolean cleanupActive;
                 synchronized (lifecycleLock) {
+                    // Cancellation hooks have now chosen which queued source
+                    // turns can actually unwind. Reclaim unstarted/terminal
+                    // envelopes without discarding still-authorized cleanup.
+                    if (sourceCancellationPending && !forceKillFenced && !closed.get()) {
+                        pruneStoppedContinuationQueueLocked(true);
+                    }
                     sourceCancellationPending = false;
                     cleanupActive = hasSourceCleanup();
                     finalizeStopLocked();
