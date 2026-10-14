@@ -8917,6 +8917,11 @@ public final class OresEvalRootNode extends RootNode {
         }
         private void define(String name, Object value, Ast.BindingKind kind,
                             boolean mutableReferent) {
+            if (!(value instanceof OresKeyedMap<?, ?>)
+                    && containsEmbeddedTypedMap(value, new IdentityHashMap<>(), 0)) {
+                throw new SecurityException(
+                        "typed Map cannot be embedded in another runtime value without ownership proof");
+            }
             if (value instanceof OresKeyedMap<?, ?> && hasExistingMapAlias(value)) {
                 throw new SecurityException(
                         "typed Map aliases require lifetime tracking; even readonly aliases are currently forbidden");
@@ -8924,6 +8929,58 @@ public final class OresEvalRootNode extends RootNode {
             if (slots.putIfAbsent(name, new Slot(value, kind, mutableReferent)) != null)
                 throw new IllegalArgumentException("duplicate binding " + name);
         }
+        private static boolean containsEmbeddedTypedMap(
+                Object value, IdentityHashMap<Object, Boolean> seen, int depth) {
+            if (value instanceof OresKeyedMap<?, ?>) return true;
+            if (value == null || value instanceof String || value instanceof Number
+                    || value instanceof Boolean || value instanceof OresSymbol) return false;
+            if (depth > 128) {
+                throw new SecurityException(
+                        "runtime value too deeply nested for typed Map ownership validation");
+            }
+            if (seen.put(value, Boolean.TRUE) != null) return false;
+            if (value instanceof OptionValue option) {
+                return option.present()
+                        && containsEmbeddedTypedMap(option.value(), seen, depth + 1);
+            }
+            if (value instanceof ResultValue result) {
+                return containsEmbeddedTypedMap(result.value(), seen, depth + 1);
+            }
+            if (value instanceof OresObject object) {
+                for (Object item : object.fields.values()) {
+                    if (containsEmbeddedTypedMap(item, seen, depth + 1)) return true;
+                }
+                return false;
+            }
+            if (value instanceof List<?> list) {
+                for (Object item : list) {
+                    if (containsEmbeddedTypedMap(item, seen, depth + 1)) return true;
+                }
+                return false;
+            }
+            if (value instanceof Set<?> set) {
+                for (Object item : set) {
+                    if (containsEmbeddedTypedMap(item, seen, depth + 1)) return true;
+                }
+                return false;
+            }
+            if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (containsEmbeddedTypedMap(entry.getKey(), seen, depth + 1)
+                            || containsEmbeddedTypedMap(entry.getValue(), seen, depth + 1)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            if (value instanceof Object[] array) {
+                for (Object item : array) {
+                    if (containsEmbeddedTypedMap(item, seen, depth + 1)) return true;
+                }
+            }
+            return false;
+        }
+
         private boolean hasExistingMapAlias(Object value) {
             for (Slot slot : slots.values()) if (slot.value == value) return true;
             return parent != null && parent.hasExistingMapAlias(value);
