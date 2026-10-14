@@ -158,6 +158,37 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void failingCleanupRetainsOriginalCancellationAndSuppressedDiagnostic()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            CountDownLatch firstTurn = new CountDownLatch(1);
+            AtomicInteger cleanupRuns = new AtomicInteger();
+            var cleanupFailure = new IllegalStateException("cleanup failed");
+            OresFuture<Integer> task = scheduler.start(
+                    (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                        if (resume.initial()) {
+                            firstTurn.countDown();
+                            return OresScheduler.await(producer);
+                        }
+                        cleanupRuns.incrementAndGet();
+                        assertInstanceOf(
+                                java.util.concurrent.CancellationException.class,
+                                resume.failure());
+                        throw cleanupFailure;
+                    });
+            assertTrue(firstTurn.await(5, TimeUnit.SECONDS));
+            assertTrue(task.cancel(false));
+            var cancelled = assertThrows(
+                    java.util.concurrent.CancellationException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertEquals(1, cleanupRuns.get());
+            assertArrayEquals(new Throwable[] {cleanupFailure}, cancelled.getSuppressed());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
     void rejectedGuestContextAdmissionSettlesTheOwningTask() throws Exception {
         IllegalStateException failure = new IllegalStateException("guest context entry rejected");
         try (OresScheduler scheduler = OresScheduler.managed(1, runnable -> { throw failure; })) {
