@@ -179,22 +179,47 @@ read can rendezvous with a pending select-write.
 
 ## Static select
 
-**Current implemented statement vocabulary:** `do select { ... }`,
-`do select over ... end`, and `do select among ... end` perform
-blocking, procedural dispatch. A `return` in a selected blocking do-select
-arm returns from the **containing callable**, including after suspension,
-rather than returning from the arm. Return values must satisfy that callable's
-declared type; arm fallthrough continues after the select.
+**Current Java/GraalVM modes:** Blocking procedural `do select { ... }`,
+`do select over ... end`, and `do select among ... end` execute arms
+for side effects. A `return` inside a blocking procedural arm exits its
+**containing callable**, with return-type and ownership checks.
 
-The older `select { ... }` and `nb select { ... }` are still accepted
-as **legacy statement forms** for compatibility. The existing
-`do nb select { ... }` is also a legacy detached, no-result spelling;
-its arm-local returns are currently discarded with a warning because it
-cannot return from an already-ended callable. Do **not** infer that
-value-producing `select over/among` or `nb select over/among` is compiled:
-those expressions require the distinct typed-result AST and Future lowering
-in the pending proposal. The Java parser rejects such end-delimited
-expression forms rather than silently compiling them as void statements.
+Blocking **value-producing** `select { ... }`, `select over ... end`,
+and `select among ... end` are now compiled in **expression positions**.
+Each normally completing winning arm must explicitly `return value;`;
+this supplies a statically typed value to the select expression, **not**
+to the containing callable. A read arm can use `when readch ch: int x ->`.
+The winning body executes through resumable source-task flow so waiting does
+not pin a scheduler carrier. The implementation uses a separate lexical
+return target for value arms and rejects missing or incompatible results.
+
+The historical `select { ... }` and `nb select { ... }` are still accepted
+as **legacy statement forms** for compatibility, while `do nb select { ... }`
+remains a legacy detached/no-result form: its arm-local returns are discarded
+with a warning because they cannot return from an already-ended callable.
+**Value-producing `nb select` returning `Future<T>` is not implemented.**
+Neither are Future/`Selectable`/Observable static arms, LLVM parity, or
+formatter normalization for these new forms.
+
+Exact-source proof: commit `e913464efcd0c9b83996bea24f4891c66a93bb3c`,
+GraalVM JDK 25 `mvn verify`, 2,002 tests passed:
+https://github.com/zed-pkg-test/java-app/actions/runs/38497303669
+
+Canonical compiled Java value-select example:
+
+```ores
+fnc choose(Channel<int> input): int {
+  const int result = select over
+    when readch input: int x -> {
+      return x * 2;
+    }
+    default -> {
+      return 0;
+    }
+  end;
+  return result + 1;
+}
+```
 
 `cb select` and `nb cb select` are **not** aliases: the parser rejects
 both with a hint to use `do select` or `do nb select`. The existing
@@ -232,8 +257,9 @@ Legacy unbraced arms are rejected by the parser; `oresfmt` migrates them.
 A select may include one `default: { ... }` or `default -> { ... }` arm,
 which must appear last. Procedural end-delimited select arms may use
 `when readch ch: val item -> { ... }` and other supported legacy
-binding spellings. Typed `readch ch: int item` and value-arm returns
-are not yet supported by the Java static-select AST.
+binding spellings. Typed `readch ch: int item` and explicit value-arm returns are supported
+in Java blocking value-producing `select` expressions. These do **not** turn
+`do select` procedural arms into value expressions.
 
 A static select arm is a non-throwing control-flow boundary. An ordinary
 `throw` may be handled by a local `try/catch`, or absorbed by a called
