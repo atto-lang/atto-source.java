@@ -41,6 +41,9 @@ Current source revision must be taken from the PR head, **not from this document
 - `preserveCleanupFailure` now bounds memory to a 64-element suppressed diagnostic sample, prevents self/identity duplicates and serializes check/add on the authoritative throwable.
 - Added `SourceTypedMatchTerminalFlowTest` with eight direct reflection-based source-flow tests (classification, quota, ARM_RESULT ownership, precedence, 2048 cleanup transitions) and a 2048-failure suppression test in `ArmResultCleanupFailureTest`. Added both to exact-head JVM and native-carrier CI. **These tests are authored but have not been executed.**
 
+- Completed synchronous/interpreter parity: `callFunctionBodyRaw` trap and procedural `try/catch` now exclude actor quota/cancellation control; synchronous `finally`, lexical defers and mutex-guard release honor the same fatal-over-cancellation-over-ordinary precedence, including when a *later* cleanup failure is terminal. Both paths use `sourceTerminalControl` and `sourceCleanupDominates`; wrapped host failures are unwrapped before classification. Added direct regression on their shared precedence helper. **No exact-head execution has occurred.**
+- The Java source-level precedence is still a *local safety rule*; it is not proof that the scheduler delivers exactly one cleanup callback after an abrupt stop. Full guest-source race tests remain mandatory.
+
 These changes harden *flow classification and cleanup precedence only*. They do NOT prove abrupt actor-stop cleanup actually runs, enforce actor-generation fences on outstanding Futures, or reconcile #823's cleanup-aware scheduler/carrier implementation. Their formal-model/implementation refinement and Native Image/LLVM parity remain open blockers.
 
 ## Outstanding correctness and security proof obligations
