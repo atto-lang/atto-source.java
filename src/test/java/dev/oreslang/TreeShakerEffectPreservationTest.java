@@ -56,7 +56,7 @@ final class TreeShakerEffectPreservationTest {
                 trap fnc trapped(int n): int { return n + 1; }
                 suspends fnc slow(int n): int { return n + 2; }
 
-                pub trap fnc get_trapped(): Option<int> {
+                pub fnc get_trapped(): Option<int> {
                   return trapped(7);
                 }
                 pub suspends fnc get_slow(): int {
@@ -66,7 +66,8 @@ final class TreeShakerEffectPreservationTest {
 
         Ast.FunctionDecl trapped = function(result, "get_trapped");
         Ast.FunctionDecl slow = function(result, "get_slow");
-        assertTrue(trapped.trapped());
+        assertFalse(trapped.trapped(),
+                "ordinary wrappers must not inherit the callee's trap effect");
         assertTrue(slow.suspends());
         assertTrue(trapped.body().stream()
                 .anyMatch(stmt -> stmt.toString().contains("trapped")),
