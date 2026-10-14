@@ -252,6 +252,42 @@ static void test_revoke_vs_cleanup_stress(void) {
         CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
     }
 }
+/* Rapidly create/join fresh native carriers. Each worker must be able to
+ * claim/release its own turn even if the OS recycles pthread_t identifiers.
+ * An idle actor may be handed to a new carrier, never simultaneously held
+ * by two of them. This also stresses bounded lease lifetime accounting.
+ */
+struct churn_args {
+    ores_turn_vm *vm;
+    ores_actor_cap *actor;
+    ores_turn_status claim, release;
+};
+static void *carrier_churn(void *opaque) {
+    struct churn_args *a = opaque;
+    ores_turn_lease *lease = NULL;
+    a->claim = ores_turn_claim_user(a->vm, a->actor, &lease);
+    if (a->claim == ORES_TURN_OK)
+        a->release = ores_turn_release(a->vm, lease);
+    return NULL;
+}
+static void test_carrier_identity_churn(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(600);
+    CHECK(vm != NULL);
+    ores_actor_cap *actor = NULL;
+    CHECK(ores_turn_register(vm, 900, 1, 1, &actor) == ORES_TURN_OK);
+    for (unsigned int i = 0; i < 512; ++i) {
+        struct churn_args a = {vm, actor, ORES_TURN_INVALID, ORES_TURN_INVALID};
+        pthread_t thread;
+        CHECK(pthread_create(&thread, NULL, carrier_churn, &a) == 0);
+        CHECK(pthread_join(thread, NULL) == 0);
+        CHECK(a.claim == ORES_TURN_OK);
+        CHECK(a.release == ORES_TURN_OK);
+    }
+    CHECK(ores_turn_stop(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
+}
+
 static void test_foreign_guesses_and_invalid_inputs(void) {
     CHECK(ores_turn_vm_new(0) == NULL);
     CHECK(ores_turn_vm_new(1000001) == NULL);
@@ -290,6 +326,7 @@ int main(void) {
     test_stop_vs_claim_stress();
     test_revoke_vs_cleanup_stress();
     test_foreign_guesses_and_invalid_inputs();
+    test_carrier_identity_churn();
     puts("ORES_NATIVE_ACTOR_TURN_CAPABILITY_OK");
     return 0;
 }
