@@ -3794,21 +3794,24 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
-                        // Unlike Map.entry, this preserves a guest null
-                        // field value without throwing from an async callback.
+                        // Stage the field before recursive delivery. The
+                        // catch must NOT include the downstream continuation:
+                        // an exception from a consumer cannot be converted
+                        // into a second delivery of the same call result.
                         try {
                             values.add(new java.util.AbstractMap.SimpleImmutableEntry<>(
                                     field.name(), value));
-                            evalSuspendableObjectField(
-                                    t,
-                                    object,
-                                    env,
-                                    values,
-                                    index + 1,
-                                    continuation);
                         } catch (RuntimeException | Error fieldFailure) {
                             continuation.accept(t, null, fieldFailure);
+                            return;
                         }
+                        evalSuspendableObjectField(
+                                t,
+                                object,
+                                env,
+                                values,
+                                index + 1,
+                                continuation);
                     });
         }
 
