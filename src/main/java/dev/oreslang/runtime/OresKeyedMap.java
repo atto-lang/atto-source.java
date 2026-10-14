@@ -25,6 +25,10 @@ import java.util.Set;
  * transport, and public construction are staged in separate compiler/runtime
  * integrations: this class alone does not expose Map<K,V> to guest code.
  *
+ * <p>Operations are synchronized on this instance so concurrent guest tasks
+ * cannot corrupt key order or race quota admission. The map is still mutable,
+ * and snapshots do not make referenced value graphs immutable.
+ *
  * <p>Snapshots detach the key/value mapping, not mutable value graphs.
  * Actor/interop transport must independently freeze and authorize every key
  * and recursively copy values before crossing isolation boundaries.
@@ -91,11 +95,11 @@ public final class OresKeyedMap<K, V> {
         return valueDomain;
     }
 
-    public int size() {
+    public synchronized int size() {
         return entries.size();
     }
 
-    public boolean isEmpty() {
+    public synchronized boolean isEmpty() {
         return entries.isEmpty();
     }
 
@@ -129,12 +133,12 @@ public final class OresKeyedMap<K, V> {
         if (key instanceof String text) checkStringKey(text);
     }
 
-    public boolean containsKey(Object key) {
+    public synchronized boolean containsKey(Object key) {
         checkKey(key);
         return entries.containsKey(key);
     }
 
-    public V get(Object key) {
+    public synchronized V get(Object key) {
         checkKey(key);
         return entries.get(key);
     }
@@ -156,7 +160,7 @@ public final class OresKeyedMap<K, V> {
         }
     }
 
-    public V put(K key, V value) {
+    public synchronized V put(K key, V value) {
         checkKey(key);
         checkValue(value);
         if (!entries.containsKey(key) && entries.size() >= MAX_ENTRIES) {
@@ -171,7 +175,7 @@ public final class OresKeyedMap<K, V> {
      * copied to immutable pairs before validation so mutable source Map.Entry
      * objects cannot change after the validation pass.
      */
-    public void putAll(Map<? extends K, ? extends V> values) {
+    public synchronized void putAll(Map<? extends K, ? extends V> values) {
         Objects.requireNonNull(values, "map entries");
         List<Map.Entry<K, V>> prepared = new ArrayList<>(values.size());
         for (Map.Entry<? extends K, ? extends V> entry : values.entrySet()) {
@@ -193,12 +197,12 @@ public final class OresKeyedMap<K, V> {
         }
     }
 
-    public V remove(Object key) {
+    public synchronized V remove(Object key) {
         checkKey(key);
         return entries.remove(key);
     }
 
-    public void clear() {
+    public synchronized void clear() {
         entries.clear();
     }
 
@@ -207,12 +211,12 @@ public final class OresKeyedMap<K, V> {
      * Values are NOT recursively frozen: callers may not use this for actor
      * transport or untrusted serialization without additional checks.
      */
-    public Map<K, V> shallowSnapshot() {
+    public synchronized Map<K, V> shallowSnapshot() {
         return Collections.unmodifiableMap(new LinkedHashMap<>(entries));
     }
 
     /** Detached immutable entry pairs, in deterministic insertion order. */
-    public List<Map.Entry<K, V>> entrySnapshot() {
+    public synchronized List<Map.Entry<K, V>> entrySnapshot() {
         List<Map.Entry<K, V>> result = new ArrayList<>(entries.size());
         for (Map.Entry<K, V> entry : entries.entrySet()) {
             result.add(Map.entry(entry.getKey(), entry.getValue()));
