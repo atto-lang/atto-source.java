@@ -128,7 +128,7 @@ final class TypedValueMatchParameterTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(source);
         }
-        assertEquals("10\\n20", output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+        assertEquals("10\n20", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 
     @Test
