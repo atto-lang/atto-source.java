@@ -1842,6 +1842,12 @@ public final class TypeChecker {
     }
 
     private int typedValueStatementFlow(Ast.Stmt stmt) {
+        if (stmt instanceof Ast.SelectStmt) {
+            throw new IllegalArgumentException(
+                    "do select inside typed value match arm requires nonlocal "
+                    + "FUNCTION_RETURN propagation through suspended ARM_RESULT "
+                    + "continuations; this combination is not yet lowered");
+        }
         if (stmt instanceof Ast.ArmReturnStmt) return TYPED_MATCH_RETURN;
         if (stmt instanceof Ast.BindingStmt || stmt instanceof Ast.DeferStmt
                 || stmt instanceof Ast.ExprStmt) return TYPED_MATCH_FALLTHROUGH;
