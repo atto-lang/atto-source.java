@@ -6729,6 +6729,8 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
         private boolean finalized;
+        /** Terminal metadata only; published after physical teardown, under lifecycleLock. */
+        private ActorFailureNotice pendingControlNotice;
         private volatile ActorTurnWatchdog.Lease watchdogLease;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
@@ -7047,6 +7049,14 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable ignored) {
                 // Actor termination must still complete. Runtime cleanup hooks
                 // are best-effort and retryable by the process collector.
+            }
+            // Heap/state cleanup and the isolate-exit hook must complete before
+            // a supervisor can observe a terminal notice or restart the actor.
+            // Offer is bounded and cannot invoke guest callbacks. Publication
+            // precedes removal from actors and all termination observers.
+            if (pendingControlNotice != null) {
+                publishActorFailureNotice(pendingControlNotice);
+                pendingControlNotice = null;
             }
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
@@ -7601,7 +7611,6 @@ public final class ActorRuntime implements AutoCloseable {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
-            ActorFailureNotice controlNotice = null;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null
@@ -7616,7 +7625,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     : "actor panicked with a typed Error",
                             ref.id().value().toString(),
                             supervisorId == null ? "" : supervisorId.value().toString());
-                    controlNotice = new ActorFailureNotice(
+                    pendingControlNotice = new ActorFailureNotice(
                             ref.id(), supervisorId, signal.kind(), envelope);
                 }
                 stopped.set(true);
@@ -7633,11 +7642,8 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
-                // A termination observer must never overtake its CONTROL notice.
-                // ArrayBlockingQueue.offer is bounded, has no user callbacks,
-                // and cannot wait for capacity. Publish before finalization
-                // releases awaitTermination()/get_done() observers.
-                if (controlNotice != null) publishActorFailureNotice(controlNotice);
+                // finalizeStopLocked publishes any pending notice only after
+                // the last carrier, descendants and owned resources are gone.
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
