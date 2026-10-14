@@ -3288,7 +3288,16 @@ public final class TypeChecker {
             }
 
             Ast.ConstructorDecl constructor = klass.constructor();
+            // Imported classes are associated with linked metadata even when
+            // they have no companion aliases. Their constructor visibility
+            // must be checked at compile time, not left to dynamic execution.
+            boolean externalConstruction = linkedClassAliases.containsKey(klass);
             if (constructor != null) {
+                if (externalConstruction
+                        && constructor.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "private constructor for imported class '" + klass.name() + "'");
+                }
                 if (created.arguments().size() != constructor.arity()) {
                     throw new IllegalArgumentException(
                             "constructor for " + klass.name() + " expects "
@@ -3329,6 +3338,15 @@ public final class TypeChecker {
                 ResolvedField resolvedField = fields.get(i);
                 Ast.FieldDecl field = resolvedField.field();
                 if (i < created.arguments().size()) {
+                    // The legacy synthesized constructor must not bypass
+                    // field-level privacy for external class imports.
+                    if (externalConstruction
+                            && field.visibility() != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException(
+                                "private synthesized constructor field '" + field.name()
+                                        + "' cannot be initialized through imported class '"
+                                        + klass.name() + "'");
+                    }
                     Type fieldPattern = classFieldType(resolvedField.owner(), field);
                     Type expected = substituteGenerics(
                             fieldPattern,
