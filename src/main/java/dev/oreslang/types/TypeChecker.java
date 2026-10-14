@@ -203,6 +203,86 @@ public final class TypeChecker {
     }
 
     /**
+     * Restricted but real cross-file function type checking.
+     *
+     * The trusted linker must resolve exactly one public, ordinary,
+     * non-generic, non-actor function per imported name before invoking this
+     * method. The checker then uses those resolved signatures, not its
+     * legacy Unknown import placeholder, to check direct calls and returns.
+     * Other import kinds are explicitly unsupported by this admission path.
+     */
+    public static Ast.Program checkTypesWithLinkedFunctions(
+            Ast.Program source, Map<String, Ast.FunctionDecl> linkedFunctions) {
+        java.util.Objects.requireNonNull(source, "source");
+        java.util.Objects.requireNonNull(linkedFunctions, "linkedFunctions");
+        source = AnnotationExpander.expand(source);
+        ReturnCleanupChecker.check(source);
+        TypeChecker checker = new TypeChecker();
+        checker.validateImports(source);
+        checker.collect(source);
+
+        Set<String> expected = new HashSet<>();
+        for (Ast.ImportDecl imported : source.imports()) {
+            if (imported.kind() != Ast.ImportKind.FUNCTION || imported.wildcard()) {
+                throw new IllegalArgumentException(
+                        "linked function checker admits explicit function imports only");
+            }
+            for (String name : imported.names()) {
+                String local = ImportRules.localName(imported, name);
+                if (!expected.add(local)) {
+                    throw new IllegalArgumentException("duplicate linked callable name");
+                }
+            }
+        }
+        if (!expected.equals(linkedFunctions.keySet())) {
+            throw new IllegalArgumentException(
+                    "resolved linked functions must match imported callable bindings exactly");
+        }
+
+        for (Map.Entry<String, Ast.FunctionDecl> entry : linkedFunctions.entrySet()) {
+            String local = entry.getKey();
+            Ast.FunctionDecl fn = entry.getValue();
+            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
+                    || fn.kind() != Ast.CallableKind.FNC
+                    || fn.actorKind() != Ast.ActorKind.NONE
+                    || fn.async() || fn.suspends() || fn.generator()
+                    || fn.structural() || fn.nonLexical() || fn.trapped()
+                    || !fn.genericParameters().isEmpty()
+                    || !safeLinkedPrimitive(fn.returnType(), true)) {
+                throw new IllegalArgumentException(
+                        "linked callable needs a verified primitive-only, effect-free signature");
+            }
+            for (Ast.Param parameter : fn.parameters()) {
+                if (!safeLinkedPrimitive(parameter.type(), false)) {
+                    throw new IllegalArgumentException(
+                            "linked parameter requires a fully known primitive signature");
+                }
+            }
+            // Local declarations cannot override imported bindings. The
+            // standard checker already diagnoses those conflicts, but assert
+            // it again before adding foreign declarations to the lookup map.
+            if (checker.functions.containsKey(local)
+                    || checker.ambiguousFunctions.contains(local)) {
+                throw new IllegalArgumentException("imported callable conflicts with local function");
+            }
+            checker.importedValues.remove(local);
+            checker.putFunctionSlot(local, fn);
+        }
+        checker.validate(source);
+        OwnershipChecker.check(source);
+        return source;
+    }
+
+    private static boolean safeLinkedPrimitive(Ast.TypeRef ref, boolean allowVoid) {
+        if (ref == null || ref.inferArguments() || !ref.arguments().isEmpty()) return false;
+        return switch (ref.name()) {
+            case "int", "float", "bool", "String" -> true;
+            case "void" -> allowVoid;
+            default -> false;
+        };
+    }
+
+    /**
      * Checked, public, explicitly imported class declarations supply field
      * signatures to this compilation unit without importing foreign bodies.
      * A missing linked signature must remain Unknown (and fail on arithmetic)
