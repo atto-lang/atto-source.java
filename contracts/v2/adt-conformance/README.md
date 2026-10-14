@@ -25,12 +25,12 @@ From `oreslang-source.java` at the *tested commit*:
 
 ```sh
 mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AdtConformanceCorpusTest test
-mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AlgebraicDataTypeMatchTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest test
+mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AlgebraicDataTypeMatchTest,ExclusiveAdtMatchSafetyTest,AdtFiniteMatchOracleTest,ExplicitDispatchStatementSyntaxTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest test
 mvn -B -ntp -Dores.runtime.carriers=native verify
 ```
 
-The manifest now contains 21 cases, including bare and explicit-do ordered and exclusive suspendable matches, terminal INT32_MAX enum tags, large integer guard
-boundaries, and unary unsigned underflow.
+The manifest now contains 21 cases, including bare and explicit-do ordered and exclusive suspendable
+matches, terminal INT32_MAX enum tags, large integer guard boundaries, and unary unsigned underflow.
 
 The JUnit test reads the TOML manifest and fixtures directly; file paths
 are constrained to simple `.ores` filenames and duplicate case IDs fail.
@@ -41,7 +41,7 @@ a native backend `required` based only on source parsing.
 
 The dedicated `.github/workflows/adt-exact-head.yml` workflow is scoped to
 ADT compiler/runtime changes. It records the exact Git commit and source tree,
-runs all six targeted JUnit classes (including the 4096-arm suspendable-match
+runs all eight targeted JUnit classes (including the 4096-arm suspendable-match
 trampoline regressions), uploads Surefire reports, then runs full `mvn verify`
 on GraalVM 25. Its full suite job depends on targeted success.
 
