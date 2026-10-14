@@ -5096,6 +5096,10 @@ public final class OresEvalRootNode extends RootNode {
                             : iterableValues(value, env);
                     try {
                         for (Object item : delegated) {
+                            if (Env.containsEmbeddedTypedMap(item, new IdentityHashMap<>(), 0)) {
+                                throw new SecurityException(
+                                        "typed Map cannot escape through yield* without ownership proof");
+                            }
                             context.schedulerSafepoint();
                             emitter.emit(item);
                         }
@@ -5103,6 +5107,10 @@ public final class OresEvalRootNode extends RootNode {
                         closeIterable(delegated);
                     }
                     return;
+                }
+                if (Env.containsEmbeddedTypedMap(value, new IdentityHashMap<>(), 0)) {
+                    throw new SecurityException(
+                            "typed Map cannot escape through yield without ownership proof");
                 }
                 context.schedulerSafepoint();
                 emitter.emit(value);
@@ -8621,6 +8629,14 @@ public final class OresEvalRootNode extends RootNode {
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
         private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
+            // Source functions, methods, generators and resumable tasks must
+            // agree with the compiler's temporary prohibition on transferring
+            // mutable Maps. Check the complete result graph, even if a host
+            // invocation bypassed typechecking or erased its declared type.
+            if (Env.containsEmbeddedTypedMap(value, new IdentityHashMap<>(), 0)) {
+                throw new SecurityException(
+                        "typed Map cannot escape through a callable return without ownership proof");
+            }
             return shapeReturnedValue(declared, value, callable, new LinkedHashSet<>());
         }
 
@@ -8955,6 +8971,10 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof ResultValue result) {
                 return containsEmbeddedTypedMap(result.value(), seen, depth + 1);
             }
+            if (value instanceof GeneratorRuntime.Step<?> step) {
+                return !step.done()
+                        && containsEmbeddedTypedMap(step.value(), seen, depth + 1);
+            }
             if (value instanceof OresObject object) {
                 for (Object item : object.fields.values()) {
                     if (containsEmbeddedTypedMap(item, seen, depth + 1)) return true;
@@ -9005,6 +9025,10 @@ public final class OresEvalRootNode extends RootNode {
         private void initialize(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
+            if (containsEmbeddedTypedMap(value, new IdentityHashMap<>(), 0)) {
+                throw new SecurityException(
+                        "reserved binding cannot acquire a typed Map without ownership proof");
+            }
             slot.value = value;
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
@@ -9012,9 +9036,10 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
-                if (slot.value instanceof OresKeyedMap<?, ?> || value instanceof OresKeyedMap<?, ?>) {
+                if (containsEmbeddedTypedMap(slot.value, new IdentityHashMap<>(), 0)
+                        || containsEmbeddedTypedMap(value, new IdentityHashMap<>(), 0)) {
                     throw new SecurityException(
-                            "typed Map rebinding is disabled until exclusive moves can be verified");
+                            "typed Map rebinding or aggregate aliasing is disabled until exclusive moves can be verified");
                 }
                 slot.value = value;
                 return;
