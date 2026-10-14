@@ -1826,6 +1826,30 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.MatchExpr match) {
+            Type subject = deref(typeOf(match.subject(), env, generics, self));
+            List<Ast.MatchArm> patterns = match.arms().stream()
+                    .map(arm -> new Ast.MatchArm(arm.pattern(), arm.guard(), List.of()))
+                    .toList();
+            checkMatch(new Ast.MatchStmt(match.subject(), true, patterns, false),
+                    subject, env, generics, Primitive.VOID, self);
+            Map<Env.Binding, Set<String>> entry = env.initializationSnapshot();
+            List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
+            Type result = null;
+            for (Ast.MatchValueArm arm : match.arms()) {
+                env.restoreInitialization(entry);
+                Env local = new Env(env);
+                checkPattern(arm.pattern(), subject, local, generics, self);
+                if (arm.guard() != null) requireAssignable(
+                        typeOfCondition(arm.guard(), local, generics, self),
+                        Primitive.BOOL, "value match guard");
+                Type armType = typeOf(arm.value(), local, generics, self);
+                result = result == null ? armType : commonType(result, armType);
+                exits.add(env.initializationSnapshot());
+            }
+            env.mergeInitialization(exits);
+            return result;
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
