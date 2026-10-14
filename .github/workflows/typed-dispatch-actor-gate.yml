@@ -21,22 +21,45 @@ permissions:
 jobs:
   typed-dispatch-jvm:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 70
     steps:
       - name: Checkout exact candidate merged tree
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Record and verify checkout revision
+        env:
+          EXPECTED_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_PR_BASE: ${{ github.event.pull_request.base.sha }}
         shell: bash
         run: |
           set -euo pipefail
           git rev-parse HEAD
           printf 'event=%s run=%s attempt=%s head=%s base=%s\n' \
             "$GITHUB_EVENT_NAME" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
-            "${{ github.event.pull_request.head.sha }}" \
-            "${{ github.event.pull_request.base.sha }}"
+            "$EXPECTED_PR_HEAD" \
+            "$EXPECTED_PR_BASE"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            test -n "$EXPECTED_PR_HEAD"
+            git merge-base --is-ancestor "$EXPECTED_PR_HEAD" HEAD
+          fi
+          git rev-parse HEAD > typed-dispatch-head.txt
+          git rev-parse HEAD^{tree} > typed-dispatch-tree.txt
+          git ls-files -z -- src/main/java src/test/java \
+            | xargs -0 -r sha256sum > typed-dispatch-source-sha256.txt
+      - name: Upload exact-tree provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typed-dispatch-checkout-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            typed-dispatch-head.txt
+            typed-dispatch-tree.txt
+            typed-dispatch-source-sha256.txt
+          if-no-files-found: warn
+          retention-days: 14
       - name: Set up GraalVM JDK 25
         uses: graalvm/setup-graalvm@v1
         with:
@@ -50,13 +73,15 @@ jobs:
       - name: Value ARM_RESULT, blocking select, and single-delivery regressions
         run: >
           mvn -B -ntp
-          -Dtest=TypedDispatchReturnIsolationTest,SerialTypedValueMatchActorExecutionTest,SourceContinuationSingleDeliveryTest,DoSelectReturnScopeTest
+          -Dtest=TypedDispatchReturnIsolationTest,SerialTypedValueMatchActorExecutionTest,SourceContinuationSingleDeliveryTest,DoSelectReturnScopeTest,ActorContinuationTeardownTest,ActorSuspensionTicketAtomicityTest,TypedValueMatchCleanupPrecedenceTest,SourceActorEndCleanupExecutionTest
           -DfailIfNoTests=true
           test
       - name: Repeat targeted tests using native carrier scheduling
         run: >
           mvn -B -ntp
           -Dores.runtime.carriers=native
-          -Dtest=TypedDispatchReturnIsolationTest,SerialTypedValueMatchActorExecutionTest,SourceContinuationSingleDeliveryTest,DoSelectReturnScopeTest
+          -Dtest=TypedDispatchReturnIsolationTest,SerialTypedValueMatchActorExecutionTest,SourceContinuationSingleDeliveryTest,DoSelectReturnScopeTest,ActorContinuationTeardownTest,ActorSuspensionTicketAtomicityTest,TypedValueMatchCleanupPrecedenceTest,SourceActorEndCleanupExecutionTest
           -DfailIfNoTests=true
           test
+      - name: Full JVM integration verification
+        run: mvn -B -ntp verify
