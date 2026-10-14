@@ -1896,6 +1896,13 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        /**
+         * Publish host termination only after every finalization phase,
+         * including completion listeners and parent notification, has returned.
+         * The actor map may be cleared earlier for group retirement.
+         */
+        private final java.util.concurrent.CountDownLatch terminalFinalization =
+                new java.util.concurrent.CountDownLatch(1);
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -1979,10 +1986,10 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+            // Absence from actors is NOT a termination barrier: group retirement
+            // unregisters the actor before done callbacks and parent notification.
+            // This dedicated one-shot signal is published at the very end.
+            return terminalFinalization.await(timeout, unit);
         }
 
         public void send(M message) {
@@ -7094,7 +7101,13 @@ public final class ActorRuntime implements AutoCloseable {
                 finalized = true;
                 lifecycleLock.notifyAll();
             }
-            if (parent != null) parent.childFinalized(this);
+            try {
+                if (parent != null) parent.childFinalized(this);
+            } finally {
+                // A parent callback may throw, but this already-finalized child
+                // must not strand its own host-side completion waiters.
+                ref.terminalFinalization.countDown();
+            }
         }
 
         private void childFinalized(ActorCell<?> child) {

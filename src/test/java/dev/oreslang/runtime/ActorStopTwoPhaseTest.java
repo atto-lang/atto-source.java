@@ -179,4 +179,50 @@ final class ActorStopTwoPhaseTest {
                     "cleanup fault must be retained as the actor's terminal failure");
         }
     }
+
+    @Test
+    void awaitTerminationCannotObserveUnregisteredActorBeforeDoneListenersFinish()
+            throws Exception {
+        var callbackEntered = new CountDownLatch(1);
+        var releaseCallback = new CountDownLatch(1);
+        var stopperFailure = new AtomicReference<Throwable>();
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, ctx) -> { });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            // The runtime removes a cell from the registry before publishing
+            // done and finishing parent notifications. Keep an inline done
+            // listener open precisely in that interval.
+            actor.done().whenCompleteRuntime((result, failure) -> {
+                callbackEntered.countDown();
+                try {
+                    if (!releaseCallback.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("test did not release done listener");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            Thread stopper = Thread.startVirtualThread(() -> {
+                try {
+                    actor.stop();
+                } catch (Throwable failure) {
+                    stopperFailure.set(failure);
+                }
+            });
+            try {
+                assertTrue(callbackEntered.await(5, TimeUnit.SECONDS),
+                        "STOP must enter inline done listener");
+                assertTrue(actor.done().isDone(), "done has been published");
+                assertFalse(actor.awaitTermination(0, TimeUnit.MILLISECONDS),
+                        "registry removal and done settlement are not the host completion barrier");
+            } finally {
+                releaseCallback.countDown();
+                stopper.join(5_000);
+            }
+            assertFalse(stopper.isAlive(), "STOP must finish after listener release");
+            assertTrue(stopperFailure.get() == null, () -> "STOP failed: " + stopperFailure.get());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
 }
