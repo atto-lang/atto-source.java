@@ -65,6 +65,40 @@ public final class InterfaceSccPlanner {
     }
 
     /**
+     * Preferred import-plan entry point for already type/ownership-admitted
+     * programs: derive public API fingerprints from those *same* ASTs rather
+     * than trusting caller-supplied export envelopes. This closes accidental
+     * stale-interface reuse when a driver pairs a new AST with an old .oresi.
+     *
+     * Program admission and compiler/header provenance are still obligations
+     * of the calling trusted compiler driver, not of this pure planner.
+     */
+    public static Plan fromCheckedPrograms(
+            Map<String, dev.oreslang.ast.Ast.Program> admittedPrograms,
+            Map<String, ExportInterfaceCodec.Header> environmentByUnit,
+            Map<String, Map<String, String>> resolvedOverrides,
+            Map<String, Map<String, String>> externalImportPins) {
+        Objects.requireNonNull(admittedPrograms, "admittedPrograms");
+        Objects.requireNonNull(environmentByUnit, "environmentByUnit");
+        if (!admittedPrograms.keySet().equals(environmentByUnit.keySet())) {
+            throw new IllegalArgumentException(
+                    "checked source and compiler environment sets must match exactly");
+        }
+        Map<String, ExportInterfaceCodec.InterfaceFile> exports = new LinkedHashMap<>();
+        for (Map.Entry<String, dev.oreslang.ast.Ast.Program> entry : admittedPrograms.entrySet()) {
+            dev.oreslang.ast.Ast.Program source =
+                    Objects.requireNonNull(entry.getValue(), "checked program");
+            ExportInterfaceCodec.Header header =
+                    Objects.requireNonNull(environmentByUnit.get(entry.getKey()), "compiler environment");
+            dev.oreslang.ast.Ast.Program local = new dev.oreslang.ast.Ast.Program(
+                    source.namespace(), List.of(), source.modules());
+            exports.put(entry.getKey(), ExportInterfaceCollector.collect(local, header));
+        }
+        return fromValidatedImportGraph(admittedPrograms, exports,
+                resolvedOverrides, externalImportPins);
+    }
+
+    /**
      * Integrates the plan with Oreslang's real import resolution and visibility
      * checks, including user-supplied effective import target overrides.
      *
