@@ -804,6 +804,21 @@ public final class OwnershipChecker {
         if (readonlyRecord && storedType.isRecordType() && !storedType.isReadonlyRecordType()) {
             storedType = Ast.TypeRef.readonlyRecordType(storedType.recordMembers());
         }
+        // Explicit annotations must preserve the loan's ownership category.
+        // Otherwise `val Any erased = rt borrow owner` could turn a lexical
+        // reference into an apparently owned value and bypass return/channel
+        // escape checks. Nor may an immutable loan be retyped as mutable.
+        if (isBorrowValue(value)) {
+            if (!storedType.isBorrow()) {
+                throw error("borrowed reference cannot be erased to an owned type; keep an explicit borrow type or copy the referent");
+            }
+            if (storedType.mutableBorrow() && value.kind != ValueKind.MUT_BORROW) {
+                throw error("shared borrow cannot be promoted to a mutable borrow by type annotation");
+            }
+        } else if (storedType.isBorrow()) {
+            throw error("borrow-typed binding requires a proven borrowed initializer");
+        }
+
         // A top-level lexical borrow is permitted through the existing loan
         // lease; an Option/tuple/record/etc holding that borrow is not.
         if ((containsBorrowType(value.type) && !value.type.isBorrow())
