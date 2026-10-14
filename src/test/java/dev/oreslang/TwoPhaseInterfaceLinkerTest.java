@@ -160,4 +160,23 @@ final class TwoPhaseInterfaceLinkerTest {
         }
     }
 
+    @Test void rejectExtraOrMissingPinnedSourceUnitsBeforeLinking() {
+        var staged=TwoPhaseInterfaceLinker.collectCheckedDeclarations(
+                cycle(),environments());
+        assertThrows(IllegalArgumentException.class,()->
+                TwoPhaseInterfaceLinker.resolveLinkedImports(
+                        staged,Map.of(),
+                        Map.of("a.ores",Map.<String,String>of())));
+        assertThrows(IllegalArgumentException.class,()->
+                TwoPhaseInterfaceLinker.resolveLinkedImports(
+                        staged,Map.of(),Map.of(
+                            "a.ores",Map.<String,String>of(),
+                            "b.ores",Map.<String,String>of(),
+                            "ghost.ores",Map.<String,String>of())));
+        assertThrows(IllegalArgumentException.class,()->
+                TwoPhaseInterfaceLinker.resolveLinkedImports(
+                        staged,Map.of("ghost.ores",Map.of("./a.ores","a.ores")),
+                        noExternal()));
+    }
+
 }
