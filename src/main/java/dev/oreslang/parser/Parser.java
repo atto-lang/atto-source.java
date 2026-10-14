@@ -1925,6 +1925,7 @@ public final class Parser {
                 String bindingName = null;
                 boolean mutableReferent = false;
                 Ast.TypeRef declaredBindingType = null;
+                boolean bindingFirstArrowConsumed = false;
 
                 if (match(READCH)) {
                     operation = Ast.ChannelOperation.READ;
@@ -1970,12 +1971,21 @@ public final class Parser {
                     channel = parseExpression();
                     consume(RPAREN, "binding-first select readch requires ')'");
                     consume(ARROW, "binding-first select case requires '->'");
+                    bindingFirstArrowConsumed = true;
                     operation = Ast.ChannelOperation.READ;
                 }
 
-                // Both legacy 'readch ch: val x { ... }' and canonical
-                // 'readch ch: val x -> { ... }' remain parseable.
-                if (check(ARROW)) advance();
+                // Legacy untyped bindings may omit the arrow. A typed
+                // binding is a new canonical construct and MUST use '->':
+                // otherwise the parser admits two different return-arm
+                // grammars for the same typed source.
+                if (declaredBindingType != null) {
+                    consume(ARROW, "typed readch select arm requires '->'");
+                } else if (bindingFirstArrowConsumed && check(ARROW)) {
+                    throw error(peek(), "duplicate '->' after binding-first select arm");
+                } else if (check(ARROW)) {
+                    advance();
+                }
                 if (!check(LBRACE)) {
                     throw error(peek(), "select arm requires a braced body '{ ... }'");
                 }
