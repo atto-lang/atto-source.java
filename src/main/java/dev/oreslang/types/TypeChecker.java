@@ -5112,6 +5112,42 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * Keep static literal subsumption consistent with valueEquals in the
+     * evaluator. In particular, do not collapse large integral literals to
+     * double: 2^53+1 is not equal to the rounded float 2^53.
+     */
+    private boolean literalPatternRuntimeEquals(Object left, Object right) {
+        if (left instanceof Number a && right instanceof Number b) {
+            if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal
+                    || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger) {
+                try {
+                    return new java.math.BigDecimal(a.toString())
+                            .compareTo(new java.math.BigDecimal(b.toString())) == 0;
+                } catch (NumberFormatException ignored) {
+                    return a.doubleValue() == b.doubleValue();
+                }
+            }
+            boolean integralA = isRuntimeIntegralNumber(a);
+            boolean integralB = isRuntimeIntegralNumber(b);
+            if (integralA && integralB) return a.longValue() == b.longValue();
+            if (integralA != integralB) {
+                Number integer = integralA ? a : b;
+                Number floating = integralA ? b : a;
+                if (!Double.isFinite(floating.doubleValue())) return false;
+                return java.math.BigDecimal.valueOf(integer.longValue())
+                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
+            }
+            return a.doubleValue() == b.doubleValue();
+        }
+        return java.util.Objects.equals(left, right);
+    }
+
+    private boolean isRuntimeIntegralNumber(Number value) {
+        return value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long;
+    }
+
     private boolean patternSubsumes(
             Ast.Pattern earlier,
             Ast.Pattern later,
@@ -5122,7 +5158,10 @@ public final class TypeChecker {
         if (later instanceof Ast.WildcardPattern || later instanceof Ast.BindingPattern) return false;
 
         if (earlier instanceof Ast.LiteralPattern a && later instanceof Ast.LiteralPattern b) {
-            return java.util.Objects.equals(a.value(), b.value());
+            // Runtime patterns use numeric value equality, not Java boxed
+            // identity: 1 and 1.0 match the same input. A second literal
+            // representing the same runtime value is unreachable.
+            return literalPatternRuntimeEquals(a.value(), b.value());
         }
 
         if (earlier instanceof Ast.TypePattern a && later instanceof Ast.TypePattern b) {
