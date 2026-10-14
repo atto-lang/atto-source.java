@@ -488,8 +488,18 @@ public final class Ast {
         }
     }
 
-    public record TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) implements Decl {
-        public TypeAliasDecl { genericParameters = List.copyOf(genericParameters); }
+    /** Compile-time only, transparent: public visibility exports the name, not a runtime value. */
+    public record TypeAliasDecl(
+            String name, Visibility visibility, List<String> genericParameters, TypeRef target) implements Decl {
+        public TypeAliasDecl {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("alias name cannot be blank");
+            if (visibility == null || target == null) throw new IllegalArgumentException("alias visibility/target required");
+            genericParameters = List.copyOf(genericParameters);
+        }
+        /** Backwards compatibility for older compiler AST producers: aliases default private. */
+        public TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) {
+            this(name, Visibility.PRIVATE, genericParameters, target);
+        }
     }
 
     public enum BindingKind { CONST, VAL, LET }
