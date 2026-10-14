@@ -73,17 +73,17 @@ public final class ActorStateContract {
         }
         // Null here intentionally means no state map, different from a
         // declared map with zero keys. Both cases are still inspected.
-        Set<String> keys = null;
+        Map<String, Ast.TypeRef> keys = null;
         if (state != null) {
             Ast.TypeRef schema = keySchema(state);
             if (!schema.isRecordType()) {
                 throw new IllegalArgumentException("actor state schema must declare typed keys");
             }
-            keys = schema.recordMembers().keySet();
+            keys = schema.recordMembers();
             // No continuation-bound alias may be smuggled into actor-state defaults.
             if (state.initializer() instanceof Ast.ObjectExpr defaults) {
                 for (Ast.ObjectField def : defaults.fields()) {
-                    if (!keys.contains(def.name())) {
+                    if (!keys.containsKey(def.name())) {
                         throw new IllegalArgumentException("unknown actor state default key '" + def.name() + "'");
                     }
                 }
@@ -98,7 +98,7 @@ public final class ActorStateContract {
         }
     }
 
-    private static void visit(Object node, String actor, Set<String> keys,
+    private static void visit(Object node, String actor, Map<String, Ast.TypeRef> keys,
                               String activeAccess, boolean nestedClosure, boolean instanceMethod,
                               Ast.CriticalMode accessMode) {
         if (node == null) return;
@@ -158,6 +158,30 @@ public final class ActorStateContract {
             throw new IllegalArgumentException(
                     "actor state loan cannot cross await, select, or suspension");
         }
+        // A direct s.key read of an immutable scalar is a detached value,
+        // but a reference-valued projection aliases actor-owned heap storage.
+        // Until the compiler proves detached snapshots/linear transfers in
+        // both Java and LLVM, fail closed at every escape boundary.
+        if (activeAccess != null && keys != null) {
+            Object escaping = null;
+            if (node instanceof Ast.ReturnStmt ret) {
+                escaping = ret.value();
+            } else if (node instanceof Ast.BindingStmt binding) {
+                escaping = binding.initializer();
+            } else if (node instanceof Ast.DestructureStmt binding) {
+                escaping = binding.initializer();
+            } else if (node instanceof Ast.AssignExpr assign
+                    && !isDirectStateMember(assign.target(), activeAccess)) {
+                escaping = assign.value();
+            } else if (node instanceof Ast.CallExpr call) {
+                escaping = call.arguments();
+            }
+            if (escaping != null && projectsReferenceState(escaping, activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state reference projection cannot escape its lexical loan; "
+                        + "copy/snapshot lowering requires an explicit ownership proof");
+            }
+        }
         // The state mode is a capability; using never upgrades read.
         if (activeAccess != null && accessMode == Ast.CriticalMode.READ
                 && node instanceof Ast.AssignExpr assign
@@ -182,7 +206,7 @@ public final class ActorStateContract {
                 throw new IllegalArgumentException(
                         "actor state access capability cannot be captured by nested closures");
             }
-            if (!keys.contains(member.member())) {
+            if (!keys.containsKey(member.member())) {
                 throw new IllegalArgumentException("undeclared actor state key '" + member.member() + "'");
             }
             return; // scoped direct field operation, subject to normal type checking
@@ -231,6 +255,55 @@ public final class ActorStateContract {
                 }
             }
         }
+    }
+
+    private static boolean isDirectStateMember(Object node, String access) {
+        return node instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr name
+                && name.name().equals(access);
+    }
+
+    private static boolean isDetachedScalar(Ast.TypeRef type) {
+        if (type == null || !type.arguments().isEmpty()) return false;
+        // Immutable, by-value primitive representations only. A structural
+        // record, class, map, array, Option or user-defined type is not
+        // automatically a detached snapshot.
+        return Set.of("int", "i8", "i16", "i32", "i64", "u8", "u16",
+                "u32", "u64", "float", "double", "f32", "f64", "bool",
+                "byte", "short", "long", "char", "string", "String")
+                .contains(type.name());
+    }
+
+    private static boolean projectsReferenceState(Object node, String access,
+                                                    Map<String, Ast.TypeRef> keys) {
+        if (node == null) return false;
+        if (node instanceof Ast.MemberExpr member && isDirectStateMember(member, access)) {
+            return !isDetachedScalar(keys.get(member.member()));
+        }
+        if (node instanceof Ast.LambdaExpr lambda) {
+            // Shadowing does not grant access to the outer loan. An ordinary
+            // closure still undergoes the existing nestedClosure check.
+            if (lambda.parameters().stream().anyMatch(p -> p.name().equals(access))) return false;
+        }
+        if (node instanceof Iterable<?> items) {
+            for (Object child : items) {
+                if (projectsReferenceState(child, access, keys)) return true;
+            }
+            return false;
+        }
+        if (node instanceof java.lang.Record record
+                && node.getClass().getName().startsWith("dev.oreslang.ast.")) {
+            for (RecordComponent component : record.getClass().getRecordComponents()) {
+                try {
+                    if (projectsReferenceState(component.getAccessor().invoke(record),
+                            access, keys)) return true;
+                } catch (ReflectiveOperationException failure) {
+                    throw new IllegalStateException(
+                            "failed to check actor state projection for escaping references", failure);
+                }
+            }
+        }
+        return false;
     }
 
     private static boolean referencesAccess(Object node, String access) {
