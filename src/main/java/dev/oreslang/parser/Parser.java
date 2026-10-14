@@ -3544,6 +3544,19 @@ public final class Parser {
     }
 
     private boolean looksLikeLambda() {
+        // An arm's slim arrow may follow a parenthesized expression, e.g.
+        // 'when await (nb readch gate) -> { ... }'. A closing ')' followed
+        // by '->' is not sufficient evidence of a lambda declaration:
+        // lambda parameters require declaration syntax, never these
+        // expression-only prefix operators.
+        if (current + 1 < tokens.size()) {
+            Token.Type first = tokens.get(current + 1).type();
+            if (first == NB || first == AWAIT || first == READCH
+                    || first == WRITECH || first == RT || first == TRAP
+                    || first == TRY || first == SELECT || first == BANG) {
+                return false;
+            }
+        }
         int depth = 0;
         for (int i = current; i < tokens.size(); i++) {
             Token.Type type = tokens.get(i).type();
