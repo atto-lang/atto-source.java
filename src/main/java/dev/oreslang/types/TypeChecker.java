@@ -1468,13 +1468,18 @@ public final class TypeChecker {
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
         boolean previousDiscard = inDiscardingSelectArm;
+        int previousGuestTryDepth = lexicalGuestTryDepth;
         loopDepth = 0;
         currentGenerator = false;
         currentAsyncCallable = false;
         inDiscardingSelectArm = discardReturn;
+        // A callback may execute after the originating try exits, so it
+        // cannot inherit the lexical catch guarantee from its declaration.
+        lexicalGuestTryDepth = 0;
         try {
             checkBlock(body, parent, generics, expectedReturn, self);
         } finally {
+            lexicalGuestTryDepth = previousGuestTryDepth;
             loopDepth = previousLoopDepth;
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
@@ -1491,6 +1496,10 @@ public final class TypeChecker {
             if (lexicalGuestTryDepth == 0) {
                 throw new IllegalArgumentException(
                         "guest throw currently requires an enclosing lexical try/catch");
+            }
+            if (currentMaySuspend) {
+                throw new IllegalArgumentException(
+                        "guest throw in suspending or async callable awaits task-local exception lowering");
             }
             Type valueType = deref(typeOf(thrown.value(), env, generics, self));
             // Unknown and broad Any must never bypass the checked Error-only
