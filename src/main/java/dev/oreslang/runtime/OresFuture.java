@@ -493,6 +493,16 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         }
     }
 
+    int claimedRuntimeWaiterCountForDiagnostics() {
+        synchronized (waiterAdmissionLock) {
+            int claimedCount = 0;
+            for (RuntimeWaiterRegistration<T> waiter : waiters) {
+                if (waiter.claimed.get()) claimedCount++;
+            }
+            return claimedCount;
+        }
+    }
+
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
         if (state.get() != PENDING) return false;
