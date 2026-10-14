@@ -998,6 +998,11 @@ public final class TypeChecker {
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
             Type fieldType = classFieldType(klass, field);
+            if (containsTypedMapType(fieldType)) {
+                throw new IllegalArgumentException(
+                        "typed Map class/actor fields require ownership-aware construction and teardown; "
+                                + klass.name() + "." + field.name());
+            }
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
                 Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
@@ -1399,6 +1404,12 @@ public final class TypeChecker {
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
+        if (containsTypedMapType(actual)
+                || (field.type() != null
+                    && containsTypedMapType(resolve(field.type(), Set.of(), null)))) {
+            throw new IllegalArgumentException(
+                    "typed Map module bindings require explicit move/borrow lifetimes and non-eager construction");
+        }
         requireMutableReferentCompatible(
                 actual,
                 field.mutableReferent(),
@@ -1986,6 +1997,11 @@ public final class TypeChecker {
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
+            if (containsTypedMapType(value)
+                    && !(assignment.target() instanceof Ast.IndexExpr)) {
+                throw new IllegalArgumentException(
+                        "typed Map cannot escape through an assignment without verified ownership transfer");
+            }
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
             if (assignment.target() instanceof Ast.MemberExpr member
