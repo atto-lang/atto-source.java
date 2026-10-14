@@ -1,0 +1,21 @@
+# Temporary diagnostic for https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/898
+# Delete before merging once runner health has been independently established.
+name: runner-smoke-diagnostic
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shell-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify GitHub-hosted runner can execute one shell command
+        run: |
+          printf 'runner-smoke: shell started\n'
+          uname -s
+          printf 'runner-smoke: success\n'
