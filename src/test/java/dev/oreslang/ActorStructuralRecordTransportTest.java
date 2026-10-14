@@ -82,6 +82,25 @@ final class ActorStructuralRecordTransportTest {
     }
 
     @Test
+    void untrustedActorRejectsNestedGroupJoinAndActorRefCapabilities() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var joinAuthority = group.joinCapability();
+            var trustedRef = runtime.<Object>spawnShared(
+                    () -> (message, context) -> { });
+            var untrusted = runtime.<Object>spawnUntrusted(
+                    () -> (message, context) -> { });
+
+            // Transport must reject capability laundering through arbitrarily
+            // nested, otherwise data-only record-shaped container values.
+            assertThrows(SecurityException.class, () -> untrusted.send(
+                    Map.of("inner", List.of(Map.of("join", joinAuthority)))));
+            assertThrows(SecurityException.class, () -> untrusted.send(
+                    Map.of("inner", List.of(Map.of("ref", trustedRef)))));
+        }
+    }
+
+    @Test
     void matchingPublicFieldOnNominalObjectDoesNotGrantSendability() {
         var nominal = new ShapedHostObject();
         IllegalArgumentException direct = assertThrows(
