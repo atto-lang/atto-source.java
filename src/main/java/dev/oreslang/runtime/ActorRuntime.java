@@ -59,6 +59,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
     private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+    /** Finite cleanup grace after structured STOP; expires without guest code off-lane. */
+    private static final long ACTOR_CLEANUP_GRACE_MILLIS = 2_000L;
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
@@ -6413,6 +6415,10 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private boolean sourceHandoffRequested;
         private OresScheduler sourceScheduler;
+        /** Actor-owned source tasks whose pending cancellation requires lexical cleanup. */
+        private final Set<OresFuture<?>> sourceCleanupTasks = new LinkedHashSet<>();
+        /** STOP does not discard admitted turns until their cancellation permits exist. */
+        private boolean sourceCancellationPending;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
@@ -6550,7 +6556,83 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean hasQueuedWorkLocked() {
-            return !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
+            return !continuationMailbox.isEmpty()
+                    || (!stopped.get() && !sourceReceiveSuspended && !mailbox.isEmpty());
+        }
+
+        private boolean authorizedCleanupContinuation(Runnable command) {
+            return !forceKillFenced && !closed.get() && !finalized
+                    && !sourceCleanupTasks.isEmpty()
+                    && command instanceof OresScheduler.CleanupTurn turn
+                    && turn.authorizedBy(sourceScheduler);
+        }
+
+        private boolean hasSourceCleanup() {
+            return !sourceCancellationPending && !sourceCleanupTasks.isEmpty()
+                    && !forceKillFenced && !closed.get();
+        }
+
+        private void recordDominantSourceFailure(Throwable failure) {
+            Throwable incoming = OresFuture.unwrap(failure);
+            int priority = sourceFailurePriority(incoming);
+            if (priority == 0) return;
+            for (;;) {
+                Throwable existing = ref.terminationCause.get();
+                if (sourceFailurePriority(existing) >= priority) return;
+                if (ref.terminationCause.compareAndSet(existing, incoming)) return;
+            }
+        }
+
+        private static int sourceFailurePriority(Throwable failure) {
+            if (failure instanceof VirtualMachineError
+                    || failure instanceof ThreadDeath
+                    || failure instanceof LinkageError) return 3;
+            if (failure instanceof UntrustedActorQuotaExceededException) return 2;
+            return 0;
+        }
+
+        private void pruneStoppedContinuationQueueLocked() {
+            List<MessageEnvelope> retained = new ArrayList<>();
+            while (continuationMailbox.drainOne(envelope -> {
+                if (envelope.taskTicket() != null
+                        && envelope.continuation() instanceof OresScheduler.CleanupTurn turn
+                        && turn.ownedBy(sourceScheduler)) {
+                    retained.add(envelope);
+                } else {
+                    releaseMailboxSlot(true);
+                    envelope.close();
+                }
+            })) { /* STOP serialization holds lifecycleLock. */ }
+            for (MessageEnvelope envelope : retained) {
+                if (!continuationMailbox.tryWrite(envelope)) {
+                    throw new IllegalStateException(
+                            "STOP cleanup mailbox preservation invariant failed");
+                }
+            }
+        }
+
+        private void drainUserMailboxReservations() {
+            while (mailbox.drainOne(envelope -> {
+                releaseMailboxSlot(false);
+                envelope.close();
+            })) { /* Reclaim ordinary user mail, not cleanup CONTROL. */ }
+            sourceReceiveSuspended = false;
+            activeMail = null;
+        }
+
+        private void expireSourceCleanup() {
+            OresScheduler scheduler;
+            synchronized (lifecycleLock) {
+                if (finalized || !stopped.get() || sourceCleanupTasks.isEmpty()) return;
+                ref.terminationCause.compareAndSet(null,
+                        new IllegalStateException("source cleanup exceeded STOP deadline: " + ref.id()));
+                scheduler = sourceScheduler;
+            }
+            if (scheduler != null) scheduler.close();
+            synchronized (lifecycleLock) {
+                finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
         }
 
         private SerialExecutionTicket issueSourceTaskTicket() {
