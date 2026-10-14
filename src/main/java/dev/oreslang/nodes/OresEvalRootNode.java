@@ -4404,7 +4404,12 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (target instanceof Ast.MemberExpr member) {
                 Object receiver = eval(member.receiver(), env);
+                if (receiver instanceof OresMutex.Guard<?> guard) receiver = guard.value();
                 if (receiver instanceof OresObject object) {
+                    if (!object.fields.containsKey(member.member())) {
+                        throw new IllegalArgumentException(
+                                "unknown field " + member.member());
+                    }
                     OwnedField targetField =
                             object.owner.findField(
                                     object.klass,
@@ -4414,7 +4419,22 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException(
                                 "unknown field " + member.member());
                     }
-                    if (targetField.field().bindingKind() != Ast.BindingKind.LET) {
+                    Ast.FieldDecl field = targetField.field();
+                    // Resumable assignments must perform the same lexical
+                    // privacy check as the synchronous evaluator. The
+                    // assignable reference does not grant field authority.
+                    object.owner.requireClassMemberVisible(
+                            field.visibility(),
+                            targetField.owner(),
+                            env.accessClass(),
+                            "field",
+                            field.name());
+                    Object currentValue = object.fields.get(member.member());
+                    boolean constructorInitialization =
+                            env.canInitialize(object)
+                                    && currentValue == UNINITIALIZED_FIELD;
+                    if (field.bindingKind() != Ast.BindingKind.LET
+                            && !constructorInitialization) {
                         throw new IllegalArgumentException(
                                 "field '" + object.klass.name()
                                         + "." + member.member()
