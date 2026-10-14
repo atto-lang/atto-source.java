@@ -1759,6 +1759,14 @@ public final class OresEvalRootNode extends RootNode {
                             SourceFlow.returning(returned.value),
                             continuation);
                     return;
+                } catch (SelectValueReturnSignal returned) {
+                    finishBlock(
+                            task,
+                            env,
+                            defers,
+                            SourceFlow.selectReturning(returned.value),
+                            continuation);
+                    return;
                 } catch (BreakSignal ignored) {
                     finishBlock(
                             task,
@@ -2285,6 +2293,8 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "unsupported suspendable statement "
                                 + stmt.getClass().getName());
+            } catch (SelectValueReturnSignal returned) {
+                continuation.accept(task, SourceFlow.selectReturning(returned.value));
             } catch (RuntimeException | Error failure) {
                 continuation.accept(
                         task,
