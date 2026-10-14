@@ -40,7 +40,7 @@ final class AdtConformanceCorpusTest {
 
         TomlArray cases = manifest.getArray("case");
         assertNotNull(cases, "ADT corpus must contain cases");
-        assertTrue(cases.size() >= 21, "the 21-case baseline corpus must not silently shrink");
+        assertTrue(cases.size() >= 23, "the 23-case baseline corpus must not silently shrink");
         Set<String> identifiers = new HashSet<>();
         for (int index = 0; index < cases.size(); index++) {
             TomlTable entry = cases.getTable(index);
