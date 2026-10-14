@@ -61,4 +61,28 @@ final class NominalMessageTransportTest {
         assertNotEquals(a, b);
         assertSame(a, ActorRuntime.freeze(a));
     }
+    @Test
+    void compiledNominalEnumSchemaHonorsTransportFieldLimit() {
+        StringBuilder schema = new StringBuilder(
+                "define enum TooWide as Data struct {");
+        for (int field = 0; field < 129; field++) {
+            if (field != 0) schema.append(", ");
+            schema.append("field").append(field).append(": int");
+        }
+        schema.append("} 1; end");
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.check(
+                        dev.oreslang.parser.Parser.parse(schema.toString())));
+        assertTrue(error.getMessage().contains("128-field"), error.getMessage());
+    }
+
+    @Test
+    void scalarOnlyCarrierRejectsTooManyFields() {
+        Map<String, Object> wide = new LinkedHashMap<>();
+        for (int i = 0; i < 129; i++) wide.put("field" + i, (long) i);
+        assertThrows(IllegalArgumentException.class, () -> new NominalMessageValue(
+                "a.ores", "m.Messages", "Messages", "Many", 1L, wide));
+    }
+
 }

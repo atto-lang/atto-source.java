@@ -631,6 +631,22 @@ public final class OresEvalRootNode extends RootNode {
                         "actor '" + state.object().klass.name()
                                 + "' has no receive(ActorMail<T>) handler");
             }
+            // Host ActorRef is erased at runtime. Never trust Java callers or
+            // internal routing to preserve the source ActorMail<T> contract:
+            // authenticate the actual delivered value before any guest code or
+            // suspension continuation is admitted.
+            if (receive.parameters().size() != 1) {
+                throw new IllegalStateException("actor receive must declare one ActorMail<T> parameter");
+            }
+            Ast.TypeRef envelope = receive.parameters().getFirst().type();
+            if (!envelope.name().equals("ActorMail") || envelope.arguments().size() != 1) {
+                throw new IllegalStateException("actor receive requires ActorMail<T> envelope");
+            }
+            if (!oresTypeMatches(mail.value(), envelope.arguments().getFirst())) {
+                throw new IllegalArgumentException(
+                        "actor '" + state.object().klass.name()
+                                + "' mailbox payload does not match declared ActorMail<T>");
+            }
             if (methodContainsPotentialSuspension(receive)
                     || receive.body().stream().anyMatch(this::containsSourceLoop)) {
                 /*
@@ -8078,8 +8094,13 @@ public final class OresEvalRootNode extends RootNode {
             if (pattern instanceof Ast.ConstructorPattern constructor) {
                 String name = constructor.constructor();
                 if (value instanceof dev.oreslang.runtime.NominalMessageValue variant) {
-                    String expected = variant.enumName() + "." + variant.variantName();
-                    if (!name.equals(expected) || !validNominalEnum(variant)) return false;
+                    int separator = name.lastIndexOf('.');
+                    if (separator < 1) return false;
+                    Ast.EnumDecl namedEnum = findEnum(name.substring(0, separator));
+                    if (namedEnum == null
+                            || !qualifiedEnumName(namedEnum).equals(variant.qualifiedEnumName())
+                            || !name.substring(separator + 1).equals(variant.variantName())
+                            || !validNominalEnum(variant)) return false;
                     if (variant.payload() == null) return constructor.arguments().isEmpty();
                     return constructor.arguments().size() == 1
                             && patternMatches(constructor.arguments().getFirst(),
