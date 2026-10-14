@@ -93,7 +93,8 @@ final class ActorPreparedMessageOwnershipTest {
                 boolean copying = StackWalker.getInstance().walk(frames ->
                         frames.anyMatch(frame ->
                                 frame.getClassName().equals(ActorRuntime.class.getName())
-                                && frame.getMethodName().equals("isolateCopy")));
+                                && frame.getMethodName().equals("isolateCopy")
+                                && frame.getMethodType().parameterCount() == 3));
                 if (!copying) return Set.of(Map.entry("safe", 1));
                 expanded.set(true);
                 return new java.util.AbstractSet<>() {
