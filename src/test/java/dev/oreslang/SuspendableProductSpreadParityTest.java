@@ -220,6 +220,65 @@ final class SuspendableProductSpreadParityTest {
     }
 
     @Test
+    void qualifiedModuleFunctionBindsPositionalPrefixAndNamedRecordTail() throws Exception {
+        String code = """
+                define module math as
+                    pub fnc calculate(int base, int multiplier, int offset): int {
+                        return base * multiplier + offset;
+                    }
+                end
+                pub routine main(): void {
+                    const args = (offset: 2, multiplier: 4);
+                    stdio.stdout.write(math.calculate(10, ...args));
+                    return;
+                }
+                """;
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
+    void asyncQualifiedModuleFunctionPreservesEffectsAndNamedAbi() throws Exception {
+        String code = """
+                define module math as
+                    pub fnc calculate(int base, int multiplier, int offset): int {
+                        return base * multiplier + offset;
+                    }
+                end
+                fnc offset(): int { stdio.stdout.write("O"); return 2; }
+                fnc multiplier(): int { stdio.stdout.write("M"); return 4; }
+                async fnc forwarded(): int {
+                    return math.calculate(10, ...(offset: offset(), multiplier: multiplier()));
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(await forwarded());
+                    return;
+                }
+                """;
+        assertEquals("OM42", checkedExecution(code));
+    }
+
+    @Test
+    void qualifiedModuleCannotBindMissingOrWrongNamedField() {
+        String prefix = """
+                define module math as
+                    pub fnc calculate(int base, int multiplier, int offset): int {
+                        return base * multiplier + offset;
+                    }
+                end
+                """;
+        for (String call : new String[] {
+                "math.calculate(10, ...(offset: 2, unknown: 4))",
+                "math.calculate(10, ...(offset: 2, multiplier: \"bad\"))",
+                "math.calculate(10, ...(offset: 2, multiplier: 4), 9)"
+        }) {
+            String code = prefix + "pub routine main(): void { stdio.stdout.write("
+                    + call + "); return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(code)), call);
+        }
+    }
+
+    @Test
     void recordPackRejectsDuplicateAcrossSpreadsOrPositionalPrefix() {
         String prefix = "fnc calculate(int base, int multiplier, int offset): int { return base * multiplier + offset; }\\n";
         for (String call : new String[] {
