@@ -110,6 +110,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * a cancellation hook registers another waiter on its own Future.
      */
     private final AtomicBoolean cancelRevocationComplete = new AtomicBoolean();
+    private final boolean deferredCancellation;
+    private final AtomicReference<CancellationException> cancellationRequest = new AtomicReference<>();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
     private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
@@ -123,7 +125,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     /** Scheduler-owned terminal notification completion (not guest admission). */
     OresFuture(Runnable cancelHook, Runnable onNotificationDrained) {
-        this(() -> true, cancelHook, onNotificationDrained);
+        this(() -> true, cancelHook, onNotificationDrained, false);
+    }
+
+    OresFuture(Runnable cancelHook, Runnable onNotificationDrained, boolean deferredCancellation) {
+        this(() -> true, cancelHook, onNotificationDrained, deferredCancellation);
     }
 
     /**
@@ -140,12 +146,30 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
             Runnable onNotificationDrained) {
+        this(cancelAdmission, cancelHook, onNotificationDrained, false);
+    }
+
+    private OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
+            Runnable onNotificationDrained, boolean deferredCancellation) {
         this.cancelAdmission = Objects.requireNonNull(
                 cancelAdmission, "cancelAdmission");
         this.cancelHook = new AtomicReference<>(
                 Objects.requireNonNull(cancelHook, "cancelHook"));
         this.onNotificationDrained = Objects.requireNonNull(
                 onNotificationDrained, "onNotificationDrained");
+        this.deferredCancellation = deferredCancellation;
+    }
+
+    CancellationException deferredCancellationCause() {
+        return cancellationRequest.get();
+    }
+
+    boolean completeDeferredCancellationFromRuntime() {
+        CancellationException requested = cancellationRequest.get();
+        if (!deferredCancellation || requested == null) return false;
+        boolean result = settle(new Cancelled(requested));
+        if (result) cancelHook.set(null);
+        return result;
     }
 
     public static <T> OresFuture<T> completed(T value) {
@@ -469,6 +493,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
+        if (deferredCancellation) {
+            synchronized (cancellationRequest) {
+                if (state.get() != PENDING || !cancellationRequest.compareAndSet(null, cancelled)) {
+                    return false;
+                }
+            }
+            invokeCancelHook();
+            return true;
+        }
         // Revoke the owning operation BEFORE any synchronous subscriber can
         // block terminal notification. isCancelled() becomes visible at the
         // successful state CAS; guest/producer authority must then be removed
@@ -604,14 +637,30 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private boolean settle(Object terminal, Runnable afterStateClaimed) {
-        if (!state.compareAndSet(PENDING, terminal)) return false;
-
+        Object published = terminal;
+        if (deferredCancellation) {
+            synchronized (cancellationRequest) {
+                if (state.get() != PENDING) return false;
+                CancellationException requested = cancellationRequest.get();
+                if (requested != null && (terminal instanceof Success<?>
+                        || (terminal instanceof Failure failed
+                        && !dominatesDeferredCancellation(failed.failure())))) {
+                    if (terminal instanceof Failure failed && failed.failure() != requested) {
+                        synchronized (requested) {
+                            if (requested.getSuppressed().length < 64) {
+                                requested.addSuppressed(failed.failure());
+                            }
+                        }
+                    }
+                    published = new Cancelled(requested);
+                }
+                if (!state.compareAndSet(PENDING, published)) return false;
+            }
+        } else if (!state.compareAndSet(PENDING, published)) {
+            return false;
+        }
         try {
-            // The winning cancellation claim runs its internal revoker before
-            // notifying potentially blocking synchronous host subscribers.
-            // Publish revocation completion BEFORE draining registrations:
-            // later registrations can then notify directly without waiting.
-            if (terminal instanceof Cancelled) {
+            if (published instanceof Cancelled) {
                 try {
                     afterStateClaimed.run();
                 } finally {
@@ -622,15 +671,20 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             }
             RuntimeWaiterRegistration<T> waiter;
             while ((waiter = waiters.poll()) != null) {
-                notifyWaiter(waiter, terminal);
+                notifyWaiter(waiter, published);
             }
             return true;
         } finally {
-            // Terminal state can be visible long before a synchronous waiter
-            // returns. A bounded host notification permit cannot be reused
-            // just because isDone() became true during a blocked callback.
             onNotificationDrained.run();
         }
+    }
+
+    private static boolean dominatesDeferredCancellation(Throwable failure) {
+        Throwable root = unwrap(failure);
+        return root instanceof VirtualMachineError
+                || root instanceof ThreadDeath
+                || root instanceof LinkageError
+                || root instanceof ActorRuntime.UntrustedActorQuotaExceededException;
     }
 
     @SuppressWarnings("unchecked")
