@@ -108,6 +108,30 @@ final class SourceContinuationSingleDeliveryTest {
                 """, "source-continuation-completed-channel.ores"));
     }
 
+    @Test void nestedCallableAfterAwaitCannotReplayDownstreamFailure() throws Exception {
+        assertEquals("call:14:caught:finally:after", run("""
+                async fnc ready(): int { return 7; }
+                fnc doubled(int input): int { return input * 2; }
+
+                pub async routine main(): void {
+                  try {
+                    val result = doubled(await ready());
+                    stdio.stdout.write("call:");
+                    stdio.stdout.write(result);
+                    stdio.stdout.write(":");
+                    val Option<int> empty = None;
+                    stdio.stdout.write(empty.unwrap());
+                  } catch (err) {
+                    stdio.stdout.write("caught:");
+                  } finally {
+                    stdio.stdout.write("finally:");
+                  }
+                  stdio.stdout.write("after");
+                  return;
+                }
+                """, "source-continuation-nested-invocation.ores"));
+    }
+
     @Test void nestedBinaryAwaitThenLaterFailureDoesNotRepublishResult() throws Exception {
         assertEquals("sum:8:caught:finally:after", run("""
                 async fnc answer(): int {
