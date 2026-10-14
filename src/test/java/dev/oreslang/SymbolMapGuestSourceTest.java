@@ -61,6 +61,36 @@ final class SymbolMapGuestSourceTest {
         assertEquals("separate", execute(program));
     }
 
+    @Test void symbolMapValuesFeedCanonicalProceduralMatch() throws Exception {
+        String program = """
+                pub routine main(): void {
+                    let mut m = new Map<Symbol, Symbol>();
+                    m[#ready] = #error;
+                    do match m[#ready] over
+                        on #error -> { stdio.stdout.write("matched-symbol-map"); }
+                        on _ -> { stdio.stdout.write("miss"); }
+                    end
+                    return;
+                }
+                """;
+        assertEquals("matched-symbol-map", execute(program));
+    }
+
+    @Test void symbolMapValuesFeedCanonicalProceduralSwitch() throws Exception {
+        String program = """
+                pub routine main(): void {
+                    let mut m = new Map<Symbol, Symbol>();
+                    m[#ready] = #error;
+                    do switch m[#ready]
+                        case #error -> { stdio.stdout.write("switched-symbol-map"); }
+                        default -> { stdio.stdout.write("miss"); }
+                    end
+                    return;
+                }
+                """;
+        assertEquals("switched-symbol-map", execute(program));
+    }
+
     @Test void staticCheckerRejectsWrongKeyAndValueTypes() {
         String wrongKey = """
                 pub fnc bad(): void {
