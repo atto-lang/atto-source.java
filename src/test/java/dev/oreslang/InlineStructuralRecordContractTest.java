@@ -141,4 +141,57 @@ final class InlineStructuralRecordContractTest {
                 fnc ok(): int { return record(); }
                 """)));
     }
+
+    @Test
+    void genericRecordAliasesPreserveReadableWidthSubtyping() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type Entry<K, V> = record{key: K, value: V};
+                type Pair<K, V> = Entry<K, V>;
+                fnc read(record{value: int} item): int { return item.value; }
+                fnc fromPair(Pair<string, int> pair): int {
+                    return read(pair);
+                }
+                """)));
+    }
+
+    @Test
+    void recordAliasesCannotConcealNumericStorageConversion() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type Entry<K, V> = record{key: K, value: V};
+                        type Pair<K, V> = Entry<K, V>;
+                        fnc consume(Pair<string, float> pair): void { return; }
+                        fnc bad(Pair<string, int> pair): void {
+                            consume(pair);
+                            return;
+                        }
+                        """)));
+    }
+
+    @Test
+    void recordAliasesCannotLaunderNestedBorrowsAcrossActors() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type Entry<K, V> = record{key: K, value: V};
+                        type Pair<K, V> = Entry<K, V>;
+                        actor fnc bad(Pair<int, &int> pair): void { return; }
+                        """)));
+    }
+
+    @Test
+    void finiteTupleAliasesRetainDistinctPositionalKinds() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type Two<A, B> = Tuple[A, B];
+                fnc second(Two<string, int> pair): int {
+                    return pair[1];
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type Two<A, B> = Tuple[A, B];
+                        fnc bad(Two<string, int> pair): int {
+                            return pair[2];
+                        }
+                        """)));
+    }
 }
