@@ -98,8 +98,7 @@ final class PublicTypeAliasLinker {
                     }
                 }
                 Ast.TypeRef expanded = expand(selected.target(), localAliases,
-                        bindings, Set.copyOf(bindings.keySet()),
-                        new HashSet<>(Set.of(selected.name())), 0, new Budget());
+                        bindings, new HashSet<>(Set.of(selected.name())), 0, new Budget());
                 String localName = ImportRules.localName(use, name);
                 Ast.TypeAliasDecl exported = new Ast.TypeAliasDecl(localName,
                         Ast.Visibility.PUBLIC, selected.genericParameters(), expanded);
@@ -129,7 +128,6 @@ final class PublicTypeAliasLinker {
             Ast.TypeRef ref,
             Map<String, Ast.TypeAliasDecl> localAliases,
             Map<String, Ast.TypeRef> bindings,
-            Set<String> genericVariables,
             Set<String> visiting,
             int depth,
             Budget budget) {
@@ -146,25 +144,29 @@ final class PublicTypeAliasLinker {
             }
             return generic;
         }
-        if (genericVariables.contains(ref.name())) return ref;
-
+        // A foreign alias body may reference only its own declared generic
+        // parameters. Never inherit generics from the exported alias: doing so
+        // would let an unbound private alias capture a caller's T accidentally.
         Ast.TypeAliasDecl alias = localAliases.get(ref.name());
         if (alias != null) {
             if (ref.inferArguments() || alias.genericParameters().size() != ref.arguments().size()) {
                 throw new IllegalArgumentException("linked alias '" + alias.name()
                         + "' expects " + alias.genericParameters().size() + " arguments");
             }
+            // Nested instantiations such as Box<Box<int>> are acyclic.
+            // Resolve their arguments in the caller's lexical environment
+            // before adding the callee alias to the recursion stack.
+            Map<String, Ast.TypeRef> applied = new HashMap<>();
+            for (int i = 0; i < alias.genericParameters().size(); i++) {
+                applied.put(alias.genericParameters().get(i),
+                        expand(ref.arguments().get(i), localAliases, bindings,
+                                visiting, depth + 1, budget));
+            }
             if (!visiting.add(alias.name())) {
                 throw new IllegalArgumentException("imported type alias cycle involving '" + alias.name() + "'");
             }
             try {
-                Map<String, Ast.TypeRef> applied = new HashMap<>(bindings);
-                for (int i = 0; i < alias.genericParameters().size(); i++) {
-                    applied.put(alias.genericParameters().get(i),
-                            expand(ref.arguments().get(i), localAliases, bindings,
-                                    genericVariables, visiting, depth + 1, budget));
-                }
-                return expand(alias.target(), localAliases, applied, genericVariables,
+                return expand(alias.target(), localAliases, applied,
                         visiting, depth + 1, budget);
             } finally {
                 visiting.remove(alias.name());
@@ -180,7 +182,7 @@ final class PublicTypeAliasLinker {
         }
         List<Ast.TypeRef> parts = ref.arguments().stream()
                 .map(arg -> expand(arg, localAliases, bindings,
-                        genericVariables, visiting, depth + 1, budget)).toList();
+                        visiting, depth + 1, budget)).toList();
         return new Ast.TypeRef(ref.name(), parts, ref.inferArguments());
     }
 }
