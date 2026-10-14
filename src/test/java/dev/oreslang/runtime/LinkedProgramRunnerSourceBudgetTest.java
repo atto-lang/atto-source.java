@@ -56,4 +56,20 @@ final class LinkedProgramRunnerSourceBudgetTest {
         assertThrows(MalformedInputException.class, () -> LinkedProgramRunner.validate(entry, Map.of()));
     }
 
+
+    @Test
+    void linkedImportChainsHaveBoundedRecursionDepth() throws Exception {
+        final int last = SourceAdmissionBudget.MAX_DEPTH + 2;
+        for (int i = 0; i <= last; i++) {
+            Path unit = temp.resolve("unit" + i + ".ores");
+            String source = i == last
+                    ? "pub fnc leaf(): int { return 1; }"
+                    : "import * as dep from \"./unit" + (i + 1) + ".ores\";\n"
+                      + (i == 0 ? "pub routine main(): void { return; }" : "");
+            Files.writeString(unit, source);
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(temp.resolve("unit0.ores"), Map.of()));
+    }
+
 }
