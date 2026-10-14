@@ -85,6 +85,29 @@ final class SourceContinuationSingleDeliveryTest {
     }
 
 
+    @Test void completedChannelReadThenDownstreamFailureDeliversOnce() throws Exception {
+        assertEquals("read:13:caught:finally:after", run("""
+                pub async routine main(): void {
+                  val Channel<int> ready = Channel.new<int>(1);
+                  writech ready, 13;
+                  try {
+                    val value = readch ready;
+                    stdio.stdout.write("read:");
+                    stdio.stdout.write(value);
+                    stdio.stdout.write(":");
+                    val Option<int> empty = None;
+                    stdio.stdout.write(empty.unwrap());
+                  } catch (err) {
+                    stdio.stdout.write("caught:");
+                  } finally {
+                    stdio.stdout.write("finally:");
+                  }
+                  stdio.stdout.write("after");
+                  return;
+                }
+                """, "source-continuation-completed-channel.ores"));
+    }
+
     @Test void nestedBinaryAwaitThenLaterFailureDoesNotRepublishResult() throws Exception {
         assertEquals("sum:8:caught:finally:after", run("""
                 async fnc answer(): int {
