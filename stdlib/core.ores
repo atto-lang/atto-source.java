@@ -5,6 +5,13 @@
 
 define module core
 
+  // Named key/value product. The alias has no runtime constructor or tag.
+  define pub type Entry<K, V> = record { key: K, value: V };
+  define pub type alias Pair<K, V> as Entry<K, V>;
+
+  // A positional two-slot tuple intentionally differs from Entry.
+  define pub type alias Two<A, B> as Tuple[A, B];
+
   pub fnc min_int(int left, int right): int {
     if left < right; do
       return left;
