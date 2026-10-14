@@ -4909,6 +4909,7 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.TypePattern typed) {
             requireRuntimeReifiableType(typed.type(), "type pattern");
+            requireKnownRuntimePatternTarget(typed.type(), new LinkedHashSet<>());
             if (typed.type().isComplement()) {
                 Type excluded = deref(resolve(typed.type().complementedType(), generics, self));
                 if (runtimeValueTypeCovered(subject, excluded, 0)) {
@@ -5481,6 +5482,50 @@ public final class TypeChecker {
         }
         if (a instanceof Record && b instanceof Record) return true;
         return a.equals(b);
+    }
+
+    /**
+     * Exhaustiveness may use T and !T as a logical partition only if T has
+     * a concrete runtime predicate. Unknown nominal names and unreified
+     * aliases cannot silently become a predicate that always returns false.
+     */
+    private void requireKnownRuntimePatternTarget(Ast.TypeRef ref, Set<String> aliases) {
+        if (ref.isComplement()) {
+            requireKnownRuntimePatternTarget(ref.complementedType(), aliases);
+            return;
+        }
+        if (ref.isUnion()) {
+            for (Ast.TypeRef member : ref.arguments()) {
+                requireKnownRuntimePatternTarget(member, aliases);
+            }
+            return;
+        }
+        String name = ref.name();
+        if (Set.of(
+                "int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "uint", "bigint",
+                "float", "f32", "f64", "decimal", "bool", "Bool", "string", "String",
+                "Symbol", "complex", "complex64", "complex128",
+                "Option", "Result", "Array", "List", "Generator", "Iterator",
+                "AsyncGenerator", "AsyncIterator", "IteratorResult").contains(name)
+                || findClass(name) != null || findInterface(name) != null) {
+            return;
+        }
+        Ast.TypeAliasDecl alias = findTypeAlias(name);
+        if (alias != null && alias.genericParameters().isEmpty()) {
+            if (!aliases.add(name)) {
+                throw new IllegalArgumentException("cyclic type alias in runtime pattern '" + name + "'");
+            }
+            try {
+                requireRuntimeReifiableType(alias.target(), "type pattern alias");
+                requireKnownRuntimePatternTarget(alias.target(), aliases);
+            } finally {
+                aliases.remove(name);
+            }
+            return;
+        }
+        throw new IllegalArgumentException(
+                "type pattern '" + name + "' has no known runtime identity; "
+                        + "declare/import a reifiable nominal type or use a supported scalar");
     }
 
     private void requireRuntimeReifiableType(Ast.TypeRef ref, String operator) {
