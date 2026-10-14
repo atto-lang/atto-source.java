@@ -91,7 +91,8 @@ public final class OresScheduler implements AutoCloseable {
     public static boolean currentTaskInCleanup() {
         Object current = CURRENT_TASK_DOMAIN.get();
         return current instanceof OresScheduler.TaskRunner<?> runner
-                && runner.cleanupAuthorized();
+                && runner.cleanupAuthorized()
+                && runner.cancellationInjected.get();
     }
 
     /** Result of one resumable task turn. */
