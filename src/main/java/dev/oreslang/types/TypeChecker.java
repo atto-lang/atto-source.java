@@ -1718,22 +1718,35 @@ public final class TypeChecker {
                         ? new Env(env, env.descendantsNonLexical(), true)
                         : new Env(env);
                 if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
-                    Type element = channelElementType(
-                            typeOf(arm.channel(), env, generics, self),
-                            "select " + arm.operation().name().toLowerCase());
+                    Type source = typeOf(arm.channel(), env, generics, self);
+                    Type element;
+                    if (arm.operation() == Ast.ChannelOperation.AWAIT) {
+                        if (!(source instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "when await requires Future<T>, got " + source);
+                        }
+                        element = future.arguments().getFirst();
+                    } else {
+                        element = channelElementType(
+                                source, "select " + arm.operation().name().toLowerCase());
+                    }
                     if (arm.operation() == Ast.ChannelOperation.WRITE) {
                         requireAssignable(
                                 typeOf(arm.value(), env, generics, self),
-                                element,
-                                "writech select value");
+                                element, "writech select value");
                     } else if (arm.bindingName() != null) {
+                        Type bound = element;
+                        if (arm.bindingType() != null) {
+                            bound = resolve(arm.bindingType(), generics, self);
+                            requireAssignable(element, bound,
+                                    "typed select binding '" + arm.bindingName() + "'");
+                        }
                         requireMutableReferentCompatible(
-                                element, arm.mutableReferent(),
+                                bound, arm.mutableReferent(),
                                 "select binding '" + arm.bindingName() + "'");
-                        armEnv.define(
-                                arm.bindingName(),
-                                element,
-                                arm.bindingKind());
+                        armEnv.define(arm.bindingName(), bound, arm.bindingKind());
                     }
                 }
                 if (selected.explicitDo()) {
@@ -2287,6 +2300,19 @@ public final class TypeChecker {
                                 typeOf(call.arguments().get(1), env, generics, self),
                                 element,
                                 "SelectCase.write value");
+                        yield new Named("SelectCase", List.of());
+                    }
+                    case "future" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("SelectCase.future expects one Future<T>");
+                        }
+                        Type pending = typeOf(call.arguments().getFirst(), env, generics, self);
+                        if (!(pending instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.future requires Future<T>, got " + pending);
+                        }
                         yield new Named("SelectCase", List.of());
                     }
                     case "default" -> {
