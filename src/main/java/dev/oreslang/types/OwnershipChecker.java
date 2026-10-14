@@ -425,7 +425,7 @@ public final class OwnershipChecker {
 
             for (Ast.IfBranch branch : conditional.branches()) {
                 restoreState(base);
-                checkExpr(branch.condition(), scope, false);
+                checkGuardExpr(branch.condition(), scope);
                 Scope branchScope = new Scope(scope);
                 defineConditionAliases(branch.condition(), branchScope, scope);
                 checkBlock(branch.body(), branchScope, returnType);
@@ -937,6 +937,9 @@ public final class OwnershipChecker {
                 }
                 default -> throw error("unknown runtime operation 'rt " + runtime.operation() + "'");
             };
+        }
+        if (expr instanceof Ast.OptionBindExpr) {
+            throw error("conditional 'as const/let' is not an ordinary expression");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
             checkAssignmentTarget(assignment.target(), scope);
@@ -2450,7 +2453,71 @@ public final class OwnershipChecker {
         }
     }
 
+    /**
+     * An Option binding is a conditional predicate, never a freely usable
+     * expression. The success edge creates a fresh owned Copy local; move-only
+     * payloads remain rejected until tag-aware move/drop lowering exists.
+     */
+    private void checkGuardExpr(Ast.Expr expr, Scope scope) {
+        if (expr instanceof Ast.OptionBindExpr binding) {
+            copyOptionPayloadType(binding.value(), scope);
+            return;
+        }
+        if (expr instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
+            checkGuardExpr(binary.left(), scope);
+            Scope right = new Scope(scope);
+            defineConditionAliases(binary.left(), right, scope);
+            checkGuardExpr(binary.right(), right);
+            right.close();
+            return;
+        }
+        if (expr instanceof Ast.BinaryExpr binary
+                && (binary.operator().equals("eq") || binary.operator().equals("neq"))
+                && binary.left() instanceof Ast.OptionBindExpr binding) {
+            checkGuardExpr(binding, scope);
+            Scope rhs = new Scope(scope);
+            defineConditionAliases(binding, rhs, scope);
+            checkExpr(binary.right(), rhs, false);
+            rhs.close();
+            return;
+        }
+        checkExpr(expr, scope, false);
+    }
+
+    private Ast.TypeRef copyOptionPayloadType(Ast.Expr carrier, Scope scope) {
+        ValueInfo checked = checkExpr(carrier, scope, false);
+        Ast.TypeRef type = checked.type == null ? Ast.TypeRef.inferred() : checked.type;
+        if (type.isBorrow()) type = type.borrowedTarget();
+        if (!type.name().equals("Option") || type.arguments().size() != 1) {
+            throw error("conditional 'as const/let' requires an Option<T>");
+        }
+        Ast.TypeRef payload = type.arguments().getFirst();
+        if (!isCopyType(payload) || payload.name().equals("$infer$")) {
+            throw error("conditional Option binding requires a proven Copy payload;"
+                    + " move-only extraction is not yet admitted");
+        }
+        // A Copy projection cannot give a new owner to a non-Copy carrier.
+        // Reject such cases before building any success-edge local.
+        if (!isCopyType(type)) {
+            throw error("conditional Option binding needs a Copy carrier");
+        }
+        return payload;
+    }
+
     private void defineConditionAliases(Ast.Expr condition, Scope destination, Scope source) {
+        if (condition instanceof Ast.OptionBindExpr binding) {
+            Ast.TypeRef payload = copyOptionPayloadType(binding.value(), source);
+            destination.define(binding.binding(), new VarState(
+                    payload, false, binding.kind() == Ast.BindingKind.LET,
+                    ValueKind.COPY, Origin.LOCAL));
+            return;
+        }
+        if (condition instanceof Ast.BinaryExpr binary
+                && (binary.operator().equals("eq") || binary.operator().equals("neq"))
+                && binary.left() instanceof Ast.OptionBindExpr binding) {
+            defineConditionAliases(binding, destination, source);
+            return;
+        }
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
             VarState original = test.value() instanceof Ast.NameExpr name ? source.lookup(name.name()) : null;
             defineRefinementAlias(test.binding(), test.targetType(), original, destination);
