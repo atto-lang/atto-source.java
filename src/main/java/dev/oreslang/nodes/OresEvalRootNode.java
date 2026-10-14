@@ -2267,47 +2267,28 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MatchArm fallback,
                 SourceFlowCont continuation) {
             final class MatchDriver {
-                private final java.util.concurrent.ConcurrentLinkedQueue<Runnable> pending =
-                        new java.util.concurrent.ConcurrentLinkedQueue<>();
-                private final java.util.concurrent.atomic.AtomicInteger workInProgress =
-                        new java.util.concurrent.atomic.AtomicInteger();
-                private final java.util.concurrent.atomic.AtomicBoolean completed =
-                        new java.util.concurrent.atomic.AtomicBoolean();
+                private final dev.oreslang.runtime.MatchContinuationQueue queue =
+                        new dev.oreslang.runtime.MatchContinuationQueue();
 
-                // A guard or a suspended branch can invoke its callback late
-                // (or twice due to a buggy host future). Completion belongs
-                // to one match, never one callback invocation.
+                // A source branch can finish inline or after suspension.
+                // Terminal delivery is strictly one-shot, including when it
+                // throws while finishing the source task.
                 void complete(SourceTask active, SourceFlow flow) {
-                    if (!completed.compareAndSet(false, true)) return;
-                    pending.clear();
-                    continuation.accept(active, flow);
+                    queue.complete(() -> continuation.accept(active, flow));
                 }
 
-                // Inline guard continuations only enqueue more work. The
-                // active drain then processes it without recursive calls;
-                // a truly suspended callback can schedule the next drain.
+                // The queue serializes immediate and resumed guard scans.
+                // Guest RuntimeExceptions are delivered as source failure,
+                // while fatal JVM Errors abort the queue and propagate.
                 void enqueue(Runnable next) {
-                    if (completed.get()) return;
-                    pending.add(next);
-                    if (workInProgress.getAndIncrement() != 0) return;
-                    int missed = 1;
-                    do {
-                        Runnable work;
-                        while ((work = pending.poll()) != null) {
-                            if (completed.get()) continue;
-                            try {
-                                work.run();
-                            } catch (RuntimeException failure) {
-                                // Guest runtime failures terminate this match
-                                // exactly once. Fatal JVM Errors must propagate
-                                // to the carrier/supervisor, not masquerade as
-                                // recoverable guest match failures.
-                                if (completed.get()) throw failure;
-                                complete(task, SourceFlow.throwing(failure));
-                            }
+                    queue.enqueue(() -> {
+                        try {
+                            next.run();
+                        } catch (RuntimeException failure) {
+                            if (queue.terminated()) throw failure;
+                            complete(task, SourceFlow.throwing(failure));
                         }
-                        missed = workInProgress.addAndGet(-missed);
-                    } while (missed != 0);
+                    });
                 }
 
                 void failure(SourceTask active, RuntimeException error) {
