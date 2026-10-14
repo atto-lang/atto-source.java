@@ -188,6 +188,52 @@ final class ConditionalOptionBindingTest {
     }
 
     @Test
+    void shorthandComparisonRhsUsesOuterOwnershipScopeNotConditionalBinder() {
+        String prelude = """
+                define class Box as
+                end
+
+                fnc consume(Box box): int {
+                  return 15;
+                }
+                """;
+
+        // Both TypeChecker and the interpreter resolve the comparison RHS
+        // against the outer Box, while the successful binding is Copy int.
+        // Ownership checking must also consume the outer Box here.
+        rejects(prelude + """
+                fnc bad(Box value, Option<int> maybe): void {
+                  if (maybe as const value) eq consume(value) then
+                    return;
+                  fi
+                  consume(value);
+                  return;
+                }
+                """, "moved");
+
+        // The RHS may consume an outer owner exactly once.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(prelude + """
+                fnc good(Box value, Option<int> maybe): void {
+                  if (maybe as const value) eq consume(value) then
+                    return;
+                  fi
+                  return;
+                }
+                """)));
+
+        // When the user intends to compare the new binding, && explicitly
+        // carries it into the RHS success scope instead.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc local(Option<int> maybe): bool {
+                  if maybe as const value && value eq 15 then
+                    return true;
+                  fi
+                  return false;
+                }
+                """)));
+    }
+
+    @Test
     void scopeMutabilityAndCarrierTypeFailClosed() {
         rejects("""
                 fnc bad(Option<int> maybe): void {
