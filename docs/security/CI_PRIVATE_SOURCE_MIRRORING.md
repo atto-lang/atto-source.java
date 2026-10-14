@@ -53,6 +53,21 @@ Git blob SHA-1 against the source bytes. It checks that the reviewed
 destination policy has not changed
 before every API write, in addition to rechecking the destination's live
 private visibility. It does not print source contents in API failures.
+For each invocation, the publisher also reads and pins the destination's
+numeric GitHub repository ID during its initial approved preflight. Before
+every Git object write it rechecks that numeric ID, full name, explicit
+private visibility, and the repository's active (non-archived, non-disabled)
+status. The shell preflight fails on missing or malformed numeric IDs and
+unknown active status. A private repository can otherwise be renamed and
+replaced with a different private repository under the same name.
+
+**Limit:** the current reviewed allowlist records repository names, not their
+numeric IDs. These checks prevent an identity swap *during a transfer*, not
+replacement between the original code-owner review and the first preflight.
+Security reviewers must independently compare the live numeric repository ID
+against their reviewed destination record before approving a transfer. Adding
+review-time numeric-ID pinning remains a separate fail-closed policy enhancement.
+
 API failure before ref creation can leave unreferenced Git objects in
 the private destination; a follow-up retention policy is still needed.
 
