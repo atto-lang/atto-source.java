@@ -592,7 +592,7 @@ public final class OwnershipChecker {
                                     Origin.LOCAL));
                 }
 
-                if (selected.mode() == Ast.WaitMode.NONBLOCKING || selected.explicitDo()) {
+                if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
                     int previousLoopDepth = loopDepth;
                     boolean previousDiscard = discardingSelectReturn;
                     loopDepth = 0;
