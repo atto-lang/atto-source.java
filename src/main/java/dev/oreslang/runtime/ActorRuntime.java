@@ -6437,17 +6437,18 @@ public final class ActorRuntime implements AutoCloseable {
          * merely rotate work on the same physical carrier.
          */
         private boolean sourceHandoffRequested;
-        private OresScheduler sourceScheduler;
+        private volatile OresScheduler sourceScheduler;
         /** Actor-owned source tasks whose pending cancellation requires lexical cleanup. */
-        private final Set<OresFuture<?>> sourceCleanupTasks = new LinkedHashSet<>();
+        private final Set<OresFuture<?>> sourceCleanupTasks =
+                ConcurrentHashMap.newKeySet();
         /** STOP does not discard admitted turns until their cancellation permits exist. */
-        private boolean sourceCancellationPending;
+        private volatile boolean sourceCancellationPending;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
-        private boolean finalized;
+        private volatile boolean finalized;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
         private long untrustedFuelRemaining;
@@ -7132,7 +7133,10 @@ public final class ActorRuntime implements AutoCloseable {
                     MessageEnvelope envelope;
                     synchronized (lifecycleLock) {
                         // Stop closes the user mailbox under this same lock.
-                        if (stopped.get() || finalized) break;
+                        // STOP seals the *user* mailbox, not authenticated
+                        // lexical cleanup. The carrier validates each cleanup
+                        // envelope under this same lock before guest execution.
+                        if (finalized || (stopped.get() && !hasSourceCleanup())) break;
 
                         // Continuations always outrank user mail. While a
                         // source receive is suspended, user mail is not runnable.
