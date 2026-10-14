@@ -38,6 +38,21 @@ final class ColonClassFieldInitializerTest {
         Ast.ClassDecl foo = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
         assertEquals(4, foo.fields().size());
         foo.fields().forEach(field -> assertEquals(Ast.BindingKind.VAL, field.bindingKind()));
+        foo.fields().forEach(field -> assertTrue(field.finalDeclaration()));
+        assertFalse(foo.fields().getFirst().compileTimeRequired());
+        foo.fields().subList(1, 4).forEach(field -> assertTrue(field.compileTimeRequired()));
+    }
+
+    @Test
+    void explicitFinalActorFieldCarriesFinalMetadataWithoutForcingConstexpr() {
+        Ast.Program program = Parser.parse("""
+                actor Worker {
+                  final count: int = 5;
+                }
+                """);
+        Ast.ClassDecl actor = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        assertTrue(actor.fields().getFirst().finalDeclaration());
+        assertFalse(actor.fields().getFirst().compileTimeRequired());
     }
 
     @Test
