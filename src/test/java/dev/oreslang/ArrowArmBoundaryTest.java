@@ -28,7 +28,7 @@ final class ArrowArmBoundaryTest {
         var arm = match.arms().getFirst();
         assertInstanceOf(Ast.ConstructorPattern.class, arm.pattern());
         var constructor = (Ast.ConstructorPattern) arm.pattern();
-        assertEquals("Foo", constructor.name());
+        assertEquals("Foo", constructor.constructor());
         assertInstanceOf(Ast.RecordPattern.class, constructor.arguments().getFirst());
         assertEquals(1, arm.body().size());
     }
