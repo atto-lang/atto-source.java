@@ -230,7 +230,7 @@ final class StaticSelectValueExpressionTest {
                   return;
                 }
                 """;
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse(code),
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(code)),
                 "finally must not synthesize an arm result or replace pending control flow");
     }
 
@@ -254,7 +254,7 @@ final class StaticSelectValueExpressionTest {
                   return answer;
                 }
                 """;
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse(code));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(code)));
     }
 
     @Test
