@@ -39,9 +39,16 @@ native-image, LLVM, formatter, imported-symbol or runtime serialization parity.
 Example of **a named-field** key/value entry:
 
 ```oreslang
-define pub type Entry<K, V> = record { key: K, value: V };
-define pub type alias Pair<K, V> as Entry<K, V>;
+// library.ores
+define module products as
+    type Internal<K,V> = record{key: K, value: V};
+    define pub type alias Pair<K,V> as Internal<K,V>;
+end
 ```
+
+The `as` keyword is part of the canonical module header (`define module products as`).
+The parser continues accepting older module headers without `as` during migration;
+new code and examples must include it.
 
 This is **not** equal to the positional type `Tuple[K,V]`.
 A separate alias `type Two<A,B> = Tuple[A,B];` names a positional pair.
