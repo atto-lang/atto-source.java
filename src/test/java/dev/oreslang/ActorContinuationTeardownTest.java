@@ -46,10 +46,31 @@ final class ActorContinuationTeardownTest {
             });
             actor.send(1);
             assertTrue(inActorTurn.await(5, TimeUnit.SECONDS));
+            // Host stop waits for physical carrier finalization. It must run
+            // on another host thread while this test controls the blocked
+            // actor turn; otherwise the test deadlocks before releasing it.
+            java.util.concurrent.ExecutorService stopper =
+                    java.util.concurrent.Executors.newSingleThreadExecutor();
             try {
-                actor.stop();
+                java.util.concurrent.Future<?> stopResult =
+                        stopper.submit((java.util.concurrent.Callable<Void>) () -> {
+                            actor.stop();
+                            return null;
+                        });
+                try {
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (actor.isAlive() && System.nanoTime() < deadline) {
+                        Thread.sleep(1);
+                    }
+                    assertFalse(actor.isAlive(),
+                            "STOP must seal admission before releasing the actor turn");
+                } finally {
+                    releaseTurn.countDown();
+                }
+                stopResult.get(10, TimeUnit.SECONDS);
             } finally {
-                releaseTurn.countDown();
+                stopper.shutdownNow();
+                assertTrue(stopper.awaitTermination(5, TimeUnit.SECONDS));
             }
             assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
             assertNull(unexpected.get(), "STOP must reject registration deterministically");
