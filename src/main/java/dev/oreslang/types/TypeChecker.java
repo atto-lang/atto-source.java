@@ -4903,6 +4903,19 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.TypePattern typed) {
             requireRuntimeReifiableType(typed.type(), "type pattern");
+            if (typed.type().isComplement()) {
+                Type excluded = deref(resolve(typed.type().complementedType(), generics, self));
+                if (runtimeValueTypeCovered(subject, excluded, 0)) {
+                    throw new IllegalArgumentException(
+                            "unreachable negative type pattern: " + subject + " is contained in " + excluded);
+                }
+                if (typed.binding() != null) {
+                    // A negative test does not prove a concrete positive
+                    // nominal type; retain the subject's static capabilities.
+                    bindings.define(typed.binding(), subject, Ast.BindingKind.VAL);
+                }
+                return;
+            }
             Type target = deref(resolve(typed.type(), generics, self));
             if (!typesMayOverlap(subject, target)) {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
@@ -5225,6 +5238,19 @@ public final class TypeChecker {
         for (Ast.Pattern pattern : patterns) {
             if (patternCoversType(pattern, subject, generics, self)) return true;
         }
+        // Every runtime value either satisfies a reifiable type predicate or
+        // its exact complement. The caller filtered guarded arms already.
+        // Matching TypeRef identities here avoids unsound subtype guesses.
+        for (Ast.Pattern a : patterns) {
+            if (!(a instanceof Ast.TypePattern positive) || positive.type().isComplement()) continue;
+            for (Ast.Pattern b : patterns) {
+                if (b instanceof Ast.TypePattern negative
+                        && negative.type().isComplement()
+                        && negative.type().complementedType().equals(positive.type())) {
+                    return true;
+                }
+            }
+        }
 
         if (subject instanceof Union union) {
             return union.options().stream().allMatch(option ->
@@ -5453,6 +5479,10 @@ public final class TypeChecker {
 
     private void requireRuntimeReifiableType(Ast.TypeRef ref, String operator) {
         if (ref == null) throw new IllegalArgumentException(operator + " requires a runtime-reifiable type");
+        if (ref.isComplement()) {
+            requireRuntimeReifiableType(ref.complementedType(), operator);
+            return;
+        }
         if (ref.isUnion()) {
             for (Ast.TypeRef option : ref.arguments()) requireRuntimeReifiableType(option, operator);
             return;
