@@ -120,26 +120,10 @@ public final class TwoPhaseInterfaceLinker {
         Set<String> available = declarations.programs.keySet();
         for (Map.Entry<String, Ast.Program> entry : declarations.programs.entrySet()) {
             String importer = entry.getKey();
-            // An importer must not bind the same local identifier from
-            // several providers or shadow its own module value declarations.
-            // Exact semantic overload/alias resolution is not implemented
-            // in this provisional linker, so reject uncertain cases.
-            Set<String> localNames = new HashSet<>();
-            for (Ast.ModuleDecl module : entry.getValue().modules()) {
-                for (Ast.Decl own : module.declarations()) {
-                    if (own instanceof Ast.FunctionDecl fn) {
-                        localNames.add(fn.name());
-                    } else if (own instanceof Ast.ClassDecl klass) {
-                        localNames.add(klass.name());
-                    } else if (own instanceof Ast.InterfaceDecl iface) {
-                        localNames.add(iface.name());
-                    } else if (own instanceof Ast.TypeAliasDecl alias) {
-                        localNames.add(alias.name());
-                    } else if (own instanceof Ast.FieldDecl field) {
-                        localNames.add(field.name());
-                    }
-                }
-            }
+            // Duplicate import bindings can resolve to different providers
+            // while appearing lexically identical to a caller. Do not grant
+            // their interface identity to a provisional linker. Local names
+            // are checked by the actual TypeChecker and are not resolved here.
             Set<String> importedBindings = new HashSet<>();
             for (Ast.ImportDecl use : entry.getValue().imports()) {
                 ImportRules.validate(use);
@@ -158,9 +142,9 @@ public final class TwoPhaseInterfaceLinker {
                 }
                 for (String symbol : use.names()) {
                     String local = ImportRules.localName(use, symbol);
-                    if (!importedBindings.add(local) || localNames.contains(local)) {
+                    if (!importedBindings.add(local)) {
                         throw new IllegalArgumentException(
-                            "ambiguous or shadowed imported binding: " + local);
+                            "duplicate imported binding: " + local);
                     }
                 }
                 ExportInterfaceCodec.Kind kind = ExportInterfaceCodec.Kind.FUNCTION;
