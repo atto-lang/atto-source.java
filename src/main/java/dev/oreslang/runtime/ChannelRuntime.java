@@ -622,14 +622,18 @@ public final class ChannelRuntime {
         }
 
         private boolean cancelAdmission() {
+            ArrayList<Runnable> cleanups = new ArrayList<>();
             COORDINATOR.lock();
             try {
                 if (decided) return false;
                 decided = true;
-                unregisterLocked(this);
+                unregisterLocked(this, cleanups);
                 return true;
             } finally {
                 COORDINATOR.unlock();
+                // Producer queues may be large even when this select is bounded.
+                // Never scan/remove their waiters under the channel coordinator.
+                runCompletions(cleanups);
             }
         }
 
@@ -656,7 +660,7 @@ public final class ChannelRuntime {
                 if (!decided && !immediateOnly
                         && exceedsPendingBudgetLocked(this)) {
                     decided = true;
-                    unregisterLocked(this);
+                    unregisterLocked(this, completions);
                     completions.add(() -> future.failFromRuntime(
                             new ChannelBackpressureException(
                                     "channel pending registration budget exhausted")));
@@ -665,7 +669,7 @@ public final class ChannelRuntime {
                 if (!decided && !immediateOnly && activeArmRegistrations > MAX_PENDING_SELECTS) {
                     // Ready operations have already been given a chance to commit.
                     decided = true;
-                    unregisterLocked(this);
+                    unregisterLocked(this, completions);
                     completions.add(() -> future.failFromRuntime(
                             new SelectAdmissionException(
                                     "pending select arm registration quota exceeded")));
@@ -673,7 +677,7 @@ public final class ChannelRuntime {
 
                 if (!decided && immediateOnly) {
                     decided = true;
-                    unregisterLocked(this);
+                    unregisterLocked(this, completions);
                 }
             } finally {
                 COORDINATOR.unlock();
@@ -705,13 +709,17 @@ public final class ChannelRuntime {
                 OresFuture.RuntimeWaiterRegistration<?> waiter =
                         candidate.future().whenCompleteRuntimeCancellable(
                                 (ignored, failure) -> futureBecameReady());
+                boolean lost;
                 COORDINATOR.lock();
                 try {
-                    if (decided) waiter.detach();
-                    else futureWaiters.add(waiter);
+                    lost = decided;
+                    if (!lost) futureWaiters.add(waiter);
                 } finally {
                     COORDINATOR.unlock();
                 }
+                // Dequeue outside the global lock, including a just-settled
+                // Future whose synchronous callback already selected a winner.
+                if (lost) waiter.detach();
             }
         }
 
@@ -776,7 +784,8 @@ public final class ChannelRuntime {
         }
     }
 
-    private static void unregisterLocked(SelectRegistration selection) {
+    private static void unregisterLocked(
+            SelectRegistration selection, List<Runnable> completions) {
         if (!selection.registered) return;
         selection.registered = false;
         ACTIVE.remove(selection);
@@ -793,11 +802,19 @@ public final class ChannelRuntime {
             }
         }
         selection.registrations.clear();
-        for (OresFuture.RuntimeWaiterRegistration<?> waiter :
-                selection.futureWaiters) {
-            waiter.detach();
+        if (!selection.futureWaiters.isEmpty()) {
+            // Once decided=true, callbacks cannot commit another arm. Queue
+            // removals can be linear in shared producer waiters; schedule all
+            // detaches after releasing COORDINATOR, before publishing the winner.
+            List<OresFuture.RuntimeWaiterRegistration<?>> detached =
+                    List.copyOf(selection.futureWaiters);
+            selection.futureWaiters.clear();
+            completions.add(() -> {
+                for (OresFuture.RuntimeWaiterRegistration<?> waiter : detached) {
+                    waiter.detach();
+                }
+            });
         }
-        selection.futureWaiters.clear();
     }
 
     /**
@@ -1058,8 +1075,8 @@ public final class ChannelRuntime {
         writer.selection.decided = true;
         reader.selection.set.selected(reader.index, reader.selection.policy);
         writer.selection.set.selected(writer.index, writer.selection.policy);
-        unregisterLocked(reader.selection);
-        unregisterLocked(writer.selection);
+        unregisterLocked(reader.selection, completions);
+        unregisterLocked(writer.selection, completions);
 
         SelectResult readResult = new SelectResult(
                 reader.index,
@@ -1085,7 +1102,7 @@ public final class ChannelRuntime {
 
         selection.decided = true;
         selection.set.selected(result.index(), selection.policy);
-        unregisterLocked(selection);
+        unregisterLocked(selection, completions);
         completions.add(() ->
                 selection.future.completeFromRuntime(result));
     }
@@ -1102,7 +1119,7 @@ public final class ChannelRuntime {
         // permanently closed arm can monopolize a reusable SelectSet forever.
         selection.decided = true;
         selection.set.selected(registration.index, selection.policy);
-        unregisterLocked(selection);
+        unregisterLocked(selection, completions);
         completions.add(() ->
                 selection.future.failFromRuntime(failure));
     }
