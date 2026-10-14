@@ -1,0 +1,102 @@
+// Canonical Oreslang-owned actor lifecycle policy.
+//
+// This is the first executable, side-effect-free slice of actorruntime.ores.
+// The runtime's authoritative ActorId, incarnation, sealed scheduler token,
+// queue reservation and physical isolation checks MUST be performed by the
+// trusted VM intrinsics before passing their attestations into these functions.
+//
+// This source intentionally imports no Java classes or host interop.
+// Pending migration: move the actor mailbox, scheduler, structured supervisor,
+// state loans, cancellation unwind and DONE orchestration into Oreslang.
+// Until the full ABI is available, these functions are policy primitives,
+// NOT a replacement for the current bootstrap ActorRuntime.java.
+//
+// STOP is monotonic. It seals ordinary user work, but may leave one
+// authenticated cleanup-only continuation path alive.
+
+define module actorruntime as
+
+  // User messages never enter a stopped or force-revoked actor.
+  pub fnc accept_user_message(
+    bool stopped,
+    bool finalized,
+    bool force_revoked
+  ): bool {
+    return !stopped && !finalized && !force_revoked;
+  }
+
+  // Queue retention and execution permission are deliberately separate.
+  // A scheduler-owned turn already in the mailbox must survive STOP even
+  // before cancellation is injected into its continuation. No untrusted
+  // CONTROL envelope may gain this retention.
+  pub fnc retain_source_turn(
+    bool stopped,
+    bool finalized,
+    bool force_revoked,
+    bool vm_closed,
+    bool actor_identity_valid,
+    bool incarnation_valid,
+    bool scheduler_provenance_valid,
+    bool source_task_registered
+  ): bool {
+    return stopped && !finalized && !force_revoked && !vm_closed
+      && actor_identity_valid && incarnation_valid
+      && scheduler_provenance_valid && source_task_registered;
+  }
+
+  // Cancellation *delivery* may enter a stopped actor so the scheduler can
+  // inject its terminal signal. This does not grant cleanup effects to
+  // ordinary source code that was already running at STOP.
+  pub fnc admit_terminal_delivery(
+    bool retained_source_turn,
+    bool cancellation_requested,
+    bool scheduler_open
+  ): bool {
+    return retained_source_turn && cancellation_requested && scheduler_open;
+  }
+
+  // Effectful post-STOP guest execution is restricted to the portion after
+  // the one-shot terminal signal has actually been injected, not merely
+  // requested. Physical single-flight admission remains a VM invariant.
+  pub fnc allow_cleanup_effects(
+    bool terminal_delivery_authorized,
+    bool cancellation_injected,
+    bool actor_turn_owned
+  ): bool {
+    return terminal_delivery_authorized
+      && cancellation_injected && actor_turn_owned;
+  }
+
+  // State retirement is gated on logical AND physical turn completion,
+  // structured children, full cancellation delivery and final cleanup.
+  // Even after a deadline/force revoke, active_turns and carrier_active must
+  // settle before an actor can publish DONE.
+  pub fnc can_retire_state(
+    bool stopped,
+    bool finalized,
+    int active_turns,
+    bool scheduled,
+    bool carrier_active,
+    int live_children,
+    bool cancellation_delivery_pending,
+    int pending_cleanup_tasks,
+    bool final_cleanup_completed
+  ): bool {
+    return stopped && !finalized
+      && active_turns == 0 && !scheduled && !carrier_active
+      && live_children == 0 && !cancellation_delivery_pending
+      && pending_cleanup_tasks == 0 && final_cleanup_completed;
+  }
+
+  // DONE is a publication barrier, not permission to retire state.
+  // Output stream closure and state retirement must be committed first.
+  pub fnc can_publish_done(
+    bool state_retired,
+    bool outputs_closed,
+    bool supervisor_terminal_record_committed
+  ): bool {
+    return state_retired && outputs_closed
+      && supervisor_terminal_record_committed;
+  }
+
+end
