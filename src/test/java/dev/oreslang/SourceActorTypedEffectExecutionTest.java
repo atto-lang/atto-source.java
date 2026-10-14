@@ -55,6 +55,9 @@ final class SourceActorTypedEffectExecutionTest {
 
     @Test void panicIsTerminalEvenIfActorUsesGuestTryCatch() throws Exception {
         Path entry = source("panic");
+        Files.writeString(entry, Files.readString(entry).replace(
+                "panic new WorkerFault(7);",
+                "try { panic new WorkerFault(7); } catch (e) { self.end(); return; }"));
         assertDoesNotThrow(() -> LinkedProgramRunner.validate(entry));
         assertThrows(RuntimeException.class, () -> LinkedProgramRunner.runWithExitStatus(
                 entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
