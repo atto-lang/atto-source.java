@@ -82,6 +82,7 @@ public final class VerifiedSccAdmission {
                 staged, resolvedOverrides, noExternal);
 
         Map<String, Ast.Program> passed = new LinkedHashMap<>();
+        Map<String, Map<String, Ast.FunctionDecl>> expectedImports = new LinkedHashMap<>();
         Set<String> available = sourcePrograms.keySet();
         for (Map.Entry<String, Ast.Program> importer : sourcePrograms.entrySet()) {
             String sourceId = importer.getKey();
@@ -114,6 +115,32 @@ public final class VerifiedSccAdmission {
             Ast.Program checked = TypeChecker.checkTypesWithLinkedFunctions(
                     importer.getValue(), signatures);
             passed.put(sourceId, checked);
+            expectedImports.put(sourceId, Map.copyOf(signatures));
+        }
+
+        // Re-read provider signatures from the CHECKED programs. Otherwise
+        // a checker annotation expansion could change a provider's public
+        // signature after another module was type-checked against the old one.
+        for (Map.Entry<String, Ast.Program> importer : passed.entrySet()) {
+            String sourceId = importer.getKey();
+            Map<String, Ast.FunctionDecl> checkedAgainst = expectedImports.get(sourceId);
+            for (Ast.ImportDecl use : importer.getValue().imports()) {
+                String providerId = ImportGraph.resolveImportUnitId(
+                        sourceId, use, available, resolvedOverrides);
+                if (providerId == null) {
+                    throw new IllegalArgumentException("untrusted provider after semantic checking");
+                }
+                Ast.Program provider = Objects.requireNonNull(passed.get(providerId));
+                for (String name : use.names()) {
+                    String local = ImportRules.localName(use, name);
+                    Ast.FunctionDecl formerlyResolved = checkedAgainst.get(local);
+                    Ast.FunctionDecl verifiedProvider = uniquelyExportedFunction(provider, name);
+                    if (!sameLinkedFunctionSignature(formerlyResolved, verifiedProvider)) {
+                        throw new IllegalArgumentException(
+                                "provider exported signature changed during SCC admission: " + name);
+                    }
+                }
+            }
         }
 
         // Annotation expansion and checked signatures may change the public
@@ -147,6 +174,24 @@ public final class VerifiedSccAdmission {
             throw new IllegalArgumentException("expected one complete strongly connected component");
         }
         return graph.components().getFirst();
+    }
+
+    private static boolean sameLinkedFunctionSignature(
+            Ast.FunctionDecl before, Ast.FunctionDecl after) {
+        return before != null && after != null
+                && before.name().equals(after.name())
+                && before.kind() == after.kind()
+                && before.visibility() == after.visibility()
+                && before.actorKind() == after.actorKind()
+                && before.async() == after.async()
+                && before.suspends() == after.suspends()
+                && before.generator() == after.generator()
+                && before.structural() == after.structural()
+                && before.nonLexical() == after.nonLexical()
+                && before.trapped() == after.trapped()
+                && before.genericParameters().equals(after.genericParameters())
+                && before.parameters().equals(after.parameters())
+                && Objects.equals(before.returnType(), after.returnType());
     }
 
     private static Ast.FunctionDecl uniquelyExportedFunction(
