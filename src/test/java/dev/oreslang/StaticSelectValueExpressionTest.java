@@ -112,6 +112,69 @@ final class StaticSelectValueExpressionTest {
     }
 
     @Test
+    void nestedProceduralReturnStillExitsContainingCallable() throws Exception {
+        String code = """
+                pub fnc compute(): int {
+                  const int v = select over
+                    default -> {
+                      do select over
+                        default -> {
+                          return 9;
+                        }
+                      end
+                      return 1;
+                    }
+                  end;
+                  return v + 100;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(compute());
+                  return;
+                }
+                """;
+        assertEquals("9", run(code));
+    }
+
+    @Test
+    void valueArmReturnRunsDeferredCleanupExactlyOnce() throws Exception {
+        String code = """
+                pub fnc main(): void {
+                  const int v = select over
+                    default -> {
+                      defer stdio.stdout.write("cleanup:");
+                      return 7;
+                    }
+                  end;
+                  stdio.stdout.write(v);
+                  return;
+                }
+                """;
+        assertEquals("cleanup:7", run(code));
+    }
+
+    @Test
+    void valueArmReturnPreservesTryFinally() throws Exception {
+        String code = """
+                pub fnc main(): void {
+                  const int v = select over
+                    default -> {
+                      try {
+                        return 3;
+                      } catch (err) {
+                        return 4;
+                      } finally {
+                        stdio.stdout.write("finally:");
+                      }
+                    }
+                  end;
+                  stdio.stdout.write(v);
+                  return;
+                }
+                """;
+        assertEquals("finally:3", run(code));
+    }
+
+    @Test
     void valueExpressionRejectsMissingReturnAndTypeErrors() {
         String[] invalid = {
             "select over default -> { 7; } end",
