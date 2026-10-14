@@ -942,6 +942,15 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
+        // A producer Future can settle midway through this priority scan.
+        // Multiple arms awaiting that SAME Future must use one readiness
+        // observation for the entire arbitration pass; otherwise an earlier
+        // arm may be sampled PENDING while a later duplicate observes SUCCESS
+        // and spuriously wins PRIORITY over the identical earlier source.
+        // Identity comparison is intentional: distinct Futures are distinct
+        // completion authorities, even when their values compare equal.
+        // IdentityHashMap accepts null values so PENDING is cached too.
+        java.util.IdentityHashMap<OresFuture<?>, Object> observedFutureStates = null;
         for (int index : selection.order) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
@@ -951,9 +960,18 @@ public final class ChannelRuntime {
             if (registration == null) continue;
 
             if (registration.selectCase instanceof FutureCase<?> awaiting) {
-                if (awaiting.future().runtimeSelectReadyStateOrNull() != null) {
-                    return registration;
+                if (observedFutureStates == null) {
+                    observedFutureStates = new java.util.IdentityHashMap<>();
                 }
+                OresFuture<?> producer = awaiting.future();
+                Object observed;
+                if (observedFutureStates.containsKey(producer)) {
+                    observed = observedFutureStates.get(producer);
+                } else {
+                    observed = producer.runtimeSelectReadyStateOrNull();
+                    observedFutureStates.put(producer, observed);
+                }
+                if (observed != null) return registration;
                 continue;
             }
             Channel<?> channel = registration.channel();
