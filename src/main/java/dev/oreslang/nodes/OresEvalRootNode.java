@@ -2749,6 +2749,16 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt select,
                 Env env,
                 SourceFlowCont continuation) {
+            // Reject an invalid execution domain before evaluating candidate
+            // operands. A ready selectAsync() can commit I/O immediately;
+            // cancelling the returned Future cannot roll that back.
+            if (select.mode() == Ast.WaitMode.NONBLOCKING
+                    && !ActorRuntime.inActorExecution()) {
+                continuation.accept(task, SourceFlow.throwing(
+                        new IllegalStateException(
+                                "nonblocking static select requires actor execution")));
+                return;
+            }
             // A blocking/nonblocking select arms callback or Future state.
             // Validate before selecting: late rejection could consume a
             // message, publish a send, or leave an armed callback behind.
@@ -2781,20 +2791,18 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            // Detached callbacks need their actor target and captured scope
+            // before the selection can commit a ready operation.
+            ActorRuntime.ContinuationTarget target = null;
+            Env captured = null;
+            if (select.mode() == Ast.WaitMode.NONBLOCKING) {
+                target = context.actors().captureCurrentContinuationTarget();
+                captured = env.snapshot();
+            }
             OresFuture<ChannelRuntime.SelectResult> future =
                     set.selectAsync(policy);
             if (select.mode() == Ast.WaitMode.NONBLOCKING) {
-                if (!ActorRuntime.inActorExecution()) {
-                    future.cancel(false);
-                    continuation.accept(
-                            task,
-                            SourceFlow.throwing(
-                                    new IllegalStateException(
-                                            "nonblocking static select requires actor execution")));
-                    return;
-                }
-                ActorRuntime.ContinuationTarget target =
-                        context.actors().captureCurrentContinuationTarget();
+                final Env selectedEnvironment = captured;
                 context.actors().enqueueOnCompletion(
                         future,
                         target,
@@ -2806,7 +2814,7 @@ public final class OresEvalRootNode extends RootNode {
                                 executeSelectedArm(
                                         select,
                                         result,
-                                        env.snapshot(),
+                                        selectedEnvironment,
                                         true,
                                         true);
                             } catch (RuntimeException | Error callbackFailure) {
@@ -4781,7 +4789,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 List<?> captured = fn.async()
-                        ? detachAsyncArguments(normalized)
+                        ? detachAsyncArguments(normalized, fn.parameters())
                         : List.copyOf(normalized);
                 GeneratorRuntime.Producer<Object> producer = emitter -> {
                     GeneratorRuntime.Emitter<Object> boundaryEmitter = fn.async()
@@ -4803,7 +4811,7 @@ public final class OresEvalRootNode extends RootNode {
                             startSourceFunctionTask(
                                     fn,
                                     fn.async()
-                                            ? detachAsyncArguments(normalized)
+                                            ? detachAsyncArguments(normalized, fn.parameters())
                                             : normalized);
 
                     if (fn.async()) {
@@ -4882,10 +4890,30 @@ public final class OresEvalRootNode extends RootNode {
             return objectArguments(args);
         }
 
-        private List<?> detachAsyncArguments(List<?> args) {
+        private List<?> detachAsyncArguments(List<?> args, List<Ast.Param> parameters) {
+            if (args.size() != parameters.size()) {
+                throw new IllegalArgumentException(
+                        "async task argument count differs from its formal parameters");
+            }
             ArrayList<Object> detached = new ArrayList<>(args.size());
-            for (Object arg : args) {
-                detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
+            for (int i = 0; i < args.size(); i++) {
+                Object arg = args.get(i);
+                if (arg instanceof ChannelRuntime.Channel<?> channel) {
+                    // Only an explicit top-level Channel<T> formal may preserve
+                    // the synchronized channel handle across a *local* async
+                    // source-task boundary. Nested capabilities remain rejected.
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !"Channel".equals(formal.name())
+                            || formal.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "async task channel argument " + (i + 1)
+                                        + " requires an explicit Channel<T> parameter");
+                    }
+                    detached.add(channel);
+                } else {
+                    detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
+                }
             }
             return List.copyOf(detached);
         }
@@ -5030,7 +5058,7 @@ public final class OresEvalRootNode extends RootNode {
                         startSourceFunctionTask(
                                 fn,
                                 fn.async()
-                                        ? detachAsyncArguments(args)
+                                        ? detachAsyncArguments(args, fn.parameters())
                                         : args);
                 return returnSourceTaskResult(future, fn.async());
             }
@@ -5551,6 +5579,12 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt selected,
                 Env env,
                 boolean tailBarrier) {
+            if (selected.mode() == Ast.WaitMode.NONBLOCKING
+                    && !ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "static nb select branches require an actor execution context; "
+                                + "use 'nb select from cases' when you only need a Future");
+            }
             ChannelRuntime.SelectSet set = buildStaticSelectSet(selected, env);
             ChannelRuntime.SelectPolicy policy = runtimeSelectPolicy(selected.policy());
 
@@ -5568,20 +5602,17 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            ActorRuntime.ContinuationTarget target = null;
+            Env captured = null;
+            if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                target = context.actors().captureCurrentContinuationTarget();
+                captured = env.snapshot();
+            }
             OresFuture<ChannelRuntime.SelectResult> future =
                     set.selectAsync(policy);
 
             if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
-                if (!ActorRuntime.inActorExecution()) {
-                    future.cancel(false);
-                    throw new IllegalStateException(
-                            "static nb select branches require an actor execution context; "
-                                    + "use 'nb select from cases' when you only need a Future");
-                }
-
-                ActorRuntime.ContinuationTarget target =
-                        context.actors().captureCurrentContinuationTarget();
-                Env captured = env.snapshot();
+                final Env capturedEnvironment = captured;
                 context.actors().enqueueOnCompletion(
                         future,
                         target,
@@ -5590,7 +5621,7 @@ public final class OresEvalRootNode extends RootNode {
                             executeSelectedArm(
                                     selected,
                                     result,
-                                    captured,
+                                    capturedEnvironment,
                                     true,
                                     true);
                         });
@@ -7581,7 +7612,7 @@ public final class OresEvalRootNode extends RootNode {
                                 fn,
                                 null,
                                 fn.async()
-                                        ? detachAsyncArguments(args)
+                                        ? detachAsyncArguments(args, fn.parameters())
                                         : args);
                 return returnSourceTaskResult(future, fn.async());
             }
