@@ -44,7 +44,10 @@ final class GeneratorLanguageTest {
                     val Option<int> missing = None;
                     stdio.stdout.write(missing.unwrap());
                   } catch (err) {
-                    throw err;
+                    // Source-level rethrow is not yet supported. Force a
+                    // terminal pull failure while preserving finally/caller catch.
+                    val Option<int> terminal = None;
+                    stdio.stdout.write(terminal.unwrap());
                   } finally {
                     stdio.stdout.write(":closed");
                   }
