@@ -81,7 +81,7 @@ public final class ChannelRuntime {
         }
     }
 
-    public static final class SelectAdmissionException extends IllegalStateException {
+    public static final class SelectAdmissionException extends IllegalArgumentException {
         public SelectAdmissionException(String message) {
             super(message);
         }
