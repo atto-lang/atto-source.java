@@ -702,11 +702,10 @@ public final class ChannelRuntime {
         }
 
         private void attachFutureWaiters() {
-            // Every Future completes once. Several select arms can await the
-            // same producer, but they need only one notification to rerun
-            // arbitration, which still considers every arm in policy order.
-            // Avoid independent callback races and redundant wakeups.
-            IdentityHashMap<OresFuture<?>, Boolean> observed = new IdentityHashMap<>();
+            // Each source arm owns a registration credit and detachable
+            // waiter. Do not dedupe registrations across duplicate Futures:
+            // independent arm accounting is part of the public select quota
+            // contract. Readiness is sampled once per producer in arbitration.
             List<CaseRegistration> pending;
             COORDINATOR.lock();
             try {
@@ -717,7 +716,6 @@ public final class ChannelRuntime {
             }
             for (CaseRegistration registration : pending) {
                 if (!(registration.selectCase instanceof FutureCase<?> candidate)) continue;
-                if (observed.put(candidate.future(), Boolean.TRUE) != null) continue;
                 // Registration can settle while we are attaching an earlier
                 // Future listener. Do not execute guest-controlled callback
                 // registration for operations that have already lost.

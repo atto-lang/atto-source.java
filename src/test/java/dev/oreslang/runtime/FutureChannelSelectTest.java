@@ -411,7 +411,7 @@ final class FutureChannelSelectTest {
     }
 
     @Test
-    void repeatedFutureArmsRegisterOnlyOneNotificationAndPreservePriority() {
+    void repeatedFutureArmsKeepPerArmWaitersAndPreservePriority() {
         var producer = new OresFuture<Integer>();
         var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
         for (int i = 0; i < 128; i++) {
@@ -419,8 +419,8 @@ final class FutureChannelSelectTest {
         }
         var selected = new ChannelRuntime.SelectSet(cases)
                 .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
-        assertEquals(1, producer.pendingRuntimeWaiterCount(),
-                "duplicate await arms must share one Future wakeup");
+        assertEquals(128, producer.pendingRuntimeWaiterCount(),
+                "duplicate await arms retain separate admission credits");
         assertTrue(producer.completeFromRuntime(17));
         var winner = selected.join();
         assertEquals(0, winner.index());
@@ -430,7 +430,7 @@ final class FutureChannelSelectTest {
     }
 
     @Test
-    void repeatedReadyProducerRespectsFairRotationWithoutDuplicateWakeups() {
+    void repeatedReadyProducerRespectsFairRotation() {
         var producer = OresFuture.completed(29);
         var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
         for (int i = 0; i < 128; i++) {
@@ -453,7 +453,7 @@ final class FutureChannelSelectTest {
         }
         var selected = new ChannelRuntime.SelectSet(cases)
                 .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
-        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertEquals(128, producer.pendingRuntimeWaiterCount());
         assertTrue(selected.cancel(false));
         assertEquals(0, producer.pendingRuntimeWaiterCount());
         assertFalse(producer.isDone());
@@ -470,8 +470,8 @@ final class FutureChannelSelectTest {
                 ChannelRuntime.await(second),
                 ChannelRuntime.await(second))
                 .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
-        assertEquals(1, first.pendingRuntimeWaiterCount());
-        assertEquals(1, second.pendingRuntimeWaiterCount());
+        assertEquals(2, first.pendingRuntimeWaiterCount());
+        assertEquals(2, second.pendingRuntimeWaiterCount());
         assertTrue(second.completeFromRuntime(23));
         var winner = selected.join();
         assertEquals(2, winner.index());
