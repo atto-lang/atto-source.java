@@ -129,6 +129,12 @@ public final class ReturnCleanupChecker {
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) scope.define(binding.name());
                 }
+            } else if (stmt instanceof Ast.ActorEffectStmt effect) {
+                if (inFinally) {
+                    throw new IllegalArgumentException(
+                            "raise/panic cannot override pending failure inside finally");
+                }
+                expression(effect.value(), scope, inDefer, state);
             } else if (stmt instanceof Ast.ThrowStmt thrown) {
                 if (inFinally) {
                     throw new IllegalArgumentException(
