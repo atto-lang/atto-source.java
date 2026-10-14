@@ -143,6 +143,20 @@ final class SymbolMapGuestSourceTest {
         }
     }
 
+    @Test void valGrantsMutableReferentWithoutAllowingRebinding() throws Exception {
+        String guest = """
+                pub routine main(): void {
+                    val m = new Map<Symbol, int>();
+                    m[#ready] = 12;
+                    if m[#ready] eq 12 then
+                        stdio.stdout.write("val-mut-ok");
+                    fi
+                    return;
+                }
+                """;
+        assertEquals("val-mut-ok", execute(guest));
+    }
+
     @Test void ordinaryConstAndLetBindingsCannotMutateMapReferent() {
         String[] invalid = {
             "pub fnc bad(): void { const m = new Map<Symbol, int>(); m[#ready] = 1; return; }",
