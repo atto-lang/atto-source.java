@@ -45,6 +45,44 @@ final class OresFutureCallbackTest {
     }
 
     @Test
+    void concurrentTerminalRegistrationAndDetachmentReclaimsClaimedWaiters()
+            throws Exception {
+        for (int round = 0; round < 64; round++) {
+            var producer = new OresFuture<Integer>();
+            var registered = new java.util.ArrayList<OresFuture.RuntimeWaiterRegistration<Integer>>();
+            var gate = new java.util.concurrent.CountDownLatch(1);
+            var workerFailure = new AtomicReference<Throwable>();
+            Thread settler = Thread.startVirtualThread(() -> {
+                try {
+                    if (!gate.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("settlement gate timed out");
+                    }
+                    assertTrue(producer.completeFromRuntime(43));
+                } catch (Throwable failure) {
+                    workerFailure.compareAndSet(null, failure);
+                }
+            });
+            gate.countDown();
+            for (int i = 0; i < 128; i++) {
+                registered.add(producer.whenCompleteRuntimeCancellable((value, failure) -> {
+                    assertNull(failure);
+                    assertEquals(43, value);
+                }));
+            }
+            settler.join(5_000);
+            assertFalse(settler.isAlive(), "settlement stalled in round " + round);
+            if (workerFailure.get() != null) {
+                throw new AssertionError("settlement worker failed in round " + round,
+                        workerFailure.get());
+            }
+            for (var waiter : registered) waiter.detach();
+            assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                    "claimed and unclaimed waiter handles must not retain queue nodes");
+            assertEquals(43, producer.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void consumerCancellationDropsFirstLateForeignCallbackButStillRejectsDuplicates() {
         AtomicReference<OresFuture.Callback<Integer>> completion = new AtomicReference<>();
 
