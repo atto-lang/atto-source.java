@@ -29,8 +29,15 @@ import java.util.Set;
  * and its downstream importers. The checker/linker must separately establish
  * import legality and visibility, and must supply trusted interface files.
  *
- * This component is an incremental *plan*, not a compiler, linker, or ABI
- * authorization mechanism. It executes no Oreslang code.
+ * This component is an *interface invalidation plan*, not an executable
+ * object-code cache key, compiler, linker, or ABI authorization mechanism.
+ * Importers may reuse checked interface results when the public ABI is stable.
+ * They MUST NOT reuse optimized object code based solely on these hashes if
+ * cross-module inlining, compile-time evaluation, macros, LTO, or other
+ * implementation-dependent optimizations consumed a dependency's body.
+ * Those build stages require verified implementation/toolchain digests in
+ * separate dependency keys, or conservatively rebuild all affected importers.
+ * It executes no Oreslang code.
  */
 public final class InterfaceSccPlanner {
     private static final int MAX_UNITS = 1024;
@@ -86,7 +93,7 @@ public final class InterfaceSccPlanner {
         if (!admittedPrograms.keySet().containsAll(resolvedOverrides.keySet())) {
             throw new IllegalArgumentException("resolution overrides for unknown source units");
         }
-        int totalImports = 0;
+        long totalImports = 0;
         for (Map.Entry<String, dev.oreslang.ast.Ast.Program> entry : admittedPrograms.entrySet()) {
             String unit = entry.getKey();
             validateUnit(unit);
