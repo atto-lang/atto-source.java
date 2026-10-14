@@ -5884,6 +5884,13 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "channel capability is execution-domain local and cannot cross actor mailboxes");
         }
+        if (value instanceof OresKeyedMap<?, ?>) {
+            // Guest maps are mutable and not java.util.Map views. Keep them
+            // non-Sendable until a typed deep-copy codec validates both Symbol
+            // keys and values against the authenticated receiver policy.
+            throw new IllegalArgumentException(
+                    "typed Map values cannot cross actor boundaries until isolated transport is supported");
+        }
         if (value == null || isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
