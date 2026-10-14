@@ -8181,6 +8181,23 @@ public final class OresEvalRootNode extends RootNode {
          * metadata here; native lowering must use the same relation against native type tags
          * (directly or through the narrow JNI bridge), never JVM Class.isInstance/instanceof.
          */
+        // Exception identity is nominal only. Do not classify by Java
+        // Throwable, matching field names, or untrusted class spelling.
+        private boolean classDerivesFromGuestError(
+                Ast.ClassDecl klass, Set<Ast.ClassDecl> visited) {
+            if (!visited.add(klass) || klass.actorKind() != Ast.ActorKind.NONE) return false;
+            for (Ast.TypeRef parent : klass.parents()) {
+                if (parent.name().equals("Error")) {
+                    return !parent.inferArguments() && parent.arguments().isEmpty();
+                }
+                Ast.ClassDecl ancestor = findClass(parent.name());
+                if (ancestor != null && classDerivesFromGuestError(ancestor, visited)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private boolean oresTypeMatches(Object value, Ast.TypeRef target) {
             if (target.isComplement()) {
                 return !oresTypeMatches(value, target.complementedType());
@@ -8216,6 +8233,11 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("string") || name.equals("String")) return value instanceof String;
             if (name.equals("Symbol") && findClass("Symbol") == null)
                 return value instanceof dev.oreslang.runtime.OresSymbol;
+            if (name.equals("Error")) {
+                return value instanceof OresObject object
+                        && object.owner.classDerivesFromGuestError(
+                                object.klass, new LinkedHashSet<>());
+            }
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
