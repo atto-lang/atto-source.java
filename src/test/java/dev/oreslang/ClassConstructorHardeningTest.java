@@ -108,10 +108,10 @@ final class ClassConstructorHardeningTest {
     void finalConstInitializersExecuteThroughPureEvaluatorWithBothConstructors() throws Exception {
         String source = """
                 define class Synthesized as
-                  final const int answer: (2 + 3) * 4
+                  pub final const int answer: (2 + 3) * 4
                 end
                 define class Explicit as
-                  final const int answer: 2 * 3
+                  pub final const int answer: 2 * 3
                   constructor() { }
                 end
 
