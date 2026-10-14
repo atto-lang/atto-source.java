@@ -11,6 +11,16 @@ import static org.junit.jupiter.api.Assertions.*;
 /** End-to-end actor-owned STOP continuation tests, not merely scheduler tests. */
 @Timeout(20)
 final class ActorStopLexicalCleanupTest {
+    private static void awaitRegistration(OresFuture<?> awaited) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (awaited.pendingRuntimeWaiterCount() == 0
+                && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertEquals(1, awaited.pendingRuntimeWaiterCount(),
+                "test must cancel only after the source await registration");
+    }
+
     @Test
     void stopRunsAwaitedCleanupOnActorLaneBeforePublishingDone() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
@@ -53,6 +63,7 @@ final class ActorStopLexicalCleanupTest {
                     });
             actor.send("start");
             assertTrue(originalFrame.await(5, TimeUnit.SECONDS));
+            awaitRegistration(blockedProducer);
             assertTrue(actor.cancel());
             assertTrue(cleanupStarted.await(5, TimeUnit.SECONDS),
                     "cancelled source frame must unwind on its actor lane");
@@ -119,6 +130,7 @@ final class ActorStopLexicalCleanupTest {
                     });
             actor.send("start");
             assertTrue(sourceStarted.await(5, TimeUnit.SECONDS));
+            awaitRegistration(suspended);
             assertTrue(actor.cancel());
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             assertSame(fatal, actor.failure().orElse(null),
