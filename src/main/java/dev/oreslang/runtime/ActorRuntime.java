@@ -5973,7 +5973,13 @@ public final class ActorRuntime implements AutoCloseable {
     public static Object freeze(Object value) {
         validateMessageGraph(value);
         rejectDataFreezeCapabilities(value, new IdentityHashMap<>(), 0);
-        return freeze(value, new IdentityHashMap<>(), 0);
+        Object prepared = freeze(value, new IdentityHashMap<>(), 0);
+        // Caller-owned Maps/Lists/Sets can change after the initial checks
+        // but before the recursive copy reads their contents. Data-only
+        // freeze must authorize its DETACHED result, not just its input.
+        validateMessageGraph(prepared);
+        rejectDataFreezeCapabilities(prepared, new IdentityHashMap<>(), 0);
+        return prepared;
     }
 
     private static Object freezeForTransport(Object value) {
