@@ -362,7 +362,9 @@ public final class OwnershipChecker {
                 throw error("cannot throw while a lexical borrow is live");
             }
             ValueInfo value = checkExpr(thrown.value(), scope, true);
-            if (value.type instanceof Borrow) {
+            if (value.kind == ValueKind.IMM_BORROW
+                    || value.kind == ValueKind.MUT_BORROW
+                    || value.type != null && value.type.isBorrow()) {
                 throw error("guest throw cannot transfer a borrowed Error");
             }
             return;
