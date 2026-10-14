@@ -948,6 +948,11 @@ public final class TypeChecker {
             return true;
         }
         if (expr instanceof Ast.BinaryExpr op) {
+            // Division/remainder can fail (notably integer remainder by
+            // zero) even when both operands were evaluated without effects.
+            // Failure cleanup of a partially built instance is not proven.
+            // Keep them outside eager initialization until that proof exists.
+            if (op.operator().equals("/") || op.operator().equals("%")) return true;
             return fieldInitializerMaySuspend(op.left()) || fieldInitializerMaySuspend(op.right());
         }
         if (expr instanceof Ast.UnaryExpr op) return fieldInitializerMaySuspend(op.operand());
@@ -991,7 +996,11 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.TypeTestExpr test) return fieldInitializerMaySuspend(test.value());
         if (expr instanceof Ast.PatternTestExpr test) return fieldInitializerMaySuspend(test.value());
-        if (expr instanceof Ast.CastExpr cast) return fieldInitializerMaySuspend(cast.value());
+        if (expr instanceof Ast.CastExpr) {
+            // Checked casts can fail independently of their source expression;
+            // permitting one could unwind a partially constructed instance.
+            return true;
+        }
         if (expr instanceof Ast.SpreadExpr spread) return fieldInitializerMaySuspend(spread.expression());
         if (expr instanceof Ast.ListExpr list)
             return list.elements().stream().anyMatch(this::fieldInitializerMaySuspend);
