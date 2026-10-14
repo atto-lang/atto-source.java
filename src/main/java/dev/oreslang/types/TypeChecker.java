@@ -1638,7 +1638,7 @@ public final class TypeChecker {
             List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
             for (Ast.IfBranch branch : conditional.branches()) {
                 env.restoreInitialization(before);
-                requireAssignable(typeOfCondition(branch.condition(), env, generics, self), Primitive.BOOL, "if condition");
+                requireAssignable(typeOfIfCondition(branch.condition(), env, generics, self), Primitive.BOOL, "if condition");
                 Env branchEnv = new Env(env);
                 defineConditionBindings(branch.condition(), branchEnv, env, generics, self);
                 checkBlock(branch.body(), branchEnv, generics, expectedReturn, self);
@@ -4811,17 +4811,30 @@ public final class TypeChecker {
         }
     }
 
+    private Type typeOfIfCondition(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        return typeOfCondition(expr, env, generics, self, true);
+    }
+
     private Type typeOfCondition(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        return typeOfCondition(expr, env, generics, self, false);
+    }
+
+    private Type typeOfCondition(
+            Ast.Expr expr, Env env, Set<String> generics, Type self, boolean allowOptionBindings) {
         rejectAssignmentInPredicate(expr);
+        if (!allowOptionBindings && containsOptionBinding(expr)) {
+            throw new IllegalArgumentException(
+                    "'as const/let' Option binding is currently only supported in if/elif conditions");
+        }
         if (expr instanceof Ast.OptionBindExpr binding) {
             copyOptionPayloadType(binding.value(), env, generics, self);
             return Primitive.BOOL;
         }
         if (expr instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
-            requireAssignable(typeOfCondition(binary.left(), env, generics, self), Primitive.BOOL, "logical operand");
+            requireAssignable(typeOfCondition(binary.left(), env, generics, self, allowOptionBindings), Primitive.BOOL, "logical operand");
             Env rightEnv = new Env(env);
             defineConditionBindings(binary.left(), rightEnv, env, generics, self);
-            requireAssignable(typeOfCondition(binary.right(), rightEnv, generics, self), Primitive.BOOL, "logical operand");
+            requireAssignable(typeOfCondition(binary.right(), rightEnv, generics, self, allowOptionBindings), Primitive.BOOL, "logical operand");
             return Primitive.BOOL;
         }
         if (expr instanceof Ast.TypeTestExpr test
@@ -4854,6 +4867,21 @@ public final class TypeChecker {
      * Move-only payload extraction needs explicit carrier consumption/drop
      * tracking and is deliberately not lowered by this frontend yet.
      */
+    private static boolean containsOptionBinding(Ast.Expr expr) {
+        if (expr instanceof Ast.OptionBindExpr) return true;
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return containsOptionBinding(binary.left()) || containsOptionBinding(binary.right());
+        }
+        if (expr instanceof Ast.TypeTestExpr test) return containsOptionBinding(test.value());
+        if (expr instanceof Ast.UnaryExpr unary) return containsOptionBinding(unary.operand());
+        if (expr instanceof Ast.ConditionalExpr ternary) {
+            return containsOptionBinding(ternary.condition())
+                    || containsOptionBinding(ternary.whenTrue())
+                    || containsOptionBinding(ternary.whenFalse());
+        }
+        return false;
+    }
+
     private Type copyOptionPayloadType(
             Ast.Expr carrier, Env env, Set<String> generics, Type self) {
         Type type = deref(typeOf(carrier, env, generics, self));
